@@ -6,6 +6,7 @@ PaddleOCR-VL GGUF 版本测试客户端
 
 import sys
 import os
+import time
 
 # 复用 CPU 版本客户端实现
 cpu_client_dir = os.path.join(os.path.dirname(__file__), "..", "PaddleOCR-VL-CPU")
@@ -50,6 +51,7 @@ def main():
             print(f"流式: {args.stream}")
             print("-" * 60)
             
+            start_time = time.time()
             response = client.chat_completion(
                 text=args.text,
                 image_path=args.image,
@@ -57,6 +59,8 @@ def main():
                 temperature=args.temperature,
                 stream=args.stream
             )
+            end_time = time.time()
+            print(f"\n消耗时间: {end_time - start_time:.2f} 秒")
 
             if args.stream:
                 # 流式响应已经在_handle_stream_response中打印
