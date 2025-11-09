@@ -174,7 +174,7 @@ class PaddleOCRVLClient:
 def main():
     parser = argparse.ArgumentParser(description="PaddleOCR-VL API 客户端")
     parser.add_argument("--url", default="http://localhost:7777", help="API服务器URL")
-    parser.add_argument("--text", required=True, help="文本提示")
+    parser.add_argument("--text", default="OCR:", help="文本提示")
     parser.add_argument("--image", help="图像文件路径")
     parser.add_argument("--max-tokens", type=int, default=131072, help="最大生成token数")
     parser.add_argument("--temperature", type=float, default=0.7, help="温度参数")
