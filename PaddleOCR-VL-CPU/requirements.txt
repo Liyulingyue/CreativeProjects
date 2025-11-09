@@ -1,0 +1,15 @@
+modelscope
+torch
+torchvision
+Pillow
+transformers
+fastapi
+uvicorn
+requests
+protobuf
+sentencepiece
+einops
+opencv-python
+openai
+bitsandbytes
+accelerate>=0.26.0
