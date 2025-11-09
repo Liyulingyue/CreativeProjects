@@ -14,8 +14,7 @@ PaddleOCR-VL GGUF 项目将多模态模型拆分成「视觉编码器 + 语言�
 
 | 能力 | 说明 |
 |------|------|
-| 内存占用 | 量化后约 1.2 GB,较原始模型降低 ~70% |
-| 推理速度 | CPU 环境下可获得 2-3x 提升,支持 GPU/Metal 加速 |
+| 推理速度 | CPU 环境下可获得 2-5x 提升 |
 | 架构解耦 | 视觉模块仍在 PyTorch 中运行,便于调试与扩展 |
 | API 兼容 | 保持与 OpenAI 风格接口一致,可无缝集成现有应用 |
 | 本地化 | 全流程离线部署,无外部服务依赖 |
@@ -83,31 +82,15 @@ python llama.cpp/convert_hf_to_gguf.py \
 
 ```bash
 # 终端 1: 启动多模态服务
-cd PaddleOCR-VL-GGUF
+# in PaddleOCR-VL-GGUF
 python demo_ppocrvl_gguf_server.py
 
 # 终端 2: 发送测试请求
 python demo_ppocrvl_gguf_client.py \
-    --text "识别这张图片中的文字" \
     --image /path/to/image.jpg
 ```
 
-## 详细指南
-
-### 环境准备
-
-```bash
-# 可选: 查看依赖版本
-pip list | grep -E "torch|transformers|llama"
-
-# 视觉编码器依赖
-pip install torch torchvision transformers einops pillow
-
-# API & 服务依赖
-pip install fastapi uvicorn requests pydantic
-```
-
-> 提示: Linux 上使用 `uvicorn[standard]` 可获得更好的生产可用性。
+## 其他说明
 
 ### 提取语言模型权重
 
@@ -210,50 +193,6 @@ print(response.json()["choices"][0]["message"]["content"])
 
 > 视觉部分仍保持原始精度,主要的性能与内存优化集中在 LLM 侧。
 
-## 性能指标
-
-| 指标 | 原始 FP32 | GGUF Q4_K_M | 说明 |
-|------|-----------|-------------|------|
-| 内存占用 | ~4 GB | ~1.2 GB | 量化后减少约 70% |
-| 推理速度 | 1x | 2-3x | CPU 下明显提速 |
-| 精度 | 100% | ~97-98% | 轻微损失,可接受 |
-
-> 实际表现与硬件、量化等级、上下文长度有关,建议根据业务场景做基准测试。
-
-## 常见问题 (FAQ)
-
-- **Q: 为什么不再使用 Ollama?**  
-  A: llama.cpp/llama-cpp-python 直接调用 GGUF,无需额外服务,延迟更低,配置更灵活。
-
-- **Q: 一定要 GPU 吗?**  
-  A: 不需要。GGUF 量化后在 CPU 上即可获得可用速度;有 GPU 时可进一步加速。
-
-- **Q: 转换脚本在哪里?**  
-  A: `convert_to_gguf.py` 完成权重拆分,后续转换与量化步骤请参考本 README 中的 llama.cpp 指南。
-
-- **Q: 精度不足怎么办?**  
-  A: 尝试更高位宽量化 (如 Q5_K_M/Q8_0),或保留部分关键层为更高精度。
-
-## 故障排除
-
-| 场景 | 诊断步骤 | 解决建议 |
-|------|----------|----------|
-| GGUF 模型无法加载 | 检查 `GGUF_MODEL_PATH` | 确认路径正确且量化过程完整 |
-| llama-cpp-python 安装失败 | 查看编译日志 | 使用 `--no-binary` 重新安装或开启相应后端选项 |
-| 推理速度低 | 检查 `N_THREADS`/`N_GPU_LAYERS` | 与硬件线程/显存匹配,减少上下文长度 |
-| 输出异常或乱码 | 确认量化等级 | 使用更高精度量化或重新转换权重 |
-
-## Roadmap
-
-- [ ] 优化视觉嵌入注入策略
-- [ ] 扩展多图像/视频输入能力
-- [ ] 补充自动化 GGUF 转换脚本
-- [ ] 发布官方性能基准
-
-## 更新历史
-
-None
-
 ## 贡献与许可证
 
 - 🚀 欢迎通过 Issue/PR 提交改进建议或补充转换脚本
@@ -262,9 +201,17 @@ None
 ## 参考资源
 
 - [PaddleOCR 官方仓库](https://github.com/PaddlePaddle/PaddleOCR)
-- [llama.cpp](https://github.com/ggerganov/llama.cpp)
+- [llama.cpp](https://github.com/ggml-org/llama.cpp)
 - [llama-cpp-python](https://github.com/abetlen/llama-cpp-python)
 - [GGUF 格式说明](https://github.com/ggerganov/ggml/blob/master/docs/gguf.md)
 
 如遇问题,请在 GitHub Issues 中反馈或提交讨论。
-```bash
+
+
+## 运行耗时测试
+|设备 | 图片尺寸 | 耗时(秒) |
+|----|---------|---------|
+| RDK X5(8x A55@1.5GHz, 4G内存版本) | 256×256 | 45 |
+| RDK X5(8x A55@1.5GHz, 4G内存版本) | 640x480 | 97.06 |
+| Intel Ultra5 | 256×256 | 4.55 |
+| Intel Ultra5 | 640x480 | 8.59 |

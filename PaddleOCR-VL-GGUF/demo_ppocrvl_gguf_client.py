@@ -18,7 +18,7 @@ import argparse
 def main():
     parser = argparse.ArgumentParser(description="PaddleOCR-VL GGUF API 客户端测试")
     parser.add_argument("--url", default="http://localhost:7778", help="API服务器URL (GGUF版本使用7778端口)")
-    parser.add_argument("--text", default="Parse this document.", help="文本提示")
+    parser.add_argument("--text", default="OCR:", help="文本提示")
     parser.add_argument("--image", help="图像文件路径")
     parser.add_argument("--max-tokens", type=int, default=1024, help="最大生成token数")
     parser.add_argument("--temperature", type=float, default=0.7, help="温度参数")
@@ -85,3 +85,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# python demo_ppocrvl_gguf_client.py --image test.png

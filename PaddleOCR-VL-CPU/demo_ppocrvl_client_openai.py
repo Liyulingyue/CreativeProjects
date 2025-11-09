@@ -74,7 +74,7 @@ def main():
     # 硬编码参数（简化版本）
     base_url = "http://localhost:7777/v1"
     image_path = "test.png"
-    prompt = "描述这张图片的内容"
+    prompt = "OCR:"
 
     try:
         print(f"正在分析图片: {image_path}")

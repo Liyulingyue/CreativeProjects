@@ -52,25 +52,25 @@ python demo_ppocrvl_server.py
 ### 基本文本对话
 
 ```bash
-python demo_ppocrvl_client.py --text "你好，请介绍一下你自己"
+python demo_ppocrvl_client.py --text "OCR:"
 ```
 
 ### 图像分析
 
 ```bash
-python demo_ppocrvl_client.py --text "描述这张图片的内容" --image path/to/image.jpg
+python demo_ppocrvl_client.py --text "OCR:" --image path/to/image.jpg
 ```
 
 ### 流式响应
 
 ```bash
-python demo_ppocrvl_client.py --text "请详细描述这张图片" --image path/to/image.jpg --stream
+python demo_ppocrvl_client.py --text "OCR:" --image path/to/image.jpg --stream
 ```
 
 ### 自定义参数
 
 ```bash
-python demo_ppocrvl_client.py --text "分析这张文档" --image document.jpg --max-tokens 1000 --temperature 0.5
+python demo_ppocrvl_client.py --text "OCR:" --image document.jpg --max-tokens 1000 --temperature 0.5
 ```
 
 ### 查看可用模型
@@ -94,6 +94,7 @@ python demo_camera_ocr.py
 ## 运行耗时测试
 |设备 | 图片尺寸 | 耗时(秒) |
 |----|---------|---------|
+| RDK X5(8x A55@1.5GHz, 4G内存版本) | 256×256 | 154.66 |
 | RDK X5(8x A55@1.5GHz, 4G内存版本) | 640x480 | 435 |
 | Intel 13th Gen Intel(R) Core(TM) i7-13700K | 256×256 | 7.3 |
 | Intel 13th Gen Intel(R) Core(TM) i7-13700K | 640x480 | 13.25 |

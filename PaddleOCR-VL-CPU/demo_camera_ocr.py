@@ -58,7 +58,7 @@ def encode_image_to_base64(image_path: str) -> str:
     except Exception as e:
         raise ValueError(f"无法读取图像文件 {image_path}: {e}")
 
-def ocr_with_openai(image_path: str, base_url: str = "http://localhost:7777/v1", prompt: str = "Extract all the text from this image. If there is no text, say 'No text found'.") -> str:
+def ocr_with_openai(image_path: str, base_url: str = "http://localhost:7777/v1", prompt: str = "OCR:") -> str:
     """
     使用OpenAI兼容API进行OCR
 
@@ -111,7 +111,7 @@ def main():
     parser = argparse.ArgumentParser(description="摄像头OCR演示")
     parser.add_argument("--camera", type=int, default=0, help="摄像头索引 (默认: 0)")
     parser.add_argument("--output", default="captured_image.jpg", help="输出图像文件名 (默认: captured_image.jpg)")
-    parser.add_argument("--prompt", default="Extract all the text from this image. If there is no text, say 'No text found'.", help="OCR提示文本")
+    parser.add_argument("--prompt", default="OCR:", help="OCR提示文本")
     parser.add_argument("--url", default="http://localhost:7777/v1", help="API服务器URL (默认: http://localhost:7777/v1)")
     
     args = parser.parse_args()
