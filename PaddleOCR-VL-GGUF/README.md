@@ -216,6 +216,14 @@ print(response.json()["choices"][0]["message"]["content"])
 | Intel Ultra5 | 256×256 | 4.55 | Q4_K_M |
 | Intel Ultra5 | 640x480 | 8.59 | Q4_K_M |
 
+## 量化前耗时测试
+|设备 | 图片尺寸 | 耗时(秒) |
+|----|---------|---------|
+| RDK X5(8x A55@1.5GHz, 4G内存版本) | 256×256 | 154.66 |
+| RDK X5(8x A55@1.5GHz, 4G内存版本) | 640x480 | 435 |
+| Intel 13th Gen Intel(R) Core(TM) i7-13700K | 256×256 | 7.3 |
+| Intel 13th Gen Intel(R) Core(TM) i7-13700K | 640x480 | 13.25 |
+
 ## 服务端代码样例
 ```python
 # PaddleOCR-VL with GGUF LLM Backend
