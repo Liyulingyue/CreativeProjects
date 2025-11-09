@@ -1,0 +1,32 @@
+# PaddleOCR-VL GGUF 版本依赖
+
+# 深度学习框架
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Transformers 和相关库
+transformers>=4.35.0
+einops>=0.7.0
+
+# llama.cpp Python 绑定 (核心依赖)
+llama-cpp-python>=0.2.0
+
+# Web 服务
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# 图像处理
+Pillow>=10.0.0
+
+# 其他工具
+requests>=2.31.0
+numpy>=1.24.0
+
+# 可选: 性能优化
+# accelerate>=0.24.0  # 加速模型加载
+# bitsandbytes>=0.41.0  # 8-bit 优化
+
+# 注意: llama-cpp-python 安装
+# CPU 版本: pip install llama-cpp-python
+# GPU 版本 (CUDA): CMAKE_ARGS="-DLLAMA_CUBLAS=on" pip install llama-cpp-python
+# GPU 版本 (Metal/Mac): CMAKE_ARGS="-DLLAMA_METAL=on" pip install llama-cpp-python
