@@ -174,17 +174,17 @@ print(response.json()["choices"][0]["message"]["content"])
 │    │                                                        │
 │    ▼                                                        │
 │ 视觉编码器 (PyTorch)                                        │
-│  ├─ SiglipVisionModel       ≈200M 参数                      │
+│  ├─ SiglipVisionModel                                     │
 │  └─ Attention Pooling                                        │
 │    │                                                        │
 │    ▼                                                        │
-│ Projector (PyTorch)       ≈20M 参数                          │
+│ Projector (PyTorch)                                        │
 │    │                                                        │
 │    ▼ 视觉嵌入                                               │
 ├─────────────────────────────────────────────────────────────┤
 │ llama-cpp 推理 (GGUF)                                       │
-│  ├─ Ernie4.5 Decoder       量化后 ≈500-800MB               │
-│  └─ LM Head                量化后 ≈100MB                   │
+│  ├─ Ernie4.5 Decoder                                      │
+│  └─ LM Head                                               │
 │    │                                                        │
 │    ▼                                                        │
 │ 生成文本输出                                                │
