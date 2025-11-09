@@ -2,7 +2,7 @@
 
 ## 项目概览
 
-PaddleOCR-VL GGUF 项目将多模态模型拆分成「视觉编码器 + 语言模型」两部分,视觉侧保持 PyTorch,语言侧使用 GGUF 量化后通过 **llama.cpp** 系列工具直接加载,无需 Ollama 服务。
+PaddleOCR-VL GGUF 项目将多模态模型拆分成「视觉编码器 + 语言模型」两部分,视觉侧保持 PyTorch,语言侧使用 GGUF 量化后通过 **llama.cpp** 系列工具直接加载。
 
 - 🎯 **目标**: 在消费级硬件上以最小的内存占用和延迟运行 PaddleOCR-VL
 - 🧠 **视觉侧**: SiglipVisionModel + Projector (原生精度)
@@ -209,9 +209,9 @@ print(response.json()["choices"][0]["message"]["content"])
 
 
 ## 运行耗时测试
-|设备 | 图片尺寸 | 耗时(秒) |
-|----|---------|---------|
-| RDK X5(8x A55@1.5GHz, 4G内存版本) | 256×256 | 45 |
-| RDK X5(8x A55@1.5GHz, 4G内存版本) | 640x480 | 97.06 |
-| Intel Ultra5 | 256×256 | 4.55 |
-| Intel Ultra5 | 640x480 | 8.59 |
+|设备 | 图片尺寸 | 耗时(秒) | 量化等级 |
+|----|---------|---------|-----|
+| RDK X5(8x A55@1.5GHz, 4G内存版本) | 256×256 | 45 | Q4_K_M |
+| RDK X5(8x A55@1.5GHz, 4G内存版本) | 640x480 | 97.06 | Q4_K_M |
+| Intel Ultra5 | 256×256 | 4.55 | Q4_K_M |
+| Intel Ultra5 | 640x480 | 8.59 | Q4_K_M |

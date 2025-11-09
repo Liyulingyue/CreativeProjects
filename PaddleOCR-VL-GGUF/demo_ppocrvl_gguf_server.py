@@ -31,7 +31,7 @@ except ImportError:
     llama_cpp_lib = None
 
 LOCAL_PATH = "PaddlePaddle/PaddleOCR-VL"  # 视觉模型路径
-GGUF_MODEL_PATH = "extracted_llm/llm_model_q4.gguf"  # GGUF 模型路径
+GGUF_MODEL_PATH = "extracted_llm/llm_model_q8_0.gguf"  # GGUF 模型路径
 N_GPU_LAYERS = 0  # GPU 层数，0 表示纯 CPU
 N_CTX = 4096  # 上下文长度
 N_THREADS = 8  # CPU 线程数
