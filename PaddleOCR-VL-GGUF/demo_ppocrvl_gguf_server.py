@@ -1,4 +1,3 @@
-# https://linux.do/t/topic/1054681
 # PaddleOCR-VL with GGUF LLM Backend
 # 视觉编码器部分使用 PyTorch，LLM 部分使用 llama.cpp/GGUF 加速
 
