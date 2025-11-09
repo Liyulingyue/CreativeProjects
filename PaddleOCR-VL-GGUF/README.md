@@ -145,7 +145,7 @@ payload = {
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": "识别图片中的文字"},
+                {"type": "text", "text": "OCR:"},
                 {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}
             ]
         }
