@@ -7,6 +7,7 @@ torchvision>=0.15.0
 # Transformers 和相关库
 transformers>=4.35.0
 einops>=0.7.0
+sentencepiece>=0.1.99
 
 # llama.cpp Python 绑定 (核心依赖)
 llama-cpp-python>=0.2.0
@@ -30,3 +31,5 @@ numpy>=1.24.0
 # CPU 版本: pip install llama-cpp-python
 # GPU 版本 (CUDA): CMAKE_ARGS="-DLLAMA_CUBLAS=on" pip install llama-cpp-python
 # GPU 版本 (Metal/Mac): CMAKE_ARGS="-DLLAMA_METAL=on" pip install llama-cpp-python
+
+protobuf

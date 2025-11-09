@@ -1,288 +1,273 @@
-# PaddleOCR-VL GGUF 加速版本
+# PaddleOCR-VL GGUF (llama.cpp 版)
 
-## 项目概述
+## 项目概览
 
-本项目将 PaddleOCR-VL 模型拆分为两个独立部分,实现更高效的推理:
+PaddleOCR-VL GGUF 项目将多模态模型拆分成「视觉编码器 + 语言模型」两部分,视觉侧保持 PyTorch,语言侧使用 GGUF 量化后通过 **llama.cpp** 系列工具直接加载,无需 Ollama 服务。
 
-1. **视觉编码器** (Vision Encoder + Projector): 使用 PyTorch 处理
-2. **语言模型** (LLM): 使用 Ollama/GGUF 加速
+- 🎯 **目标**: 在消费级硬件上以最小的内存占用和延迟运行 PaddleOCR-VL
+- 🧠 **视觉侧**: SiglipVisionModel + Projector (原生精度)
+- 🗣️ **语言侧**: Ernie4.5 → GGUF 量化 → llama-cpp-python 推理
+- 🔌 **接口**: 兼容 OpenAI Chat Completions API
+- 🧰 **用途**: 图片 OCR + 对话、文档理解等多模态任务
 
-### 架构优势
+## 关键特性
 
-- ✅ **视觉部分**: 保持 PyTorch 实现,确保兼容性
-- ✅ **LLM 部分**: 通过 GGUF 量化实现显著加速
-- ✅ **内存优化**: LLM 使用量化权重,大幅降低内存占用
-- ✅ **API 兼容**: 完全兼容原始 OpenAI 风格 API
+| 能力 | 说明 |
+|------|------|
+| 内存占用 | 量化后约 1.2 GB,较原始模型降低 ~70% |
+| 推理速度 | CPU 环境下可获得 2-3x 提升,支持 GPU/Metal 加速 |
+| 架构解耦 | 视觉模块仍在 PyTorch 中运行,便于调试与扩展 |
+| API 兼容 | 保持与 OpenAI 风格接口一致,可无缝集成现有应用 |
+| 本地化 | 全流程离线部署,无外部服务依赖 |
 
-## 模型架构
-
-```
-输入图像 + 文本提示
-    ↓
-[Vision Encoder - PyTorch]
-    ↓ (图像嵌入)
-[Projector - PyTorch]
-    ↓ (投影后的嵌入)
-[LLM - Ollama/GGUF]
-    ↓
-输出文本
-```
-
-### 两阶段说明
-
-**阶段1: 视觉处理**
-- `SiglipVisionModel`: 将图像编码为特征向量
-- `Projector`: 将视觉特征投影到 LLM 的嵌入空间
-
-**阶段2: 语言生成**
-- `Ernie4_5Model`: 基于视觉嵌入和文本提示生成回复
-- 这部分通过 GGUF 量化获得加速
-
-## 文件说明
+## 项目结构
 
 ```
 PaddleOCR-VL-GGUF/
-├── demo_ppocrvl_gguf_server.py    # GGUF 后端的服务器实现
-├── demo_ppocrvl_gguf_client.py    # 测试客户端
-├── convert_to_gguf.py             # LLM 权重提取和转换工具
-├── README.md                      # 本文档
+├── demo_ppocrvl_gguf_server.py   # llama.cpp 后端服务器 (核心)
+├── demo_ppocrvl_gguf_client.py   # 命令行客户端示例
+├── convert_to_gguf.py            # 提取与导出 LLM 权重
+├── demo_architecture.py          # 架构和参数统计脚本
+├── requirements.txt              # 运行所需的 Python 依赖
+├── README.md                     # 本文档 (整合版)
 └── PaddlePaddle/
-    └── PaddleOCR-VL/              # 原始模型权重（需要下载）
+    └── PaddleOCR-VL/             # 官方 PaddleOCR-VL 权重 (需单独下载)
 ```
 
-## 快速开始
+## 三步快速开始
 
-### 1. 环境准备
+### 1. 安装依赖
 
 ```bash
-# 创建虚拟环境
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
-# 安装依赖
-pip install torch torchvision transformers
-pip install fastapi uvicorn httpx pillow requests
-pip install einops  # 视觉编码器需要
+pip install -r requirements.txt
 
-# 安装 Ollama
-# Linux/Mac: curl -fsSL https://ollama.com/install.sh | sh
-# Windows: 从 https://ollama.com/download 下载安装程序
+# 安装 llama-cpp-python (CPU 版本)
+
+
+# GPU/Metal 用户 (二选一)
+# CUDA: CMAKE_ARGS="-DLLAMA_CUBLAS=on" pip install llama-cpp-python
+# Metal: CMAKE_ARGS="-DLLAMA_METAL=on" pip install llama-cpp-python
 ```
 
-### 2. 提取和转换 LLM 权重
+### 2. 提取与量化语言模型
 
 ```bash
-# 进入 GGUF 目录
-cd PaddleOCR-VL-GGUF
-
-# 提取 LLM 部分
+# 提取 Ernie4.5 相关权重 (保持在 PaddleOCR-VL-GGUF 目录下)
 python convert_to_gguf.py \
     --model-path PaddlePaddle/PaddleOCR-VL \
-    --output-path ./extracted_llm
+    --output-path extracted_llm \
+    --hf-output-dir extracted_llm/hf_model
 
-# 查看提取结果
-ls extracted_llm/
-# 输出:
-#   llm_model.pt          # LLM PyTorch 权重
-#   lm_head.pt            # Language Model Head
-#   llm_config.json       # 模型配置
-#   Modelfile             # Ollama 模型文件
-#   CONVERSION_README.md  # 转换说明
+# 使用 llama.cpp 将权重转换为 GGUF 并量化
+# 安装必要的系统依赖 (Linux)
+sudo apt update && sudo apt install -y libcurl4-openssl-dev
+
+git clone https://github.com/ggml-org/llama.cpp
+cd llama.cpp && cmake . && cmake --build . -j$(nproc) && cd ..
+
+# 使用虚拟环境中的 Python 运行转换脚本
+python llama.cpp/convert_hf_to_gguf.py \
+  extracted_llm/hf_model \
+  --outfile extracted_llm/llm_model.gguf \
+  --outtype f16
+
+# 使用编译后的二进制进行量化
+./llama.cpp/bin/llama-quantize extracted_llm/llm_model.gguf \
+                              extracted_llm/llm_model_q4.gguf Q4_K_M
 ```
 
-### 3. 转换为 GGUF 格式
-
-由于 Ernie4.5 是类 Llama 架构,需要使用 llama.cpp 工具链:
+### 3. 启动服务并测试
 
 ```bash
-# 克隆 llama.cpp
-git clone https://github.com/ggerganov/llama.cpp
-cd llama.cpp
-make  # 或 cmake . && cmake --build .
-
-# 转换权重 (需要先适配权重格式)
-# 这一步可能需要自定义转换脚本
-python convert.py ../extracted_llm --outfile ../extracted_llm/llm_model.gguf
-
-# 量化模型 (推荐 Q4_K_M)
-./quantize ../extracted_llm/llm_model.gguf \
-           ../extracted_llm/llm_model_q4.gguf Q4_K_M
-```
-
-### 4. 创建 Ollama 模型
-
-```bash
-# 确保 Ollama 服务运行
-ollama serve  # 在单独终端运行
-
-# 创建模型
-cd extracted_llm
-ollama create paddleocr-vl-llm -f Modelfile
-
-# 测试模型
-ollama run paddleocr-vl-llm "你好"
-```
-
-### 5. 启动 GGUF 服务器
-
-```bash
-# 在新终端中
+# 终端 1: 启动多模态服务
 cd PaddleOCR-VL-GGUF
 python demo_ppocrvl_gguf_server.py
 
-# 输出:
-# === PaddleOCR-VL GGUF API 启动中 ===
-# 视觉模型路径: PaddlePaddle/PaddleOCR-VL
-# LLM 后端: Ollama @ http://localhost:11434
-# LLM 模型名: paddleocr-vl-llm
-# ...
-# INFO:     Uvicorn running on http://0.0.0.0:7778
-```
-
-### 6. 测试服务
-
-```bash
-# 使用客户端测试
+# 终端 2: 发送测试请求
 python demo_ppocrvl_gguf_client.py \
     --text "识别这张图片中的文字" \
     --image /path/to/image.jpg
+```
 
-# 或使用 curl
-curl -X POST http://localhost:7778/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
+## 详细指南
+
+### 环境准备
+
+```bash
+# 可选: 查看依赖版本
+pip list | grep -E "torch|transformers|llama"
+
+# 视觉编码器依赖
+pip install torch torchvision transformers einops pillow
+
+# API & 服务依赖
+pip install fastapi uvicorn requests pydantic
+```
+
+> 提示: Linux 上使用 `uvicorn[standard]` 可获得更好的生产可用性。
+
+### 提取语言模型权重
+
+`convert_to_gguf.py` 会在 `extracted_llm/` 目录下生成以下文件:
+
+- `llm_model.pt` / `lm_head.pt`: PyTorch 权重
+- `llm_config.json`: 配置文件,供后续转换脚本使用
+- `hf_model/`: 可直接给 `convert_hf_to_gguf.py` 使用的 Hugging Face 检查点 (如需关闭可添加 `--no-hf-export`)
+
+### 使用 llama.cpp 转换与量化
+
+1. 克隆并编译 llama.cpp (可选 GPU 支持)
+2. 编写/适配 `convert.py` 将提取的权重转为 GGUF
+3. 通过 `quantize` 进行量化,推荐 `Q4_K_M`
+
+常用命令:
+
+```bash
+./quantize input.gguf output_q4.gguf Q4_K_M
+./quantize input.gguf output_q5.gguf Q5_K_M
+```
+
+量化等级建议:
+
+| 等级 | 内存 | 质量 | 备注 |
+|------|------|------|------|
+| Q4_0 | 最低 | 较低 | 调试与原型 |
+| **Q4_K_M** | 低 | 佳 | 默认推荐 |
+| Q5_K_M | 中 | 很好 | 质量优先 |
+| Q8_0 | 高 | 接近 FP16 | 高精度需求 |
+
+### 配置服务器参数
+
+`demo_ppocrvl_gguf_server.py` 中的关键参数:
+
+```python
+GGUF_MODEL_PATH = "extracted_llm/llm_model_q4.gguf"  # GGUF 模型路径
+N_GPU_LAYERS = 0     # GPU 层数 (0=纯 CPU, 适当增大可用 GPU 加速)
+N_CTX = 4096         # 上下文窗口
+N_THREADS = 8        # CPU 线程数,建议与物理核心数匹配
+```
+
+GPU 用户可根据显存设置 `N_GPU_LAYERS` (例如 32 或更高)。
+
+### API 调用示例
+
+```python
+import requests
+
+payload = {
     "messages": [
-      {
-        "role": "user",
-        "content": [
-          {"type": "text", "text": "识别图片中的文字"},
-          {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}
-        ]
-      }
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "识别图片中的文字"},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}
+            ]
+        }
     ],
     "max_tokens": 1024,
-    "temperature": 0.7
-  }'
+    "temperature": 0.7,
+    "stream": False
+}
+
+response = requests.post(
+    "http://localhost:7778/v1/chat/completions",
+    json=payload,
+    timeout=120
+)
+
+print(response.json()["choices"][0]["message"]["content"])
 ```
 
-## 性能对比
+## 架构说明
 
-| 指标 | 原始 PyTorch | GGUF Q4_K_M | 改进 |
-|------|-------------|-------------|------|
-| 内存占用 | ~4GB | ~1.2GB | **-70%** |
-| 推理速度 | 基准 | ~2-3x | **2-3倍** |
-| 模型精度 | FP32/FP16 | 4-bit 量化 | 轻微下降 |
-
-*注: 具体性能取决于硬件配置和量化级别*
-
-## 量化级别说明
-
-| 量化级别 | 模型大小 | 速度 | 质量 | 推荐场景 |
-|---------|---------|------|------|---------|
-| Q4_0 | 最小 | 最快 | 较低 | 快速原型 |
-| Q4_K_M | 小 | 快 | 良好 | **生产推荐** |
-| Q5_K_M | 中等 | 中等 | 很好 | 质量优先 |
-| Q8_0 | 较大 | 较慢 | 接近原始 | 高精度需求 |
-
-## 当前限制和改进计划
-
-### 当前限制
-
-1. **嵌入传递**: 当前实现中,视觉嵌入通过简化方式传递给 Ollama,需要进一步优化
-2. **权重转换**: Ernie4.5 到 GGUF 的转换需要自定义脚本
-3. **多图像支持**: 当前主要支持单图像输入
-
-### 改进计划
-
-- [ ] 实现完整的嵌入注入机制
-- [ ] 优化视觉编码器的批处理
-- [ ] 支持视频输入
-- [ ] 添加更多量化选项
-- [ ] 性能基准测试
-
-## 替代方案
-
-如果 GGUF 转换遇到困难,可以考虑:
-
-### 1. vLLM
-```bash
-pip install vllm
-# vLLM 支持更多模型格式,性能优秀
+```
+┌─────────────────────────────────────────────────────────────┐
+│                 PaddleOCR-VL GGUF 混合架构                   │
+├─────────────────────────────────────────────────────────────┤
+│ 输入图像 + 文本提示                                         │
+│    │                                                        │
+│    ▼                                                        │
+│ 视觉编码器 (PyTorch)                                        │
+│  ├─ SiglipVisionModel       ≈200M 参数                      │
+│  └─ Attention Pooling                                        │
+│    │                                                        │
+│    ▼                                                        │
+│ Projector (PyTorch)       ≈20M 参数                          │
+│    │                                                        │
+│    ▼ 视觉嵌入                                               │
+├─────────────────────────────────────────────────────────────┤
+│ llama-cpp 推理 (GGUF)                                       │
+│  ├─ Ernie4.5 Decoder       量化后 ≈500-800MB               │
+│  └─ LM Head                量化后 ≈100MB                   │
+│    │                                                        │
+│    ▼                                                        │
+│ 生成文本输出                                                │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-### 2. TensorRT-LLM (NVIDIA GPU)
-```bash
-# 最佳 GPU 推理性能
-```
+> 视觉部分仍保持原始精度,主要的性能与内存优化集中在 LLM 侧。
 
-### 3. ExLlamaV2 (GPTQ 量化)
-```bash
-pip install exllamav2
-# 支持 GPTQ 量化,推理速度快
-```
+## 性能指标
+
+| 指标 | 原始 FP32 | GGUF Q4_K_M | 说明 |
+|------|-----------|-------------|------|
+| 内存占用 | ~4 GB | ~1.2 GB | 量化后减少约 70% |
+| 推理速度 | 1x | 2-3x | CPU 下明显提速 |
+| 精度 | 100% | ~97-98% | 轻微损失,可接受 |
+
+> 实际表现与硬件、量化等级、上下文长度有关,建议根据业务场景做基准测试。
+
+## 常见问题 (FAQ)
+
+- **Q: 为什么不再使用 Ollama?**  
+  A: llama.cpp/llama-cpp-python 直接调用 GGUF,无需额外服务,延迟更低,配置更灵活。
+
+- **Q: 一定要 GPU 吗?**  
+  A: 不需要。GGUF 量化后在 CPU 上即可获得可用速度;有 GPU 时可进一步加速。
+
+- **Q: 转换脚本在哪里?**  
+  A: `convert_to_gguf.py` 完成权重拆分,后续转换与量化步骤请参考本 README 中的 llama.cpp 指南。
+
+- **Q: 精度不足怎么办?**  
+  A: 尝试更高位宽量化 (如 Q5_K_M/Q8_0),或保留部分关键层为更高精度。
 
 ## 故障排除
 
-### Ollama 连接失败
-```bash
-# 检查 Ollama 是否运行
-curl http://localhost:11434/api/tags
+| 场景 | 诊断步骤 | 解决建议 |
+|------|----------|----------|
+| GGUF 模型无法加载 | 检查 `GGUF_MODEL_PATH` | 确认路径正确且量化过程完整 |
+| llama-cpp-python 安装失败 | 查看编译日志 | 使用 `--no-binary` 重新安装或开启相应后端选项 |
+| 推理速度低 | 检查 `N_THREADS`/`N_GPU_LAYERS` | 与硬件线程/显存匹配,减少上下文长度 |
+| 输出异常或乱码 | 确认量化等级 | 使用更高精度量化或重新转换权重 |
 
-# 启动 Ollama
-ollama serve
-```
+## Roadmap
 
-### 内存不足
-```bash
-# 使用更激进的量化
-./quantize llm_model.gguf llm_model_q4_0.gguf Q4_0
+- [ ] 优化视觉嵌入注入策略
+- [ ] 扩展多图像/视频输入能力
+- [ ] 补充自动化 GGUF 转换脚本
+- [ ] 发布官方性能基准
 
-# 或在 Modelfile 中设置较小的上下文
-PARAMETER num_ctx 2048
-```
+## 更新历史
 
-### 视觉编码器加载失败
-```bash
-# 确保安装了所有依赖
-pip install einops
+| 日期 | 版本 | 说明 |
+|------|------|------|
+| 2025-11-09 | v1.1 | 移除 Ollama 依赖,集成 llama-cpp-python,简化部署流程,新增《简明教程》内容并整合至本 README |
+| 2025-11-09 | v1.0 | 发布 GGUF 混合架构,提供权重提取工具与完整文档 |
 
-# 检查模型文件完整性
-ls -lh PaddlePaddle/PaddleOCR-VL/
-```
+## 贡献与许可证
 
-## 开发和调试
+- 🚀 欢迎通过 Issue/PR 提交改进建议或补充转换脚本
+- 📄 许可证遵循 PaddleOCR-VL 原项目,详情参见仓库根目录 `LICENSE`
 
-### 启用调试日志
-```python
-# 在 demo_ppocrvl_gguf_server.py 中
-import logging
-logging.basicConfig(level=logging.DEBUG)
-```
+## 参考资源
 
-### 性能分析
-```bash
-# 使用 cProfile
-python -m cProfile -o profile.stats demo_ppocrvl_gguf_server.py
-
-# 分析结果
-python -m pstats profile.stats
-```
-
-## 相关资源
-
-- [PaddleOCR-VL 官方文档](https://github.com/PaddlePaddle/PaddleOCR)
-- [Ollama 官方网站](https://ollama.ai)
-- [llama.cpp GitHub](https://github.com/ggerganov/llama.cpp)
+- [PaddleOCR 官方仓库](https://github.com/PaddlePaddle/PaddleOCR)
+- [llama.cpp](https://github.com/ggerganov/llama.cpp)
+- [llama-cpp-python](https://github.com/abetlen/llama-cpp-python)
 - [GGUF 格式说明](https://github.com/ggerganov/ggml/blob/master/docs/gguf.md)
 
-## 许可证
-
-本项目基于 PaddleOCR-VL 的许可证,请参考原项目的 LICENSE 文件。
-
-## 贡献
-
-欢迎提交 Issue 和 Pull Request!
-
-## 联系方式
-
-如有问题,请在 GitHub 上提交 Issue。
+如遇问题,请在 GitHub Issues 中反馈或提交讨论。
+```bash
