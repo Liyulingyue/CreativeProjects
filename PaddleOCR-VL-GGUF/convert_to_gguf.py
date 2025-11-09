@@ -1,18 +1,46 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-将 PaddleOCR-VL 的 LLM 部分（Ernie4_5Model）提取并转换为 GGUF 格式
-以便使用 ollama 进行加速推理
+提取 PaddleOCR-VL 的语言模型权重,并准备后续 GGUF/llama.cpp 转换所需的资产。
+
+脚本会生成以下内容:
+
+1. 原始的权重切分 (`llm_model.pt`, `lm_head.pt`, `llm_config.json`)
+2. 可选的 Hugging Face 风格检查点 (`hf_model/`)
+
+这样即可直接调用 llama.cpp 的 `convert_hf_to_gguf.py` 脚本。
 """
 
-import os
-import sys
-import torch
 import argparse
-from pathlib import Path
-from transformers import AutoModelForCausalLM, AutoConfig
+import copy
+import importlib
 import json
-import struct
+from pathlib import Path
+from typing import Optional
+
+import torch
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+
+def sanitize_text_config(base_config: AutoConfig) -> AutoConfig:
+    """Create a text-only config compatible with Ernie4.5 causal LM."""
+
+    text_config = copy.deepcopy(base_config)
+    text_config.architectures = ["Ernie4_5ForCausalLM"]
+    text_config.model_type = "ernie4_5"
+    text_config.is_encoder_decoder = False
+    text_config.add_cross_attention = False
+    text_config.tie_encoder_decoder = False
+
+    if getattr(text_config, "num_key_value_heads", None) is None:
+        text_config.num_key_value_heads = text_config.num_attention_heads
+
+    text_config.auto_map = {
+        "AutoConfig": "configuration_paddleocr_vl.PaddleOCRVLConfig",
+        "AutoModelForCausalLM": "modeling_paddleocr_vl.Ernie4_5ForCausalLM",
+    }
+
+    return text_config
+
 
 def extract_llm_weights(model_path, output_path):
     """
@@ -32,7 +60,8 @@ def extract_llm_weights(model_path, output_path):
         low_cpu_mem_usage=True
     )
     
-    config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    base_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    text_config = sanitize_text_config(base_config)
     
     print("模型加载完成")
     print(f"模型架构: {type(full_model)}")
@@ -51,31 +80,17 @@ def extract_llm_weights(model_path, output_path):
     config_path = output_dir / "llm_config.json"
     
     print(f"保存 LLM 权重到: {llm_weights_path}")
-    torch.save(llm_model.state_dict(), llm_weights_path)
-    
+    llm_state = llm_model.state_dict()
+    torch.save(llm_state, llm_weights_path)
+
     print(f"保存 LM Head 到: {lm_head_path}")
-    torch.save(lm_head.state_dict(), lm_head_path)
+    lm_head_state = lm_head.state_dict()
+    torch.save(lm_head_state, lm_head_path)
     
     # 保存配置
-    llm_config = {
-        "vocab_size": config.vocab_size,
-        "hidden_size": config.hidden_size,
-        "intermediate_size": config.intermediate_size,
-        "num_hidden_layers": config.num_hidden_layers,
-        "num_attention_heads": config.num_attention_heads,
-        "num_key_value_heads": config.num_key_value_heads,
-        "max_position_embeddings": config.max_position_embeddings,
-        "rms_norm_eps": config.rms_norm_eps,
-        "rope_theta": config.rope_theta,
-        "use_bias": config.use_bias,
-        "hidden_act": config.hidden_act,
-        "head_dim": config.head_dim,
-        "rope_scaling": config.rope_scaling,
-    }
-    
     print(f"保存配置到: {config_path}")
     with open(config_path, 'w', encoding='utf-8') as f:
-        json.dump(llm_config, f, indent=2, ensure_ascii=False)
+        json.dump(text_config.to_dict(), f, indent=2, ensure_ascii=False)
     
     print("\n=== 提取的权重信息 ===")
     total_params = 0
@@ -92,170 +107,85 @@ def extract_llm_weights(model_path, output_path):
     print(f"  - {lm_head_path}")
     print(f"  - {config_path}")
     
-    return output_dir
+    return output_dir, llm_state, lm_head_state, text_config, full_model.__class__.__module__
 
 
-def create_conversion_guide(llm_config_path, output_path):
-    """
-    创建 GGUF 转换指南
-    """
-    with open(llm_config_path, 'r', encoding='utf-8') as f:
-        config = json.load(f)
-    
-    readme_path = Path(output_path) / "CONVERSION_README.md"
-    readme_content = f"""# PaddleOCR-VL LLM 转 GGUF 指南
+def export_to_hf_checkpoint(
+    model_path,
+    config,
+    llm_state,
+    lm_head_state,
+    hf_output_dir,
+    module_name: Optional[str],
+):
+    """将提取的语言模型重新封装成 Hugging Face 兼容的检查点。"""
 
-## 已提取的文件
+    hf_output_dir = Path(hf_output_dir)
+    hf_output_dir.mkdir(parents=True, exist_ok=True)
 
-- `llm_model.pt`: LLM 部分的 PyTorch 权重
-- `lm_head.pt`: Language Model Head 权重  
-- `llm_config.json`: 模型配置
+    print(f"\n导出 Hugging Face 检查点到: {hf_output_dir}")
 
-## 转换为 GGUF 步骤
+    ernie_cls = None
+    if module_name:
+        try:
+            module = importlib.import_module(module_name)
+            ernie_cls = getattr(module, "Ernie4_5ForCausalLM", None)
+        except ModuleNotFoundError as exc:  # pragma: no cover - env dependent
+            print(f"警告: 无法导入模块 {module_name}: {exc}")
 
-### 1. 安装 llama.cpp
+    try:
+        # 直接基于配置实例化模型,避免重复加载整套多模态权重。
+        if ernie_cls is not None:
+            hf_model = ernie_cls(copy.deepcopy(config))
+        else:
+            hf_model = AutoModelForCausalLM.from_config(
+                config,
+                trust_remote_code=True,
+            )
+        hf_model.model.load_state_dict(llm_state, strict=True)
+        hf_model.lm_head.load_state_dict(lm_head_state, strict=True)
+    except Exception as exc:  # noqa: BLE001 - 需要捕获并回退
+        print("警告: 基于配置构建模型失败, 将回退到 from_pretrained 路径。")
+        print(f"详细信息: {exc}")
+        hf_model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            trust_remote_code=True,
+            torch_dtype=torch.float32,
+            low_cpu_mem_usage=True,
+        )
+        hf_model.model.load_state_dict(llm_state, strict=True)
+        hf_model.lm_head.load_state_dict(lm_head_state, strict=True)
 
-```bash
-git clone https://github.com/ggerganov/llama.cpp
-cd llama.cpp
-make
-```
+    hf_model.config.architectures = ["Ernie4_5ForCausalLM"]
+    hf_model.config.model_type = "ernie4_5"
+    hf_model.config.auto_map = {
+        "AutoConfig": "configuration_paddleocr_vl.PaddleOCRVLConfig",
+        "AutoModelForCausalLM": "modeling_paddleocr_vl.Ernie4_5ForCausalLM",
+    }
+    hf_model.save_pretrained(hf_output_dir, safe_serialization=True)
 
-### 2. 准备模型权重
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_path,
+            trust_remote_code=True,
+            use_fast=True,
+        )
+    except (ValueError, ImportError) as exc:  # noqa: PERF203 - narrow fallback
+        print("警告: Fast Tokenizer 初始化失败, 回退至 slow 版本。")
+        print(f"详细信息: {exc}")
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_path,
+                trust_remote_code=True,
+                use_fast=False,
+            )
+        except ImportError as slow_exc:  # pragma: no cover - dependency guidance
+            raise RuntimeError(
+                "无法加载 slow tokenizer, 请先安装 sentencepiece 和 protobuf 后重试。"
+            ) from slow_exc
+    tokenizer.save_pretrained(hf_output_dir)
 
-需要将 PyTorch 权重转换为 llama.cpp 可识别的格式。由于 Ernie4.5 基于类似 Llama 的架构，可以参考以下步骤:
-
-```bash
-# 将 PyTorch 权重转换为 HuggingFace 格式（如果需要）
-python convert_to_hf.py --input llm_model.pt --output ./hf_model
-
-# 使用 llama.cpp 转换工具
-python llama.cpp/convert.py ./hf_model --outfile llm_model.gguf --outtype f16
-```
-
-### 3. 量化模型（推荐，大幅加速）
-
-```bash
-# 量化为 Q4_K_M 格式（推荐）
-./llama.cpp/quantize llm_model.gguf llm_model_q4.gguf Q4_K_M
-
-# 或其他量化级别:
-# - Q4_0: 最快，质量较低
-# - Q4_K_M: 平衡（推荐）
-# - Q5_K_M: 更高质量
-# - Q8_0: 接近原始精度
-```
-
-### 4. 使用 llama-cpp-python 加载
-
-```python
-from llama_cpp import Llama
-
-# 加载 GGUF 模型
-llm = Llama(
-    model_path="llm_model_q4.gguf",
-    n_gpu_layers=0,  # 0 表示纯 CPU，>0 使用 GPU
-    n_ctx=4096,      # 上下文长度
-    n_threads=8      # CPU 线程数
-)
-
-# 生成文本
-output = llm(
-    "你好",
-    max_tokens=100,
-    temperature=0.7
-)
-print(output['choices'][0]['text'])
-```
-
-### 5. 配置 GGUF 服务器
-
-编辑 `demo_ppocrvl_gguf_server.py` 中的配置:
-
-```python
-GGUF_MODEL_PATH = "extracted_llm/llm_model_q4.gguf"  # GGUF 模型路径
-N_GPU_LAYERS = 0  # GPU 层数，0 表示纯 CPU
-N_CTX = 4096      # 上下文长度
-N_THREADS = 8     # CPU 线程数
-```
-
-然后启动服务器:
-
-```bash
-python demo_ppocrvl_gguf_server.py
-```
-
-## 模型配置
-
-- **词汇表大小**: {config['vocab_size']}
-- **隐藏层大小**: {config['hidden_size']}
-- **层数**: {config['num_hidden_layers']}
-- **注意力头数**: {config['num_attention_heads']}
-- **最大上下文长度**: {config['max_position_embeddings']}
-
-## 量化级别对比
-
-| 级别 | 每参数位数 | 模型大小 | 速度 | 质量 | 推荐场景 |
-|------|-----------|---------|------|------|---------|
-| Q4_0 | 4.0 | 最小 | 最快 | 较低 | 快速原型 |
-| Q4_K_M | ~4.5 | 小 | 快 | 良好 | **生产推荐** |
-| Q5_K_M | ~5.5 | 中等 | 中等 | 很好 | 质量优先 |
-| Q8_0 | 8.0 | 较大 | 较慢 | 接近原始 | 高精度需求 |
-
-## 注意事项
-
-1. **权重映射**: Ernie4.5 的权重需要映射到 llama.cpp 的格式，可能需要自定义转换脚本
-2. **RoPE 配置**: 注意 rope_scaling 参数的转换（Ernie4.5 使用 MRoPE）
-3. **特殊 Token**: 确保 tokenizer 的特殊 token 正确配置
-
-## GPU 加速
-
-### CUDA (NVIDIA GPU)
-
-```bash
-# 编译支持 CUDA 的 llama.cpp
-cd llama.cpp
-make clean
-LLAMA_CUBLAS=1 make
-
-# 或安装支持 CUDA 的 llama-cpp-python
-CMAKE_ARGS="-DLLAMA_CUBLAS=on" pip install llama-cpp-python --force-reinstall --no-cache-dir
-
-# 在代码中启用 GPU
-llm = Llama(model_path="...", n_gpu_layers=32)  # 使用 GPU
-```
-
-### Metal (Mac M1/M2)
-
-```bash
-# 编译支持 Metal 的 llama.cpp
-cd llama.cpp
-make clean
-LLAMA_METAL=1 make
-
-# 或安装支持 Metal 的 llama-cpp-python
-CMAKE_ARGS="-DLLAMA_METAL=on" pip install llama-cpp-python --force-reinstall --no-cache-dir
-```
-
-## 替代方案
-
-如果 GGUF 转换遇到困难，可以考虑:
-
-1. **使用 vLLM**: 支持多种模型格式，性能优秀
-2. **使用 TensorRT-LLM**: NVIDIA GPU 上性能最佳
-3. **使用 ExLlamaV2**: 支持 GPTQ 量化的高效推理
-
-## 相关资源
-
-- llama.cpp: https://github.com/ggerganov/llama.cpp
-- llama-cpp-python: https://github.com/abetlen/llama-cpp-python
-- GGUF 格式说明: https://github.com/ggerganov/ggml/blob/master/docs/gguf.md
-"""
-    
-    with open(readme_path, 'w', encoding='utf-8') as f:
-        f.write(readme_content)
-    
-    print(f"转换指南已创建: {readme_path}")
+    print("Hugging Face 检查点导出完成。")
 
 
 def main():
@@ -272,6 +202,17 @@ def main():
         default="./extracted_llm",
         help="输出目录"
     )
+    parser.add_argument(
+        "--hf-output-dir",
+        type=str,
+        default=None,
+        help="额外导出 Hugging Face 检查点的目录 (默认: <output-path>/hf_model)"
+    )
+    parser.add_argument(
+        "--no-hf-export",
+        action="store_true",
+        help="仅保存原始切分权重, 不生成 Hugging Face 检查点"
+    )
     
     args = parser.parse_args()
     
@@ -280,16 +221,26 @@ def main():
     print("=" * 60)
     
     # 提取权重
-    output_dir = extract_llm_weights(args.model_path, args.output_path)
-    
-    # 创建转换指南
-    config_path = output_dir / "llm_config.json"
-    create_conversion_guide(config_path, output_dir)
+    output_dir, llm_state, lm_head_state, config, module_name = extract_llm_weights(
+        args.model_path,
+        args.output_path,
+    )
+
+    if not args.no_hf_export:
+        hf_output_dir = Path(args.hf_output_dir) if args.hf_output_dir else output_dir / "hf_model"
+        export_to_hf_checkpoint(
+            args.model_path,
+            config,
+            llm_state,
+            lm_head_state,
+            hf_output_dir,
+            module_name,
+        )
     
     print("\n" + "=" * 60)
     print("提取完成!")
     print("=" * 60)
-    print(f"\n请查看 {output_dir}/CONVERSION_README.md 了解后续转换步骤")
+    print("后续转换与量化步骤请参考项目 README.md 中的 llama.cpp 部分。")
 
 
 if __name__ == "__main__":

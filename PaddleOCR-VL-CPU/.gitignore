@@ -1,0 +1,3 @@
+PaddlePaddle/PaddleOCR-VL/*
+*.pyc
+__pycache__/

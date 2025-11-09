@@ -151,51 +151,46 @@ async def encode_vision(image, text_prompt):
         # 处理输入
         inputs = processor(text=prompt, images=image, return_tensors="pt").to("cpu")
         
-        # 获取文本嵌入
         input_ids = inputs["input_ids"]
-        inputs_embeds = visual_encoder.vision_model.embeddings(input_ids) if hasattr(visual_encoder, 'vision_model') else None
-        
-        # 处理图像（如果存在）
+        image_embeds = None
+
         if image and "pixel_values" in inputs:
-            pixel_values = inputs["pixel_values"]
-            
-            # 从配置中获取图像网格信息
-            # 简化版本：假设单张图像
-            image_grid_thw = [(1, 14, 14)]  # t, h, w - 根据实际配置调整
-            
-            # 构建视觉输入参数
-            siglip_position_ids = torch.arange(np.prod(image_grid_thw[0])).to(pixel_values.device)
-            cu_seqlens = torch.tensor([0, np.prod(image_grid_thw[0])], dtype=torch.int32).to(pixel_values.device)
-            sample_indices = torch.zeros(np.prod(image_grid_thw[0]), dtype=torch.int64).to(pixel_values.device)
-            
-            # 视觉编码
-            with torch.no_grad():
-                vision_outputs = visual_encoder(
-                    pixel_values=pixel_values.unsqueeze(0),
-                    image_grid_thw=image_grid_thw,
-                    position_ids=siglip_position_ids,
-                    vision_return_embed_list=True,
-                    interpolate_pos_encoding=True,
-                    sample_indices=sample_indices,
-                    cu_seqlens=cu_seqlens,
-                    return_pooler_output=False,
-                    use_rope=True,
-                    window_size=-1,
-                )
-                
-                image_embeds = vision_outputs.last_hidden_state
-                
-                # 通过投影层
-                image_embeds = projector(image_embeds, image_grid_thw)
-                
-                # 如果是列表，拼接
-                if isinstance(image_embeds, list):
-                    image_embeds = torch.cat(image_embeds, dim=0)
-        
-        # 返回处理后的嵌入和 prompt
+            pixel_values = inputs["pixel_values"].unsqueeze(0)
+            device = pixel_values.device
+            if "image_grid_thw" in inputs:
+                grid_values = inputs["image_grid_thw"][0].tolist()
+                image_grid_thw = [tuple(int(x) for x in grid_values)]
+                token_count = int(np.prod(image_grid_thw[0]))
+                siglip_position_ids = torch.arange(token_count, dtype=torch.long, device=device)
+                cu_seqlens = torch.tensor([0, token_count], dtype=torch.int32, device=device)
+                sample_indices = torch.zeros(token_count, dtype=torch.long, device=device)
+
+                with torch.no_grad():
+                    vision_outputs = visual_encoder(
+                        pixel_values=pixel_values,
+                        image_grid_thw=image_grid_thw,
+                        position_ids=siglip_position_ids,
+                        vision_return_embed_list=True,
+                        interpolate_pos_encoding=True,
+                        sample_indices=sample_indices,
+                        cu_seqlens=cu_seqlens,
+                        return_pooler_output=False,
+                        use_rope=True,
+                        window_size=-1,
+                    )
+
+                    hidden_states = vision_outputs.last_hidden_state
+                    if isinstance(hidden_states, list):
+                        hidden_states = torch.cat(hidden_states, dim=0)
+
+                    projected = projector(hidden_states, image_grid_thw)
+                    if isinstance(projected, list):
+                        projected = torch.cat(projected, dim=0)
+                    image_embeds = projected.cpu().numpy()
+
         return {
             "prompt": prompt,
-            "image_embeds": image_embeds.cpu().numpy() if image and "pixel_values" in inputs else None,
+            "image_embeds": image_embeds,
             "input_ids": input_ids.cpu().numpy()
         }
         

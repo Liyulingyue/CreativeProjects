@@ -7,9 +7,10 @@ PaddleOCR-VL GGUF 版本测试客户端
 import sys
 import os
 
-# 复用原有的客户端代码
-sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from PaddleOCR_VL_CPU.demo_ppocrvl_client import PaddleOCRVLClient
+# 复用 CPU 版本客户端实现
+cpu_client_dir = os.path.join(os.path.dirname(__file__), "..", "PaddleOCR-VL-CPU")
+sys.path.insert(0, os.path.abspath(cpu_client_dir))
+from demo_ppocrvl_client import PaddleOCRVLClient
 import argparse
 
 
