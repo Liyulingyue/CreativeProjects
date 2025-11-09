@@ -8,7 +8,7 @@ https://linux.do/t/topic/1054681 提供了在CPU上运行的原始代码，在�
 - 提供了完整的 requirements.txt 文件
 - 包含了完整的调用示例
 
-特别感谢 https://github.com/funkpopo 的原始贡献！
+特别感谢 [@funkpopo](https://github.com/funkpopo) 的原始贡献！
 
 ## 文件说明
 - `demo_ppocrvl_server.py`: 启动PaddleOCR-VL CPU API服务器
