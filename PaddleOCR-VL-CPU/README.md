@@ -94,6 +94,6 @@ python demo_camera_ocr.py
 ## 运行耗时测试
 |设备 | 图片尺寸 | 耗时(秒) |
 |----|---------|---------|
-| RDK X5 | 640x480 | 435 |
+| RDK X5(8x A55@1.5GHz, 4G内存版本) | 640x480 | 435 |
 | Intel 13th Gen Intel(R) Core(TM) i7-13700K | 256×256 | 7.3 |
 | Intel 13th Gen Intel(R) Core(TM) i7-13700K | 640x480 | 13.25 |
