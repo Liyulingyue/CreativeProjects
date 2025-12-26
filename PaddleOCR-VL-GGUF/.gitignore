@@ -1,7 +1,7 @@
 language_model/*
 gguf_model/*
 PaddlePaddle/PaddleOCR-VL/*
-llama.cpp/*
+llama.cpp/
 llama-cpp-python/*
 __pycache__/
 *.pyc
