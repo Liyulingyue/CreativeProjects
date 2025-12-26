@@ -118,9 +118,8 @@ python demo_ppocrvl_gguf_server.py
 python demo_ppocrvl_gguf_client.py --image test.png
 ```
 
-## 其他说明
 
-### 提取语言模型权重
+## 其他说明
 
 `convert_to_gguf.py` 会在 `language_model/` 目录下生成以下文件:
 

@@ -1,5 +1,8 @@
 # PaddleOCR-VL GGUF 版本依赖
 
+# 使用清华镜像源加速安装
+--index-url https://pypi.tuna.tsinghua.edu.cn/simple/
+
 # 深度学习框架
 torch>=2.0.0
 torchvision>=0.15.0
@@ -22,6 +25,7 @@ Pillow>=10.0.0
 # 其他工具
 requests>=2.31.0
 numpy>=1.24.0
+bitsandbytes>=0.41.0
 
 # 可选: 性能优化
 # accelerate>=0.24.0  # 加速模型加载
@@ -33,3 +37,5 @@ numpy>=1.24.0
 # GPU 版本 (Metal/Mac): CMAKE_ARGS="-DLLAMA_METAL=on" pip install llama-cpp-python
 
 protobuf
+
+
