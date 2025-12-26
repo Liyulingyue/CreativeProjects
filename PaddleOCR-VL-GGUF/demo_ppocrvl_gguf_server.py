@@ -29,44 +29,28 @@ except ImportError:
     LLAMA_CPP_AVAILABLE = False
     llama_cpp_lib = None
 
-LOCAL_PATH = "PaddlePaddle/PaddleOCR-VL"  # 视觉模型路径
-GGUF_MODEL_PATH = "extracted_llm/llm_model_q4.gguf"  # GGUF 模型路径
+LOCAL_PATH = "PaddlePaddle/PaddleOCR-VL"  # 原始完整模型路径（仅供参考）
+VISION_MODEL_PATH = "vision_model"  # 微缩版视觉模型路径
+GGUF_MODEL_PATH = "gguf_model/llm_model_q4.gguf"  # GGUF 模型路径
 N_GPU_LAYERS = 0  # GPU 层数，0 表示纯 CPU
 N_CTX = 4096  # 上下文长度
 N_THREADS = 8  # CPU 线程数
 
 print(f"=== PaddleOCR-VL GGUF API 启动中 ===")
-print(f"视觉模型路径: {LOCAL_PATH}")
+print(f"视觉模型路径: {VISION_MODEL_PATH}")
 print(f"LLM 后端: llama.cpp (直接)")
 print(f"GGUF 模型路径: {GGUF_MODEL_PATH}")
 
 try:
-    # 只加载 processor 和视觉模型部分
-    processor = AutoProcessor.from_pretrained(LOCAL_PATH, trust_remote_code=True, use_fast=True)
-    
-    # 加载完整模型用于提取视觉编码器
-    from transformers import AutoModelForCausalLM
-    print("正在加载完整模型以提取视觉编码器...")
-    full_model = AutoModelForCausalLM.from_pretrained(
-        LOCAL_PATH, 
-        trust_remote_code=True, 
-        torch_dtype=torch.float32,
-        low_cpu_mem_usage=True
-    ).to("cpu")
-    
-    # 提取视觉编码器和投影层
-    visual_encoder = full_model.visual
-    projector = full_model.mlp_AR
-    
-    # 清理完整模型，只保留需要的部分
-    del full_model.model  # 删除 LLM 部分
-    del full_model.lm_head
-    del full_model
-    gc.collect()
-    
-    visual_encoder.eval()
+    # 加载微缩版视觉模型
+    print("正在加载微缩版视觉模型...")
+    from export_vision_model import load_vision_model
+    vision_model, processor = load_vision_model(VISION_MODEL_PATH, device="cpu")
+    visual_encoder = vision_model.visual
+    projector = vision_model.mlp_AR
+    print("✅ 微缩版视觉模型加载成功")
     projector.eval()
-    
+
     print("视觉编码器加载成功")
     
     # 加载 GGUF LLM 模型

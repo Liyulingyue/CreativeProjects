@@ -18,111 +18,83 @@ PaddleOCR-VL GGUF 项目将多模态模型拆分成「视觉编码器 + 语言�
 | 架构解耦 | 视觉模块仍在 PyTorch 中运行,便于调试与扩展 |
 | API 兼容 | 保持与 OpenAI 风格接口一致,可无缝集成现有应用 |
 | 本地化 | 全流程离线部署,无外部服务依赖 |
-| 内存优化 | 使用微缩版视觉模型,节省约 7GB 内存 |
 
 ## 项目结构
 
 ```
 PaddleOCR-VL-GGUF/
-├── convert_all.sh                 # 全流程转换脚本 (推荐)
-├── export_vision_model.py         # 导出微缩版视觉模型
-├── export_language_model.py       # 导出语言模型部分
-├── vision_model/                  # 微缩版视觉模型 (必需)
-├── language_model/                 # 提取的语言模型权重
-├── gguf_model/                     # 转换后的GGUF模型文件
 ├── demo_ppocrvl_gguf_server.py   # llama.cpp 后端服务器 (核心)
 ├── demo_ppocrvl_gguf_client.py   # 命令行客户端示例
-├── convert_to_gguf.py            # 旧版语言模型提取脚本 (兼容)
+├── convert_to_gguf.py            # 提取与导出 LLM 权重
 ├── demo_architecture.py          # 架构和参数统计脚本
 ├── requirements.txt              # 运行所需的 Python 依赖
 ├── README.md                     # 本文档 (整合版)
 └── PaddlePaddle/
-    └── PaddleOCR-VL/             # 官方 PaddleOCR-VL 权重 (用于导出)
+    └── PaddleOCR-VL/             # 官方 PaddleOCR-VL 权重 (需单独下载)
 ```
 
 ## 三步快速开始
 
-### 1. 一键转换（推荐）
-
-使用全流程脚本自动完成所有转换步骤：
+### 1. 安装依赖
 
 ```bash
-# 自动完成所有步骤：导出模型、编译llama.cpp、转换GGUF、量化
-./convert_all.sh
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
-# 自定义参数
-./convert_all.sh --input-path /path/to/model --quantization-type Q8_0
+pip install -r requirements.txt
+
+# 安装 llama-cpp-python (CPU 版本)
+
+
+# GPU/Metal 用户 (二选一)
+# CUDA: CMAKE_ARGS="-DLLAMA_CUBLAS=on" pip install llama-cpp-python
+# Metal: CMAKE_ARGS="-DLLAMA_METAL=on" pip install llama-cpp-python
 ```
 
-**脚本功能**:
-- ✅ 检查系统依赖
-- ✅ 导出视觉模型 (`vision_model/`)
-- ✅ 导出语言模型 (`language_model/`)
-- ✅ 编译 llama.cpp
-- ✅ 转换为 GGUF 格式
-- ✅ 量化到 Q4_K_M 格式
-
-### 2. 手动分步转换（可选）
-
-如果你需要更精细的控制，可以手动执行各步骤：
+### 2. 提取与量化语言模型
 
 ```bash
-# 导出视觉模型
-python export_vision_model.py --input-path PaddlePaddle/PaddleOCR-VL --output-path vision_model
+# 提取 Ernie4.5 相关权重 (保持在 PaddleOCR-VL-GGUF 目录下，PaddlePaddle/PaddleOCR-VL 需预先下载)
+python convert_to_gguf.py \
+    --model-path PaddlePaddle/PaddleOCR-VL \
+    --output-path extracted_llm \
+    --hf-output-dir extracted_llm/hf_model
 
-# 导出语言模型
-python export_language_model.py --input-path PaddlePaddle/PaddleOCR-VL --output-path language_model
+# 使用 llama.cpp 将权重转换为 GGUF 并量化
+# 安装必要的系统依赖 (Linux)
+sudo apt update && sudo apt install -y libcurl4-openssl-dev
 
-# 编译 llama.cpp
 git clone https://github.com/ggml-org/llama.cpp
 cd llama.cpp && cmake . && cmake --build . -j$(nproc) && cd ..
 
-# 转换为 GGUF
-mkdir -p gguf_model
-python llama.cpp/convert_hf_to_gguf.py language_model/hf_model --outfile gguf_model/llm_model.gguf --outtype f16
+# 使用虚拟环境中的 Python 运行转换脚本
+python llama.cpp/convert_hf_to_gguf.py \
+  extracted_llm/hf_model \
+  --outfile extracted_llm/llm_model.gguf \
+  --outtype f16
 
-# 量化
-./llama.cpp/bin/llama-quantize gguf_model/llm_model.gguf gguf_model/llm_model_q4.gguf Q4_K_M
+# 使用编译后的二进制进行量化
+./llama.cpp/bin/llama-quantize extracted_llm/llm_model.gguf \
+                              extracted_llm/llm_model_q4.gguf Q4_K_M
 ```
-
-### 全流程脚本选项
-
-`convert_all.sh` 支持以下命令行选项：
-
-```bash
-./convert_all.sh [选项]
-
-选项:
-  --input-path PATH        输入模型路径 (默认: PaddlePaddle/PaddleOCR-VL)
-  --vision-output PATH     视觉模型输出路径 (默认: vision_model)
-  --llm-output PATH        语言模型输出路径 (默认: language_model)
-  --gguf-output PATH       GGUF模型输出路径 (默认: gguf_model)
-  --quantization-type TYPE 量化类型 (默认: Q4_K_M)
-  --help                   显示帮助信息
-
-示例:
-  ./convert_all.sh                                    # 使用默认设置
-  ./convert_all.sh --quantization-type Q8_0          # 使用 Q8_0 量化
-  ./convert_all.sh --input-path /custom/path         # 自定义输入路径
-```
-
-**智能跳过**: 脚本会自动检测已存在的文件，避免重复处理。
 
 ### 3. 启动服务并测试
 
 ```bash
 # 终端 1: 启动多模态服务
+# in PaddleOCR-VL-GGUF
 python demo_ppocrvl_gguf_server.py
 
 # 终端 2: 发送测试请求
-python demo_ppocrvl_gguf_client.py --image test.png
+python demo_ppocrvl_gguf_client.py \
+    --image /path/to/image.jpg
 ```
 
 ## 其他说明
 
 ### 提取语言模型权重
 
-`convert_to_gguf.py` 会在 `language_model/` 目录下生成以下文件:
+`convert_to_gguf.py` 会在 `extracted_llm/` 目录下生成以下文件:
 
 - `llm_model.pt` / `lm_head.pt`: PyTorch 权重
 - `llm_config.json`: 配置文件,供后续转换脚本使用
@@ -155,7 +127,7 @@ python demo_ppocrvl_gguf_client.py --image test.png
 `demo_ppocrvl_gguf_server.py` 中的关键参数:
 
 ```python
-GGUF_MODEL_PATH = "gguf_model/llm_model_q4.gguf"  # GGUF 模型路径
+GGUF_MODEL_PATH = "extracted_llm/llm_model_q4.gguf"  # GGUF 模型路径
 N_GPU_LAYERS = 0     # GPU 层数 (0=纯 CPU, 适当增大可用 GPU 加速)
 N_CTX = 4096         # 上下文窗口
 N_THREADS = 8        # CPU 线程数,建议与物理核心数匹配
@@ -278,7 +250,7 @@ except ImportError:
     llama_cpp_lib = None
 
 LOCAL_PATH = "PaddlePaddle/PaddleOCR-VL"  # 视觉模型路径
-GGUF_MODEL_PATH = "gguf_model/llm_model_q4.gguf"  # GGUF 模型路径
+GGUF_MODEL_PATH = "extracted_llm/llm_model_q4.gguf"  # GGUF 模型路径
 N_GPU_LAYERS = 0  # GPU 层数，0 表示纯 CPU
 N_CTX = 4096  # 上下文长度
 N_THREADS = 8  # CPU 线程数

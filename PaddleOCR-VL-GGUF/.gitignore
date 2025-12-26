@@ -1,6 +1,65 @@
-extracted_llm/*
+language_model/*
+gguf_model/*
 PaddlePaddle/PaddleOCR-VL/*
 llama.cpp/*
 llama-cpp-python/*
 __pycache__/
 *.pyc
+
+.venv/*
+
+# 模型文件和目录
+vision_model/
+language_model/
+gguf_model/
+
+# 模型权重文件
+*.pt
+*.pth
+*.bin
+*.gguf
+*.safetensors
+*.ckpt
+*.h5
+*.pb
+*.onnx
+*.pkl
+*.pickle
+
+# 临时文件和缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# IDE和编辑器文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 日志文件
+*.log
+logs/
+
+# 数据文件
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tiff
+*.tif
+data/
+datasets/
+
+# 系统文件
+.DS_Store
+Thumbs.db

@@ -144,21 +144,21 @@ def demo_workflow():
     print("\n步骤 1: 提取 LLM 权重")
     print("  $ python convert_to_gguf.py \\")
     print("      --model-path PaddlePaddle/PaddleOCR-VL \\")
-    print("      --output-path ./language_model")
+    print("      --output-path ./extracted_llm")
     
     print("\n步骤 2: 转换为 GGUF 格式")
     print("  $ cd llama.cpp")
-    print("  $ python convert.py ../language_model \\")
-    print("      --outfile ../language_model/llm_model.gguf")
+    print("  $ python convert.py ../extracted_llm \\")
+    print("      --outfile ../extracted_llm/llm_model.gguf")
     
     print("\n步骤 3: 量化模型")
     print("  $ ./quantize \\")
-    print("      ../language_model/llm_model.gguf \\")
-    print("      ../gguf_model/llm_model_q4.gguf \\")
+    print("      ../extracted_llm/llm_model.gguf \\")
+    print("      ../extracted_llm/llm_model_q4.gguf \\")
     print("      Q4_K_M")
     
     print("\n步骤 4: 导入 Ollama")
-    print("  $ cd ../language_model")
+    print("  $ cd ../extracted_llm")
     print("  $ ollama create paddleocr-vl-llm -f Modelfile")
     
     print("\n步骤 5: 启动服务")
