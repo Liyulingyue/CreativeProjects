@@ -173,7 +173,7 @@ payload = {
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": "识别图片中的文字"},
+                {"type": "text", "text": "OCR:"},
                 {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}
             ]
         }
@@ -202,17 +202,17 @@ print(response.json()["choices"][0]["message"]["content"])
 │    │                                                        │
 │    ▼                                                        │
 │ 视觉编码器 (PyTorch)                                        │
-│  ├─ SiglipVisionModel       ≈200M 参数                      │
+│  ├─ SiglipVisionModel                                     │
 │  └─ Attention Pooling                                        │
 │    │                                                        │
 │    ▼                                                        │
-│ Projector (PyTorch)       ≈20M 参数                          │
+│ Projector (PyTorch)                                        │
 │    │                                                        │
 │    ▼ 视觉嵌入                                               │
 ├─────────────────────────────────────────────────────────────┤
 │ llama-cpp 推理 (GGUF)                                       │
-│  ├─ Ernie4.5 Decoder       量化后 ≈500-800MB               │
-│  └─ LM Head                量化后 ≈100MB                   │
+│  ├─ Ernie4.5 Decoder                                      │
+│  └─ LM Head                                               │
 │    │                                                        │
 │    ▼                                                        │
 │ 生成文本输出                                                │
@@ -243,6 +243,14 @@ print(response.json()["choices"][0]["message"]["content"])
 | RDK X5(8x A55@1.5GHz, 4G内存版本) | 640x480 | 97.06 | Q4_K_M |
 | Intel Ultra5 | 256×256 | 4.55 | Q4_K_M |
 | Intel Ultra5 | 640x480 | 8.59 | Q4_K_M |
+
+## 量化前耗时测试
+|设备 | 图片尺寸 | 耗时(秒) |
+|----|---------|---------|
+| RDK X5(8x A55@1.5GHz, 4G内存版本) | 256×256 | 154.66 |
+| RDK X5(8x A55@1.5GHz, 4G内存版本) | 640x480 | 435 |
+| Intel 13th Gen Intel(R) Core(TM) i7-13700K | 256×256 | 7.3 |
+| Intel 13th Gen Intel(R) Core(TM) i7-13700K | 640x480 | 13.25 |
 
 ## 服务端代码样例
 ```python
