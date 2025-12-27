@@ -1,0 +1,169 @@
+# llama-cpp-ernie-tutorial
+
+本教程演示如何将 ERNIE 4.5 模型转换为 GGUF 格式，并使用 llama.cpp 启动兼容 OpenAI API 的服务。
+
+## 概述
+
+ERNIE 4.5 是百度开发的强大语言模型。本教程将展示如何：
+
+1. 将 ERNIE 4.5 模型转换为 GGUF 格式
+2. 使用 llama.cpp 启动本地服务
+3. 通过 OpenAI 兼容的 API 调用模型
+
+## 前提条件
+
+- Python 3.8+
+- Git (用于编译 llama.cpp)
+- CMake (用于编译 llama.cpp)
+- C/C++ 编译器(用于编译 llama.cpp)：Windows 用户需要安装 MinGW
+- llama.cpp (需要克隆和编译)
+
+## 安装指南
+
+### 安装 CMake
+
+1. **使用 winget（推荐，Windows 10+）：**
+   ```powershell
+   winget install Kitware.CMake
+   ```
+
+2. 验证安装：打开命令提示符或 PowerShell，运行 `cmake --version` 确认安装成功。
+
+安装完成后，请重新打开终端以确保 PATH 更新。
+
+### 安装 MinGW (Windows)
+
+1. 从 [WinLibs](https://winlibs.com/#download-release) 下载最新的 MinGW-w64 预编译版本（选择 x86_64-posix-seh 版本），解压到合适目录（如 `C:\mingw64`）。
+
+2. 将 MinGW 的 `bin` 目录添加到系统 PATH 环境变量中：
+   - 右键点击“此电脑” > “属性” > “高级系统设置” > “环境变量”
+   - 在“系统变量”中找到“Path”，点击“编辑”
+   - 点击“新建”，添加路径 `C:\mingw64\bin`（根据您的安装目录调整）
+   - 点击“确定”保存更改
+
+**可选：通过命令行添加 PATH（需要管理员权限，重启终端后生效）：**
+- 在 PowerShell 中（以管理员身份运行）：
+  ```powershell
+  [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "Machine") + ";C:\mingw64\bin", "Machine")
+  ```
+- 或在命令提示符中（以管理员身份运行）：
+  ```cmd
+  setx PATH "%PATH%;C:\mingw64\bin" /M
+  ```
+
+3. 验证安装：打开新的命令提示符或 PowerShell 窗口，运行 `gcc --version` 确认 GCC 已安装。
+
+## 步骤
+
+### 0. 创建虚拟环境
+
+为了避免依赖冲突，建议使用 Python 虚拟环境：
+
+```bash
+python -m venv .venv
+```
+
+激活虚拟环境：
+- Windows (PowerShell)：
+  ```powershell
+  .\.venv\Scripts\Activate.ps1
+  ```
+- Windows (命令提示符)：
+  ```cmd
+  .\.venv\Scripts\activate.bat
+  ```
+- Linux/macOS：
+  ```bash
+  source .venv/bin/activate
+  ```
+
+**注意：** 如果 PowerShell 执行策略阻止运行脚本，请以管理员身份运行 PowerShell 并执行 `set-ExecutionPolicy RemoteSigned`。
+
+### 1. 安装依赖
+
+```bash
+pip install -r requirements.txt
+```
+
+### 2. 克隆和编译 llama.cpp
+
+```bash
+git clone https://github.com/ggerganov/llama.cpp
+cd llama.cpp
+mkdir build
+cd build
+cmake .. 
+# Windows 下可能的编译配置方式是 cmake .. -G "MinGW Makefiles" -DLLAMA_CURL=OFF 
+# 或 cmake .. -G "MinGW Makefiles" -DLLAMA_CURL=OFF -DCMAKE_CXX_FLAGS="-D_WIN32_WINNT=0x0A00"
+cmake --build . --config Release
+# Windows 下可能的编译方式是 mingw32-make
+# 回到根目录
+cd ../.. 
+```
+
+> 在笔者的两台Windows电脑上可能因为配置不同导致操作不完全一致，请根据自己的电脑情况调整命令
+
+### 3. 下载 ERNIE 4.5 模型
+
+从 Hugging Face 下载 ERNIE 4.5 模型权重：
+
+```bash
+# 示例：下载 ERNIE-4.5-0.3B-Instruct
+hf download baidu/ERNIE-4.5-0.3B-PT --local-dir ./ernie_model_03
+```
+
+或者从魔搭社区下载（可选）：
+
+```bash
+# 安装 modelscope（如果未安装）
+pip install modelscope
+
+# 示例：下载 ERNIE-4.5-0.3B-Instruct
+modelscope download --model PaddlePaddle/ERNIE-4.5-0.3B-PT --local_dir ./ernie_model_03
+```
+
+### 4. 转换为 GGUF 格式
+```bash
+python llama.cpp/convert_hf_to_gguf.py ./ernie_model_03 --outfile ./ernie.gguf --outtype f16
+```
+
+### 5. 启动服务
+
+使用 llama.cpp 的服务器：
+
+```bash
+./llama.cpp/build/bin/server --model ./ernie.gguf --host 0.0.0.0 --port 8000 --ctx-size 4096
+```
+
+### 6. 测试调用
+
+使用客户端脚本测试：
+
+```bash
+python client.py --url http://localhost:8000 --prompt "你好，请介绍一下自己。"
+```
+
+或者使用 curl：
+
+```bash
+curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "ernie-gguf",
+    "messages": [{"role": "user", "content": "你好"}]
+  }'
+```
+
+## 文件说明
+
+- `convert_to_gguf.py`: 模型转换脚本 (调用 llama.cpp convert)
+- `server.py`: 启动 llama.cpp 服务器的脚本
+- `client.py`: 测试客户端
+- `requirements.txt`: Python 依赖
+
+## 注意事项
+
+- 需要先编译 llama.cpp
+- 转换过程可能需要大量内存
+- GGUF 格式支持量化，可以显著减少模型大小
+- 服务支持流式响应和多种参数配置
