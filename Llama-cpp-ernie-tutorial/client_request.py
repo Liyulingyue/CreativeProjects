@@ -87,7 +87,7 @@ def list_models(url: str):
 def main():
     parser = argparse.ArgumentParser(description="ERNIE GGUF API 客户端")
     parser.add_argument("--url", default="http://localhost:8000", help="API 服务器 URL")
-    parser.add_argument("--prompt", help="要发送的提示文本")
+    parser.add_argument("--prompt", default="你好，请介绍一下自己。", help="要发送的提示文本")
     parser.add_argument("--model", default="ernie-gguf", help="模型名称")
     parser.add_argument("--max-tokens", type=int, default=1024, help="最大生成 token 数")
     parser.add_argument("--temperature", type=float, default=0.7, help="温度参数")
@@ -98,7 +98,7 @@ def main():
 
     if args.list_models:
         list_models(args.url)
-    elif args.prompt:
+    else:
         chat_completion(
             url=args.url,
             prompt=args.prompt,
@@ -107,10 +107,6 @@ def main():
             temperature=args.temperature,
             stream=args.stream
         )
-    else:
-        print("请提供 --prompt 或使用 --list-models")
-        parser.print_help()
-        sys.exit(1)
 
 if __name__ == "__main__":
     main()

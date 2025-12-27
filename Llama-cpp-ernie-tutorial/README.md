@@ -18,7 +18,7 @@ ERNIE 4.5 是百度开发的强大语言模型。本教程将展示如何：
 - C/C++ 编译器(用于编译 llama.cpp)：Windows 用户需要安装 MinGW
 - llama.cpp (需要克隆和编译)
 
-## 安装指南
+## 前置安装指南
 
 ### 安装 CMake
 
@@ -53,7 +53,7 @@ ERNIE 4.5 是百度开发的强大语言模型。本教程将展示如何：
 
 3. 验证安装：打开新的命令提示符或 PowerShell 窗口，运行 `gcc --version` 确认 GCC 已安装。
 
-## 步骤
+## 方式一：从源码编译 llama.cpp 并转换模型
 
 ### 0. 创建虚拟环境
 
@@ -129,7 +129,33 @@ pip install -r llama.cpp/requirements/requirements-convert_hf_to_gguf.txt
 python llama.cpp/convert_hf_to_gguf.py ./ernie_model_03 --outfile ./ernie.gguf --outtype f16
 ```
 
-### 5. 启动服务
+## 方式二：使用预编译文件和下载 GGUF 模型
+
+如果你不想从源码编译，可以下载预编译的 llama.cpp 和已经转换好的 GGUF 模型。
+
+### 下载预编译的 llama.cpp
+
+从 [llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases) 下载最新版本的预编译二进制文件。根据你的操作系统选择合适的版本，解压到项目目录。
+
+例如，下载 `llama-b7554-bin-win-cpu-x64` 并解压到。
+
+### 下载转换好的 GGUF 模型
+
+从 Hugging Face 或 ModelScope 下载已经转换好的 ERNIE GGUF 模型：
+
+- Hugging Face: 搜索 "ERNIE GGUF"
+- ModelScope: 搜索 "ERNIE GGUF"
+
+将下载的 `.gguf` 文件放置在项目根目录，并命名为 `ernie.gguf`。
+
+## 启动服务和测试
+
+> **注意：** 如果你创建了虚拟环境，请确保先激活它：
+> - Windows (PowerShell)：`.\.venv\Scripts\Activate.ps1`
+> - Windows (命令提示符)：`.\.venv\Scripts\activate.bat`
+> - Linux/macOS：`source .venv/bin/activate`
+
+### 1. 启动服务
 
 使用 llama.cpp 的服务器：
 
@@ -137,12 +163,33 @@ python llama.cpp/convert_hf_to_gguf.py ./ernie_model_03 --outfile ./ernie.gguf -
 ./llama.cpp/build/bin/server --model ./ernie.gguf --host 0.0.0.0 --port 8000 --ctx-size 4096
 ```
 
-### 6. 测试调用
-
-使用客户端脚本测试：
+或者使用我们提供的 server.py 脚本（推荐），它封装了默认参数配置，无需每次都输入长命令：
 
 ```bash
-python client.py --url http://localhost:8000 --prompt "你好，请介绍一下自己。"
+# 
+python server.py
+```
+
+如果需要自定义参数，可以使用命令行选项，例如：
+
+```bash
+python server.py --model ./custom.gguf --port 8080
+```
+
+### 2. 测试调用
+
+使用客户端脚本测试（脚本已封装默认配置，可以直接运行测试，或指定自定义参数）：
+
+```bash
+# 使用 requests 库的客户端（默认URL: http://localhost:8000，默认提示: "你好，请介绍一下自己。"）
+python client_request.py
+
+# 使用 OpenAI 库的客户端（需要先安装 openai 库：pip install openai，默认URL: http://localhost:8000，默认提示: "你好，请介绍一下自己。"）
+python client_openai.py
+
+# 示例：指定自定义提示或参数
+python client_request.py --prompt "请解释什么是机器学习"
+python client_request.py --url http://localhost:8080 --model custom-model --temperature 0.5
 ```
 
 或者使用 curl：
@@ -160,12 +207,6 @@ curl -X POST http://localhost:8000/v1/chat/completions \
 
 - `convert_to_gguf.py`: 模型转换脚本 (调用 llama.cpp convert)
 - `server.py`: 启动 llama.cpp 服务器的脚本
-- `client.py`: 测试客户端
+- `client_request.py`: 使用 requests 库的测试客户端
+- `client_openai.py`: 使用 OpenAI 库的测试客户端
 - `requirements.txt`: Python 依赖
-
-## 注意事项
-
-- 需要先编译 llama.cpp
-- 转换过程可能需要大量内存
-- GGUF 格式支持量化，可以显著减少模型大小
-- 服务支持流式响应和多种参数配置
