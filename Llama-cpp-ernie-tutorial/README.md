@@ -124,6 +124,8 @@ modelscope download --model PaddlePaddle/ERNIE-4.5-0.3B-PT --local_dir ./ernie_m
 
 ### 4. 转换为 GGUF 格式
 ```bash
+# 安装 convert_hf_to_gguf.py 的依赖
+pip install -r llama.cpp/requirements/requirements-convert_hf_to_gguf.txt
 python llama.cpp/convert_hf_to_gguf.py ./ernie_model_03 --outfile ./ernie.gguf --outtype f16
 ```
 
