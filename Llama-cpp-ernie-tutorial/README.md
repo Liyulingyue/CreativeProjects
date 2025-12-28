@@ -20,6 +20,18 @@ ERNIE 4.5 是百度开发的强大语言模型。本教程将展示如何：
 
 ## 前置安装指南
 
+### Ubuntu
+
+在 Ubuntu 上，您需要使用 `apt` 包管理器安装必要的依赖项。运行以下命令：
+
+```bash
+sudo apt update
+sudo apt install python3 python3-pip python3-venv git cmake build-essential
+```
+
+> **注意：** 上述安装可能并不完整，具体取决于您的Ubuntu版本和系统配置。请根据需要安装其他必要的组件，例如特定版本的Python或额外的构建工具。
+
+### Windows
 ### 安装 CMake
 
 1. **使用 winget（推荐，Windows 10+）：**
@@ -31,7 +43,7 @@ ERNIE 4.5 是百度开发的强大语言模型。本教程将展示如何：
 
 安装完成后，请重新打开终端以确保 PATH 更新。
 
-### 安装 MinGW (Windows)
+### 安装 MinGW
 
 1. 从 [WinLibs](https://winlibs.com/#download-release) 下载最新的 MinGW-w64 预编译版本（选择 x86_64-posix-seh 版本），解压到合适目录（如 `C:\mingw64`）。
 
@@ -127,7 +139,13 @@ modelscope download --model PaddlePaddle/ERNIE-4.5-0.3B-PT --local_dir ./ernie_m
 # 安装 convert_hf_to_gguf.py 的依赖
 pip install -r llama.cpp/requirements/requirements-convert_hf_to_gguf.txt
 python llama.cpp/convert_hf_to_gguf.py ./ernie_model_03 --outfile ./ernie.gguf --outtype f16
+# 如果需要量化，可以替换为 --outtype q4_k_m 或其他类型
+# 示例：使用 Q4_K_M 量化
+# python llama.cpp/convert_hf_to_gguf.py ./ernie_model_03 --outfile ./ernie.gguf --outtype q4_k_m
+# 如果需要量化以减少模型大小和提高推理速度，可以使用 --outtype q4_0 或其他量化类型（如 q4_1, q5_0 等）
 ```
+
+> **故障排除：** 如果在转换过程中遇到 PyTorch DLL 加载错误（如 "动态链接库(DLL)初始化例程失败"），请确保安装了 Microsoft Visual C++ Redistributable for Visual Studio 2015-2019 (x64)，可以从 Microsoft 官网下载。或者尝试重新安装 PyTorch：`pip install torch --index-url https://download.pytorch.org/whl/cpu`。
 
 ## 方式二：使用预编译文件和下载 GGUF 模型
 
@@ -137,7 +155,7 @@ python llama.cpp/convert_hf_to_gguf.py ./ernie_model_03 --outfile ./ernie.gguf -
 
 从 [llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases) 下载最新版本的预编译二进制文件。根据你的操作系统选择合适的版本，解压到项目目录。
 
-例如，下载 `llama-b7554-bin-win-cpu-x64` 并解压到。
+> **注意：** 后续启动命令是基于源码编译配置的，如果您使用预编译版本，请确保二进制文件路径正确，并相应调整启动命令中的路径（例如，将 `./llama.cpp/build/bin/server` 替换为预编译二进制文件的实际路径）。
 
 ### 下载转换好的 GGUF 模型
 
@@ -146,7 +164,9 @@ python llama.cpp/convert_hf_to_gguf.py ./ernie_model_03 --outfile ./ernie.gguf -
 - Hugging Face: 搜索 "ERNIE GGUF"
 - ModelScope: 搜索 "ERNIE GGUF"
 
-将下载的 `.gguf` 文件放置在项目根目录，并命名为 `ernie.gguf`。
+将下载的 `.gguf` 文件放置在项目根目录。
+
+> **注意：** 后续启动命令是基于源码编译和转换配置的，请调整启动时的模型路径到您的下载路径。
 
 ## 启动服务和测试
 
