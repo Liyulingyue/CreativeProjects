@@ -31,7 +31,7 @@ def start_server(model_path: str, llama_cpp_path: str = "./llama.cpp",
         return False
 
     # 检查 server 二进制
-    server_binary = Path(llama_cpp_path) / "build" / "bin" / "server"
+    server_binary = Path(llama_cpp_path) / "build" / "bin" / "llama-server.exe"
     if not server_binary.exists():
         print(f"错误: llama.cpp server 二进制未找到: {server_binary}")
         print("请确保已编译 llama.cpp")
@@ -68,7 +68,7 @@ def start_server(model_path: str, llama_cpp_path: str = "./llama.cpp",
 
 def main():
     parser = argparse.ArgumentParser(description="ERNIE GGUF 服务器启动器")
-    parser.add_argument("--model", default="./ernie.gguf", help="GGUF 模型文件路径")
+    parser.add_argument("--model", default="./ernie_q4_k_m.gguf", help="GGUF 模型文件路径")
     parser.add_argument("--llama-cpp", default="./llama.cpp", help="llama.cpp 仓库路径")
     parser.add_argument("--host", default="0.0.0.0", help="服务器主机")
     parser.add_argument("--port", type=int, default=8000, help="服务器端口")

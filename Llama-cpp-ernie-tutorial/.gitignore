@@ -1,2 +1,4 @@
 llama.cpp/
 ernie_model_03/
+ernie.gguf
+ernie_q4_k_m.gguf
