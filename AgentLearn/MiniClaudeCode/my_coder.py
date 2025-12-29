@@ -4,7 +4,16 @@ from openai import OpenAI
 from dotenv import load_dotenv
 import subprocess, sys, os, json
 
+from pathlib import Path
+
+# 尝试加载当前目录的.env
 load_dotenv()
+# 如果没有MODEL_KEY，尝试上一级目录的.env
+if not os.getenv("MODEL_KEY"):
+    parent_env = Path("..") / ".env"
+    if parent_env.exists():
+        load_dotenv(dotenv_path=parent_env)
+
 api_key = os.getenv("MODEL_KEY")
 base_url = os.getenv("MODEL_URL")
 model_name = os.getenv("MODEL_NAME", "gpt-4")
