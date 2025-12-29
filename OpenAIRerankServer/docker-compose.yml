@@ -1,0 +1,8 @@
+services:
+  rerank-server:
+    build: .
+    ports:
+      - "10053:10053"
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
