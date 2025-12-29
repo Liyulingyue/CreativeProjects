@@ -1,0 +1,27 @@
+# Git
+.git
+.gitignore
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# Python缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 模型文件（在Docker中重新下载）
+mixedbread-ai/
+
+# 日志
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# 其他
+.DS_Store
+Thumbs.db
