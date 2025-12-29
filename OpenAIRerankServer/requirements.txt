@@ -1,0 +1,6 @@
+sentence-transformers
+modelscope
+fastapi
+uvicorn[standard]
+pydantic
+# openai>=1.50.0
