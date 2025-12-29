@@ -12,10 +12,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # 下载模型（在构建时下载以便缓存）
-RUN python -c "from modelscope import snapshot_download; snapshot_download('mixedbread-ai/mxbai-rerank-base-v1')"
+RUN modelscope download --model mixedbread-ai/mxbai-rerank-base-v1 --local_dir mixedbread-ai/mxbai-rerank-base-v1
 
 # 暴露端口
 EXPOSE 10053
 
 # 运行应用
-CMD ["python", "fastapi_rerank.py"]
+CMD ["python", "fastapi_rerank_server.py"]
