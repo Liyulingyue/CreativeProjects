@@ -52,7 +52,9 @@ def chat(prompt, history=[]):
         history.append({"role": "user", "content": results})
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1: print(chat(sys.argv[1]))  # 子代理模式
+    if len(sys.argv) > 1: 
+        print(chat(sys.argv[1]))  # 子代理模式
     else:
         h = []
-        while (q := input("\033[36m>> \033[0m")) not in ("q", "exit", ""): print(chat(q, h))  # 交互模式
+        while (q := input("\033[36m>> \033[0m")) not in ("q", "exit", ""): 
+            print(chat(q, h))  # 交互模式

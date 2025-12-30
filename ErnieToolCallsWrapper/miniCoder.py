@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 """v0_bash_agent.py - 极简 Claude Code (20行核心) | Bash is All You Need"""
+# based on https://mp.weixin.qq.com/s/WPkCONFnBc84Q3V5Qjynrg
 from openai import OpenAI
 from dotenv import load_dotenv
 import subprocess, sys, os, json
