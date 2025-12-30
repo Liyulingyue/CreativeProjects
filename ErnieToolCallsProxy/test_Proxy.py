@@ -17,8 +17,8 @@ if not os.getenv("MODEL_KEY"):
 
 api_key = os.getenv("MODEL_KEY")
 # base_url = os.getenv("MODEL_URL")
-base_url = "http://localhost:8000/v1"
-model_name = os.getenv("MODEL_NAME", "gpt-4")
+base_url = "http://localhost:9000/v1"
+model_name = os.getenv("MODEL_NAME", "user_model")
 
 client = OpenAI(api_key=api_key, base_url=base_url)
 TOOL = [{
@@ -61,9 +61,3 @@ r = client.chat.completions.create(model=model_name, messages=history, tools=TOO
 message = r.choices[0].message
 print(f"=== Model Response ===\n{message}\n=====================")
 
-history = []
-prompt = "show me the files in current directory"
-history.append({"role": "user", "content": prompt})
-r = client.chat.completions.create(model=model_name, messages=history, tools=TOOL, max_tokens=8000)
-message = r.choices[0].message
-print(f"=== Model Response ===\n{message}\n=====================")

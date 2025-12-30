@@ -53,8 +53,6 @@ async def proxy_chat_completions(req: Request):
 
     return JSONResponse(content=serializable)
 
-
-
 @app.get("/health")
 async def health():
     return {"ok": True}
