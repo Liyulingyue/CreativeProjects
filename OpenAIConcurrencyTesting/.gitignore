@@ -1,2 +1,4 @@
+
 llm-benchmark/
+llm-benchmark/*
 .env
