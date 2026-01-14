@@ -17,6 +17,7 @@ import json
 import gc
 import traceback
 import numpy as np
+from vision_model_loader import load_vision_model
 
 # 使用 llama-cpp-python 直接加载 GGUF 模型
 try:
@@ -44,7 +45,6 @@ print(f"GGUF 模型路径: {GGUF_MODEL_PATH}")
 try:
     # 加载微缩版视觉模型
     print("正在加载微缩版视觉模型...")
-    from export_vision_model import load_vision_model
     vision_model, processor = load_vision_model(VISION_MODEL_PATH, device="cpu")
     visual_encoder = vision_model.visual
     projector = vision_model.mlp_AR

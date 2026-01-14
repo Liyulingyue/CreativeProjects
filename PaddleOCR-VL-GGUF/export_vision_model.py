@@ -86,6 +86,18 @@ def export_vision_model(input_path: str, output_path: str):
     processor = AutoProcessor.from_pretrained(input_path, trust_remote_code=True)
     processor.save_pretrained(output_path)
 
+    # 抽取并保存必要的代码文件，实现模型独立加载
+    import shutil
+    print("抽取模型定义代码...")
+    code_files = ['configuration_paddleocr_vl.py', 'modeling_paddleocr_vl.py']
+    for filename in code_files:
+        src_file = os.path.join(input_path, filename)
+        if os.path.exists(src_file):
+            shutil.copy(src_file, os.path.join(output_path, filename))
+            print(f"   - 已抽取: {filename}")
+        else:
+            print(f"   - 警告: 未找到 {filename}")
+
     # 保存配置信息
     with open(os.path.join(output_path, 'model_info.json'), 'w') as f:
         json.dump({
