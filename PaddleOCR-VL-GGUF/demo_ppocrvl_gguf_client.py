@@ -7,13 +7,9 @@ PaddleOCR-VL GGUF 版本测试客户端
 import sys
 import os
 import time
-
-# 复用 CPU 版本客户端实现
-cpu_client_dir = os.path.join(os.path.dirname(__file__), "..", "PaddleOCR-VL-CPU")
-sys.path.insert(0, os.path.abspath(cpu_client_dir))
-from demo_ppocrvl_client import PaddleOCRVLClient
+from paddleocr_vl_client import PaddleOCRVLClient
 import argparse
-
+import traceback
 
 def main():
     parser = argparse.ArgumentParser(description="PaddleOCR-VL GGUF API 客户端测试")
@@ -78,7 +74,6 @@ def main():
 
     except Exception as e:
         print(f"错误: {e}")
-        import traceback
         traceback.print_exc()
         sys.exit(1)
 
