@@ -1,0 +1,6 @@
+knowledge/*
+!knowledge/.gitkeep
+# Semantic search index files
+semantic_index.faiss
+documents.pkl
+file_paths.pkl
