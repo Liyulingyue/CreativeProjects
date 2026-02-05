@@ -59,6 +59,7 @@ documents = []
 file_paths = []
 INDEX_FILE = "semantic_index.faiss"
 DOCUMENTS_FILE = "documents.pkl"
+FILE_PATHS_FILE = "file_paths.pkl"
 def save_index():
     """Save the current index and documents to disk"""
     if index is not None and documents and file_paths:
@@ -71,9 +72,15 @@ def save_index():
 
 def load_index():
     """Load index and documents from disk if available"""
-    global index, documents, file_paths
+    global model, index, documents, file_paths
     if os.path.exists(INDEX_FILE) and os.path.exists(DOCUMENTS_FILE) and os.path.exists(FILE_PATHS_FILE):
         try:
+            # Load model if not already loaded
+            if model is None:
+                print("🔄 Loading semantic search model...")
+                model = SentenceTransformer('all-MiniLM-L6-v2')
+                print("✅ Model loaded")
+            
             index = faiss.read_index(INDEX_FILE)
             with open(DOCUMENTS_FILE, 'rb') as f:
                 documents = pickle.load(f)

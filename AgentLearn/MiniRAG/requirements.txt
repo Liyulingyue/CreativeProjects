@@ -4,3 +4,4 @@ fastapi
 uvicorn
 sentence-transformers
 faiss-cpu
+gradio

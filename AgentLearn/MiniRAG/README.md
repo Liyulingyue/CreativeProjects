@@ -38,20 +38,19 @@ python my_rag.py
 python my_rag.py "your query here"
 ```
 
-### 服务器模式
-
-启动 API 服务器：
+### Gradio Web 界面
+启动美观的 Web 聊天界面：
 ```bash
-python rag_server.py
+python gradio_app.py
 ```
 
-然后发送 POST 请求到 `http://localhost:8000/chat`，JSON 格式：
-```json
-{
-  "prompt": "在文件中搜索 'function'",
-  "history": []
-}
-```
+然后在浏览器中访问 `http://localhost:7860`
+
+**界面特性**：
+- 💬 实时对话
+- 📚 示例问题
+- 🧹 一键清空对话
+- 🎨 现代化 UI
 
 ## 知识库设置
 
