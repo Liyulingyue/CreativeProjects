@@ -4,7 +4,7 @@ from typing import List, Dict, Any
 import sys
 import os
 sys.path.append(os.path.dirname(__file__))
-from my_rag import chat
+from AgentLearn.MiniRAG.mini_rag import chat, chat_stream
 
 app = FastAPI(title="MiniRAG API", description="Simple RAG Chat API")
 
@@ -18,7 +18,11 @@ class ChatResponse(BaseModel):
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(request: ChatRequest):
     try:
-        response = chat(request.prompt, request.history)
+        # Use streaming version to get thinking process
+        response = ""
+        for chunk in chat_stream(request.prompt, request.history):
+            if chunk.get("type") == "final":
+                response = chunk.get("content", "")
         return ChatResponse(response=response)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

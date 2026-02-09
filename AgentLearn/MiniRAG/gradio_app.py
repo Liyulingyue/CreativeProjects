@@ -1,31 +1,76 @@
 import gradio as gr
-from my_rag import chat
+from AgentLearn.MiniRAG.mini_rag import chat_stream
+import time
 
 def respond(message, history):
-    """Handle user message and return response"""
+    """Handle user message and return response with streaming"""
     if not message.strip():
-        return "", history
+        yield "", history
+        return
 
     # Convert Gradio history format to our format
     chat_history = []
-    for msg in history:
-        chat_history.append({
-            "role": msg["role"],
-            "content": msg["content"]
-        })
+    if history:
+        for msg in history:
+            if isinstance(msg, dict):
+                chat_history.append({
+                    "role": msg.get("role"),
+                    "content": msg.get("content")
+                })
+            elif isinstance(msg, (list, tuple)) and len(msg) == 2:
+                # 支持旧格式 [user_msg, bot_msg]
+                if msg[0]:
+                    chat_history.append({"role": "user", "content": msg[0]})
+                if msg[1]:
+                    chat_history.append({"role": "assistant", "content": msg[1]})
 
-    # Get response from our RAG agent
+    # Add user message to history
+    history.append({"role": "user", "content": message})
+    
+    # Initialize assistant response
+    assistant_msg = ""
+    process_log = []
+    
+    # Get streaming response from our RAG agent
     try:
-        response = chat(message, chat_history)
-        # Add current exchange to history
-        history.append({"role": "user", "content": message})
-        history.append({"role": "assistant", "content": response})
-        return "", history
+        for chunk in chat_stream(message, chat_history):
+            chunk_type = chunk.get("type")
+            chunk_content = chunk.get("content", "")
+            
+            if chunk_type == "thinking":
+                process_log.append(f"\n**{chunk_content}**")
+            elif chunk_type == "agent_thought":
+                process_log.append(f"\n💭 **思考过程:**\n{chunk_content}")
+            elif chunk_type == "tool_call":
+                tool_name = chunk.get("tool_name", "unknown")
+                args = chunk.get("args", {})
+                process_log.append(f"\n🔧 **调用工具:** `{tool_name}`\n```json\n{chunk_content.split('参数: ')[1] if '参数: ' in chunk_content else ''}\n```")
+            elif chunk_type == "tool_result":
+                process_log.append(f"\n📊 **工具结果:**\n```\n{chunk_content.replace('📊 工具结果:', '').strip()}\n```")
+            elif chunk_type == "final":
+                assistant_msg = chunk_content
+            
+            # Update display with process log and current answer
+            current_display = "\n".join(process_log)
+            if assistant_msg:
+                current_display += f"\n\n---\n\n✅ **最终答案:**\n{assistant_msg}"
+            
+            # Yield updated history
+            temp_history = history.copy()
+            temp_history.append({"role": "assistant", "content": current_display})
+            yield "", temp_history
+            time.sleep(0.05)  # Small delay for smooth updates
+        
+        # Final update
+        history.append({"role": "assistant", "content": current_display})
+        yield "", history
+        
     except Exception as e:
-        error_msg = f"Error: {str(e)}"
-        history.append({"role": "user", "content": message})
-        history.append({"role": "assistant", "content": error_msg})
-        return "", history
+        error_msg = f"❌ **错误:** {str(e)}"
+        process_log.append(error_msg)
+        current_display = "\n".join(process_log)
+        history.append({"role": "assistant", "content": current_display})
+        yield "", history
 
 def clear_history():
     """Clear chat history"""
@@ -39,7 +84,8 @@ with gr.Blocks(title="MiniRAG Chat") as demo:
     chatbot = gr.Chatbot(
         height=500,
         show_label=False,
-        container=True
+        container=True,
+        type="messages"  # 使用messages格式支持流式输出
     )
 
     with gr.Row():

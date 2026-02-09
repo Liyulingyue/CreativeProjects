@@ -1,6 +1,11 @@
 knowledge/*
 !knowledge/.gitkeep
 # Semantic search index files
-semantic_index.faiss
-documents.pkl
-file_paths.pkl
+knowledge_vector/*
+!knowledge_vector/.gitkeep
+
+# Local models and environment
+models/
+__pycache__/
+.env
+.venv/
