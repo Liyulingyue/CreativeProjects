@@ -87,7 +87,7 @@ export default function FileUpload({ onUploadSuccess, currentPath }: FileUploadP
       {loading && (
         <div className="fixed bottom-10 right-10 z-[60] bg-white p-4 rounded-2xl shadow-2xl border border-slate-100 flex items-center space-x-4 animate-in slide-in-from-right">
           <div className="w-5 h-5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
-          <span className="text-xs font-black text-slate-700 uppercase tracking-widest">正在同步版本数据...</span>
+          <span className="text-xs font-black text-slate-700 uppercase tracking-widest">正在上传并保存文件...</span>
         </div>
       )}
     </>

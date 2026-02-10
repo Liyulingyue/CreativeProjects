@@ -18,15 +18,5 @@ def init_db():
             comment TEXT
         )
     ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS file_versions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            filename TEXT NOT NULL,
-            version_hash TEXT NOT NULL,
-            content_hash TEXT NOT NULL,
-            upload_time TEXT,
-            comment TEXT
-        )
-    ''')
     conn.commit()
     conn.close()

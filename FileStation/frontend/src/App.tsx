@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback } from 'react'
 import axios from 'axios'
 import FileUpload from './components/FileUpload'
 import FileExplorer from './components/FileExplorer'
-import HistoryPanel from './components/HistoryPanel'
 import './App.css'
 
 interface FileItem {
@@ -17,7 +16,6 @@ interface FileItem {
 function App() {
   const [files, setFiles] = useState<FileItem[]>([])
   const [currentPath, setCurrentPath] = useState<string[]>([])
-  const [historyFile, setHistoryFile] = useState<string | null>(null)
 
   const fetchFiles = useCallback(async () => {
     try {
@@ -125,7 +123,7 @@ function App() {
           <div className="flex items-center space-x-8 text-[10px] font-black text-slate-400 uppercase tracking-widest">
             <div className="flex flex-col items-end">
               <span className="text-indigo-600 leading-none">{files.length}</span>
-              <span className="mt-1">VERSIONS</span>
+              <span className="mt-1">STORAGE NODES</span>
             </div>
             <div className="flex flex-col items-end border-l border-slate-100 pl-8">
               <span className="text-slate-800 leading-none">{new Set(files.map(f => f.filename)).size}</span>
@@ -143,7 +141,6 @@ function App() {
           onBack={() => setCurrentPath(currentPath.slice(0, -1))}
           onRoot={() => setCurrentPath([])}
           onDownload={handleDownload}
-          onViewHistory={setHistoryFile}
           onDelete={handleDelete}
           onMove={handleMove}
           onCreateFolder={(name) => {
@@ -157,20 +154,13 @@ function App() {
         />
       </div>
 
-      {historyFile && (
-        <HistoryPanel 
-          filename={historyFile} 
-          onClose={() => setHistoryFile(null)} 
-        />
-      )}
-
       {/* System Status Bar */}
       <footer className="h-6 bg-indigo-600 text-[9px] font-black text-white flex items-center px-10 justify-between uppercase tracking-widest shrink-0">
         <div className="flex items-center">
           <span className="w-2 h-2 bg-green-400 rounded-full mr-2 animate-pulse"></span>
           Server Online: http://localhost:8000
         </div>
-        <div>MVP v0.2.0 • Local Storage Mode</div>
+        <div>MVP v0.3.0 • Local Storage Mode</div>
       </footer>
     </div>
   )

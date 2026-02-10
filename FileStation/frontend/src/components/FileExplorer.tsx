@@ -18,7 +18,6 @@ interface FileExplorerProps {
   onDownload: (id: number, name: string) => void;
   onCreateFolder: (name: string) => void;
   onUploadClick: () => void;
-  onViewHistory: (filename: string) => void;
   onDelete: (filename: string) => void;
   onMove: (oldPath: string, newPath: string, isFolder: boolean) => void;
 }
@@ -26,7 +25,7 @@ interface FileExplorerProps {
 export default function FileExplorer({ 
   subFolders, currentFiles, currentPath, 
   onNavigate, onBack, onRoot, onDownload,
-  onCreateFolder, onUploadClick, onViewHistory,
+  onCreateFolder, onUploadClick,
   onDelete, onMove
 }: FileExplorerProps) {
   const [isCreating, setIsCreating] = useState(false);
@@ -249,13 +248,6 @@ export default function FileExplorer({
                   <span className="text-xs">⬇</span>
                 </button>
 
-                <button
-                  onClick={() => onViewHistory(file.filename)}
-                  className="absolute top-2 left-2 opacity-0 group-hover:opacity-100 transition-all bg-white text-indigo-600 w-8 h-8 rounded-xl flex items-center justify-center hover:scale-110 shadow-lg border border-indigo-50"
-                >
-                  <span className="text-xs">🕒</span>
-                </button>
-
                 {/* Bottom Actions (Extra) */}
                 <div className="absolute -bottom-2 opacity-0 group-hover:opacity-100 transition-all flex space-x-2 bg-white px-3 py-1.5 rounded-2xl shadow-xl border border-slate-50">
                   <button
@@ -338,7 +330,6 @@ export default function FileExplorer({
                 </div>
                 <div className="w-32 text-[10px] font-black text-slate-500">{(file.size / 1024).toFixed(0)} KB</div>
                 <div className="w-48 flex justify-end space-x-3">
-                  <button onClick={() => onViewHistory(file.filename)} className="w-9 h-9 flex items-center justify-center rounded-xl hover:bg-slate-100 text-slate-400 hover:text-indigo-600 transition-colors">🕒</button>
                   <button onClick={() => onDownload(file.id, file.filename)} className="w-9 h-9 flex items-center justify-center rounded-xl bg-indigo-600 text-white shadow-lg shadow-indigo-100 hover:bg-indigo-700 active:scale-90 transition-all">⬇</button>
                 </div>
               </div>
