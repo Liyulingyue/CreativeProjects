@@ -115,10 +115,10 @@ function App() {
             </div>
             <div>
               <h1 className="text-xl font-black text-slate-800 tracking-tighter uppercase leading-none">
-                Gittly<span className="text-indigo-600">Station</span>
+                File<span className="text-indigo-600">Station</span>
               </h1>
               <p className="text-[9px] text-slate-400 font-black uppercase tracking-[0.2em] mt-1">
-                Content-Addressed Storage
+                Content-Addressed Foundation
               </p>
             </div>
           </div>
