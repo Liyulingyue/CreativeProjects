@@ -1,5 +1,6 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, Form
 from fastapi.responses import FileResponse
+from typing import List, Optional
 import os
 import hashlib
 from .. import manager
@@ -62,7 +63,29 @@ def delete_file(filename: str):
     manager.delete_item(filename)
     return {"message": f"Item {filename} deleted"}
 
+@router.post("/files/move-batch")
+def move_files_batch(
+    old_paths: List[str] = Form(...), 
+    new_paths: List[str] = Form(...), 
+    is_folders: List[bool] = Form(...)
+):
+    results = []
+    for old_path, new_path, is_folder in zip(old_paths, new_paths, is_folders):
+        try:
+            manager.move_item(old_path, new_path, is_folder)
+            results.append({"path": old_path, "status": "success"})
+        except Exception as e:
+            results.append({"path": old_path, "status": "error", "message": str(e)})
+    return {"results": results}
+
 @router.post("/files/move")
 def move_file(old_path: str = Form(...), new_path: str = Form(...), is_folder: bool = Form(False)):
-    manager.move_item(old_path, new_path, is_folder)
-    return {"message": "Moved successfully"}
+    try:
+        manager.move_item(old_path, new_path, is_folder)
+        return {"message": "Moved successfully"}
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Source item not found: {old_path}")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))

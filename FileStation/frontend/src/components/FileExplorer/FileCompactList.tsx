@@ -28,13 +28,18 @@ interface FileCompactListProps {
   setDragOverFolder: (folder: string | null) => void;
   openConfirm: (title: string, message: string, onOk: () => void) => void;
   openPrompt: (title: string, message: string, initialValue: string, onOk: (v: string) => void) => void;
+  onContextMenu: (e: React.MouseEvent, type: 'file' | 'folder', data: any) => void;
+  selectedFiles: number[];
+  selectedFolders: string[];
+  onFileSelect: (fileId: number, ctrlKey: boolean) => void;
+  handleDropToPath: (e: React.DragEvent, pathArray: string[]) => void;
 }
 
 export default function FileCompactList({
   currentPath, filteredFolders, filteredFiles, isCreating, newFolderName, dragOverFolder,
   setNewFolderName, onBack, onNavigate, onDownload, onMove, onDelete,
-  submitFolder, cancelFolder, handleDragStart, handleDrop, setDragOverFolder,
-  openConfirm, openPrompt
+  submitFolder, cancelFolder, handleDragStart, handleDrop, handleDropToPath, setDragOverFolder,
+  openConfirm, openPrompt, onContextMenu, selectedFiles, selectedFolders, onFileSelect
 }: FileCompactListProps) {
   return (
     <div className="flex flex-col space-y-1">
@@ -52,15 +57,17 @@ export default function FileCompactList({
       {currentPath.length > 0 && (
         <div
           onClick={onBack}
-          onDragOver={(e) => e.preventDefault()}
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.currentTarget.classList.add('bg-indigo-50');
+          }}
+          onDragLeave={(e) => {
+            e.currentTarget.classList.remove('bg-indigo-50');
+          }}
           onDrop={(e) => {
             e.preventDefault();
-            const sourcePath = e.dataTransfer.getData('sourcePath');
-            const isFolder = e.dataTransfer.getData('isFolder') === 'true';
-            const fileName = sourcePath.split('/').pop();
-            const parentPath = currentPath.slice(0, -1).join('/');
-            const targetPath = parentPath ? `${parentPath}/${fileName}` : fileName || '';
-            if (sourcePath !== targetPath) onMove(sourcePath, targetPath, isFolder);
+            e.currentTarget.classList.remove('bg-indigo-50');
+            handleDropToPath(e, currentPath.slice(0, -1));
           }}
           className="group flex items-center px-4 py-2 transition-all border bg-slate-50/50 border-slate-100 hover:shadow-sm hover:shadow-slate-200/40 rounded-lg cursor-pointer hover:bg-slate-100"
         >
@@ -110,10 +117,12 @@ export default function FileCompactList({
       {filteredFolders.map(folder => {
         const fullPath = currentPath.length > 0 ? `${currentPath.join('/')}/${folder}` : folder;
         const isDragOver = dragOverFolder === folder;
+        const isSelected = selectedFolders.includes(folder);
 
         return (
           <div
             key={folder}
+            data-folder-name={folder}
             draggable
             onDragStart={(e) => handleDragStart(e, fullPath, true)}
             onDragOver={(e) => {
@@ -126,10 +135,13 @@ export default function FileCompactList({
               handleDrop(e, folder);
             }}
             onClick={() => onNavigate(folder)}
+            onContextMenu={(e) => onContextMenu(e, 'folder', folder)}
             className={`group flex items-center px-4 py-2 transition-all border ${
               isDragOver
                 ? 'bg-indigo-50 border-indigo-400 translate-x-1'
-                : 'bg-white border-slate-50 hover:shadow-sm hover:shadow-slate-200/40'
+                : isSelected
+                  ? 'bg-indigo-50 border-indigo-200'
+                  : 'bg-white border-slate-50 hover:shadow-sm hover:shadow-slate-200/40'
             } rounded-lg cursor-pointer`}
           >
             <div className="w-8 flex items-center justify-center">
@@ -172,13 +184,21 @@ export default function FileCompactList({
         const fileName = file.filename.split('/').pop() || '';
         const fileExt = fileName.split('.').pop()?.toUpperCase() || 'FILE';
         const fileSize = (file.size / 1024).toFixed(0) + ' KB';
+        const isSelected = selectedFiles.includes(file.id);
 
         return (
           <div
             key={file.id}
+            data-file-id={file.id}
             draggable
             onDragStart={(e) => handleDragStart(e, file.filename, false)}
-            className="group flex items-center px-4 py-2 bg-white rounded-lg hover:shadow-sm hover:shadow-indigo-100/30 transition-all border border-slate-50"
+            onContextMenu={(e) => onContextMenu(e, 'file', file)}
+            onClick={(e) => onFileSelect(file.id, e.ctrlKey)}
+            className={`group flex items-center px-4 py-2 rounded-lg transition-all border ${
+              isSelected 
+                ? 'bg-indigo-50 border-indigo-200 shadow-sm shadow-indigo-100/50' 
+                : 'bg-white hover:shadow-sm hover:shadow-indigo-100/30 border-slate-50'
+            }`}
           >
             <div className="w-8 flex items-center justify-center">
               <span className="text-base group-hover:scale-110 transition-transform">📄</span>

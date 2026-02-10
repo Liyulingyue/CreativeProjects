@@ -86,6 +86,24 @@ function AppContent() {
     }
   }
 
+  const handleMoveBatch = async (moves: { oldPath: string, newPath: string, isFolder: boolean }[]) => {
+    if (moves.length === 0) return;
+    try {
+      const formData = new FormData()
+      moves.forEach(m => {
+        formData.append('old_paths', m.oldPath)
+        formData.append('new_paths', m.newPath)
+        formData.append('is_folders', String(m.isFolder))
+      })
+      
+      await axios.post('http://localhost:8000/files/move-batch', formData)
+      fetchFiles()
+    } catch (error) {
+      console.error('Error batch moving files:', error)
+      alert('批量操作失败')
+    }
+  }
+
   const handleCreateFolder = async (name: string) => {
     try {
       const fullPath = currentPath.length > 0 ? `${currentPath.join('/')}/${name}` : name
@@ -151,6 +169,7 @@ function AppContent() {
           onDownload={handleDownload}
           onDelete={handleDelete}
           onMove={handleMove}
+          onMoveBatch={handleMoveBatch}
           onCreateFolder={handleCreateFolder}
           onUploadClick={() => {
             alert("请直接拖拽文件到页面任何地方进行上传");
