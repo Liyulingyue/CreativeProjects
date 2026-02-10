@@ -13,7 +13,7 @@ class BasePlugin(ABC):
     @abstractmethod
     async def process_file(self, file_path: str, metadata: Dict[str, Any]) -> None:
         """
-        Logic for processing a file (e.g., extracting text, generating vectors).
+        Logic for processing a file (e.g., extracting text).
         """
         pass
 

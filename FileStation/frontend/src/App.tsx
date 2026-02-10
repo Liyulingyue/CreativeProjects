@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import axios from 'axios'
 import FileUpload from './components/FileUpload'
 import FileExplorer from './components/FileExplorer'
@@ -13,18 +14,31 @@ interface FileItem {
   comment: string
 }
 
-function App() {
+function AppContent() {
   const [files, setFiles] = useState<FileItem[]>([])
-  const [currentPath, setCurrentPath] = useState<string[]>([])
+  const [subFolders, setSubFolders] = useState<string[]>([])
+  
+  const navigate = useNavigate()
+  const location = useLocation()
+
+  // Derive currentPath from URL metadata
+  const currentPath = useMemo(() => {
+    const path = location.pathname.startsWith('/filestation') 
+      ? location.pathname.substring('/filestation'.length)
+      : ''
+    return path.split('/').filter(Boolean)
+  }, [location.pathname])
 
   const fetchFiles = useCallback(async () => {
     try {
-      const response = await axios.get('http://localhost:8000/files')
-      setFiles(response.data)
+      const prefix = currentPath.join('/')
+      const response = await axios.get(`http://localhost:8000/files?prefix=${encodeURIComponent(prefix)}`)
+      setFiles(response.data.files)
+      setSubFolders(response.data.folders)
     } catch (error) {
       console.error('Error fetching files:', error)
     }
-  }, [])
+  }, [currentPath])
 
   useEffect(() => {
     fetchFiles()
@@ -72,29 +86,22 @@ function App() {
     }
   }
 
-  const getCurrentContents = () => {
-    const prefix = currentPath.length > 0 ? currentPath.join('/') + '/' : ''
-    const folders = new Set<string>()
-    const items: FileItem[] = []
-
-    files.forEach(file => {
-      if (file.filename.startsWith(prefix)) {
-        const relativePath = file.filename.slice(prefix.length)
-        if (relativePath.includes('/')) {
-          folders.add(relativePath.split('/')[0])
-        } else if (relativePath.length > 0) {
-          items.push(file)
-        }
-      }
-    })
-
-    return {
-      subFolders: Array.from(folders).sort(),
-      currentFiles: items.sort((a, b) => a.filename.localeCompare(b.filename))
+  const handleCreateFolder = async (name: string) => {
+    try {
+      const fullPath = currentPath.length > 0 ? `${currentPath.join('/')}/${name}` : name
+      const formData = new FormData()
+      formData.append('path', fullPath)
+      await axios.post('http://localhost:8000/files/create-folder', formData)
+      fetchFiles()
+    } catch (error) {
+      console.error('Error creating folder:', error)
+      alert('创建文件夹失败')
     }
   }
 
-  const { subFolders, currentFiles } = getCurrentContents()
+  const navigateTo = (path: string[]) => {
+    navigate(`/filestation/${path.join('/')}`)
+  }
 
   return (
     <div className="h-screen w-screen bg-slate-50 text-slate-900 flex flex-col overflow-hidden font-sans">
@@ -135,20 +142,17 @@ function App() {
         {/* Full Screen Explorer */}
         <FileExplorer 
           subFolders={subFolders}
-          currentFiles={currentFiles}
+          currentFiles={files}
           currentPath={currentPath}
-          onNavigate={(f) => setCurrentPath([...currentPath, f])}
-          onBack={() => setCurrentPath(currentPath.slice(0, -1))}
-          onRoot={() => setCurrentPath([])}
+          onNavigate={(f) => navigateTo([...currentPath, f])}
+          onBreadcrumbClick={(path) => navigateTo(path)}
+          onBack={() => navigateTo(currentPath.slice(0, -1))}
+          onRoot={() => navigateTo([])}
           onDownload={handleDownload}
           onDelete={handleDelete}
           onMove={handleMove}
-          onCreateFolder={(name) => {
-            // Virtual folder creation for UI - real creation happens on upload
-            setCurrentPath([...currentPath, name]);
-          }}
+          onCreateFolder={handleCreateFolder}
           onUploadClick={() => {
-            // Signal upload - for now just informative as full screen drag is active
             alert("请直接拖拽文件到页面任何地方进行上传");
           }}
         />
@@ -163,6 +167,15 @@ function App() {
         <div>MVP v0.3.0 • Local Storage Mode</div>
       </footer>
     </div>
+  )
+}
+
+function App() {
+  return (
+    <Routes>
+      <Route path="/filestation/*" element={<AppContent />} />
+      <Route path="/" element={<Navigate to="/filestation/" replace />} />
+    </Routes>
   )
 }
 

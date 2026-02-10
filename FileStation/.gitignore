@@ -13,6 +13,8 @@ backend/build/
 backend/uploads/
 backend/gittly.db
 backend/gittly.db-journal
+backend/filestation.db
+backend/filestation.db-journal
 
 # Python
 *.py[cod]

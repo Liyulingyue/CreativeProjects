@@ -13,7 +13,10 @@ export default function FileUpload({ onUploadSuccess, currentPath }: FileUploadP
   useEffect(() => {
     const handleWindowDragOver = (e: DragEvent) => {
       e.preventDefault();
-      setIsDragging(true);
+      // Only show drag overlay for external files, not internal drag operations
+      if (e.dataTransfer?.types.includes('Files')) {
+        setIsDragging(true);
+      }
     };
 
     const handleWindowDragLeave = (e: DragEvent) => {

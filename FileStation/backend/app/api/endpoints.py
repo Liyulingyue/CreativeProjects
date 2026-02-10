@@ -3,7 +3,7 @@ from fastapi.responses import FileResponse
 import os
 import hashlib
 from .. import manager
-from ..core.config import UPLOAD_DIR
+from ..core.config import settings
 
 router = APIRouter()
 
@@ -40,18 +40,22 @@ def download_file(file_id_or_path: str):
         from .. import crud
         result = crud.get_file_metadata(int(file_id_or_path))
         if result:
-            file_path = os.path.join(UPLOAD_DIR, result[0])
+            file_path = os.path.join(settings.UPLOAD_DIR, result[0])
             display_name = os.path.basename(result[0])
     
     if not file_path:
         # Fallback to direct path
-        file_path = os.path.join(UPLOAD_DIR, file_id_or_path)
+        file_path = os.path.join(settings.UPLOAD_DIR, file_id_or_path)
         display_name = os.path.basename(file_id_or_path)
 
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
     
     return FileResponse(file_path, media_type='application/octet-stream', filename=display_name)
+
+@router.post("/files/create-folder")
+def create_folder(path: str = Form(...)):
+    return manager.create_folder(path)
 
 @router.delete("/files")
 def delete_file(filename: str):

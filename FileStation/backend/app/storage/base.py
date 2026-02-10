@@ -8,6 +8,11 @@ class StorageDriver(ABC):
         pass
 
     @abstractmethod
+    def create_folder(self, relative_path: str) -> None:
+        """Creates an empty folder at the given relative path."""
+        pass
+
+    @abstractmethod
     def delete_item(self, relative_path: str) -> None:
         """Deletes a file or folder at the given relative path."""
         pass

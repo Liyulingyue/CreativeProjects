@@ -2,9 +2,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .api.endpoints import router as api_router
 from .database import init_db
-from .core.config import USE_DATABASE
+from .core.config import settings
 
-app = FastAPI(title="FileStation API", version="0.3.0")
+app = FastAPI(title=settings.APP_NAME, version=settings.VERSION)
 
 # Add CORS middleware
 app.add_middleware(
@@ -16,7 +16,7 @@ app.add_middleware(
 )
 
 # Initialize database on startup if enabled
-if USE_DATABASE:
+if settings.USE_DATABASE:
     init_db()
 
 # Include dynamic routes

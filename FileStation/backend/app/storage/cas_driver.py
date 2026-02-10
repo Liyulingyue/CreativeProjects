@@ -1,18 +1,22 @@
 import os
 from .base import StorageDriver
-from ..core.config import UPLOAD_DIR
+from ..core.config import settings
 from typing import Optional, Dict, Any
 
 class CASStorageDriver(StorageDriver):
     def save_file(self, content: bytes, relative_path: str) -> str:
         import hashlib
         file_hash = hashlib.sha256(content).hexdigest()
-        full_path = os.path.join(UPLOAD_DIR, file_hash)
+        full_path = os.path.join(settings.UPLOAD_DIR, file_hash)
         if not os.path.exists(full_path):
             with open(full_path, "wb") as f:
                 f.write(content)
         # In CAS, the "physical path" is identified by hash
         return file_hash
+
+    def create_folder(self, relative_path: str) -> None:
+        # CAS typically doesn't have "physical" folders, it's metadata-driven
+        pass
 
     def delete_item(self, relative_path: str) -> None:
         # In a strict CAS, we usually don't delete by path 
