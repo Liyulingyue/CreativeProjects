@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+backend/__pycache__/
+.venv/
+env/
+venv/
+
+# Build outputs
+frontend/dist/
+backend/build/
+
+# GittlyFileStation Data (CRITICAL: Ignore storage and DB)
+backend/uploads/
+backend/gittly.db
+backend/gittly.db-journal
+
+# Python
+*.py[cod]
+*$py.class
+backend/.pytest_cache/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+.env.local

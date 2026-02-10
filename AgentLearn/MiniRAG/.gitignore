@@ -9,3 +9,7 @@ models/
 __pycache__/
 .env
 .venv/
+
+# backup files
+backup/
+backups/
