@@ -3,6 +3,7 @@ import Breadcrumbs from './FileExplorer/Breadcrumbs';
 import Toolbar from './FileExplorer/Toolbar';
 import FileGrid from './FileExplorer/FileGrid';
 import FileList from './FileExplorer/FileList';
+import FileCompactList from './FileExplorer/FileCompactList';
 import Dialog from './ui/Dialog';
 
 interface FileItem {
@@ -36,7 +37,7 @@ export default function FileExplorer({
 }: FileExplorerProps) {
   const [isCreating, setIsCreating] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [viewMode, setViewMode] = useState<'grid' | 'list' | 'compact'>('list');
   const [searchQuery, setSearchQuery] = useState('');
   const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
 
@@ -203,8 +204,30 @@ export default function FileExplorer({
             openConfirm={openConfirm}
             openPrompt={openPrompt}
           />
-        ) : (
+        ) : viewMode === 'list' ? (
           <FileList 
+            currentPath={currentPath}
+            filteredFolders={filteredFolders}
+            filteredFiles={filteredFiles}
+            isCreating={isCreating}
+            newFolderName={newFolderName}
+            dragOverFolder={dragOverFolder}
+            setNewFolderName={setNewFolderName}
+            onBack={onBack}
+            onNavigate={onNavigate}
+            onDownload={onDownload}
+            onMove={onMove}
+            onDelete={onDelete}
+            submitFolder={submitFolder}
+            cancelFolder={cancelFolder}
+            handleDragStart={handleDragStart}
+            handleDrop={handleDrop}
+            setDragOverFolder={setDragOverFolder}
+            openConfirm={openConfirm}
+            openPrompt={openPrompt}
+          />
+        ) : (
+          <FileCompactList 
             currentPath={currentPath}
             filteredFolders={filteredFolders}
             filteredFiles={filteredFiles}

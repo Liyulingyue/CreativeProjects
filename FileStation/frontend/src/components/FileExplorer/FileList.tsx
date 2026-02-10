@@ -41,7 +41,9 @@ export default function FileList({
       {/* List View Header */}
       <div className="flex items-center px-8 py-3 bg-white/50 rounded-2xl text-[10px] font-black text-slate-400 uppercase tracking-widest border border-slate-100">
         <div className="flex-1">名称</div>
+        <div className="w-24">类型</div>
         <div className="w-32">大小</div>
+        <div className="w-40">修改时间</div>
         <div className="w-48 text-right">快捷操作</div>
       </div>
 
@@ -68,7 +70,9 @@ export default function FileList({
               <div className="text-[9px] text-slate-400 font-bold uppercase mt-0.5">上级目录</div>
             </div>
           </div>
+          <div className="w-24 text-[10px] font-black text-slate-400">--</div>
           <div className="w-32 text-[10px] font-black text-slate-400">--</div>
+          <div className="w-40 text-[10px] font-black text-slate-400">--</div>
           <div className="w-48 flex justify-end space-x-2 opacity-0 group-hover:opacity-100 transition-opacity">
             <span className="text-[10px] text-slate-300">返回</span>
           </div>
@@ -96,7 +100,9 @@ export default function FileList({
               <div className="text-[9px] text-slate-300 font-bold uppercase mt-0.5">按 ESC 取消</div>
             </div>
           </div>
+          <div className="w-24 text-[10px] font-black text-slate-400">--</div>
           <div className="w-32 text-[10px] font-black text-slate-400">--</div>
+          <div className="w-40 text-[10px] font-black text-slate-400">--</div>
           <div className="w-48 flex justify-end space-x-2">
             <button onClick={cancelFolder} className="text-[10px] text-slate-300 hover:text-red-500">放弃创建</button>
           </div>
@@ -131,12 +137,11 @@ export default function FileList({
           >
             <div className="flex-1 flex items-center">
               <span className="text-3xl mr-4 group-hover:scale-110 transition-transform">📂</span>
-              <div>
-                <div className="text-xs font-black text-slate-700 uppercase tracking-tight">{folder}</div>
-                <div className="text-[9px] text-slate-300 font-bold uppercase mt-0.5">文件夹</div>
-              </div>
+              <div className="text-xs font-black text-slate-700 uppercase tracking-tight">{folder}</div>
             </div>
+            <div className="w-24 text-[10px] font-black text-slate-500 uppercase">FOLDER</div>
             <div className="w-32 text-[10px] font-black text-slate-400">--</div>
+            <div className="w-40 text-[10px] font-black text-slate-400">--</div>
             <div className="w-48 flex justify-end space-x-3">
               <button 
                 onClick={(e) => { 
@@ -175,12 +180,11 @@ export default function FileList({
         >
           <div className="flex-1 flex items-center">
             <span className="text-3xl mr-4 group-hover:scale-110 transition-transform">📄</span>
-            <div>
-              <div className="text-xs font-black text-slate-800 uppercase tracking-tight">{file.filename.split('/').pop()}</div>
-              <div className="text-[9px] text-slate-300 font-bold uppercase mt-0.5">{new Date(file.upload_time).toLocaleDateString()}</div>
-            </div>
+            <div className="text-xs font-black text-slate-800 uppercase tracking-tight">{file.filename.split('/').pop()}</div>
           </div>
+          <div className="w-24 text-[10px] font-black text-slate-500 uppercase">{file.filename.split('/').pop()?.split('.').pop()?.toUpperCase() || 'FILE'}</div>
           <div className="w-32 text-[10px] font-black text-slate-500">{(file.size / 1024).toFixed(0)} KB</div>
+          <div className="w-40 text-[10px] font-black text-slate-500">{new Date(file.upload_time).toLocaleDateString()}</div>
           <div className="w-48 flex justify-end space-x-3">
             <button onClick={() => onDownload(file.id, file.filename)} className="w-9 h-9 flex items-center justify-center rounded-xl bg-indigo-600 text-white shadow-lg shadow-indigo-100 hover:bg-indigo-700 active:scale-90 transition-all">⬇</button>
             <button 

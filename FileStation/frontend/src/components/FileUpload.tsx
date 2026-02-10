@@ -8,7 +8,6 @@ interface FileUploadProps {
 export default function FileUpload({ onUploadSuccess, currentPath }: FileUploadProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [comment, setComment] = useState('');
 
   useEffect(() => {
     const handleWindowDragOver = (e: DragEvent) => {
@@ -43,7 +42,7 @@ export default function FileUpload({ onUploadSuccess, currentPath }: FileUploadP
       window.removeEventListener('dragleave', handleWindowDragLeave);
       window.removeEventListener('drop', handleWindowDrop);
     };
-  }, [currentPath, comment]); // Re-bind if these change to ensure handleUpload uses latest
+  }, [currentPath]); // Re-bind if these change to ensure handleUpload uses latest
 
   const handleUpload = async (file: File) => {
     setLoading(true);
@@ -51,7 +50,7 @@ export default function FileUpload({ onUploadSuccess, currentPath }: FileUploadP
     const prefix = currentPath.length > 0 ? currentPath.join('/') + '/' : '';
     formData.append('file', file);
     formData.append('target_path', prefix + file.name);
-    formData.append('comment', comment || `Uploaded to ${prefix || 'root'}`);
+    formData.append('comment', `Uploaded to ${prefix || 'root'}`);
 
     try {
       const response = await fetch('http://localhost:8000/upload', {

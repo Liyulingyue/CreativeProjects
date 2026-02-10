@@ -3,8 +3,8 @@ import React from 'react';
 interface ToolbarProps {
   searchQuery: string;
   setSearchQuery: (query: string) => void;
-  viewMode: 'grid' | 'list';
-  setViewMode: (mode: 'grid' | 'list') => void;
+  viewMode: 'grid' | 'list' | 'compact';
+  setViewMode: (mode: 'grid' | 'list' | 'compact') => void;
   onNewFolder: () => void;
   onUpload: () => void;
   children?: React.ReactNode;
@@ -54,6 +54,12 @@ export default function Toolbar({
             className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase transition-all ${viewMode === 'list' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-400'}`}
           >
             List
+          </button>
+          <button 
+            onClick={() => setViewMode('compact')}
+            className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase transition-all ${viewMode === 'compact' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-400'}`}
+          >
+            Compact
           </button>
         </div>
         <button 
