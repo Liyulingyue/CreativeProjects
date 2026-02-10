@@ -25,11 +25,19 @@ class PathStorageDriver(StorageDriver):
                 os.remove(full_path)
 
     def move_item(self, old_path: str, new_path: str) -> None:
-        old_full = os.path.join(settings.UPLOAD_DIR, old_path)
-        new_full = os.path.join(settings.UPLOAD_DIR, new_path)
+        # Normalize paths for Windows/Unix compatibility
+        old_path = old_path.replace("\\", "/").strip("/")
+        new_path = new_path.replace("\\", "/").strip("/")
+        
+        old_full = os.path.abspath(os.path.join(settings.UPLOAD_DIR, old_path))
+        new_full = os.path.abspath(os.path.join(settings.UPLOAD_DIR, new_path))
+        
         if os.path.exists(old_full):
             os.makedirs(os.path.dirname(new_full), exist_ok=True)
+            # Use shutil.move which handles cross-device and folder moves
             shutil.move(old_full, new_full)
+        else:
+            raise FileNotFoundError(f"Source path {old_full} does not exist")
 
     def get_physical_path(self, relative_path: str, file_id: Optional[int] = None) -> str:
         return os.path.join(settings.UPLOAD_DIR, relative_path)

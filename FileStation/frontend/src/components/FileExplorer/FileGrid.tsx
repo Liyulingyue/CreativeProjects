@@ -28,13 +28,17 @@ interface FileGridProps {
   setDragOverFolder: (folder: string | null) => void;
   openConfirm: (title: string, message: string, onOk: () => void) => void;
   openPrompt: (title: string, message: string, initialValue: string, onOk: (v: string) => void) => void;
+  onContextMenu: (e: React.MouseEvent, type: 'file' | 'folder', data: any) => void;
+  selectedFiles: number[];
+  selectedFolders: string[];
+  onFileSelect: (fileId: number, ctrlKey: boolean) => void;
 }
 
 export default function FileGrid({
   currentPath, filteredFolders, filteredFiles, isCreating, newFolderName, dragOverFolder,
   setNewFolderName, onBack, onNavigate, onDownload, onMove, onDelete,
   submitFolder, cancelFolder, handleDragStart, handleDrop, setDragOverFolder,
-  openConfirm, openPrompt
+  openConfirm, openPrompt, onContextMenu, selectedFiles, selectedFolders, onFileSelect
 }: FileGridProps) {
   return (
     <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-8">
@@ -86,10 +90,12 @@ export default function FileGrid({
       {filteredFolders.map(folder => {
         const fullPath = currentPath.length > 0 ? `${currentPath.join('/')}/${folder}` : folder;
         const isDragOver = dragOverFolder === folder;
-        
+        const isSelected = selectedFolders.includes(folder);
+
         return (
           <div
             key={folder}
+            data-folder-name={folder}
             draggable
             onDragStart={(e) => handleDragStart(e, fullPath, true)}
             onDragOver={(e) => {
@@ -101,10 +107,13 @@ export default function FileGrid({
               setDragOverFolder(null);
               handleDrop(e, folder);
             }}
+            onContextMenu={(e) => onContextMenu(e, 'folder', folder)}
             className={`group relative flex flex-col items-center p-4 rounded-[32px] transition-all border-2 ${
               isDragOver 
                 ? 'bg-indigo-50 border-indigo-400 scale-110 z-10 shadow-2xl' 
-                : 'hover:bg-white hover:shadow-2xl hover:shadow-slate-200/60 border-transparent hover:scale-105'
+                : isSelected
+                  ? 'bg-indigo-50/50 border-indigo-200 shadow-lg'
+                  : 'hover:bg-white hover:shadow-2xl hover:shadow-slate-200/60 border-transparent hover:scale-105'
             } cursor-pointer`}
           >
             <div onClick={() => onNavigate(folder)} className="w-full flex flex-col items-center">
@@ -144,13 +153,22 @@ export default function FileGrid({
       })}
 
       {/* Files */}
-      {filteredFiles.map(file => (
-        <div
-          key={file.id}
-          draggable
-          onDragStart={(e) => handleDragStart(e, file.filename, false)}
-          className="group relative flex flex-col items-center p-4 rounded-[32px] hover:bg-white hover:shadow-2xl hover:shadow-indigo-100/40 cursor-default transition-all border border-transparent hover:scale-105"
-        >
+      {filteredFiles.map(file => {
+        const isSelected = selectedFiles.includes(file.id);
+        return (
+          <div
+            key={file.id}
+            data-file-id={file.id}
+            draggable
+            onDragStart={(e) => handleDragStart(e, file.filename, false)}
+            onContextMenu={(e) => onContextMenu(e, 'file', file)}
+            onClick={(e) => onFileSelect(file.id, e.ctrlKey)}
+            className={`group relative flex flex-col items-center p-4 rounded-[32px] cursor-default transition-all border hover:scale-105 ${
+              isSelected 
+                ? 'bg-indigo-50 border-indigo-200 shadow-lg shadow-indigo-100/50' 
+                : 'hover:bg-white hover:shadow-2xl hover:shadow-indigo-100/40 border-transparent'
+            }`}
+          >
           <div className="text-6xl mb-3 transition-transform duration-500 group-hover:-rotate-12 drop-shadow-sm">📄</div>
           <span className="text-[11px] font-black text-slate-800 truncate w-full text-center px-1 uppercase tracking-tight" title={file.filename}>
             {file.filename.split('/').pop()}
@@ -195,7 +213,8 @@ export default function FileGrid({
             </button>
           </div>
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
