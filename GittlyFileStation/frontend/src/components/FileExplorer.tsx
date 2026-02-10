@@ -18,12 +18,16 @@ interface FileExplorerProps {
   onDownload: (id: number, name: string) => void;
   onCreateFolder: (name: string) => void;
   onUploadClick: () => void;
+  onViewHistory: (filename: string) => void;
+  onDelete: (filename: string) => void;
+  onMove: (oldPath: string, newPath: string, isFolder: boolean) => void;
 }
 
 export default function FileExplorer({ 
   subFolders, currentFiles, currentPath, 
   onNavigate, onBack, onRoot, onDownload,
-  onCreateFolder, onUploadClick
+  onCreateFolder, onUploadClick, onViewHistory,
+  onDelete, onMove
 }: FileExplorerProps) {
   const [isCreating, setIsCreating] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
@@ -103,13 +107,43 @@ export default function FileExplorer({
           {subFolders.map(folder => (
             <div
               key={folder}
-              onClick={() => onNavigate(folder)}
-              className="group flex flex-col items-center p-4 rounded-[32px] hover:bg-white hover:shadow-2xl hover:shadow-slate-200/60 cursor-pointer transition-all border border-transparent hover:scale-105"
+              className="group relative flex flex-col items-center p-4 rounded-[32px] hover:bg-white hover:shadow-2xl hover:shadow-slate-200/60 cursor-pointer transition-all border border-transparent hover:scale-105"
             >
-              <div className="text-6xl mb-3 transition-transform duration-500 group-hover:rotate-12 drop-shadow-sm">📂</div>
-              <span className="text-[11px] font-black text-slate-700 truncate w-full text-center px-2 group-hover:text-indigo-700 uppercase tracking-tight">
-                {folder}
-              </span>
+              <div onClick={() => onNavigate(folder)} className="w-full flex flex-col items-center">
+                <div className="text-6xl mb-3 transition-transform duration-500 group-hover:rotate-12 drop-shadow-sm">📂</div>
+                <span className="text-[11px] font-black text-slate-700 truncate w-full text-center px-2 group-hover:text-indigo-700 uppercase tracking-tight">
+                  {folder}
+                </span>
+              </div>
+
+              {/* Folder Actions */}
+              <div className="absolute -top-1 -right-1 opacity-0 group-hover:opacity-100 transition-all flex flex-col space-y-1">
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const newName = prompt('重命名文件夹:', folder);
+                    if (newName && newName !== folder) {
+                      const oldPath = currentPath.length > 0 ? `${currentPath.join('/')}/${folder}` : folder;
+                      const newPath = currentPath.length > 0 ? `${currentPath.join('/')}/${newName}` : newName;
+                      onMove(oldPath, newPath, true);
+                    }
+                  }}
+                  className="bg-white text-slate-400 w-6 h-6 rounded-lg flex items-center justify-center hover:text-indigo-600 shadow-sm border border-slate-100 hover:scale-110"
+                >
+                  <span className="text-[10px]">✏️</span>
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (confirm(`确定要删除文件夹 "${folder}" 及其所有内容吗？`)) {
+                      onDelete(currentPath.length > 0 ? `${currentPath.join('/')}/${folder}` : folder);
+                    }
+                  }}
+                  className="bg-white text-slate-400 w-6 h-6 rounded-lg flex items-center justify-center hover:text-red-500 shadow-sm border border-slate-100 hover:scale-110"
+                >
+                  <span className="text-[10px]">✕</span>
+                </button>
+              </div>
             </div>
           ))}
 
@@ -127,12 +161,47 @@ export default function FileExplorer({
                 {(file.size / 1024).toFixed(0)} KB
               </span>
 
+              {/* Side Actions (Main) */}
               <button
                 onClick={() => onDownload(file.id, file.filename)}
                 className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-all bg-indigo-600 text-white w-8 h-8 rounded-xl flex items-center justify-center hover:scale-110 shadow-lg shadow-indigo-200"
               >
                 <span className="text-xs">⬇</span>
               </button>
+
+              <button
+                onClick={() => onViewHistory(file.filename)}
+                className="absolute top-2 left-2 opacity-0 group-hover:opacity-100 transition-all bg-white text-indigo-600 w-8 h-8 rounded-xl flex items-center justify-center hover:scale-110 shadow-lg border border-indigo-50"
+              >
+                <span className="text-xs">🕒</span>
+              </button>
+
+              {/* Bottom Actions (Extra) */}
+              <div className="absolute -bottom-2 opacity-0 group-hover:opacity-100 transition-all flex space-x-2 bg-white px-3 py-1.5 rounded-2xl shadow-xl border border-slate-50">
+                <button
+                  onClick={() => {
+                    const currentName = file.filename.split('/').pop() || '';
+                    const newName = prompt('重命名/移动文件:', currentName);
+                    if (newName && newName !== currentName) {
+                      const prefix = currentPath.length > 0 ? `${currentPath.join('/')}/` : '';
+                      onMove(file.filename, prefix + newName, false);
+                    }
+                  }}
+                  className="text-[10px] grayscale hover:grayscale-0 transition-all"
+                >
+                  ✏️
+                </button>
+                <button
+                  onClick={() => {
+                    if (confirm(`确定要删除文件 "${file.filename}" 吗？`)) {
+                      onDelete(file.filename);
+                    }
+                  }}
+                  className="text-[10px] grayscale hover:grayscale-0 transition-all"
+                >
+                  ✕
+                </button>
+              </div>
             </div>
           ))}
         </div>

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import axios from 'axios'
 import FileUpload from './components/FileUpload'
 import FileExplorer from './components/FileExplorer'
+import HistoryPanel from './components/HistoryPanel'
 import './App.css'
 
 interface FileItem {
@@ -16,6 +17,7 @@ interface FileItem {
 function App() {
   const [files, setFiles] = useState<FileItem[]>([])
   const [currentPath, setCurrentPath] = useState<string[]>([])
+  const [historyFile, setHistoryFile] = useState<string | null>(null)
 
   const fetchFiles = useCallback(async () => {
     try {
@@ -44,6 +46,31 @@ function App() {
       link.remove()
     } catch (error) {
       console.error('Error downloading file:', error)
+    }
+  }
+
+  const handleDelete = async (filename: string) => {
+    try {
+      await axios.delete(`http://localhost:8000/files?filename=${encodeURIComponent(filename)}`)
+      fetchFiles()
+    } catch (error) {
+      console.error('Error deleting file:', error)
+      alert('删除失败')
+    }
+  }
+
+  const handleMove = async (oldPath: string, newPath: string, isFolder: boolean) => {
+    try {
+      const formData = new FormData()
+      formData.append('old_path', oldPath)
+      formData.append('new_path', newPath)
+      formData.append('is_folder', String(isFolder))
+      
+      await axios.post('http://localhost:8000/files/move', formData)
+      fetchFiles()
+    } catch (error) {
+      console.error('Error moving file:', error)
+      alert('移动/重命名失败')
     }
   }
 
@@ -116,6 +143,9 @@ function App() {
           onBack={() => setCurrentPath(currentPath.slice(0, -1))}
           onRoot={() => setCurrentPath([])}
           onDownload={handleDownload}
+          onViewHistory={setHistoryFile}
+          onDelete={handleDelete}
+          onMove={handleMove}
           onCreateFolder={(name) => {
             // Virtual folder creation for UI - real creation happens on upload
             setCurrentPath([...currentPath, name]);
@@ -126,6 +156,13 @@ function App() {
           }}
         />
       </div>
+
+      {historyFile && (
+        <HistoryPanel 
+          filename={historyFile} 
+          onClose={() => setHistoryFile(null)} 
+        />
+      )}
 
       {/* System Status Bar */}
       <footer className="h-6 bg-indigo-600 text-[9px] font-black text-white flex items-center px-10 justify-between uppercase tracking-widest shrink-0">
