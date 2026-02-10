@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-GittlyFileStation Backend Entry Point
+FileStation Backend Entry Point
 """
 import uvicorn
 from app.main import app

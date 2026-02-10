@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .api.endpoints import router as api_router
 from .database import init_db
+from .core.config import USE_DATABASE
 
 app = FastAPI(title="FileStation API", version="0.3.0")
 
@@ -14,12 +15,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize database on startup
-init_db()
+# Initialize database on startup if enabled
+if USE_DATABASE:
+    init_db()
 
 # Include dynamic routes
 app.include_router(api_router)
 
 @app.get("/")
 def root():
-    return {"message": "GittlyFileStation API", "status": "running"}
+    return {"message": "FileStation API", "status": "running"}
