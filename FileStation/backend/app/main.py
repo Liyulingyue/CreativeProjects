@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .api.endpoints import router as api_router
 from .database import init_db
 
-app = FastAPI(title="GittlyFileStation API", version="0.2.0")
+app = FastAPI(title="FileStation API", version="0.3.0")
 
 # Add CORS middleware
 app.add_middleware(
