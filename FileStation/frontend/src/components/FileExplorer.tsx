@@ -32,6 +32,15 @@ interface FileExplorerProps {
   onMoveBatch: (moves: { oldPath: string, newPath: string, isFolder: boolean }[]) => void;
 }
 
+/**
+ * FileExplorer 组件 - 一个高性能的文件管理基座。
+ * 
+ * 该组件旨在作为文件管理器的心脏，提供了现代化的文件交互功能（如：多选、右键菜单、拖拽移动等）。
+ * 它具有极强的通用性和可扩展性，可以作为独立组件集成到个人 NAS 系统、私有云存储或 AI 数据集管理工具中。
+ * 
+ * @component
+ * @param props 包含子文件夹列表、当前文件列表、路径导航回调及基础操作接口
+ */
 export default function FileExplorer({ 
   subFolders, currentFiles, currentPath, 
   onNavigate, onBreadcrumbClick, onBack, onRoot, onDownload,
@@ -454,12 +463,17 @@ export default function FileExplorer({
         onNewFolder={() => setIsCreating(true)}
         onUpload={onUploadClick}
       >
-        <Breadcrumbs 
-          currentPath={currentPath}
-          onRoot={onRoot}
-          onBreadcrumbClick={onBreadcrumbClick}
-          onDropToPath={handleDropToPath}
-        />
+        <div className="flex flex-col">
+          <Breadcrumbs 
+            currentPath={currentPath}
+            onRoot={onRoot}
+            onBreadcrumbClick={onBreadcrumbClick}
+            onDropToPath={handleDropToPath}
+          />
+          <span className="text-[10px] text-slate-400 font-medium ml-3 -mt-1 opacity-60">
+            File Management Base / NAS-Ready Storage Core
+          </span>
+        </div>
       </Toolbar>
 
       {/* Custom Dialog */}

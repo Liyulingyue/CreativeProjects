@@ -21,7 +21,8 @@
 | 📊 性能测试 | [OpenAIConcurrencyTesting](#openaiconcurrencytesting) | API 并发测试 |
 | 🔤 文本识别 | [PaddleOCR-VL-CPU](#paddleocr-vl-cpu) | CPU 文本理解 |
 | 🔤 文本识别 | [PaddleOCR-VL-GGUF](#paddleocr-vl-gguf) | GGUF 文本理解 |
-| 📚 研究工具 | [LeadersPseudoIMBT](#leaderspseudoimbt) | 领导特性分析 |
+| � 文件管理 | [FileStation](#filestation) | 极简、高性能的文件管理基座 |
+| �📚 研究工具 | [LeadersPseudoIMBT](#leaderspseudoimbt) | 领导特性分析 |
 | 🧪 实验代码 | [AgentLearn](#agentlearn) | 智能体探索 |
 
 ---
@@ -87,7 +88,21 @@ Qwen2.5-Coder + OpenCode Server on RK3588S。本项目旨在 Rockchip RK3588S (C
 
 ---
 
-### 🔤 文本识别与视觉理解
+### � 文件管理
+
+#### **FileStation**
+🔗 `./FileStation/` {#filestation}
+
+一个极简、高性能且面向未来的现代文件管理系统，可以作为文件管理器的基座架构。其轻量化架构非常适合作为个人 NAS 或私有云存储的前端交互界面。
+
+**核心定位：**
+- **底层基座**：抽象了物理存储与逻辑路径，支持 Path 和 CAS 两种模式。
+- **NAS 扩展性**：提供了标准的文件管理接口，方便集成到各类存储系统。
+- **AI Ready**：预留了向量化检索、多模态元数据提取的插件接口。
+
+---
+
+### �🔤 文本识别与视觉理解
 
 #### **PaddleOCR-VL-CPU**
 🔗 `./PaddleOCR-VL-CPU/` {#paddleocr-vl-cpu}
