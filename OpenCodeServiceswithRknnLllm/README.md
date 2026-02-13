@@ -56,6 +56,8 @@ sudo cp rknn-llm/rkllm-runtime/Linux/librkllm_api/aarch64/librkllmrt.so /usr/lib
 
 ### 步骤 3: 模型转换 (HuggingFace -> RKLLM)
 
+> **重要提示**：RKLLM Runtime 只能加载 `.rkllm` 格式的模型。通用的 Vision/NPU 模型（`.rknn`）无法直接在此服务端运行。
+
 在 PC 端编写 `convert.py`:
 ```python
 from rkllm.api import RKLLM
@@ -67,30 +69,59 @@ rkllm.load_huggingface(model='/path/to/Qwen2.5-Coder-1.5B', model_type='qwen')
 # 2. 构建模型 (针对 RK3588 优化并量化)
 rkllm.build(do_quantization=True, optimization_level=1, device='rk3588')
 
-# 3. 导出模型
+# 3. 导出模型 (必须是 .rkllm 结尾)
 rkllm.export_rkllm(export_path='./qwen2_5_coder_1_5b.rkllm')
 ```
 运行：`python convert.py`，并将生成的 `.rkllm` 文件拷贝到板端。
 
 ### 步骤 4: 部署服务端
 
-官方提供的 Flask Demo 已经兼容 OpenAI 的响应格式，只需启动即可：
+根据您的需求，可以选择 **纯 LLM 模式**（推荐用于编程助手）或 **多模态 VLLM 模式**。
 
-1. **安装依赖** (在 RK3588S 上):
+#### 4.1 纯 LLM 方案 (推荐: Qwen2.5-Coder)
+适用于 OpenCode 插件。只需 **一个 `.rkllm`** 模型。
+
+1. **安装依赖** (在 RK3588 上):
    ```bash
-   pip install fastapi uvicorn requests flask
+   pip install flask==2.2.2 Werkzeug==2.2.2
    ```
 
-2. **启动 Server**:
-   进入 `rknn-llm/examples/rkllm_server_demo/`，执行：
+2. **启动 Server (原生运行)**:
+   进入 `rknn-llm/examples/rkllm_server_demo/rkllm_server/` 执行：
    ```bash
-   # 赋予脚本执行权限
-   chmod +x build_rkllm_server_flask.sh
+   python3 flask_server.py --rkllm_model_path /home/liyulingyue/models/qwen2_5_coder_1_5b.rkllm --target_platform rk3588
+   ```
+   *注：官方提供的 `.sh` 脚本默认为 ADB 远程部署，板端直接操作建议使用上述 python 原生命令。*
+
+#### 4.2 多模态 VLLM 方案 (如 Qwen3-VL)
+适用于视觉问答。需要 **`.rknn` (视觉零件)** + **`.rkllm` (文本主体)** 模型。目前板端推荐使用 C++ 部署。
+
+1. **编译与运行**:
+   ```bash
+   cd rknn-llm/examples/multimodal_model_demo/deploy/
+   ./build-linux.sh
+   cd install/multimodal_model_demo_Linux/
    
-   # 启动服务 (根据实际路径替换模型路径)
-   ./build_rkllm_server_flask.sh --workshop ./ --model_path /home/liyulingyue/models/qwen2_5_coder_1_5b.rkllm --platform rk3588
+   # 依次传入：图片 视觉零件 LLM主体 核心数 [特殊Token...]
+   ./demo image.jpg ./vision.rknn ./llm.rkllm 2048 4096 3 "<|vision_start|>" "<|vision_end|>" "<|image_pad|>"
    ```
-   Server 默认运行在 `8080` 端口，API 路径为 `http://<rk3588_ip>:8080/rkllm_chat`。
+
+---
+
+## 部署与选型深度讨论
+
+### 1. 后缀名迷思：`.rkllm` vs `.rknn`
+- **`.rkllm`**：RKLLM 专用格式，只能由 `librkllmrt.so` 加载。
+- **`.rknn`**：通用 NPU 格式，由 `librknnrt.so` 加载。
+- **排错**：如果报错 `invalid rkllm model!`，通常是因为误用了视觉零件（`.rknn`）去跑文本引擎服务。
+
+### 2. Python 能跑多模态吗？
+**官方目前主要支持 C++ 部署多模态。**
+虽然底层逻辑支持，但 Python API 尚未提供一键式的端到端 VLLM 封装。若要在 Python 中实现，需手动使用 RKNN 推理图特征，再通过 `RKLLM_INPUT_EMBED` 传入文本模型。
+
+### 3. 环境与报错排查
+- **DDR/DMC 频率报错**：在 CoolPi 等第三方开发板上，锁定频率脚本可能报错找不到 sysfs 路径，这通常不影响模型运行，仅影响极限性能。
+- **驱动版本**：加载模型失败时，请检查 `rknpu` 驱动版本是否满足要求（通常建议 0.9.8+）。
 
 ### 步骤 5: 配置 OpenCode
 
