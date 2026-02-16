@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EasyConfig - 设备配置</title>
+    <style>
+        body { font-family: sans-serif; max-width: 600px; margin: 20px auto; padding: 0 10px; line-height: 1.6; }
+        .card { border: 1px solid #ddd; border-radius: 8px; padding: 15px; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h1, h2 { color: #333; }
+        .status-item { margin: 5px 0; }
+        .btn { background: #007bff; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; }
+        .btn:disabled { background: #ccc; }
+        input { padding: 8px; width: 100%; box-sizing: border-box; margin: 10px 0; }
+        ul { list-style: none; padding: 0; }
+        li { padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; }
+        li:hover { background: #f9f9f9; }
+        .loading { color: #666; font-style: italic; }
+    </style>
+</head>
+<body>
+    <h1>EasyConfig SingleBoard</h1>
+    
+    <div class="card">
+        <h2>系统状态</h2>
+        <div id="status-content" class="loading">正在加载状态...</div>
+    </div>
+
+    <div class="card">
+        <h2>连接 WIFI</h2>
+        <div id="wifi-list-content">
+            <button class="btn" onclick="fetchWifi()">扫描可用网络</button>
+            <ul id="wifi-list"></ul>
+        </div>
+        <div id="wifi-connect-form" style="display:none;">
+            <p>连接到: <b id="selected-ssid"></b></p>
+            <input type="password" id="wifi-password" placeholder="请输入密码">
+            <button class="btn" id="connect-btn" onclick="connectWifi()">连接</button>
+            <button class="btn" style="background:#6c757d" onclick="cancelConnect()">取消</button>
+        </div>
+    </div>
+
+    <script>
+        let selectedSsid = '';
+
+        async function fetchStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                document.getElementById('status-content').innerHTML = `
+                    <div class="status-item">CPU 使用率: ${data.cpu.percent}%</div>
+                    <div class="status-item">内存: ${data.memory.percent}% (${data.memory.available}GB / ${data.memory.total}GB)</div>
+                    <div class="status-item">IP 地址: <br>${Object.entries(data.ips).map(([k, v]) => `${k}: ${v}`).join('<br>')}</div>
+                `;
+            } catch (e) {
+                document.getElementById('status-content').innerText = '获取状态失败';
+            }
+        }
+
+        async function fetchWifi() {
+            const list = document.getElementById('wifi-list');
+            list.innerHTML = '<li class="loading">正在扫描...</li>';
+            try {
+                const res = await fetch('/api/wifi/list');
+                const data = await res.json();
+                list.innerHTML = '';
+                data.forEach(w => {
+                    const li = document.createElement('li');
+                    li.innerText = `${w.ssid} (信号: ${w.signal}, 安全: ${w.security})`;
+                    li.onclick = () => showConnectForm(w.ssid);
+                    list.appendChild(li);
+                });
+            } catch (e) {
+                list.innerHTML = '<li>扫描失败</li>';
+            }
+        }
+
+        function showConnectForm(ssid) {
+            selectedSsid = ssid;
+            document.getElementById('selected-ssid').innerText = ssid;
+            document.getElementById('wifi-list-content').style.display = 'none';
+            document.getElementById('wifi-connect-form').style.display = 'block';
+        }
+
+        function cancelConnect() {
+            document.getElementById('wifi-list-content').style.display = 'block';
+            document.getElementById('wifi-connect-form').style.display = 'none';
+        }
+
+        async function connectWifi() {
+            const password = document.getElementById('wifi-password').value;
+            const btn = document.getElementById('connect-btn');
+            btn.disabled = true;
+            btn.innerText = '正在连接...';
+            
+            try {
+                const res = await fetch('/api/wifi/connect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ssid: selectedSsid, password })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    alert('连接成功！');
+                    cancelConnect();
+                    fetchStatus();
+                } else {
+                    alert('失败: ' + data.error);
+                }
+            } catch (e) {
+                alert('网络错误');
+            } finally {
+                btn.disabled = false;
+                btn.innerText = '连接';
+            }
+        }
+
+        setInterval(fetchStatus, 5000);
+        fetchStatus();
+    </script>
+</body>
+</html>
