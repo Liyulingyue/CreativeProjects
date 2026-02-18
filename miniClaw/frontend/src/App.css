@@ -1,0 +1,156 @@
+.App {
+  text-align: center;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background-color: #282c34;
+  color: white;
+}
+
+.App-header {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  padding: 2rem;
+  margin-bottom: 2rem;
+}
+
+.App-header h1 {
+  margin: 0;
+  font-size: 2.5rem;
+}
+
+.App-header p {
+  margin: 0.5rem 0 0;
+  opacity: 0.9;
+}
+
+.proxy-container {
+  flex: 1;
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 2rem;
+  width: 100%;
+}
+
+.input-group {
+  margin-bottom: 1.5rem;
+  text-align: left;
+}
+
+.input-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: bold;
+}
+
+.input-group input,
+.input-group select {
+  width: 100%;
+  padding: 0.75rem;
+  border: 1px solid #444;
+  border-radius: 4px;
+  background-color: #333;
+  color: white;
+  font-size: 1rem;
+}
+
+.button-group {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.button-group button {
+  flex: 1;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.button-group button:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.button-group button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.error {
+  background-color: #d32f2f;
+  color: white;
+  padding: 1rem;
+  border-radius: 4px;
+  margin-top: 1rem;
+}
+
+.response {
+  background-color: #333;
+  padding: 1rem;
+  border-radius: 4px;
+  margin-top: 1rem;
+  text-align: left;
+}
+
+.response pre {
+  background-color: #222;
+  padding: 1rem;
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  max-height: 400px;
+}
+
+.headers {
+  margin-top: 1rem;
+}
+
+.headers pre {
+  max-height: 200px;
+}
+
+.test-urls {
+  margin-top: 2rem;
+  background-color: #333;
+  padding: 1rem;
+  border-radius: 4px;
+  text-align: left;
+}
+
+.test-urls h4 {
+  margin-top: 0;
+}
+
+.test-urls ul {
+  list-style: none;
+  padding: 0;
+}
+
+.test-urls li {
+  padding: 0.5rem;
+  margin: 0.25rem 0;
+  background-color: #444;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  word-break: break-all;
+}
+
+.test-urls li:hover {
+  background-color: #555;
+}
+
+.App-footer {
+  padding: 1rem;
+  background-color: #1a1d23;
+  margin-top: auto;
+}
+
+.App-footer p {
+  margin: 0;
+  opacity: 0.7;
+}

@@ -1,0 +1,35 @@
+.code-editor {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.code-textarea {
+  width: 100%;
+  height: 100%;
+  padding: 16px;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 14px;
+  line-height: 1.5;
+  background-color: #1e1e1e;
+  color: #d4d4d4;
+  border: 1px solid #333;
+  border-radius: 8px;
+  resize: none;
+  outline: none;
+  tab-size: 2;
+}
+
+.code-textarea:focus {
+  border-color: #007acc;
+}
+
+.code-textarea.readonly {
+  background-color: #252526;
+  cursor: not-allowed;
+}
+
+.code-textarea::placeholder {
+  color: #6a6a6a;
+}
