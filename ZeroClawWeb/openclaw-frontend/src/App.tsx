@@ -191,7 +191,8 @@ export default function App() {
             </div>
           </div>
           <div className="history-list">
-            {history.length === 0 && <div className="muted" style={{ padding: '20px', textAlign: 'center', fontSize: '0.85rem' }}>暂无会话</div>}
+            {!history && <div className="muted" style={{ padding: '20px', textAlign: 'center', fontSize: '0.85rem' }}>加载中...</div>}
+            {history?.length === 0 && <div className="muted" style={{ padding: '20px', textAlign: 'center', fontSize: '0.85rem' }}>暂无会话</div>}
             {history && history.map((h) => (
               <div key={h.id} className="history-item">
                 <div className="history-main" onClick={() => loadConversationFromHistory(h)}>
