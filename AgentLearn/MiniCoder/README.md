@@ -1,107 +1,43 @@
-# MiniCoder - 智能代码助手
+# MiniCoder — 极简 LLM 代码助理
 
-<div align="center">
+轻量化的 MiniCoder：模块化 Agent + LLM 客户端，提供四条命令行功能 — `generate`, `explain`, `fix`, `optimize`。
 
-**MiniCoder** 是一个基于LLM的智能代码助手，提供代码生成、解释、bug修复和优化等功能。
-
-[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-
-</div>
-
-## ✨ 特性
-
-- 🎯 **代码生成**: 根据自然语言描述生成高质量代码
-- 📚 **代码解释**: 详细解释代码逻辑和实现原理
-- 🔧 **Bug修复**: 分析错误信息并提供修复方案
-- ⚡ **代码优化**: 改进代码性能、可读性和可维护性
-- 🌍 **多语言支持**: Python, JavaScript, Java, C++, Go等
-
-## 📦 安装
+## 安装
 
 ```bash
-# 克隆仓库
-git clone <repository-url>
-cd MiniCoder
-
-# 安装依赖
 pip install -r requirements.txt
-
-# 配置环境变量
-cp .env.example .env
-# 编辑.env文件，添加你的API密钥
+cp .env.example .env    # 编辑并添加 MODEL_KEY
 ```
 
-## 🚀 快速开始
+## 快速使用（CLI）
 
-```bash
-python mini_coder.py
-```
+- 生成代码:
+  ```bash
+  python mini_coder.py generate -p "实现快速排序" -l python
+  ```
 
-## 📝 使用示例
+- 解释代码:
+  ```bash
+  python mini_coder.py explain -c "def foo(): ..."
+  ```
 
-### 生成代码
-```
-请描述需要生成的代码: 创建一个快速排序算法
-```
+- 修复 bug:
+  ```bash
+  python mini_coder.py fix --error "IndexError" --context "arr=[1]; print(arr[2])"
+  ```
 
-### 解释代码
-```
-请输入要解释的代码: def quicksort(arr):...
-```
+- 优化代码:
+  ```bash
+  python mini_coder.py optimize -c "def f(): pass"
+  ```
 
-### 修复bug
-```
-请输入错误信息: IndexError: list index out of range
-请输入代码上下文: arr = [1,2,3]; print(arr[5])
-```
+> ⚠️ 需要在环境变量中设置 `MODEL_KEY`（或写入 `.env`）。
 
-## 🏗️ 项目结构
+## 文件说明
 
-```
-MiniCoder/
-├── mini_coder.py       # 主程序
-├── tools.py           # 工具函数
-├── search_utils.py    # 搜索工具（可选）
-├── requirements.txt    # Python依赖
-├── .env.example       # 环境变量示例
-└── README.md          # 项目文档
-```
-
-## 🔧 配置
-
-在 `.env` 文件中配置:
-```env
-MODEL_KEY=your_openai_api_key
-MODEL_URL=https://api.openai.com/v1
-MODEL_NAME=gpt-4
-```
-
-## 🚧 开发计划
-
-- [ ] 集成OpenAI API
-- [ ] 添加本地模型支持（llama.cpp）
-- [ ] 实现文件读取和上下文分析
-- [ ] 添加语法高亮
-- [ ] 创建Web界面（Gradio/Streamlit）
-- [ ] 添加单元测试
-- [ ] 实现历史记录功能
-- [ ] 添加代码保存和导出功能
-
-## 📄 许可证
-
-MIT License - 见 LICENSE 文件
-
-## 🤝 贡献
-
-欢迎提交Issue和Pull Request！
-
-## 📧 联系
-
-- 作者: 笠雨聆月
-- 邮箱: (待添加)
-- GitHub: (待添加)
+- `agent.py` — Agent 风格实现（业务逻辑）
+- `llm_client.py` — LLM wrapper（集中化 API 调用）
+- `mini_coder.py` — 极简 CLI（入口）
+- `tools.py` — 辅助工具函数
 
 ---
-
-**MiniCoder** - 让编程更简单、更高效！ 🚀

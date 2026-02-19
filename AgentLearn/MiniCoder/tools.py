@@ -2,6 +2,7 @@
 """tools.py - MiniCoder 工具函数"""
 import os
 import json
+import subprocess
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -9,92 +10,126 @@ class CodeTools:
     """代码相关工具类"""
     
     @staticmethod
-    def read_file(file_path: str) -> str:
+    def execute_bash(command: str) -> str:
+        """执行 Bash 命令"""
+        try:
+            result = subprocess.run(
+                command, 
+                shell=True, 
+                capture_output=True, 
+                text=True, 
+                timeout=30,
+                cwd=os.getcwd()
+            )
+            output = result.stdout + result.stderr
+            return output if output else "(empty output)"
+        except subprocess.TimeoutExpired:
+            return "Error: Command timed out after 30 seconds."
+        except Exception as e:
+            return f"Error executing command: {str(e)}"
+
+    @staticmethod
+    def read_file(path: str) -> str:
         """读取文件内容"""
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                return f.read()
+            p = Path(path)
+            if not p.exists():
+                return f"Error: File {path} does not exist."
+            return p.read_text(encoding='utf-8')
         except Exception as e:
-            return f"Error reading file: {e}"
-    
-    @staticmethod
-    def write_file(file_path: str, content: str) -> bool:
-        """写入文件"""
-        try:
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(content)
-            return True
-        except Exception as e:
-            print(f"Error writing file: {e}")
-            return False
-    
-    @staticmethod
-    def get_file_extension(file_path: str) -> str:
-        """获取文件扩展名"""
-        return Path(file_path).suffix
-    
-    @staticmethod
-    def validate_python_syntax(code: str) -> bool:
-        """验证Python语法"""
-        try:
-            compile(code, '<string>', 'exec')
-            return True
-        except SyntaxError as e:
-            print(f"Syntax error: {e}")
-            return False
-    
-    @staticmethod
-    def format_code(code: str, language: str = "python") -> str:
-        """格式化代码（简化版）"""
-        # 这里可以集成black、autopep8等工具
-        return code.strip()
-    
-    @staticmethod
-    def extract_functions(code: str) -> List[str]:
-        """提取函数名"""
-        import re
-        # 简单的正则匹配
-        pattern = r'def\s+(\w+)\s*\('
-        return re.findall(pattern, code)
+            return f"Error reading file: {str(e)}"
 
-class ProjectManager:
-    """项目管理工具"""
-    
     @staticmethod
-    def create_project_structure(project_name: str, project_path: str = ".") -> bool:
-        """创建项目基础结构"""
+    def write_file(path: str, content: str) -> str:
+        """写入文件内容"""
         try:
-            base_path = Path(project_path) / project_name
-            base_path.mkdir(exist_ok=True)
-            
-            # 创建基础目录
-            for folder in ["src", "tests", "docs", "data"]:
-                (base_path / folder).mkdir(exist_ok=True)
-            
-            # 创建基础文件
-            (base_path / "README.md").touch()
-            (base_path / "requirements.txt").touch()
-            (base_path / ".gitignore").touch()
-            
-            print(f"✅ 项目 {project_name} 创建成功于 {base_path}")
-            return True
+            p = Path(path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content, encoding='utf-8')
+            return f"Successfully wrote to {path}"
         except Exception as e:
-            print(f"❌ 创建项目失败: {e}")
-            return False
-    
+            return f"Error writing file: {str(e)}"
+
     @staticmethod
-    def get_project_files(project_path: str) -> Dict[str, str]:
-        """获取项目中的所有文件"""
-        files = {}
+    def list_files(path: str = ".") -> str:
+        """列出目录下的文件"""
         try:
-            for root, dirs, filenames in os.walk(project_path):
-                for filename in filenames:
-                    full_path = os.path.join(root, filename)
-                    rel_path = os.path.relpath(full_path, project_path)
-                    files[rel_path] = full_path
+            items = os.listdir(path)
+            return "\n".join(items) if items else "(empty directory)"
         except Exception as e:
-            print(f"Error scanning files: {e}")
-        return files
+            return f"Error listing files: {str(e)}"
+
+# 工具定义（OpenAI 格式）
+TOOL_SCHEMAS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_bash",
+            "description": "Execute a bash command in the local environment. Use this for running tests, checking status, or searching.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "The command to run."}
+                },
+                "required": ["command"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read the content of a file from the disk.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the file."}
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "Write or overwrite a file with the provided content.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the file."},
+                    "content": {"type": "string", "description": "The content to write."}
+                },
+                "required": ["path", "content"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_files",
+            "description": "List files and directories in a given path.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "The directory path (defaults to current)."}
+                }
+            }
+        }
+    }
+]
+
+def handle_tool_call(tool_name: str, args: dict) -> str:
+    """根据函数名称路由调用"""
+    if tool_name == "execute_bash":
+        return CodeTools.execute_bash(args.get("command", ""))
+    elif tool_name == "read_file":
+        return CodeTools.read_file(args.get("path", ""))
+    elif tool_name == "write_file":
+        return CodeTools.write_file(args.get("path", ""), args.get("content", ""))
+    elif tool_name == "list_files":
+        return CodeTools.list_files(args.get("path", "."))
+    return f"Error: Tool {tool_name} not found."
 
 # 便捷函数
 def print_success(message: str):
