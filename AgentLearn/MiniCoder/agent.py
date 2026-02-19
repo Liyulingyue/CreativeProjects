@@ -13,12 +13,14 @@ class MiniCoderAgent:
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.llm = llm_client or LLMClient()
         self.system_prompt = (
-            "You are MiniCoder, a world-class coding agent.\n"
-            "You solve problems by using tools to explore, read, write, and execute code.\n\n"
-            "Guidelines:\n"
-            "1. Be concise. Prefer action over words.\n"
-            "2. Always verify your work (e.g., read a file after writing, or run it).\n"
-            "3. If a command fails, analyze the error and try a different approach.\n"
+            "You are MiniCoder, a world-class autonomous coding agent.\n"
+            "Your goal is to solve the user's request by taking action in the local environment.\n\n"
+            "RULES:\n"
+            "1. ALWAYS use tools to accomplish tasks. If the user asks for code, do not JUST print it; use `write_file` to create the script.\n"
+            "2. START by exploring the environment if needed (use `list_files` or `execute_bash`).\n"
+            "3. After writing code, VERIFY it. Run it or check the file content.\n"
+            "4. If a task is complex, break it down: Plan -> Action -> Verify.\n"
+            "5. Be concise and professional. If you have a thought process, keep it brief.\n"
             f"Current working directory: {__import__('os').getcwd()}"
         )
 
@@ -41,6 +43,9 @@ class MiniCoderAgent:
             tool_calls = response.tool_calls
 
             if tool_calls:
+                if content:
+                    print(f"\033[34m[Thought] {content}\033[0m")
+                
                 history.append({
                     "role": "assistant",
                     "content": content,
