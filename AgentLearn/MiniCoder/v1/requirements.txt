@@ -1,0 +1,6 @@
+# MiniCoder 依赖
+openai>=1.0.0
+python-dotenv>=1.0.0
+# 可选依赖
+# gradio>=4.0.0  # 如果需要Web界面
+# rich>=13.0.0   # 如果需要美化输出
