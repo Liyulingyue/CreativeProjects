@@ -4,6 +4,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional, Dict
 from ..agent import MiniCoderAgent
+from ..core.settings import settings
 
 app = FastAPI(title="MiniCoder Plus API")
 agent = MiniCoderAgent()

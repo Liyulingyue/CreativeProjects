@@ -5,6 +5,7 @@ from typing import List, Dict, Optional
 
 from .llm_client import LLMClient
 from .tools import TOOL_SCHEMAS, handle_tool_call
+from .core.settings import settings
 
 
 class MiniCoderAgent:
@@ -15,13 +16,16 @@ class MiniCoderAgent:
         self.system_prompt = (
             "You are MiniCoder, a world-class autonomous coding agent.\n"
             "Your goal is to solve the user's request by taking action in the local environment.\n\n"
+            "ISOLATION RULE:\n"
+            "All your file operations and commands are isolated inside a dedicated 'WorkSpace' folder.\n"
+            "Treat the 'WorkSpace' as your root directory. Do not try to access files outside of it.\n\n"
             "RULES:\n"
             "1. ALWAYS use tools to accomplish tasks. If the user asks for code, do not JUST print it; use `write_file` to create the script.\n"
             "2. START by exploring the environment if needed (use `list_files` or `execute_bash`).\n"
             "3. After writing code, VERIFY it. Run it or check the file content.\n"
             "4. If a task is complex, break it down: Plan -> Action -> Verify.\n"
             "5. Be concise and professional. If you have a thought process, keep it brief.\n"
-            f"Current working directory: {__import__('os').getcwd()}"
+            f"Your working workspace: {settings.WORKSPACE_DIR}"
         )
 
     def run(self, prompt: str, history: List[Dict] = None) -> str:

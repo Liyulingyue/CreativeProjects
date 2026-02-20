@@ -1,11 +1,7 @@
 #!/usr/bin/env python
 """llm_client.py — small wrapper around the LLM (keeps calls in one place)."""
-import os
 from typing import List, Dict
-
-MODEL_KEY = os.getenv("MODEL_KEY", "")
-BASE_URL = os.getenv("MODEL_URL", "https://api.openai.com/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4")
+from .core.settings import settings
 
 
 class LLMClient:
@@ -16,17 +12,15 @@ class LLMClient:
     """
 
     def __init__(self, api_key: str = None, base_url: str = None, model_name: str = None):
-        self.api_key = api_key or MODEL_KEY
-        self.base_url = base_url or BASE_URL
-        self.model_name = model_name or MODEL_NAME
+        self.api_key = api_key or settings.MODEL_KEY
+        self.base_url = base_url or settings.MODEL_URL
+        self.model_name = model_name or settings.MODEL_NAME
 
     def chat(self, messages: List[Dict], tools: List[Dict] = None, temperature: float = 0.7):
         """Send `messages` to the LLM and return assistant message object or text.
 
         If tools are provided, returns the full response object to handle tool_calls.
         """
-        if not self.api_key:
-            return "⚠️  请先设置 MODEL_KEY 环境变量"
 
         try:
             from openai import OpenAI

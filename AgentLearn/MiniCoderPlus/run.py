@@ -1,15 +1,10 @@
 #!/usr/bin/env python
 """main.py — Unified entry point for MiniCoder Plus."""
+# Load environment variables
+
 import sys
 import argparse
 import os
-
-# Load environment variables
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
 
 def main():
     parser = argparse.ArgumentParser(description="MiniCoder Plus — Agent Assistant")

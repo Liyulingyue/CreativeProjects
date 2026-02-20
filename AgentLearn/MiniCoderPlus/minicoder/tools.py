@@ -5,13 +5,28 @@ import json
 import subprocess
 from pathlib import Path
 from typing import List, Dict, Optional
+from .core.settings import settings
 
 class CodeTools:
     """代码相关工具类"""
     
     @staticmethod
+    def _resolve_path(path: str) -> Path:
+        """解析并确保路径在 WorkSpace 内"""
+        p = Path(path)
+        if p.is_absolute():
+            # 如果是绝对路径，尝试检查它是否在 WorkSpace 内
+            try:
+                p.relative_to(settings.WORKSPACE_DIR)
+                return p
+            except ValueError:
+                # 如果不在，则将其视为相对路径并拼接到 WorkSpace
+                return settings.WORKSPACE_DIR / p.name
+        return settings.WORKSPACE_DIR / p
+
+    @staticmethod
     def execute_bash(command: str) -> str:
-        """执行 Bash 命令"""
+        """执行 Bash 命令 (在 WorkSpace 目录下)"""
         try:
             result = subprocess.run(
                 command, 
@@ -19,7 +34,7 @@ class CodeTools:
                 capture_output=True, 
                 text=True, 
                 timeout=30,
-                cwd=os.getcwd()
+                cwd=str(settings.WORKSPACE_DIR)
             )
             output = result.stdout + result.stderr
             return output if output else "(empty output)"
@@ -30,31 +45,31 @@ class CodeTools:
 
     @staticmethod
     def read_file(path: str) -> str:
-        """读取文件内容"""
+        """读取文件内容 (从 WorkSpace 内)"""
         try:
-            p = Path(path)
+            p = CodeTools._resolve_path(path)
             if not p.exists():
-                return f"Error: File {path} does not exist."
+                return f"Error: File {path} does not exist in WorkSpace."
             return p.read_text(encoding='utf-8')
         except Exception as e:
             return f"Error reading file: {str(e)}"
 
     @staticmethod
     def write_file(path: str, content: str) -> str:
-        """写入文件内容"""
+        """写入文件内容 (在 WorkSpace 内)"""
         try:
-            p = Path(path)
+            p = CodeTools._resolve_path(path)
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(content, encoding='utf-8')
-            return f"Successfully wrote to {path}"
+            return f"Successfully wrote to {path} (in WorkSpace)"
         except Exception as e:
             return f"Error writing file: {str(e)}"
 
     @staticmethod
     def list_files(path: str = ".") -> str:
-        """列出目录下的文件和文件夹 (带类型标记)"""
+        """列出 WorkSpace 目录下的文件和文件夹"""
         try:
-            p = Path(path)
+            p = CodeTools._resolve_path(path)
             if not p.exists():
                 return f"Error: Directory {path} does not exist."
             if not p.is_dir():
@@ -71,15 +86,17 @@ class CodeTools:
 
     @staticmethod
     def search_files(query: str, path: str = ".") -> str:
-        """在路径下搜索包含特定文本的文件 (grep)"""
+        """在 WorkSpace 下搜索包含特定文本的文件 (grep)"""
         try:
+            p = CodeTools._resolve_path(path)
             # 使用 grep 递归搜索
             result = subprocess.run(
-                f"grep -ril \"{query}\" {path}",
+                f"grep -ril \"{query}\" .", # 始终在当前 resolved 路径搜索，但 cwd 是 WorkSpace
                 shell=True,
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=30,
+                cwd=str(p)
             )
             output = result.stdout.strip()
             return output if output else "No matches found."
