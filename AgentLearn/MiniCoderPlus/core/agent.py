@@ -3,8 +3,8 @@
 import json
 from typing import List, Dict, Optional
 
-from llm_client import LLMClient
-from tools import TOOL_SCHEMAS, handle_tool_call
+from .llm_client import LLMClient
+from .tools import TOOL_SCHEMAS, handle_tool_call
 
 
 class MiniCoderAgent:
