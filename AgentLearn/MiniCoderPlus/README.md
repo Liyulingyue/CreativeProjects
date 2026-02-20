@@ -47,7 +47,7 @@ python main.py server --port 8000
 
 - `main.py` — **统一入口**，根据参数选择 CLI 或 Server 模式。
 - `minicoder/` — **核心业务逻辑包**。
-    - `agent.py` — 🤖 Agent 大脑，负责决策与推理。
+    - `agents/` — 🤖 **多角色代理目录**。目前包含通用代理 `agent.py` 及角色演进规划 `TODO.md`。
     - `tools.py` — 🛠️ 工具箱定义与执行实现。
     - `llm_client.py` — 📡 统一的大模型 API 客户端。
     - `cli/` — 🖥️ CLI 专属交互界面逻辑。

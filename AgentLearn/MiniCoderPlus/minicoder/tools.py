@@ -91,7 +91,7 @@ class CodeTools:
             p = CodeTools._resolve_path(path)
             # 使用 grep 递归搜索
             result = subprocess.run(
-                f"grep -ril \"{query}\" .", # 始终在当前 resolved 路径搜索，但 cwd 是 WorkSpace
+                f"grep -ril \"{query}\" .", # 始终在当前 resolved 路径搜索
                 shell=True,
                 capture_output=True,
                 text=True,
@@ -102,6 +102,18 @@ class CodeTools:
             return output if output else "No matches found."
         except Exception as e:
             return f"Error searching files: {str(e)}"
+
+class EmbeddedSSHTools:
+    """Special tools for constrained SSH/Buildroot environments."""
+    
+    @staticmethod
+    def pipe_command(command: str) -> str:
+        """Execute a command through a base64-encoded pipe to avoid character escaping issues."""
+        import base64
+        # This is a conceptual tool for use in the PROPOSAL_EMBEDDED_SSH.md
+        encoded_cmd = base64.b64encode(command.encode()).decode()
+        # In a real scenario, we'd send: echo "encoded_cmd" | base64 -d | sh
+        return f"Executed pipelined: {command} (Simulated)"
 
 # 工具定义（OpenAI 格式）
 TOOL_SCHEMAS = [

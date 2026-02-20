@@ -1,225 +1,119 @@
-import React, { useState } from 'react';
-import { CodeEditor } from './components/CodeEditor';
-import { MiniCoderApi } from './services/api';
-import { ApiResponse } from './types';
+import React, { useState, useRef, useEffect } from 'react';
 import './App.css';
 
-type FunctionType = 'generate' | 'explain' | 'fix' | 'optimize';
+interface Message {
+  role: 'user' | 'assistant' | 'tool';
+  content: string;
+}
 
 function App() {
-  const [activeFunction, setActiveFunction] = useState<FunctionType>('generate');
-  const [inputCode, setInputCode] = useState('');
-  const [outputCode, setOutputCode] = useState('');
-  const [prompt, setPrompt] = useState('');
-  const [language, setLanguage] = useState('python');
-  const [errorMessage, setErrorMessage] = useState('');
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const handleGenerate = async () => {
-    if (!prompt.trim()) {
-      setError('请输入代码描述');
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-    
-    const result: ApiResponse = await MiniCoderApi.generateCode(prompt, language);
-    
-    if (result.success && result.data) {
-      setOutputCode(result.data.content || '');
-    } else {
-      setError(result.error || '生成代码失败');
-    }
-    
-    setLoading(false);
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  const handleExplain = async () => {
-    if (!inputCode.trim()) {
-      setError('请输入要解释的代码');
-      return;
-    }
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
 
+  const handleSend = async () => {
+    if (!input.trim() || loading) return;
+
+    const userMessage: Message = { role: 'user', content: input };
+    setMessages((prev) => [...prev, userMessage]);
+    setInput('');
     setLoading(true);
-    setError(null);
-    
-    const result: ApiResponse = await MiniCoderApi.explainCode(inputCode);
-    
-    if (result.success && result.data) {
-      setOutputCode(result.data.content || '');
-    } else {
-      setError(result.error || '解释代码失败');
-    }
-    
-    setLoading(false);
-  };
 
-  const handleFix = async () => {
-    if (!errorMessage.trim() || !inputCode.trim()) {
-      setError('请输入错误信息和代码上下文');
-      return;
-    }
+    try {
+      const history = messages.map(m => ({ role: m.role, content: m.content }));
+      const response = await fetch('/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: input, history: history }),
+      });
 
-    setLoading(true);
-    setError(null);
-    
-    const result: ApiResponse = await MiniCoderApi.fixBug(errorMessage, inputCode);
-    
-    if (result.success && result.data) {
-      setOutputCode(result.data.content || '');
-    } else {
-      setError(result.error || '修复bug失败');
-    }
-    
-    setLoading(false);
-  };
+      if (!response.ok) throw new Error('Network response was not ok');
 
-  const handleOptimize = async () => {
-    if (!inputCode.trim()) {
-      setError('请输入要优化的代码');
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-    
-    const result: ApiResponse = await MiniCoderApi.optimizeCode(inputCode);
-    
-    if (result.success && result.data) {
-      setOutputCode(result.data.content || '');
-    } else {
-      setError(result.error || '优化代码失败');
-    }
-    
-    setLoading(false);
-  };
-
-  const handleSubmit = () => {
-    switch (activeFunction) {
-      case 'generate':
-        handleGenerate();
-        break;
-      case 'explain':
-        handleExplain();
-        break;
-      case 'fix':
-        handleFix();
-        break;
-      case 'optimize':
-        handleOptimize();
-        break;
+      const data = await response.json();
+      
+      const assistantMessage: Message = { 
+        role: 'assistant', 
+        content: data.response 
+      };
+      
+      setMessages((prev) => [...prev, assistantMessage]);
+    } catch (error) {
+      console.error('Error:', error);
+      setMessages((prev) => [...prev, { role: 'assistant', content: '⚠️ Error: Failed to connect to MiniCoder backend.' }]);
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
-    <div className="app">
+    <div className="mini-coder-app">
       <header className="app-header">
-        <h1>🚀 MiniCoder Web</h1>
-        <p>智能代码助手 - React + TypeScript</p>
+        <div className="logo-container">🚀 <span className="logo-text">MiniCoder Plus</span></div>
+        <div className="status">
+          <span className="status-dot"></span> Online
+        </div>
       </header>
 
-      <div className="app-container">
-        {/* 功能选择 */}
-        <div className="function-selector">
-          <button
-            className={activeFunction === 'generate' ? 'active' : ''}
-            onClick={() => setActiveFunction('generate')}
-          >
-            ✨ 生成代码
-          </button>
-          <button
-            className={activeFunction === 'explain' ? 'active' : ''}
-            onClick={() => setActiveFunction('explain')}
-          >
-            📚 解释代码
-          </button>
-          <button
-            className={activeFunction === 'fix' ? 'active' : ''}
-            onClick={() => setActiveFunction('fix')}
-          >
-            🔧 修复bug
-          </button>
-          <button
-            className={activeFunction === 'optimize' ? 'active' : ''}
-            onClick={() => setActiveFunction('optimize')}
-          >
-            ⚡ 优化代码
-          </button>
-        </div>
-
-        {/* 输入区域 */}
-        <div className="input-section">
-          <h3>输入</h3>
-          {activeFunction === 'generate' ? (
-            <div className="generate-inputs">
-              <input
-                type="text"
-                placeholder="描述要生成的代码..."
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                className="prompt-input"
-              />
-              <select
-                value={language}
-                onChange={(e) => setLanguage(e.target.value)}
-                className="language-select"
-              >
-                <option value="python">Python</option>
-                <option value="javascript">JavaScript</option>
-                <option value="typescript">TypeScript</option>
-                <option value="java">Java</option>
-                <option value="cpp">C++</option>
-                <option value="go">Go</option>
-              </select>
+      <main className="chat-container">
+        <div className="messages-list">
+          {messages.length === 0 && (
+            <div className="welcome-message">
+              <h1>Hello! I'm MiniCoder.</h1>
+              <p>Ask me to handle your coding tasks, search the workspace, or explain logic.</p>
+              <div className="examples">
+                <button onClick={() => setInput("What's in my WorkSpace?")}>🔎 List files</button>
+                <button onClick={() => setInput("Create a simple Python script")}>📜 Create script</button>
+              </div>
             </div>
-          ) : (activeFunction === 'fix' ? (
-            <div className="fix-inputs">
-              <input
-                type="text"
-                placeholder="错误信息..."
-                value={errorMessage}
-                onChange={(e) => setErrorMessage(e.target.value)}
-                className="error-input"
-              />
-              <CodeEditor
-                code={inputCode}
-                onCodeChange={setInputCode}
-                placeholder="代码上下文..."
-              />
-            </div>
-          ) : (
-            <CodeEditor
-              code={inputCode}
-              onCodeChange={setInputCode}
-              placeholder="请输入代码..."
-            />
           )}
+          {messages.map((msg, index) => (
+            <div key={index} className={`message-wrapper ${msg.role}`}>
+              <div className="message-icon">
+                {msg.role === 'user' ? '👤' : '🤖'}
+              </div>
+              <div className="message-content">
+                <div className="message-text">{msg.content}</div>
+              </div>
+            </div>
+          ))}
+          {loading && (
+            <div className="message-wrapper assistant loading">
+              <div className="message-icon">🤖</div>
+              <div className="message-content">
+                <div className="typing-indicator">
+                  <span></span><span></span><span></span>
+                </div>
+              </div>
+            </div>
+          )}
+          <div ref={messagesEndRef} />
         </div>
+      </main>
 
-        {/* 操作按钮 */}
-        <div className="action-section">
-          <button
-            className="submit-button"
-            onClick={handleSubmit}
+      <footer className="footer-area">
+        <div className="input-container">
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyPress={(e) => e.key === 'Enter' && handleSend()}
+            placeholder="Type your request here..."
             disabled={loading}
-          >
-            {loading ? '处理中...' : '执行'}
-          </button>
-          {error && <div className="error-message">❌ {error}</div>}
-        </div>
-
-        {/* 输出区域 */}
-        <div className="output-section">
-          <h3>输出</h3>
-          <CodeEditor
-            code={outputCode}
-            onCodeChange={setOutputCode}
-            readOnly={true}
           />
+          <button className="send-btn" onClick={handleSend} disabled={loading || !input.trim()}>
+            {loading ? '...' : 'Send'}
+          </button>
         </div>
-      </div>
+      </footer>
     </div>
   );
 }

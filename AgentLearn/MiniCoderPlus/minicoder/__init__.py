@@ -1,4 +1,4 @@
-from .agent import MiniCoderAgent
+from .agents.agent import MiniCoderAgent
 from .tools import CodeTools
 from .llm_client import LLMClient
 

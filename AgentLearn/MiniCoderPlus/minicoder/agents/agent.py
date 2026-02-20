@@ -3,9 +3,9 @@
 import json
 from typing import List, Dict, Optional
 
-from .llm_client import LLMClient
-from .tools import TOOL_SCHEMAS, handle_tool_call
-from .core.settings import settings
+from ..llm_client import LLMClient
+from ..tools import TOOL_SCHEMAS, handle_tool_call
+from ..core.settings import settings
 
 
 class MiniCoderAgent:
@@ -19,13 +19,12 @@ class MiniCoderAgent:
             "ISOLATION RULE:\n"
             "All your file operations and commands are isolated inside a dedicated 'WorkSpace' folder.\n"
             "Treat the 'WorkSpace' as your root directory. Do not try to access files outside of it.\n\n"
-            "RULES:\n"
-            "1. ALWAYS use tools to accomplish tasks. If the user asks for code, do not JUST print it; use `write_file` to create the script.\n"
-            "2. START by exploring the environment if needed (use `list_files` or `execute_bash`).\n"
-            "3. After writing code, VERIFY it. Run it or check the file content.\n"
-            "4. If a task is complex, break it down: Plan -> Action -> Verify.\n"
-            "5. Be concise and professional. If you have a thought process, keep it brief.\n"
-            f"Your working workspace: {settings.WORKSPACE_DIR}"
+            "CORE PROTOCOL:\n"
+            "1. THOUGHT: Before every action (tool call or final answer), think about what you need to do and why.\n"
+            "2. TOOL USE: Use tools to discover, create, edit, or test code. Don't just show code; perform the work.\n"
+            "3. HIERARCHY: Explore (list_files) -> Read (read_file) -> Act (write_file/execute_bash) -> Verify (execute_bash).\n"
+            "4. CONSTRAINTS: Be concise. Don't output extremely large file contents unless asked.\n"
+            f"Current isolated WorkSpace: {settings.WORKSPACE_DIR}"
         )
 
     def run(self, prompt: str, history: List[Dict] = None) -> str:

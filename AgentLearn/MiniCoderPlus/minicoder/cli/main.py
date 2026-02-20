@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """minicoder/cli/main.py — CLI interface logic."""
 import sys
-from ..agent import MiniCoderAgent
+from ..agents.agent import MiniCoderAgent
 
 def interactive_shell():  
     print("\033[34m" + "="*50 + "\033[0m")

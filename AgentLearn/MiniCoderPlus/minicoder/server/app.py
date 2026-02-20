@@ -1,12 +1,23 @@
 #!/usr/bin/env python
 """minicoder/server/app.py — FastAPI Web Server logic."""
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict
-from ..agent import MiniCoderAgent
+from ..agents.agent import MiniCoderAgent
 from ..core.settings import settings
 
 app = FastAPI(title="MiniCoder Plus API")
+
+# Add CORS Middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # For development, allow all. Change this for production.
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 agent = MiniCoderAgent()
 
 class ChatRequest(BaseModel):
