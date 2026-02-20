@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """agent.py — MiniCoder Agent with Tool Use loop."""
 import json
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Callable
 
 from ..llm_client import LLMClient
 from ..tools import TOOL_SCHEMAS, handle_tool_call
@@ -27,12 +27,18 @@ class MiniCoderAgent:
             f"Current isolated WorkSpace: {settings.WORKSPACE_DIR}"
         )
 
-    def run(self, prompt: str, history: List[Dict] = None) -> str:
-        """Run the agent loop for a given prompt."""
+    def run(self, prompt: str, history: List[Dict] = None, on_update: Optional[Callable[[Dict], None]] = None) -> str:
+        """Run the agent loop for a given prompt.
+
+        If `on_update` is provided it will be called with each new history entry
+        so callers (e.g. an HTTP streaming endpoint) can push incremental updates.
+        """
         if history is None:
             history = []
         
         history.append({"role": "user", "content": prompt})
+        if on_update:
+            on_update(history[-1])
         
         while True:
             messages = [{"role": "system", "content": self.system_prompt}] + history
@@ -63,6 +69,8 @@ class MiniCoderAgent:
                         } for tc in tool_calls
                     ]
                 })
+                if on_update:
+                    on_update(history[-1])
                 
                 for tool_call in tool_calls:
                     name = tool_call.function.name
@@ -82,8 +90,12 @@ class MiniCoderAgent:
                         "name": name,
                         "content": result
                     })
+                    if on_update:
+                        on_update(history[-1])
             else:
                 history.append({"role": "assistant", "content": content})
+                if on_update:
+                    on_update(history[-1])
                 return content or "(No response from agent)"
 
 

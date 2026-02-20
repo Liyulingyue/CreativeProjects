@@ -4,12 +4,17 @@ import './App.css';
 interface Message {
   role: 'user' | 'assistant' | 'tool';
   content: string;
+  isThought?: boolean;
+  tool_calls?: any[];
+  tool_call_id?: string;
+  name?: string;
 }
 
 function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -29,26 +34,90 @@ function App() {
     setLoading(true);
 
     try {
-      const history = messages.map(m => ({ role: m.role, content: m.content }));
-      const response = await fetch('/chat', {
+      // Prepare history snapshot with all required LLM fields
+      const history = messages.map(m => ({ 
+        role: m.role, 
+        content: m.content,
+        tool_calls: m.tool_calls,
+        tool_call_id: m.tool_call_id,
+        name: m.name
+      }));
+
+      const endpoint = isStreaming ? '/chat?stream=1' : '/chat';
+      const resp = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: input, history: history }),
       });
 
-      if (!response.ok) throw new Error('Network response was not ok');
+      if (!resp.ok) throw new Error('Network response was not ok');
 
-      const data = await response.json();
-      
-      const assistantMessage: Message = { 
-        role: 'assistant', 
-        content: data.response 
-      };
-      
-      setMessages((prev) => [...prev, assistantMessage]);
+      if (!isStreaming) {
+        // Standard JSON response
+        const data = await resp.json();
+        const updated: Message[] = data.history.map((msg: any) => ({
+          role: msg.role,
+          content: msg.content || '',
+          isThought: !!(msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0),
+          tool_calls: msg.tool_calls,
+          tool_call_id: msg.tool_call_id,
+          name: msg.name
+        }));
+        setMessages(updated);
+      } else {
+        // Streaming mode (SSE)
+        const reader = resp.body!.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          const parts = buffer.split('\n\n');
+          buffer = parts.pop() || '';
+
+          for (const part of parts) {
+            if (!part.startsWith('data:')) continue;
+            const jsonText = part.replace(/^data:\s*/, '');
+            let payload;
+            try {
+              payload = JSON.parse(jsonText);
+            } catch (e) { continue; }
+
+            if (payload.type === 'update') {
+              const item = payload.item;
+              if (item.role === 'user') continue;
+              const isThought = item.role === 'assistant' && item.tool_calls && item.tool_calls.length > 0;
+              
+              const newMessage: Message = { 
+                role: item.role, 
+                content: item.content || '', 
+                isThought: !!isThought,
+                tool_calls: item.tool_calls,
+                tool_call_id: item.tool_call_id,
+                name: item.name
+              };
+              setMessages(prev => [...prev, newMessage]);
+            } else if (payload.type === 'done') {
+              const updated: Message[] = payload.history.map((msg: any) => ({
+                role: msg.role,
+                content: msg.content || '',
+                isThought: !!(msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0),
+                tool_calls: msg.tool_calls,
+                tool_call_id: msg.tool_call_id,
+                name: msg.name
+              }));
+              setMessages(updated);
+            }
+          }
+        }
+      }
+
     } catch (error) {
-      console.error('Error:', error);
-      setMessages((prev) => [...prev, { role: 'assistant', content: '⚠️ Error: Failed to connect to MiniCoder backend.' }]);
+      console.error('Stream error:', error);
+      setMessages((prev) => [...prev, { role: 'assistant', content: '⚠️ Error: Streaming failed.' }]);
     } finally {
       setLoading(false);
     }
@@ -75,16 +144,22 @@ function App() {
               </div>
             </div>
           )}
-          {messages.map((msg, index) => (
-            <div key={index} className={`message-wrapper ${msg.role}`}>
-              <div className="message-icon">
-                {msg.role === 'user' ? '👤' : '🤖'}
+          {messages.map((msg, index) => {
+            // Skip tool messages in UI if you prefer, or show them as logic steps
+            if (msg.role === 'tool') return null;
+
+            return (
+              <div key={index} className={`message-wrapper ${msg.role} ${msg.isThought ? 'thought' : ''}`}>
+                <div className="message-icon">
+                  {msg.role === 'user' ? '👤' : '🤖'}
+                </div>
+                <div className="message-content">
+                  {msg.isThought && <div className="thought-badge">Thought Process</div>}
+                  <div className="message-text">{msg.content}</div>
+                </div>
               </div>
-              <div className="message-content">
-                <div className="message-text">{msg.content}</div>
-              </div>
-            </div>
-          ))}
+            );
+          })}
           {loading && (
             <div className="message-wrapper assistant loading">
               <div className="message-icon">🤖</div>
@@ -100,6 +175,16 @@ function App() {
       </main>
 
       <footer className="footer-area">
+        <div className="controls-container">
+          <label className="stream-toggle">
+            <input 
+              type="checkbox" 
+              checked={isStreaming} 
+              onChange={(e) => setIsStreaming(e.target.checked)} 
+            />
+            <span>Streaming Mode</span>
+          </label>
+        </div>
         <div className="input-container">
           <input
             type="text"

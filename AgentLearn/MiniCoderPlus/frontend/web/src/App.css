@@ -155,10 +155,55 @@ body, html, #root {
   border-top-left-radius: 2px;
 }
 
+/* Thought Process Styling */
+.message-wrapper.thought {
+  opacity: 0.8;
+  margin-bottom: 12px;
+}
+
+.message-wrapper.thought .message-content {
+  background-color: #f0f0ff;
+  border: 1px dashed #c7d2fe;
+  font-style: italic;
+  font-size: 0.85rem;
+}
+
+.thought-badge {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  font-weight: bold;
+  color: #6366f1;
+  margin-bottom: 4px;
+  display: block;
+}
+
 .footer-area {
-  padding: 20px 24px;
+  padding: 16px 24px;
   background: white;
   border-top: 1px solid #e5e7eb;
+}
+
+.controls-container {
+  max-width: 1200px;
+  margin: 0 auto 12px auto;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.stream-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: #4b5563;
+  cursor: pointer;
+  user-select: none;
+}
+
+.stream-toggle input {
+  cursor: pointer;
+  width: 16px;
+  height: 16px;
 }
 
 .input-container {
