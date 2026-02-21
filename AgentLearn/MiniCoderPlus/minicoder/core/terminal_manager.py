@@ -3,99 +3,106 @@
 import os
 import asyncio
 import threading
-import queue
+import json
+import subprocess
 from pathlib import Path
-from winpty import PTY
 from .settings import settings
 
 class TerminalSession:
-    """A persistent PTY session (PowerShell/CMD on Windows)."""
+    """A persistent PTY session using Node.js PTY Bridge for maximum stability."""
     
     def __init__(self, session_id: str, working_dir: Path = None):
         self.session_id = session_id
         self.working_dir = working_dir or settings.WORKSPACE_DIR
-        self.pty = None
+        self.proc = None
         self.output_queue = asyncio.Queue()
         self.is_running = False
-        self._thread = None
         self._loop = None
 
     def start(self):
-        """Start the PTY and worker thread."""
+        """Start the Node.js PTY Bridge process."""
         if self.is_running:
             return
 
-        # Start PowerShell in the workspace
-        # On Windows, winpty uses full paths or executable names in PATH
-        # We find powershell.exe
-        pwsh_path = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-        if not os.path.exists(pwsh_path):
-            pwsh_path = "powershell.exe"
-
-        print(f"Spawning PTY with {pwsh_path} in {self.working_dir}")
-        # Try to use ConPTY if possible (backend=1), which is much more stable on modern Windows
+        bridge_path = Path(__file__).parent / "pty_bridge" / "index.js"
+        
+        # Build environment for the bridge
+        env = os.environ.copy()
+        env["PTY_CWD"] = str(self.working_dir)
+        env["PTY_COLS"] = "120"
+        env["PTY_ROWS"] = "30"
+        
+        print(f"Spawning PTY Bridge: node {bridge_path}")
+        
         try:
-            from winpty import PTY
-            # Initialize with standard size
-            self.pty = PTY(120, 30, backend=1) 
-            print("Using ConPTY backend")
-        except Exception as e:
-            print(f"Failed to load ConPTY: {e}. Falling back to legacy.")
-            self.pty = PTY(120, 30)
-            print("Using WinPTY legacy backend")
+            self.proc = subprocess.Popen(
+                ["node", str(bridge_path)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=False, # Use raw bytes for terminal data
+                env=env,
+                bufsize=0   # Unbuffered for real-time
+            )
             
-        # Spawn the process
-        # Use full path for reliability
-        if not self.pty.spawn(pwsh_path, cwd=str(self.working_dir)):
-            print("ERROR: winpty failed to spawn process")
-            raise RuntimeError("Failed to spawn PowerShell PTY")
-        
-        # Give ConPTY a moment to initialize before we start reading
-        print(f"PTY spawned successfully for session {self.session_id}")
-        self.is_running = True
-        try:
-            self._loop = asyncio.get_running_loop()
-        except RuntimeError:
-            self._loop = asyncio.new_event_loop()
-        
-        # Start background reader thread
-        self._thread = threading.Thread(target=self._read_loop, daemon=True)
-        self._thread.start()
+            self.is_running = True
+            try:
+                self._loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self._loop = asyncio.new_event_loop()
+            
+            # Start background reader threads
+            threading.Thread(target=self._read_loop, daemon=True).start()
+            threading.Thread(target=self._error_loop, daemon=True).start()
+            
+            print(f"PTY Bridge spawned successfully for session {self.session_id}")
+            
+        except Exception as e:
+            print(f"Failed to spawn PTY Bridge: {e}")
+            self.is_running = False
+            raise
 
     def _read_loop(self):
-        """Background thread to read from PTY."""
-        while self.is_running and self.pty:
+        """Read output from bridge stdout (which is the PTY's actual output)."""
+        while self.is_running and self.proc and self.proc.stdout:
             try:
-                # Use blocking=True for maximum responsiveness in the background thread.
-                # This ensures we push data to WS the instant it appears.
-                data = self.pty.read(True) 
-                if data:
-                    self._loop.call_soon_threadsafe(self.output_queue.put_nowait, data)
-                else:
-                    # If we get empty but no exception, the PTY might be closing
+                # Read chunks of data
+                data = self.proc.stdout.read(1024)
+                if not data:
                     break
+                
+                # Terminal data is often UTF-8 with ANSI codes
+                text = data.decode('utf-8', errors='replace')
+                self._loop.call_soon_threadsafe(self.output_queue.put_nowait, text)
             except Exception as e:
-                # Handle cases where PTY is closed during read
-                if self.is_running:
-                    print(f"PTY Read error: {e}")
+                print(f"Bridge Read error: {e}")
                 break
         
         self.is_running = False
-        print(f"PTY Session {self.session_id} terminated.")
+        print(f"PTY Bridge stdout closed for session {self.session_id}")
+
+    def _error_loop(self):
+        """Monitor stderr for bridge logs."""
+        while self.is_running and self.proc and self.proc.stderr:
+            line = self.proc.stderr.readline()
+            if not line:
+                break
+            print(f"[Bridge Log] {line.decode().strip()}")
 
     async def write(self, data: str):
-        """Write string to PTY."""
-        if self.is_running and self.pty:
-            self.pty.write(data)
+        """Send input to PTY via Bridge stdin (JSON format)."""
+        if self.is_running and self.proc and self.proc.stdin:
+            msg = json.dumps({"type": "input", "data": data}) + "\n"
+            self.proc.stdin.write(msg.encode())
+            self.proc.stdin.flush()
 
     def resize(self, cols: int, rows: int):
-        """Resize the PTY dimensions."""
-        if self.is_running and self.pty:
-            try:
-                self.pty.set_size(cols, rows)
-                print(f"PTY Session {self.session_id} resized to {cols}x{rows}")
-            except Exception as e:
-                print(f"Resize error: {e}")
+        """Send resize command to Bridge stdin (JSON format)."""
+        if self.is_running and self.proc and self.proc.stdin:
+            msg = json.dumps({"type": "resize", "cols": cols, "rows": rows}) + "\n"
+            self.proc.stdin.write(msg.encode())
+            self.proc.stdin.flush()
+            print(f"Sent resize to bridge: {cols}x{rows}")
 
     async def get_output(self):
         """Yield output from the queue."""
@@ -104,11 +111,11 @@ class TerminalSession:
             yield data
 
     def stop(self):
-        """Shutdown the PTY."""
+        """Shutdown the bridge and PTY."""
         self.is_running = False
-        if self.pty:
-            self.pty.close()
-            self.pty = None
+        if self.proc:
+            self.proc.terminate()
+            self.proc = None
 
 class SessionManager:
     """Manages multiple active terminal sessions."""
