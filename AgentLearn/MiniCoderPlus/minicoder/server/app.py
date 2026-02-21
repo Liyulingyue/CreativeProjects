@@ -9,6 +9,9 @@ import asyncio
 import json
 from ..agents.agent import MiniCoderAgent
 from ..core.settings import settings
+from ..core.terminal_manager import terminal_manager
+from ..tools import CodeTools
+from fastapi import WebSocket, WebSocketDisconnect
 
 app = FastAPI(title="MiniCoder Plus API")
 
@@ -26,6 +29,7 @@ agent = MiniCoderAgent()
 class ChatRequest(BaseModel):
     prompt: str
     history: Optional[List[Dict]] = None
+    session_id: Optional[str] = None
 
 class ChatResponse(BaseModel):
     response: str
@@ -39,6 +43,13 @@ async def root():
 async def chat(request: ChatRequest, stream: bool = False):
     try:
         history = request.history or []
+        
+        # Link session if provided
+        if request.session_id:
+            session = terminal_manager.get_or_create_session(request.session_id)
+            CodeTools.set_active_session(session)
+        else:
+            CodeTools.set_active_session(None)
 
         # Non-streaming (existing behavior)
         if not stream:
@@ -82,6 +93,63 @@ async def chat(request: ChatRequest, stream: bool = False):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.websocket("/ws/terminal/{session_id}")
+async def terminal_websocket(websocket: WebSocket, session_id: str):
+    """WebSocket endpoint to connect to a PTY session."""
+    await websocket.accept()
+    
+    # Get or create the terminal session
+    session = terminal_manager.get_or_create_session(session_id)
+    
+    # Task to read from PTY and send to WebSocket
+    async def downlink():
+        try:
+            while True:
+                data = await session.output_queue.get()
+                if data:
+                    await websocket.send_text(data)
+        except Exception as e:
+            print(f"Downlink error: {e}")
+
+    # Task to read from WebSocket and write to PTY
+    async def uplink():
+        try:
+            while True:
+                message = await websocket.receive_text()
+                if not message:
+                    continue
+
+                # Identify if it's a JSON command or raw input
+                if message.startswith('{') and message.endswith('}'):
+                    try:
+                        data = json.loads(message)
+                        msg_type = data.get("type")
+                        if msg_type == "resize":
+                            session.resize(data["cols"], data["rows"])
+                            continue
+                        elif msg_type == "input":
+                            await session.write(data["text"])
+                            continue
+                    except json.JSONDecodeError:
+                        pass # Fallback to raw write
+
+                # Default to raw write for anything else or failed JSON
+                await session.write(message)
+        except WebSocketDisconnect:
+            print(f"WebSocket disconnected for {session_id}")
+        except Exception as e:
+            print(f"Uplink error: {e}")
+
+    # Run both concurrently
+    done, pending = await asyncio.wait(
+        [asyncio.create_task(downlink()), asyncio.create_task(uplink())],
+        return_when=asyncio.FIRST_COMPLETED
+    )
+    
+    # Clean up pending tasks
+    for task in pending:
+        task.cancel()
 
 def run_server(host="0.0.0.0", port=8000):
     import uvicorn

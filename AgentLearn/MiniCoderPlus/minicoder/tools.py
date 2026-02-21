@@ -3,6 +3,8 @@
 import os
 import json
 import subprocess
+import asyncio
+import time
 from pathlib import Path
 from typing import List, Dict, Optional
 from .core.settings import settings
@@ -10,6 +12,13 @@ from .core.settings import settings
 class CodeTools:
     """代码相关工具类"""
     
+    _active_session = None
+
+    @classmethod
+    def set_active_session(cls, session):
+        """Set the active terminal session for interactive execution."""
+        cls._active_session = session
+
     @staticmethod
     def _resolve_path(path: str) -> Path:
         """解析并确保路径在 WorkSpace 内"""
@@ -27,6 +36,10 @@ class CodeTools:
     @staticmethod
     def execute_bash(command: str) -> str:
         """执行 Bash 命令 (在 WorkSpace 目录下)"""
+        # If we have an active interactive session, use it
+        if CodeTools._active_session:
+            return CodeTools._execute_interactive(command)
+            
         try:
             result = subprocess.run(
                 command, 
@@ -42,6 +55,53 @@ class CodeTools:
             return "Error: Command timed out after 30 seconds."
         except Exception as e:
             return f"Error executing command: {str(e)}"
+
+    @staticmethod
+    def _execute_interactive(command: str) -> str:
+        """Execute command in the persistent PTY session."""
+        session = CodeTools._active_session
+        if not session:
+            return "Error: No active interactive session found."
+        
+        try:
+            # We need to run this async within a sync context if called from agent.py
+            # Since agent.py's run is currently sync, we use a small helper
+            async def _run():
+                # Clear queue before starting to capture only current command output
+                while not session.output_queue.empty():
+                    session.output_queue.get_nowait()
+                
+                # Send the command
+                await session.write(command + "\r\n")
+                
+                # Wait for output
+                # We collect chunks until a short idle period (0.3s)
+                # This is a heuristic for "command finished" in a local PTY
+                output = ""
+                idle_count = 0
+                max_wait = 30 # 3 seconds total max for responsive commands
+                
+                while idle_count < 3 and max_wait > 0:
+                    try:
+                        chunk = await asyncio.wait_for(session.output_queue.get(), timeout=1.0)
+                        output += chunk
+                        idle_count = 0 # reset idle if we got something
+                    except asyncio.TimeoutError:
+                        idle_count += 1
+                    max_wait -= 1
+                
+                return output if output else "(executed in PTY)"
+
+            # Run the async helper
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                
+            return loop.run_until_complete(_run())
+        except Exception as e:
+            return f"Error in interactive PTY: {str(e)}"
 
     @staticmethod
     def read_file(path: str) -> str:

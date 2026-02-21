@@ -95,9 +95,92 @@ body, html, #root {
   justify-content: center;
 }
 
-.examples button {
-  padding: 8px 16px;
-  border-radius: 20px;
+.workbench-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.workbench-main {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.terminal-wrapper {
+  height: 100%;
+  padding: 0;
+  margin: 0;
+  background-color: #1e1e1e;
+  overflow: hidden;
+  position: relative;
+}
+
+.xterm-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 4px; /* Small safe padding controlled by CSS, not affecting fit calculation if we target parent */
+}
+
+.workbench-chat-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: white;
+  border-left: 1px solid #e5e7eb;
+}
+
+.workbench-input-area {
+  padding: 12px;
+  border-top: 1px solid #e5e7eb;
+  display: flex;
+  gap: 8px;
+}
+
+.workbench-input-area input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+}
+
+.resize-handle {
+  width: 4px;
+  background-color: #e5e7eb;
+  cursor: col-resize;
+  transition: background-color 0.2s;
+}
+
+.resize-handle:hover {
+  background-color: var(--primary);
+}
+
+.nav-links {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.nav-btn {
+  text-decoration: none;
+  font-size: 14px;
+  padding: 6px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  color: #374151;
+  background: white;
+  transition: all 0.2s;
+}
+
+.nav-btn:hover {
+  background: #f9fafb;
+  border-color: var(--primary);
+  color: var(--primary);
+}
   border: 1px solid #e5e7eb;
   background: white;
   cursor: pointer;
