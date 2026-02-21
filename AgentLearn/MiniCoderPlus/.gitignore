@@ -33,3 +33,6 @@ Thumbs.db
 
 # Workspace
 WorkSpace/
+
+# Node modules
+node_modules/

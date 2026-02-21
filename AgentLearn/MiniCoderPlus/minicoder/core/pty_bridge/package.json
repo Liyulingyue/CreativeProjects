@@ -1,0 +1,11 @@
+{
+  "name": "minicoder-pty-bridge",
+  "version": "1.0.0",
+  "main": "index.js",
+  "dependencies": {
+    "node-pty": "^1.1.0"
+  },
+  "scripts": {
+    "start": "node index.js"
+  }
+}
