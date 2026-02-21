@@ -17,6 +17,8 @@ const ptyProcess = pty.spawn(shell, [], {
 
 // Output from the PTY goes directly to stdout
 ptyProcess.onData((data) => {
+  // Use process.stdout.write which is the standard, well-integrated way for stream outputs
+  // On Windows pipes, fs.writeSync(1, ...) can sometimes behave unpredictably.
   process.stdout.write(data);
 });
 
@@ -26,10 +28,9 @@ ptyProcess.onExit(({ exitCode, signal }) => {
 });
 
 // Control messages from Python over stdin
-// We expect a line-delimited JSON format for control messages
 let inputBuffer = '';
 process.stdin.on('data', (chunk) => {
-  inputBuffer += chunk.toString();
+  inputBuffer += chunk.toString('utf8');
   
   let lineEnd;
   while ((lineEnd = inputBuffer.indexOf('\n')) !== -1) {
@@ -41,14 +42,15 @@ process.stdin.on('data', (chunk) => {
     try {
       const msg = JSON.parse(line);
       if (msg.type === 'input') {
+        // Use a small pause if writing very large chunks to avoid pty buffer overflow
         ptyProcess.write(msg.data);
       } else if (msg.type === 'resize') {
-        ptyProcess.resize(msg.cols, msg.rows);
+        if (msg.cols > 0 && msg.rows > 0) {
+          ptyProcess.resize(msg.cols, msg.rows);
+        }
       }
     } catch (e) {
-      // If it's not JSON, we might have received raw input by mistake?
-      // Log it or ignore for stability.
-      console.error('Invalid JSON message from parent:', line);
+      // Ignore parse errors from noise on stdin
     }
   }
 });

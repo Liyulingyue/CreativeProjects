@@ -101,16 +101,21 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
     
     # Get or create the terminal session
     session = terminal_manager.get_or_create_session(session_id)
+    # Register a dedicated queue for this websocket connection
+    output_queue = session.get_output_queue()
     
     # Task to read from PTY and send to WebSocket
     async def downlink():
         try:
             while True:
-                data = await session.output_queue.get()
+                data = await output_queue.get()
                 if data:
                     await websocket.send_text(data)
         except Exception as e:
-            print(f"Downlink error: {e}")
+            # print(f"Downlink error: {e}")
+            pass
+        finally:
+            session.remove_queue(output_queue)
 
     # Task to read from WebSocket and write to PTY
     async def uplink():
@@ -119,37 +124,33 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
                 message = await websocket.receive_text()
                 if not message:
                     continue
-
-                # Identify if it's a JSON command or raw input
+                
+                # Intercept JSON Control Messages (Resize, etc.)
                 if message.startswith('{') and message.endswith('}'):
                     try:
-                        data = json.loads(message)
-                        msg_type = data.get("type")
-                        if msg_type == "resize":
-                            session.resize(data["cols"], data["rows"])
+                        cmd = json.loads(message)
+                        if cmd.get("type") == "resize":
+                            session.resize(cmd["cols"], cmd["rows"])
                             continue
-                        elif msg_type == "input":
-                            await session.write(data["text"])
+                        elif cmd.get("type") == "input":
+                            await session.write(cmd["text"])
                             continue
-                    except json.JSONDecodeError:
-                        pass # Fallback to raw write
-
-                # Default to raw write for anything else or failed JSON
+                    except:
+                        pass # Fall through to raw write if parsing fails
+                
+                # Default: raw write to PTY
                 await session.write(message)
         except WebSocketDisconnect:
-            print(f"WebSocket disconnected for {session_id}")
+            pass
         except Exception as e:
-            print(f"Uplink error: {e}")
+            # print(f"Uplink error: {e}")
+            pass
 
     # Run both concurrently
-    done, pending = await asyncio.wait(
+    await asyncio.wait(
         [asyncio.create_task(downlink()), asyncio.create_task(uplink())],
         return_when=asyncio.FIRST_COMPLETED
     )
-    
-    # Clean up pending tasks
-    for task in pending:
-        task.cancel()
 
 def run_server(host="0.0.0.0", port=8000):
     import uvicorn
