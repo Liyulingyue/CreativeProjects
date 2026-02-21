@@ -216,7 +216,7 @@ function Workbench() {
       </header>
 
       <PanelGroup direction="horizontal" className="workbench-main">
-        <Panel defaultSize={50} minSize={30}>
+        <Panel defaultSize={70} minSize={30}>
           <div className="terminal-wrapper">
              <div ref={termRef} className="xterm-container" />
           </div>
@@ -224,7 +224,7 @@ function Workbench() {
         
         <PanelResizeHandle className="resize-handle" />
         
-        <Panel defaultSize={50} minSize={30}>
+        <Panel defaultSize={30} minSize={20}>
           <div className="workbench-chat-container">
             <div className="messages-list">
               {messages.map((msg, i) => (

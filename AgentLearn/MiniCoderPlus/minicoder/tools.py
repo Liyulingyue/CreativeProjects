@@ -64,42 +64,43 @@ class CodeTools:
             return "Error: No active interactive session found."
         
         try:
-            # We need to run this async within a sync context if called from agent.py
-            # Since agent.py's run is currently sync, we use a small helper
-            async def _run():
-                # Clear queue before starting to capture only current command output
-                while not session.output_queue.empty():
-                    session.output_queue.get_nowait()
-                
-                # Send the command
-                await session.write(command + "\r\n")
-                
-                # Wait for output
-                # We collect chunks until a short idle period (0.3s)
-                # This is a heuristic for "command finished" in a local PTY
-                output = ""
-                idle_count = 0
-                max_wait = 30 # 3 seconds total max for responsive commands
-                
-                while idle_count < 3 and max_wait > 0:
-                    try:
-                        chunk = await asyncio.wait_for(session.output_queue.get(), timeout=1.0)
-                        output += chunk
-                        idle_count = 0 # reset idle if we got something
-                    except asyncio.TimeoutError:
-                        idle_count += 1
-                    max_wait -= 1
-                
-                return output if output else "(executed in PTY)"
+            # We use the session's loop to create and manage the queue
+            loop = session._loop
+            output_queue = session.get_output_queue()
 
-            # Run the async helper
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                
-            return loop.run_until_complete(_run())
+            async def _run():
+                try:
+                    # Clear any existing backlog in OUR queue
+                    while not output_queue.empty():
+                        output_queue.get_nowait()
+                    
+                    # Send command
+                    await session.write(command + "\r\n")
+                    
+                    output = ""
+                    idle_count = 0
+                    max_wait = 100 
+                    
+                    while idle_count < 2 and max_wait > 0:
+                        try:
+                            # Wait for output
+                            chunk = await asyncio.wait_for(output_queue.get(), timeout=0.1)
+                            output += chunk
+                            idle_count = 0 
+                        except asyncio.TimeoutError:
+                            if output:
+                                idle_count += 1
+                        max_wait -= 1
+                    
+                    return output if output else "(executed in PTY)"
+                finally:
+                    session.remove_queue(output_queue)
+
+            # This code is running in a worker thread (from agent.py's to_thread)
+            # We MUST run the coroutine in the session's home loop
+            future = asyncio.run_coroutine_threadsafe(_run(), loop)
+            return future.result(timeout=15) # Wait for result safely
+
         except Exception as e:
             return f"Error in interactive PTY: {str(e)}"
 
