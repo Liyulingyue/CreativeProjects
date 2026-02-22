@@ -34,5 +34,11 @@ Thumbs.db
 # Workspace
 WorkSpace/
 
+# Local data & databases
+data/
+*.db
+*.sqlite
+*.sqlite3
+
 # Node modules
 node_modules/

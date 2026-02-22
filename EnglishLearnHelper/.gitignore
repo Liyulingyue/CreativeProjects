@@ -1,0 +1,7 @@
+# reference codes
+MiniRAG
+
+# virtual environment
+venv/
+.env
+.venv/

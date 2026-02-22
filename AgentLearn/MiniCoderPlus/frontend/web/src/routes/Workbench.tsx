@@ -11,12 +11,13 @@ import ViewerTerminalStack from '../components/ViewerTerminalStack';
 import ChatColumn from '../components/ChatColumn';
 
 function Workbench() {
+  const createSessionId = () => `session_${Math.random().toString(36).substr(2, 9)}`;
   const queryParams = new URLSearchParams(window.location.search);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [isStreaming, setIsStreaming] = useState(true);
-  const [sessionId] = useState(`session_${Math.random().toString(36).substr(2, 9)}`);
+  const [sessionId, setSessionId] = useState(createSessionId());
   const [workspace, setWorkspace] = useState(queryParams.get('workspace') || '');
   
   // File Explorer State
@@ -213,13 +214,16 @@ function Workbench() {
           prompt: input, 
           history: messages,
           session_id: sessionId,
-          workspace: workspace || undefined
+          workspace: workspace || undefined,
+          // Workbench needs terminal to execute code and run tools
+          needs_terminal: true
         }),
       });
 
       if (!isStreaming) {
         const data = await resp.json();
         const updated: Message[] = data.history.map((msg: any) => ({
+          id: msg.id,
           role: msg.role,
           content: msg.content || '',
           isThought: !!(msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0),
@@ -247,12 +251,25 @@ function Workbench() {
               const item = json.item;
               if (item.role === 'user') continue;
               setMessages(prev => [...prev, {
+                id: item.id,
                 role: item.role,
                 content: item.content || '',
-                isThought: !!(item.role === 'assistant' && item.tool_calls)
+                isThought: !!(item.role === 'assistant' && item.tool_calls),
+                tool_calls: item.tool_calls,
+                tool_call_id: item.tool_call_id,
+                name: item.name
               }]);
             } else if (json.type === 'done') {
-              setMessages(json.history);
+              const updated = json.history.map((msg: any) => ({
+                id: msg.id,
+                role: msg.role,
+                content: msg.content || '',
+                isThought: !!(msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0),
+                tool_calls: msg.tool_calls,
+                tool_call_id: msg.tool_call_id,
+                name: msg.name
+              }));
+              setMessages(updated);
             }
           }
         }
@@ -266,6 +283,43 @@ function Workbench() {
 
   const handleRefreshChat = () => {
     setMessages([]);
+    setLoading(false);
+    setSessionId(createSessionId());
+  };
+  
+  const loadSessionHistory = async (sessionIdToLoad: string) => {
+    if (!sessionIdToLoad) return;
+    try {
+      const resp = await fetch(`/api/v1/chat/history?session_id=${encodeURIComponent(sessionIdToLoad)}`);
+      if (!resp.ok) throw new Error('Failed to load history');
+      const data = await resp.json();
+      const historyMessages: Message[] = data.items.map((item: any) => ({
+        id: item.id,
+        role: item.role,
+        content: item.content || '',
+        isThought: !!(item.role === 'assistant' && item.tool_calls && Object.keys(item.tool_calls || {}).length > 0),
+        tool_calls: item.tool_calls,
+        tool_call_id: item.tool_call_id,
+        name: item.name,
+        feedback: item.feedback,
+        feedback_comment: item.feedback_comment
+      }));
+      console.log('[DEBUG] Loaded history messages:', historyMessages);
+      setMessages(historyMessages);
+      setSessionId(sessionIdToLoad);
+      if (data.workspace) {
+        setWorkspace(data.workspace);
+      }
+    } catch (error) {
+      console.error('Failed to load session history', error);
+    }
+  };
+
+  const handleSessionDeleted = (deletedId: string) => {
+    if (deletedId === sessionId) {
+      setMessages([]);
+      setSessionId(createSessionId());
+    }
   };
 
   return (
@@ -276,6 +330,8 @@ function Workbench() {
         workspace={workspace}
         onWorkspaceChange={setWorkspace}
         onRefreshChat={handleRefreshChat}
+        onLoadSession={loadSessionHistory}
+        onSessionDeleted={handleSessionDeleted}
         showExplorer={showExplorer}
         onToggleExplorer={setShowExplorer}
         showFileViewer={showFileViewer}
@@ -322,6 +378,7 @@ function Workbench() {
           onInputChange={setInput}
           onSend={handleSend}
           messagesEndRef={messagesEndRef}
+          sessionId={sessionId}
           panelId="wb-chat-panel"
           handleId="wb-handle-chat-h"
           emptyState={

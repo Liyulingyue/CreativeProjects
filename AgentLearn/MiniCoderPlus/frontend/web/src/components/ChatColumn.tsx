@@ -12,6 +12,8 @@ interface ChatColumnProps {
   onInputChange: (value: string) => void;
   onSend: () => void;
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
+  sessionId?: string;
+  onFeedbackChange?: (messageId: number, feedback: string) => void;
   panelId?: string;
   order?: number;
   defaultSize?: number;
@@ -29,6 +31,8 @@ const ChatColumn: React.FC<ChatColumnProps> = ({
   onInputChange,
   onSend,
   messagesEndRef,
+  sessionId,
+  onFeedbackChange,
   panelId,
   order = 3,
   defaultSize = 30,
@@ -62,7 +66,12 @@ const ChatColumn: React.FC<ChatColumnProps> = ({
           <div className="messages-list">
             {messages.length === 0 && emptyState}
             {messages.map((msg, i) => (
-              <ChatMessage key={i} msg={msg} />
+              <ChatMessage 
+                key={i} 
+                msg={msg} 
+                sessionId={sessionId}
+                onFeedbackChange={onFeedbackChange}
+              />
             ))}
             {loading && <LoadingIndicator />}
             <div ref={messagesEndRef} />

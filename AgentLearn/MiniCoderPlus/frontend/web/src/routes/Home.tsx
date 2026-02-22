@@ -8,12 +8,14 @@ import ViewerTerminalStack from '../components/ViewerTerminalStack';
 import ChatColumn from '../components/ChatColumn';
 
 function Home() {
+  const createSessionId = () => `session_${Math.random().toString(36).substr(2, 9)}`;
   const queryParams = new URLSearchParams(window.location.search);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [isStreaming, setIsStreaming] = useState(true);
   const [workspace, setWorkspace] = useState(queryParams.get('workspace') || '');
+  const [sessionId, setSessionId] = useState(createSessionId());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const viewerTermRef = useRef<HTMLDivElement>(null);
 
@@ -89,7 +91,10 @@ function Home() {
         body: JSON.stringify({ 
           prompt: input, 
           history: history,
-          workspace: workspace || undefined
+          session_id: sessionId,
+          workspace: workspace || undefined,
+          // Home route doesn't need terminal (pure LLM chat)
+          needs_terminal: false
         }),
       });
 
@@ -98,6 +103,7 @@ function Home() {
       if (!isStreaming) {
         const data = await resp.json();
         const updated: Message[] = data.history.map((msg: any) => ({
+          id: msg.id,
           role: msg.role,
           content: msg.content || '',
           isThought: !!(msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0),
@@ -133,6 +139,7 @@ function Home() {
               const isThought = item.role === 'assistant' && item.tool_calls && item.tool_calls.length > 0;
               
               const newMessage: Message = { 
+                id: item.id,
                 role: item.role, 
                 content: item.content || '', 
                 isThought: !!isThought,
@@ -143,6 +150,7 @@ function Home() {
               setMessages(prev => [...prev, newMessage]);
             } else if (payload.type === 'done') {
               const updated: Message[] = payload.history.map((msg: any) => ({
+                id: msg.id,
                 role: msg.role,
                 content: msg.content || '',
                 isThought: !!(msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0),
@@ -164,8 +172,43 @@ function Home() {
     }
   };
 
+  const loadSessionHistory = async (sessionIdToLoad: string) => {
+    if (!sessionIdToLoad) return;
+    try {
+      const resp = await fetch(`/api/v1/chat/history?session_id=${encodeURIComponent(sessionIdToLoad)}`);
+      if (!resp.ok) throw new Error('Failed to load history');
+      const data = await resp.json();
+      const historyMessages: Message[] = data.items.map((item: any) => ({
+        id: item.id,
+        role: item.role,
+        content: item.content || '',
+        isThought: !!(item.role === 'assistant' && item.tool_calls && Object.keys(item.tool_calls || {}).length > 0),
+        tool_calls: item.tool_calls,
+        tool_call_id: item.tool_call_id,
+        name: item.name,
+        feedback: item.feedback
+      }));
+      console.log('[DEBUG] Loaded history messages:', historyMessages);
+      setMessages(historyMessages);
+      setSessionId(sessionIdToLoad);
+      if (data.workspace) {
+        setWorkspace(data.workspace);
+      }
+    } catch (error) {
+      console.error('Failed to load session history', error);
+    }
+  };
+
   const handleRefreshChat = () => {
     setMessages([]);
+    setSessionId(createSessionId());
+  };
+
+  const handleSessionDeleted = (deletedId: string) => {
+    if (deletedId === sessionId) {
+      setMessages([]);
+      setSessionId(createSessionId());
+    }
   };
 
   return (
@@ -176,6 +219,8 @@ function Home() {
         workspace={workspace}
         onWorkspaceChange={setWorkspace}
         onRefreshChat={handleRefreshChat}
+        onLoadSession={loadSessionHistory}
+        onSessionDeleted={handleSessionDeleted}
         showExplorer={showExplorer}
         onToggleExplorer={setShowExplorer}
         showFileViewer={showFileViewer}
@@ -183,7 +228,7 @@ function Home() {
           setShowFileViewer(val);
           if (!val) setSelectedFilePath(null);
         }}
-        statusText="Online"
+        sessionId={sessionId}
       />
 
       <PanelGroup direction="horizontal" className="home-main-panels" id="home-outer-group" autoSaveId="home-outer-layout">
@@ -225,6 +270,7 @@ function Home() {
           onInputChange={setInput}
           onSend={handleSend}
           messagesEndRef={messagesEndRef}
+          sessionId={sessionId}
           panelId="home-chat-panel"
           handleId="home-handle-chat"
           showHandle={showFileViewer && showExplorer}
