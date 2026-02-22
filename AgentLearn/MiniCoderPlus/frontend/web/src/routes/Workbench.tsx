@@ -5,12 +5,9 @@ import 'xterm/css/xterm.css';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { Link } from 'react-router-dom';
 import '../App.css';
-
-interface Message {
-  role: 'user' | 'assistant' | 'tool';
-  content: string;
-  isThought?: boolean;
-}
+import type { Message } from '../types';
+import ChatMessage from '../components/ChatMessage';
+import LoadingIndicator from '../components/LoadingIndicator';
 
 function Workbench() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -228,12 +225,9 @@ function Workbench() {
           <div className="workbench-chat-container">
             <div className="messages-list">
               {messages.map((msg, i) => (
-                <div key={i} className={`message-wrapper ${msg.role} ${msg.isThought ? 'thought' : ''}`}>
-                  <div className="message-content">
-                    <div className="message-text">{msg.content}</div>
-                  </div>
-                </div>
+                <ChatMessage key={i} msg={msg} />
               ))}
+              {loading && <LoadingIndicator />}
               <div ref={messagesEndRef} />
             </div>
             

@@ -1,15 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import '../App.css';
-
-interface Message {
-  role: 'user' | 'assistant' | 'tool';
-  content: string;
-  isThought?: boolean;
-  tool_calls?: any[];
-  tool_call_id?: string;
-  name?: string;
-}
+import type { Message } from '../types';
+import ChatMessage from '../components/ChatMessage';
+import LoadingIndicator from '../components/LoadingIndicator';
 
 function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -145,31 +139,10 @@ function Home() {
               </div>
             </div>
           )}
-          {messages.map((msg, index) => {
-            if (msg.role === 'tool') return null;
-
-            return (
-              <div key={index} className={`message-wrapper ${msg.role} ${msg.isThought ? 'thought' : ''}`}>
-                <div className="message-icon">
-                  {msg.role === 'user' ? '👤' : '🤖'}
-                </div>
-                <div className="message-content">
-                  {msg.isThought && <div className="thought-badge">Thought Process</div>}
-                  <div className="message-text">{msg.content}</div>
-                </div>
-              </div>
-            );
-          })}
-          {loading && (
-            <div className="message-wrapper assistant loading">
-              <div className="message-icon">🤖</div>
-              <div className="message-content">
-                <div className="typing-indicator">
-                  <span></span><span></span><span></span>
-                </div>
-              </div>
-            </div>
-          )}
+          {messages.map((msg, index) => (
+            <ChatMessage key={index} msg={msg} />
+          ))}
+          {loading && <LoadingIndicator />}
           <div ref={messagesEndRef} />
         </div>
       </main>
