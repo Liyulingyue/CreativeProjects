@@ -2,20 +2,13 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import 'xterm/css/xterm.css';
-import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { Link } from 'react-router-dom';
+import { PanelGroup } from 'react-resizable-panels';
 import '../App.css';
-import type { Message } from '../types';
-import ChatMessage from '../components/ChatMessage';
-import LoadingIndicator from '../components/LoadingIndicator';
+import type { Message, FileItem } from '../types';
 import AppHeader from '../components/AppHeader';
-
-interface FileItem {
-  name: string;
-  path: string;
-  abs_path: string;
-  type: 'file' | 'directory';
-}
+import FileExplorerColumn from '../components/FileExplorerColumn';
+import ViewerTerminalStack from '../components/ViewerTerminalStack';
+import ChatColumn from '../components/ChatColumn';
 
 function Workbench() {
   const queryParams = new URLSearchParams(window.location.search);
@@ -278,99 +271,45 @@ function Workbench() {
         sessionId={sessionId}
       />
 
-      <PanelGroup direction="horizontal" className="workbench-main" id="workbench-outer">
+      <PanelGroup direction="horizontal" className="workbench-main" id="wb-outer-group" autoSaveId="wb-outer-layout">
         {showExplorer && (
-          <>
-            <Panel defaultSize={20} minSize={10} id="wb-sidebar">
-              <div className="file-explorer">
-                <div className="explorer-header">
-                  <span>FILES</span>
-                  <button onClick={fetchFileList} className="refresh-btn">🔄</button>
-                </div>
-                <div className="explorer-list">
-                  {explorerData.map((item, i) => (
-                    <div 
-                      key={i} 
-                      className={`explorer-item ${item.type} ${selectedFilePath === item.abs_path ? 'selected' : ''} ${!showFileViewer && item.type === 'file' ? 'no-peek' : ''}`}
-                      onClick={() => {
-                        if (item.type === 'file' && showFileViewer) setSelectedFilePath(item.abs_path);
-                      }}
-                    >
-                      {item.type === 'directory' ? '📁' : '📄'} {item.name}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </Panel>
-            <PanelResizeHandle className="resize-handle" />
-          </>
+          <FileExplorerColumn
+            explorerData={explorerData}
+            selectedFilePath={selectedFilePath}
+            showFileViewer={showFileViewer}
+            onRefresh={fetchFileList}
+            onSelect={setSelectedFilePath}
+            title="FILES"
+            panelId="wb-sidebar-panel"
+            handleId="wb-handle-sidebar"
+          />
         )}
 
-        <Panel id="wb-content">
-          <PanelGroup direction="horizontal" id="wb-inner">
-            {showFileViewer && (
-              <>
-                <Panel defaultSize={30} minSize={20} id="wb-viewer-panel">
-                  <div className="file-viewer">
-                    {selectedFilePath ? (
-                      <>
-                        <div className="viewer-header">
-                          <span>{selectedFilePath.split(/[/\\]/).pop()}</span>
-                          <button onClick={() => setSelectedFilePath(null)} className="close-btn">×</button>
-                        </div>
-                        <pre className="viewer-content">
-                          {fileLoading ? 'Loading...' : fileContent}
-                        </pre>
-                      </>
-                    ) : (
-                      <div className="viewer-placeholder">
-                        <div className="placeholder-content">
-                          <span className="icon">📄</span>
-                          <p>Select a file to preview</p>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </Panel>
-                <PanelResizeHandle className="resize-handle" />
-              </>
-            )}
+        <ViewerTerminalStack
+          showFileViewer={showFileViewer && showExplorer}
+          selectedFilePath={selectedFilePath}
+          fileContent={fileContent}
+          fileLoading={fileLoading}
+          onClearSelection={() => setSelectedFilePath(null)}
+          termRef={termRef}
+          panelId="wb-middle-column"
+          panelGroupId="wb-middle-vertical-group"
+          autoSaveId="wb-middle-v-layout"
+          viewerPanelId="wb-viewer-panel"
+          viewerHandleId="wb-handle-viewer-v"
+          terminalPanelId="wb-terminal-panel"
+        />
 
-            <Panel defaultSize={showFileViewer ? 40 : 70} minSize={30} id="wb-terminal-area">
-              <div className="main-content-area">
-                 <div className="terminal-wrapper">
-                    <div ref={termRef} className="xterm-container" />
-                 </div>
-              </div>
-            </Panel>
-            
-            <PanelResizeHandle className="resize-handle" />
-            
-            <Panel defaultSize={30} minSize={20} id="wb-chat-area">
-              <div className="workbench-chat-container">
-                <div className="messages-list">
-                  {messages.map((msg, i) => (
-                    <ChatMessage key={i} msg={msg} />
-                  ))}
-                  {loading && <LoadingIndicator />}
-                  <div ref={messagesEndRef} />
-                </div>
-                
-                <footer className="workbench-input-area">
-                  <input
-                    type="text"
-                    value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    onKeyPress={(e) => e.key === 'Enter' && handleSend()}
-                    placeholder="Ask Agent to do something..."
-                    disabled={loading}
-                  />
-                  <button onClick={handleSend} disabled={loading}>{loading ? '...' : 'Run'}</button>
-                </footer>
-              </div>
-            </Panel>
-          </PanelGroup>
-        </Panel>
+        <ChatColumn
+          messages={messages}
+          loading={loading}
+          input={input}
+          onInputChange={setInput}
+          onSend={handleSend}
+          messagesEndRef={messagesEndRef}
+          panelId="wb-chat-panel"
+          handleId="wb-handle-chat-h"
+        />
       </PanelGroup>
     </div>
   );

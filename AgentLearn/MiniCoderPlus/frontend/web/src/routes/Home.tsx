@@ -1,18 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Link } from 'react-router-dom';
-import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
+import { PanelGroup } from 'react-resizable-panels';
 import '../App.css';
-import type { Message } from '../types';
-import ChatMessage from '../components/ChatMessage';
-import LoadingIndicator from '../components/LoadingIndicator';
+import type { Message, FileItem } from '../types';
 import AppHeader from '../components/AppHeader';
-
-interface FileItem {
-  name: string;
-  path: string;
-  abs_path: string;
-  type: 'file' | 'directory';
-}
+import FileExplorerColumn from '../components/FileExplorerColumn';
+import ViewerTerminalStack from '../components/ViewerTerminalStack';
+import ChatColumn from '../components/ChatColumn';
 
 function Home() {
   const queryParams = new URLSearchParams(window.location.search);
@@ -22,6 +15,7 @@ function Home() {
   const [isStreaming, setIsStreaming] = useState(true);
   const [workspace, setWorkspace] = useState(queryParams.get('workspace') || '');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const viewerTermRef = useRef<HTMLDivElement>(null);
 
   // File Explorer State
   const [showExplorer, setShowExplorer] = useState(false);
@@ -192,115 +186,88 @@ function Home() {
         statusText="Online"
       />
 
-      <PanelGroup direction="horizontal" className="home-main-panels" id="outer-layout">
+      <PanelGroup direction="horizontal" className="home-main-panels" id="home-outer-group" autoSaveId="home-outer-layout">
         {showExplorer && (
-          <>
-            <Panel defaultSize={20} minSize={10} id="sidebar-panel">
-              <div className="file-explorer">
-                <div className="explorer-header" style={{ padding: '12px 14px' }}>
-                  <span>WORKSPACE FILES</span>
-                  <button onClick={fetchFileList} className="refresh-btn">🔄</button>
-                </div>
-                <div className="explorer-list">
-                  {explorerData.map((item, i) => (
-                    <div 
-                      key={i} 
-                      className={`explorer-item ${item.type} ${selectedFilePath === item.abs_path ? 'selected' : ''} ${!showFileViewer && item.type === 'file' ? 'no-peek' : ''}`}
-                      onClick={() => {
-                        if (item.type === 'file' && showFileViewer) setSelectedFilePath(item.abs_path);
-                      }}
-                    >
-                      {item.type === 'directory' ? '📁' : '📄'} {item.name}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </Panel>
-            <PanelResizeHandle className="resize-handle" />
-          </>
+          <FileExplorerColumn
+            explorerData={explorerData}
+            selectedFilePath={selectedFilePath}
+            showFileViewer={showFileViewer}
+            onRefresh={fetchFileList}
+            onSelect={setSelectedFilePath}
+            title="WORKSPACE FILES"
+            panelId="home-sidebar-panel"
+            handleId="home-handle-sidebar"
+          />
         )}
 
-        <Panel id="content-area">
-          <PanelGroup direction="horizontal" id="inner-layout">
-            {showFileViewer && (
-              <>
-                <Panel defaultSize={40} minSize={20} id="viewer-panel">
-                  <div className="file-viewer file-viewer-home">
-                    {selectedFilePath ? (
-                      <>
-                        <div className="viewer-header">
-                          <span>{selectedFilePath.split(/[/\\]/).pop()}</span>
-                          <button onClick={() => setSelectedFilePath(null)} className="close-btn">×</button>
-                        </div>
-                        <pre className="viewer-content">
-                          {fileLoading ? 'Loading...' : fileContent}
-                        </pre>
-                      </>
-                    ) : (
-                      <div className="viewer-placeholder">
-                        <div className="placeholder-content">
-                          <span className="icon">📄</span>
-                          <p>Select a file to preview</p>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </Panel>
-                <PanelResizeHandle className="resize-handle" />
-              </>
-            )}
+        {(showFileViewer && showExplorer) && (
+          <ViewerTerminalStack
+            showFileViewer={showFileViewer && showExplorer}
+            selectedFilePath={selectedFilePath}
+            fileContent={fileContent}
+            fileLoading={fileLoading}
+            onClearSelection={() => setSelectedFilePath(null)}
+            termRef={viewerTermRef}
+            panelId="home-viewer-column"
+            panelGroupId="home-viewer-v-group"
+            autoSaveId="home-viewer-layout"
+            viewerPanelId="home-viewer-panel"
+            viewerHandleId="home-handle-viewer"
+            terminalPanelId="home-terminal-panel"
+            showTerminal={false}
+          />
+        )}
 
-            <Panel minSize={30} id="chat-panel">
-              <div className="chat-interface-wrapper">
-                <main className="chat-container">
-                  <div className="messages-list">
-                    {messages.length === 0 && (
-                      <div className="welcome-message">
-                        <h1>Hello! I'm MiniCoder.</h1>
-                        <p>Ask me to handle your coding tasks, search the workspace, or explain logic.</p>
-                        <div className="examples">
-                          <button onClick={() => setInput("What's in my WorkSpace?")}>🔎 List files</button>
-                          <button onClick={() => setInput("Create a simple Python script")}>📜 Create script</button>
-                        </div>
-                      </div>
-                    )}
-                    {messages.map((msg, index) => (
-                      <ChatMessage key={index} msg={msg} />
-                    ))}
-                    {loading && <LoadingIndicator />}
-                    <div ref={messagesEndRef} />
-                  </div>
-                </main>
-
-                <footer className="footer-area">
-                  <div className="controls-container">
-                    <label className="stream-toggle">
-                      <input 
-                        type="checkbox" 
-                        checked={isStreaming} 
-                        onChange={(e) => setIsStreaming(e.target.checked)} 
-                      />
-                      <span>Streaming Mode</span>
-                    </label>
-                  </div>
-                  <div className="input-container">
-                    <input
-                      type="text"
-                      value={input}
-                      onChange={(e) => setInput(e.target.value)}
-                      onKeyPress={(e) => e.key === 'Enter' && handleSend()}
-                      placeholder="Type your request here..."
-                      disabled={loading}
-                    />
-                    <button className="send-btn" onClick={handleSend} disabled={loading || !input.trim()}>
-                      {loading ? '...' : 'Send'}
-                    </button>
-                  </div>
-                </footer>
+        <ChatColumn
+          messages={messages}
+          loading={loading}
+          input={input}
+          onInputChange={setInput}
+          onSend={handleSend}
+          messagesEndRef={messagesEndRef}
+          panelId="home-chat-panel"
+          handleId="home-handle-chat"
+          showHandle={showFileViewer && showExplorer}
+          emptyState={
+            <div className="welcome-message">
+              <h1>Hello! I'm MiniCoder.</h1>
+              <p>Ask me to handle your coding tasks, search the workspace, or explain logic.</p>
+              <div className="examples">
+                <button onClick={() => setInput("What's in my WorkSpace?")}>🔎 List files</button>
+                <button onClick={() => setInput("Create a simple Python script")}>📜 Create script</button>
               </div>
-            </Panel>
-          </PanelGroup>
-        </Panel>
+            </div>
+          }
+          renderFooter={() => (
+            <footer className="footer-area">
+              <div className="controls-container">
+                <label className="stream-toggle">
+                  <input
+                    type="checkbox"
+                    checked={isStreaming}
+                    onChange={(e) => setIsStreaming(e.target.checked)}
+                  />
+                  <span>Streaming Mode</span>
+                </label>
+              </div>
+              <div className="input-container">
+                <div className="workbench-input-area">
+                  <input
+                    type="text"
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyPress={(e) => e.key === 'Enter' && handleSend()}
+                    placeholder="Type your request here..."
+                    disabled={loading}
+                  />
+                  <button className="send-btn" onClick={handleSend} disabled={loading || !input.trim()}>
+                    {loading ? '...' : 'Send'}
+                  </button>
+                </div>
+              </div>
+            </footer>
+          )}
+        />
       </PanelGroup>
     </div>
   );
