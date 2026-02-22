@@ -17,7 +17,17 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ msg, sessionId, onFeedbackCha
   const [showCommentInput, setShowCommentInput] = useState(false);
   const [pendingFeedback, setPendingFeedback] = useState<string | null>(null);
   const [commentText, setCommentText] = useState(msg.feedback_comment || '');
-  const [showCommentDisplay, setShowCommentDisplay] = useState(false);
+
+  // Sync state with props when msg changes (e.g. from history load)
+  React.useEffect(() => {
+    setGivenFeedback(msg.feedback);
+  }, [msg.feedback]);
+
+  React.useEffect(() => {
+    if (msg.feedback_comment) {
+      setCommentText(msg.feedback_comment);
+    }
+  }, [msg.feedback_comment]);
 
   if (msg.role === 'tool') return null;
   
@@ -48,14 +58,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ msg, sessionId, onFeedbackCha
       return;
     }
 
-    // If already given feedback, only allow viewing/editing comment, not changing rating
-    if (givenFeedback && givenFeedback !== feedback) {
-      console.log('[handleFeedback] Already have feedback, showing comment editor');
-      setShowCommentInput(true);
-      return;
-    }
-
-    // Show comment input dialog for new feedback
+    // Allow changing feedback - always show comment input dialog
     setPendingFeedback(feedback);
     setShowCommentInput(true);
   };
@@ -89,7 +92,6 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ msg, sessionId, onFeedbackCha
       setGivenFeedback(undefined);
     } finally {
       setShowCommentInput(false);
-      setCommentText('');
       setPendingFeedback(null);
     }
   };
@@ -118,72 +120,65 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ msg, sessionId, onFeedbackCha
               <span style={{ whiteSpace: 'nowrap' }}>评分:</span>
               <button
                 onClick={() => handleFeedback(THUMBS_UP)}
-                disabled={givenFeedback && givenFeedback !== THUMBS_UP ? true : false}
-                title={givenFeedback && givenFeedback !== THUMBS_UP ? "已评分，点击查看或修改评论" : "好评 - 帮助改进模型"}
+                disabled={false}
+                title="好评 - 帮助改进模型"
                 style={{
                   background: givenFeedback === THUMBS_UP ? '#d1fae5' : 'transparent',
                   border: givenFeedback === THUMBS_UP ? '1px solid #6ee7b7' : '1px solid #e5e7eb',
                   borderRadius: '4px',
                   padding: '4px 8px',
-                  cursor: givenFeedback && givenFeedback !== THUMBS_UP ? 'not-allowed' : 'pointer',
+                  cursor: 'pointer',
                   fontSize: '14px',
                   transition: 'all 0.2s',
                   opacity: givenFeedback && givenFeedback !== THUMBS_UP ? 0.5 : 1
                 }}
                 onMouseEnter={(e) => {
-                  if (!(givenFeedback && givenFeedback !== THUMBS_UP)) {
-                    e.currentTarget.style.background = '#f0fdf4';
-                  }
+                  e.currentTarget.style.background = '#f0fdf4';
                 }}
                 onMouseLeave={(e) => {
-                  if (!(givenFeedback && givenFeedback !== THUMBS_UP)) {
-                    e.currentTarget.style.background = givenFeedback === THUMBS_UP ? '#d1fae5' : 'transparent';
-                  }
+                  e.currentTarget.style.background = givenFeedback === THUMBS_UP ? '#d1fae5' : 'transparent';
                 }}
               >
                 {THUMBS_UP} 好
               </button>
               <button
                 onClick={() => handleFeedback(THUMBS_DOWN)}
-                disabled={givenFeedback && givenFeedback !== THUMBS_DOWN ? true : false}
-                title={givenFeedback && givenFeedback !== THUMBS_DOWN ? "已评分，点击查看或修改评论" : "差评 - 帮助改进模型"}
+                disabled={false}
+                title="差评 - 帮助改进模型"
                 style={{
                   background: givenFeedback === THUMBS_DOWN ? '#fee2e2' : 'transparent',
                   border: givenFeedback === THUMBS_DOWN ? '1px solid #fca5a5' : '1px solid #e5e7eb',
                   borderRadius: '4px',
                   padding: '4px 8px',
-                  cursor: givenFeedback && givenFeedback !== THUMBS_DOWN ? 'not-allowed' : 'pointer',
+                  cursor: 'pointer',
                   fontSize: '14px',
                   transition: 'all 0.2s',
-                  opacity: givenFeedback && givenFeedback !== THUMBS_DOWN ? 0.5 : 1
+                  opacity: 1
                 }}
                 onMouseEnter={(e) => {
-                  if (!(givenFeedback && givenFeedback !== THUMBS_DOWN)) {
-                    e.currentTarget.style.background = '#fef2f2';
-                  }
+                  e.currentTarget.style.background = '#fef2f2';
                 }}
                 onMouseLeave={(e) => {
-                  if (!(givenFeedback && givenFeedback !== THUMBS_DOWN)) {
-                    e.currentTarget.style.background = givenFeedback === THUMBS_DOWN ? '#fee2e2' : 'transparent';
-                  }
+                  e.currentTarget.style.background = givenFeedback === THUMBS_DOWN ? '#fee2e2' : 'transparent';
                 }}
               >
                 {THUMBS_DOWN} 差
               </button>
               
               {/* Display existing comment if feedback was given */}
-              {givenFeedback && msg.feedback_comment && (
+              {givenFeedback && commentText && (
                 <div style={{
-                  padding: '2px 6px',
-                  background: '#f0fdf4',
-                  border: '1px solid #bbf7d0',
-                  borderRadius: '3px',
-                  fontSize: '11px',
-                  color: '#166534',
-                  maxWidth: '300px',
-                  wordBreak: 'break-word'
+                  padding: '2px 8px',
+                  background: '#f9fafb',
+                  border: '1px solid #e5e7eb',
+                  borderRadius: '4px',
+                  fontSize: '13px',
+                  color: '#4b5563',
+                  maxWidth: '400px',
+                  wordBreak: 'break-word',
+                  fontStyle: 'italic'
                 }}>
-                  {msg.feedback_comment}
+                  "{commentText}"
                 </div>
               )}
             </div>
@@ -214,10 +209,10 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ msg, sessionId, onFeedbackCha
               boxShadow: '0 20px 25px rgba(0,0,0,0.15)'
             }}>
               <h3 style={{ marginTop: 0, fontSize: '16px', color: '#1f2937' }}>
-                添加评论 {pendingFeedback}
+                {givenFeedback && givenFeedback !== pendingFeedback ? '修改评分' : '添加评论'} {pendingFeedback}
               </h3>
               <p style={{ fontSize: '13px', color: '#6b7280', marginBottom: '12px' }}>
-                请输入您对此回复的评论（可选）
+                {givenFeedback && givenFeedback !== pendingFeedback ? '您正在修改评分。' : ''}请输入您对此回复的评论（可选）
               </p>
               <textarea
                 value={commentText}

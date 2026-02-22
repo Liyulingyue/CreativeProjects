@@ -267,7 +267,9 @@ function Workbench() {
                 isThought: !!(msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0),
                 tool_calls: msg.tool_calls,
                 tool_call_id: msg.tool_call_id,
-                name: msg.name
+                name: msg.name,
+                feedback: msg.feedback,
+                feedback_comment: msg.feedback_comment
               }));
               setMessages(updated);
             }

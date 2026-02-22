@@ -320,20 +320,42 @@ class ChatDatabase:
         feedback: str,
         comment: Optional[str] = None
     ) -> int:
-        """Save user feedback for a message (e.g. '👍', '👎') with optional comment.
+        """Save or update user feedback for a message (e.g. '👍', '👎') with optional comment.
         
+        If feedback already exists for this message, it will be updated.
+        Otherwise, a new feedback record will be created.
         Used for training data collection and model improvement.
         Returns the feedback record ID.
         """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
+        # Check if feedback already exists for this message
         cursor.execute("""
-            INSERT INTO message_feedback (message_id, session_id, feedback, comment)
-            VALUES (?, ?, ?, ?)
-        """, (message_id, session_id, feedback, comment))
+            SELECT id FROM message_feedback
+            WHERE message_id = ?
+        """, (message_id,))
         
-        feedback_id = cursor.lastrowid
+        existing = cursor.fetchone()
+        
+        if existing:
+            # Update existing feedback
+            feedback_id = existing[0]
+            cursor.execute("""
+                UPDATE message_feedback
+                SET feedback = ?, comment = ?, timestamp = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (feedback, comment, feedback_id))
+            print(f"[DEBUG] Updated feedback for message {message_id}: {feedback}")
+        else:
+            # Insert new feedback
+            cursor.execute("""
+                INSERT INTO message_feedback (message_id, session_id, feedback, comment)
+                VALUES (?, ?, ?, ?)
+            """, (message_id, session_id, feedback, comment))
+            feedback_id = cursor.lastrowid
+            print(f"[DEBUG] Created new feedback for message {message_id}: {feedback}")
+        
         conn.commit()
         conn.close()
         return feedback_id
