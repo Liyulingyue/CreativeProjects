@@ -7,39 +7,75 @@ import asyncio
 import time
 from pathlib import Path
 from typing import List, Dict, Optional
+from contextvars import ContextVar
+from contextlib import contextmanager
 from .core.settings import settings
+
+# Concurrency-safe context variables
+_active_session_ctx: ContextVar[Optional[object]] = ContextVar("active_session_ctx", default=None)
+_workspace_override_ctx: ContextVar[Optional[Path]] = ContextVar("workspace_override_ctx", default=None)
+
+@contextmanager
+def set_current_workspace(workspace_path: Optional[Path]):
+    """Context manager to temp set the workspace for current task thread."""
+    token = _workspace_override_ctx.set(workspace_path)
+    try:
+        yield
+    finally:
+        _workspace_override_ctx.reset(token)
 
 class CodeTools:
     """代码相关工具类"""
     
-    _active_session = None
-
     @classmethod
     def set_active_session(cls, session):
-        """Set the active terminal session for interactive execution."""
-        cls._active_session = session
+        """Set the active terminal session in the current context."""
+        _active_session_ctx.set(session)
+
+    @classmethod
+    def get_active_session(cls):
+        """Get the active terminal session from current context."""
+        return _active_session_ctx.get()
+
+    @classmethod
+    def get_current_workspace(cls) -> Path:
+        """Determines the current active workspace directory."""
+        # 1. Use override from context if present
+        ctx_path = _workspace_override_ctx.get()
+        if ctx_path:
+            return ctx_path
+            
+        # 2. Use session's working dir if present
+        session = cls.get_active_session()
+        if session and hasattr(session, 'working_dir') and session.working_dir:
+            return session.working_dir
+            
+        return settings.WORKSPACE_DIR
 
     @staticmethod
     def _resolve_path(path: str) -> Path:
-        """解析并确保路径在 WorkSpace 内"""
+        """解析并确保路径在当前工作区内"""
+        root = CodeTools.get_current_workspace()
         p = Path(path)
         if p.is_absolute():
-            # 如果是绝对路径，尝试检查它是否在 WorkSpace 内
+            # 如果是绝对路径，尝试检查它是否在根目录内
             try:
-                p.relative_to(settings.WORKSPACE_DIR)
+                p.relative_to(root)
                 return p
             except ValueError:
-                # 如果不在，则将其视为相对路径并拼接到 WorkSpace
-                return settings.WORKSPACE_DIR / p.name
-        return settings.WORKSPACE_DIR / p
+                # 如果不在，则将其视为相对路径并拼接到根目录
+                return root / p.name
+        return root / p
 
     @staticmethod
     def execute_bash(command: str) -> str:
-        """执行 Bash 命令 (在 WorkSpace 目录下)"""
+        """执行 Bash 命令 (在当前工作区目录下)"""
         # If we have an active interactive session, use it
-        if CodeTools._active_session:
+        session = CodeTools.get_active_session()
+        if session:
             return CodeTools._execute_interactive(command)
-            
+        
+        root = CodeTools.get_current_workspace()
         try:
             result = subprocess.run(
                 command, 
@@ -47,7 +83,7 @@ class CodeTools:
                 capture_output=True, 
                 text=True, 
                 timeout=30,
-                cwd=str(settings.WORKSPACE_DIR)
+                cwd=str(root)
             )
             output = result.stdout + result.stderr
             return output if output else "(empty output)"
@@ -59,7 +95,7 @@ class CodeTools:
     @staticmethod
     def _execute_interactive(command: str) -> str:
         """Execute command in the persistent PTY session."""
-        session = CodeTools._active_session
+        session = CodeTools.get_active_session()
         if not session:
             return "Error: No active interactive session found."
         

@@ -137,9 +137,11 @@ class SessionManager:
         self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         self._cleanup_thread.start()
 
-    def get_or_create_session(self, session_id: str) -> TerminalSession:
+    def get_or_create_session(self, session_id: str, working_dir: Path = None) -> TerminalSession:
         if session_id not in self.sessions:
-            session = TerminalSession(session_id)
+            # If not provided, use the global default. If global default is none, it uses current dir.
+            actual_dir = working_dir or settings.WORKSPACE_DIR
+            session = TerminalSession(session_id, working_dir=actual_dir)
             session.start()
             self.sessions[session_id] = session
         return self.sessions[session_id]
