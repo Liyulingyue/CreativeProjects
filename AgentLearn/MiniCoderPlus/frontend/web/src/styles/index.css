@@ -1,0 +1,9 @@
+/* styles/index.css
+   Aggregation entry for styles. Initially imports existing App.css
+   Later we will split App.css into modules and import them here.
+*/
+
+@import './base.css';
+@import './layout.css';
+@import './components.css';
+@import './explorer.css';

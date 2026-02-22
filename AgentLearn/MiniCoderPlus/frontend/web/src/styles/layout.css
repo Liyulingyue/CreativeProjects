@@ -1,0 +1,458 @@
+/* layout.css — 布局与面板相关样式 */
+
+.mini-coder-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.app-header {
+  height: 60px;
+  background-color: var(--bg-header);
+  border-bottom: 1px solid #e5e7eb;
+  padding: 0 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+  z-index: 10;
+}
+
+.logo-container {
+  font-weight: bold;
+  font-size: 1.25rem;
+  color: #111827;
+}
+
+.logo-text {
+  background: linear-gradient(to right, #4f46e5, #9333ea);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  font-size: 0.875rem;
+  color: #4b5563;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  background-color: #10b981;
+  border-radius: 50%;
+  margin-right: 8px;
+  box-shadow: 0 0 10px #10b981;
+}
+
+.workbench-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.workbench-main {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.terminal-wrapper {
+  height: 100%;
+  padding: 0;
+  margin: 0;
+  background-color: #1e1e1e;
+  overflow: hidden;
+  position: relative;
+}
+
+.xterm-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 4px;
+}
+
+/* Resizable Panels Styles */
+.h-resizer {
+  width: 4px;
+  background-color: transparent;
+  transition: background-color 0.2s;
+  position: relative;
+  z-index: 10;
+  cursor: col-resize;
+}
+
+.h-resizer:hover,
+.h-resizer[data-panel-group-direction="horizontal"][data-resize-handle-active] {
+  background-color: var(--primary);
+}
+
+.h-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 1px;
+  background-color: #e5e7eb;
+}
+
+.v-resizer {
+  height: 4px;
+  background-color: transparent;
+  transition: background-color 0.2s;
+  position: relative;
+  z-index: 10;
+  cursor: row-resize;
+}
+
+.v-resizer:hover,
+.v-resizer[data-panel-group-direction="vertical"][data-resize-handle-active] {
+  background-color: var(--primary);
+}
+
+.v-resizer::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 1px;
+  background-color: #e5e7eb;
+}
+
+/* Workbench footer & input styles (migrated from App.css) */
+.workbench-chat-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: white;
+  border-left: 1px solid #e5e7eb;
+}
+
+.footer-area {
+  padding: 12px 24px 20px 24px;
+  background: transparent;
+}
+
+.controls-container {
+  max-width: 900px;
+  margin: 0 auto 8px auto;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.stream-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: #6b7280;
+  cursor: pointer;
+  user-select: none;
+  background: #f3f4f6;
+  padding: 4px 10px;
+  border-radius: 8px;
+  transition: all 0.2s;
+}
+
+.stream-toggle:hover {
+  background: #e5e7eb;
+}
+
+.stream-toggle input {
+  cursor: pointer;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+}
+
+.input-container {
+  max-width: 900px;
+  margin: 0 auto;
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 20px;
+  box-shadow: 0 4px 20px -5px rgba(0, 0, 0, 0.08), 0 2px 10px -5px rgba(0, 0, 0, 0.04);
+  transition: all 0.2s ease;
+  overflow: hidden;
+}
+
+.input-container:focus-within {
+  border-color: var(--primary);
+  box-shadow: 0 8px 30px -10px rgba(79, 70, 229, 0.12);
+  transform: translateY(-1px);
+}
+
+.workbench-input-area {
+  padding: 12px 16px;
+  background: white;
+  border-top: 1px solid #e5e7eb;
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.workbench-input-area input {
+  flex: 1;
+  padding: 10px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  font-size: 14px;
+  transition: all 0.2s;
+  outline: none;
+  background: white;
+}
+
+.input-container .workbench-input-area {
+  padding: 8px 8px 8px 16px;
+  border-top: none;
+  background: transparent;
+  width: 100%;
+}
+
+.input-container .workbench-input-area input {
+  border: none;
+  padding: 12px 0;
+  font-size: 16px;
+}
+
+.input-container .workbench-input-area input:focus {
+  box-shadow: none;
+}
+
+.send-btn {
+  background-color: var(--primary);
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  height: 40px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.send-btn:hover:not(:disabled) {
+  background-color: #4338ca;
+  transform: scale(1.05);
+}
+
+.send-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.send-btn:disabled {
+  background-color: #f3f4f6;
+  color: #9ca3af;
+  cursor: not-allowed;
+}
+
+.session-info {
+  font-size: 13px;
+  color: #6b7280;
+  display: flex;
+  align-items: center;
+}
+
+.session-info span {
+  max-width: 40vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+}
+
+.workspace-input-header {
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  padding: 4px 8px;
+  margin: 0 8px;
+  width: 150px;
+  background: #f9fafb;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.workspace-input-header:focus {
+  outline: none;
+  border-color: var(--primary);
+  background: white;
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.1);
+}
+
+.workspace-popover {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 8px;
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  padding: 16px;
+  width: 380px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.workspace-popover h4 {
+  margin: 0;
+  font-size: 14px;
+  color: #111827;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.workspace-popover-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 14px;
+  font-family: inherit;
+}
+
+.workspace-popover-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.workspace-popover-btn {
+  padding: 6px 12px;
+  font-size: 13px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid #e5e7eb;
+  background: white;
+  transition: all 0.2s;
+}
+
+.workspace-popover-btn:hover {
+  background: #f9fafb;
+  border-color: var(--primary);
+}
+
+.workspace-popover-btn.primary {
+  background: var(--primary);
+  color: white;
+  border-color: var(--primary);
+}
+
+.workspace-popover-btn.primary:hover {
+  background: #4338ca;
+}
+
+.abs-path-display {
+  font-size: 12px;
+  color: #6b7280;
+  background: #f3f4f6;
+  padding: 8px;
+  border-radius: 6px;
+  word-break: break-all;
+  border: 1px solid #e5e7eb;
+}
+
+.workspace-trigger-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #374151;
+  transition: all 0.2s;
+  margin-right: 12px; /* space from rest */
+}
+
+.workspace-trigger-btn:hover {
+  background: #e5e7eb;
+}
+
+.workspace-trigger-btn.active {
+  background: #eef2ff;
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+/* Home layout adjustments migrated from App.css */
+.home-main-panels {
+  flex: 1;
+  overflow: hidden;
+  height: 0; /* Important for flex child with overflow */
+}
+
+.chat-interface-wrapper {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: white;
+}
+
+.file-viewer-home {
+  border-left: 1px solid #e5e7eb;
+  border-right: 1px solid #e5e7eb;
+}
+
+.chat-interface-wrapper .chat-container {
+  padding: 16px;
+}
+
+.chat-interface-wrapper .footer-area {
+  padding: 12px 16px;
+}
+
+.chat-interface-wrapper .input-container {
+  max-width: none; /* Occupy full width in the panel */
+}
+
+/* Generic chat container and messages list (migrated from App.css) */
+.chat-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+.messages-list {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+/* Workbench-specific chat container layout details */
+.workbench-chat-container .messages-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.workbench-chat-container .footer-area {
+  flex-shrink: 0;
+  padding: 12px 24px 20px 24px;
+  background: transparent;
+  border-top: 1px solid #f0f0f0;
+}

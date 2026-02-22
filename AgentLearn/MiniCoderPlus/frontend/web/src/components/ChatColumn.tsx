@@ -1,5 +1,6 @@
 import React from 'react';
 import { Panel, PanelResizeHandle } from 'react-resizable-panels';
+import { Send } from 'lucide-react';
 import type { Message } from '../types';
 import ChatMessage from './ChatMessage';
 import LoadingIndicator from './LoadingIndicator';
@@ -10,7 +11,7 @@ interface ChatColumnProps {
   input: string;
   onInputChange: (value: string) => void;
   onSend: () => void;
-  messagesEndRef: React.RefObject<HTMLDivElement>;
+  messagesEndRef: React.RefObject<HTMLDivElement | null>;
   panelId?: string;
   order?: number;
   defaultSize?: number;
@@ -43,12 +44,12 @@ const ChatColumn: React.FC<ChatColumnProps> = ({
         type="text"
         value={input}
         onChange={(e) => onInputChange(e.target.value)}
-        onKeyPress={(e) => e.key === 'Enter' && onSend()}
-        placeholder="Ask Agent to do something..."
+        onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && onSend()}
+        placeholder="Type a message..."
         disabled={loading}
       />
-      <button onClick={onSend} disabled={loading}>
-        {loading ? '...' : 'Run'}
+      <button className="send-btn" onClick={onSend} disabled={loading || !input.trim()}>
+        {loading ? <div className="typing-indicator" style={{justifyContent: 'center'}}><span style={{backgroundColor: 'white'}}></span><span style={{backgroundColor: 'white'}}></span><span style={{backgroundColor: 'white'}}></span></div> : <><Send size={16} /><span>发送</span></>}
       </button>
     </div>
   );

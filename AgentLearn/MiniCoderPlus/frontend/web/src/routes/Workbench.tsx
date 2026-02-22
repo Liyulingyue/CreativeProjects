@@ -1,9 +1,9 @@
-import React, { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import 'xterm/css/xterm.css';
 import { PanelGroup } from 'react-resizable-panels';
-import '../App.css';
+import { Send, Sparkles } from 'lucide-react';
 import type { Message, FileItem } from '../types';
 import AppHeader from '../components/AppHeader';
 import FileExplorerColumn from '../components/FileExplorerColumn';
@@ -15,6 +15,7 @@ function Workbench() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(true);
   const [sessionId] = useState(`session_${Math.random().toString(36).substr(2, 9)}`);
   const [workspace, setWorkspace] = useState(queryParams.get('workspace') || '');
   
@@ -204,7 +205,8 @@ function Workbench() {
     setInput('');
 
     try {
-      const resp = await fetch('/api/v1/chat?stream=1', {
+      const endpoint = isStreaming ? '/api/v1/chat?stream=1' : '/api/v1/chat';
+      const resp = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -215,31 +217,44 @@ function Workbench() {
         }),
       });
 
-      const reader = resp.body!.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
+      if (!isStreaming) {
+        const data = await resp.json();
+        const updated: Message[] = data.history.map((msg: any) => ({
+          role: msg.role,
+          content: msg.content || '',
+          isThought: !!(msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0),
+          tool_calls: msg.tool_calls,
+          tool_call_id: msg.tool_call_id,
+          name: msg.name
+        }));
+        setMessages(updated);
+      } else {
+        const reader = resp.body!.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split('\n\n');
-        buffer = parts.pop() || '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split('\n\n');
+          buffer = parts.pop() || '';
 
-        for (const part of parts) {
+          for (const part of parts) {
             if (!part.startsWith('data:')) continue;
             const json = JSON.parse(part.replace('data: ', ''));
             if (json.type === 'update') {
-                const item = json.item;
-                if (item.role === 'user') continue;
-                setMessages(prev => [...prev, {
-                    role: item.role,
-                    content: item.content || '',
-                    isThought: !!(item.role === 'assistant' && item.tool_calls)
-                }]);
+              const item = json.item;
+              if (item.role === 'user') continue;
+              setMessages(prev => [...prev, {
+                role: item.role,
+                content: item.content || '',
+                isThought: !!(item.role === 'assistant' && item.tool_calls)
+              }]);
             } else if (json.type === 'done') {
-                setMessages(json.history);
+              setMessages(json.history);
             }
+          }
         }
       }
     } catch (e) {
@@ -309,6 +324,46 @@ function Workbench() {
           messagesEndRef={messagesEndRef}
           panelId="wb-chat-panel"
           handleId="wb-handle-chat-h"
+          emptyState={
+            <div className="welcome-message">
+              <h1>Welcome to the Workbench</h1>
+              <p>Use the sidebar to browse files or send a request below.</p>
+              <div className="examples">
+                <button onClick={() => setInput("Show me the workspace files")}>🔎 List files</button>
+                <button onClick={() => setInput("Open file README.md")}>📄 Open README</button>
+              </div>
+            </div>
+          }
+          renderFooter={() => (
+            <footer className="footer-area">
+              <div className="controls-container">
+                <label className="stream-toggle" title="Select whether to stream the agent Response">
+                  <input
+                    type="checkbox"
+                    checked={isStreaming}
+                    onChange={(e) => setIsStreaming(e.target.checked)}
+                  />
+                  <Sparkles size={14} />
+                  <span>Streaming Mode</span>
+                </label>
+              </div>
+              <div className="input-container">
+                <div className="workbench-input-area">
+                  <input
+                    type="text"
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
+                    placeholder="Type your request here..."
+                    disabled={loading}
+                  />
+                  <button className="send-btn" onClick={handleSend} disabled={loading || !input.trim()}>
+                    {loading ? <div className="typing-indicator" style={{justifyContent: 'center'}}><span style={{backgroundColor: 'white'}}></span><span style={{backgroundColor: 'white'}}></span><span style={{backgroundColor: 'white'}}></span></div> : <Send size={18} />}
+                  </button>
+                </div>
+              </div>
+            </footer>
+          )}
         />
       </PanelGroup>
     </div>

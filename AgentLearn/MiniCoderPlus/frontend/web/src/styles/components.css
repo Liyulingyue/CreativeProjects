@@ -1,0 +1,154 @@
+/* components.css — 独立组件样式（消息、按钮、badge 等） */
+
+.message-wrapper {
+  width: fit-content;
+  max-width: 85%;
+  display: flex;
+  margin-bottom: 24px;
+}
+
+.message-wrapper.assistant {
+  align-self: flex-start;
+  margin-right: auto;
+}
+
+.message-wrapper.user {
+  align-self: flex-end;
+  margin-left: auto;
+  flex-direction: row-reverse;
+}
+
+.message-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 12px;
+  background: white;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  font-size: 1.2rem;
+}
+
+.message-content {
+  padding: 12px 16px;
+  border-radius: 12px;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.user .message-content {
+  background-color: var(--bg-message-user);
+  color: var(--text-user);
+  border-top-right-radius: 2px;
+}
+
+.assistant .message-content {
+  background-color: var(--bg-message-assistant);
+  color: var(--text-assistant);
+  border-top-left-radius: 2px;
+}
+
+/* Thought Process Styling */
+.message-wrapper.thought {
+  opacity: 0.8;
+  margin-bottom: 12px;
+}
+
+.message-wrapper.thought .message-content {
+  background-color: #f0f0ff;
+  border: 1px dashed #c7d2fe;
+  font-style: italic;
+  font-size: 0.85rem;
+}
+
+.thought-badge {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  font-weight: bold;
+  color: #6366f1;
+  margin-bottom: 4px;
+  display: block;
+}
+
+/* Home welcome & small utility components migrated from App.css */
+.welcome-message {
+  text-align: center;
+  padding: 48px 0;
+  color: #4b5563;
+}
+
+.welcome-message h1 {
+  font-size: 2rem;
+  color: #111827;
+  margin-bottom: 16px;
+}
+
+.examples {
+  margin-top: 24px;
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+}
+
+/* Loading / typing indicator */
+.typing-indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0;
+}
+
+.typing-indicator span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: #9ca3af;
+  animation: bounce 1.4s infinite ease-in-out both;
+}
+
+.typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
+.typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
+
+@keyframes bounce {
+  0%, 80%, 100% { transform: scale(0); }
+  40% { transform: scale(1); }
+}
+/* Navigation Links - Button Styles */
+.nav-links {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.nav-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 16px;
+  background-color: var(--primary);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(79, 70, 229, 0.2);
+}
+
+.nav-btn:hover {
+  background-color: #4338ca;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);
+}
+
+.nav-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 4px rgba(79, 70, 229, 0.2);
+}

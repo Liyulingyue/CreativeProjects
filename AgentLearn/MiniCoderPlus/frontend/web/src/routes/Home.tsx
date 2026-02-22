@@ -1,6 +1,6 @@
-import React, { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { PanelGroup } from 'react-resizable-panels';
-import '../App.css';
+import { Send, Sparkles } from 'lucide-react';
 import type { Message, FileItem } from '../types';
 import AppHeader from '../components/AppHeader';
 import FileExplorerColumn from '../components/FileExplorerColumn';
@@ -241,12 +241,13 @@ function Home() {
           renderFooter={() => (
             <footer className="footer-area">
               <div className="controls-container">
-                <label className="stream-toggle">
+                <label className="stream-toggle" title="Select whether to stream the agent Response">
                   <input
                     type="checkbox"
                     checked={isStreaming}
                     onChange={(e) => setIsStreaming(e.target.checked)}
                   />
+                  <Sparkles size={14} />
                   <span>Streaming Mode</span>
                 </label>
               </div>
@@ -256,12 +257,12 @@ function Home() {
                     type="text"
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
-                    onKeyPress={(e) => e.key === 'Enter' && handleSend()}
+                    onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
                     placeholder="Type your request here..."
                     disabled={loading}
                   />
                   <button className="send-btn" onClick={handleSend} disabled={loading || !input.trim()}>
-                    {loading ? '...' : 'Send'}
+                    {loading ? <div className="typing-indicator" style={{justifyContent: 'center'}}><span style={{backgroundColor: 'white'}}></span><span style={{backgroundColor: 'white'}}></span><span style={{backgroundColor: 'white'}}></span></div> : <Send size={18} />}
                   </button>
                 </div>
               </div>

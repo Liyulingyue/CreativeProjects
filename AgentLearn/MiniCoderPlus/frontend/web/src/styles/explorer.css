@@ -1,0 +1,154 @@
+/* explorer.css — 文件浏览器与预览相关样式 */
+
+/* File Explorer Container */
+.file-explorer {
+  height: 100%;
+  background: #f9fafb;
+  border-right: 1px solid #e5e7eb;
+  display: flex;
+  flex-direction: column;
+}
+
+.explorer-header {
+  padding: 8px 12px;
+  background: #f3f4f6;
+  border-bottom: 1px solid #e5e7eb;
+  font-size: 11px;
+  font-weight: bold;
+  color: #6b7280;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.refresh-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 10px;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+
+.refresh-btn:hover {
+  opacity: 1;
+}
+
+.explorer-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* Explorer Items */
+.explorer-item {
+  padding: 4px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #374151;
+  transition: background-color 0.15s;
+}
+
+.explorer-item:hover {
+  background: #f1f5f9;
+}
+
+.explorer-item.file.no-peek {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.explorer-item.file.no-peek:hover {
+  background: transparent;
+}
+
+.explorer-item.selected {
+  background: #e2e8f0;
+  color: #1e293b;
+  font-weight: 500;
+}
+
+.explorer-item.directory {
+  font-weight: 600;
+}
+
+/* File Viewer */
+.file-viewer {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+}
+
+.viewer-header {
+  padding: 8px 16px;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  font-size: 18px;
+  cursor: pointer;
+  line-height: 1;
+  transition: opacity 0.2s;
+}
+
+.close-btn:hover {
+  opacity: 0.6;
+}
+
+.viewer-content {
+  flex: 1;
+  margin: 0;
+  padding: 16px;
+  overflow: auto;
+  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  background: #fff;
+  color: #334155;
+  white-space: pre-wrap;
+}
+
+.main-content-area {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Viewer Placeholder */
+.viewer-placeholder {
+  height: 100%;
+  border-left: 1px solid #e5e7eb;
+  border-right: 1px solid #e5e7eb;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #f8fafc;
+}
+
+.placeholder-content {
+  text-align: center;
+  color: #94a3b8;
+}
+
+.placeholder-content .icon {
+  font-size: 32px;
+  display: block;
+  margin-bottom: 8px;
+  opacity: 0.5;
+}
+
+.placeholder-content p {
+  margin: 0;
+  font-size: 14px;
+}

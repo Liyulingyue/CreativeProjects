@@ -7,7 +7,7 @@ interface ViewerTerminalStackProps {
   fileContent: string | null;
   fileLoading: boolean;
   onClearSelection: () => void;
-  termRef: React.RefObject<HTMLDivElement>;
+  termRef: React.RefObject<HTMLDivElement | null>;
   panelId?: string;
   order?: number;
   minSize?: number;
