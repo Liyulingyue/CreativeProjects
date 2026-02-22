@@ -156,9 +156,11 @@ function Home() {
                 isThought: !!(msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0),
                 tool_calls: msg.tool_calls,
                 tool_call_id: msg.tool_call_id,
-                name: msg.name
+                name: msg.name,
+                feedback: msg.feedback,
+                feedback_comment: msg.feedback_comment
               }));
-              setMessages(updated);
+              setMessages(updated)
             }
           }
         }
@@ -186,7 +188,8 @@ function Home() {
         tool_calls: item.tool_calls,
         tool_call_id: item.tool_call_id,
         name: item.name,
-        feedback: item.feedback
+        feedback: item.feedback,
+        feedback_comment: item.feedback_comment
       }));
       console.log('[DEBUG] Loaded history messages:', historyMessages);
       setMessages(historyMessages);
