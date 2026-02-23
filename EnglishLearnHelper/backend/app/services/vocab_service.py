@@ -18,10 +18,16 @@ def parse_vocab_file() -> List[Vocabulary]:
         return []
     
     current_unit = ""
+    line_num = 0
     
     with open(vocab_file, "r", encoding="utf-8") as f:
         for line in f:
+            line_num += 1
             line = line.strip()
+            
+            if line_num <= 16:
+                continue
+            
             if not line:
                 continue
             

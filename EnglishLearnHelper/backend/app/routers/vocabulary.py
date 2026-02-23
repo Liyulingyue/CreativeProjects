@@ -3,7 +3,7 @@ from typing import Optional
 from app.services import vocab_service
 from app.models.vocabulary import Vocabulary
 
-router = APIRouter(prefix="/api/vocabulary", tags=["vocabulary"])
+router = APIRouter(prefix="/vocabulary", tags=["vocabulary"])
 
 @router.get("")
 def get_vocabulary(

@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import vocabulary
 
@@ -12,7 +12,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(vocabulary.router)
+api_router = APIRouter(prefix="/api/v1")
+api_router.include_router(vocabulary.router)
+
+app.include_router(api_router)
 
 @app.get("/")
 def root():
