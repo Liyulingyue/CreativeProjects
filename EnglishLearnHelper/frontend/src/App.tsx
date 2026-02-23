@@ -3,6 +3,7 @@ import Header from './components/Header'
 import Home from './pages/Home'
 import Vocab from './pages/Vocab'
 import Random from './pages/Random'
+import OCR from './pages/OCR'
 
 function App() {
   return (
@@ -13,6 +14,7 @@ function App() {
           <Route path="/" element={<Home />} />
           <Route path="/vocab" element={<Vocab />} />
           <Route path="/random" element={<Random />} />
+          <Route path="/ocr" element={<OCR />} />
         </Routes>
       </main>
     </div>

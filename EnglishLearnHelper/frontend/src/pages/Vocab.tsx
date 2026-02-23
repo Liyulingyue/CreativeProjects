@@ -120,7 +120,7 @@ export default function Vocab() {
           <div className="vocab-grid">
             {displayedList.map((vocab, idx) => (
               <VocabCard
-                key={vocab.id}
+                key={vocab.id || `vocab-${idx}`}
                 index={idx}
                 word={vocab.word}
                 phonetic={vocab.phonetic}

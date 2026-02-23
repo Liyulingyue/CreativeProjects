@@ -243,6 +243,40 @@
   font-size: 15px;
 }
 
+/* Article content */
+.article-section-wrapper {
+  margin-bottom: 24px;
+}
+
+.article-content {
+  background: white;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 24px;
+  margin-bottom: 24px;
+}
+
+.article-section {
+  margin-bottom: 20px;
+}
+
+.article-section:last-child {
+  margin-bottom: 0;
+}
+
+.article-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+
+.article-text {
+  font-size: 15px;
+  line-height: 1.8;
+  color: var(--text-primary);
+}
+
 /* Responsive */
 @media (max-width: 768px) {
   .vocab-card {
@@ -255,4 +289,39 @@
   .page-controls {
     flex-direction: column;
   }
+}
+
+/* OCR */
+.file-input {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: white;
+}
+
+.error-message {
+  color: var(--danger);
+  padding: 12px;
+  background: #fef2f2;
+  border-radius: var(--radius);
+  margin-bottom: 16px;
+}
+
+.ocr-results {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ocr-item {
+  background: white;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+
+.ocr-text {
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--text-primary);
 }
