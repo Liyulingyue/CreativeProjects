@@ -363,8 +363,9 @@ function Workbench() {
       <AppHeader
         title="🛠️ MiniCoder Workbench"
         links={[
-          { to: '/', label: '🔙 Back to Chat' },
-          { to: '/feedback-analysis', label: '📊 Feedback' }
+          { to: '/', label: '🏠 首页' },
+          { to: '/workbench', label: '🛠️ 工作台' },
+          { to: '/feedback-analysis', label: '📊 反馈分析' }
         ]}
         workspace={workspace}
         onWorkspaceChange={setWorkspace}

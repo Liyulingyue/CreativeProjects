@@ -300,26 +300,37 @@
   position: absolute;
   top: 100%;
   right: 0;
-  margin-top: 8px;
+  margin-top: 10px;
   background: white;
-  border: 1px solid #e5e7eb;
+  border: 1px solid #e2e8f0;
   border-radius: 12px;
-  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
-  padding: 16px;
-  width: 380px;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.05);
+  padding: 12px;
+  width: 320px;
   z-index: 1000;
   display: flex;
   flex-direction: column;
   gap: 12px;
+  animation: popoverFadeIn 0.2s ease-out;
+}
+
+@keyframes popoverFadeIn {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .workspace-popover h4 {
   margin: 0;
-  font-size: 14px;
-  color: #111827;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #f1f5f9;
+  font-size: 13px;
+  font-weight: 600;
+  color: #64748b;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
 }
 
 .workspace-popover-input {
@@ -376,25 +387,61 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  background: #f3f4f6;
-  border: 1px solid #e5e7eb;
-  padding: 4px 10px;
-  border-radius: 6px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  padding: 5px 12px;
+  border-radius: 8px;
   cursor: pointer;
   font-size: 13px;
-  color: #374151;
-  transition: all 0.2s;
-  margin-right: 12px; /* space from rest */
+  font-weight: 500;
+  color: #475569;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  margin-right: 12px;
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
 }
 
 .workspace-trigger-btn:hover {
-  background: #e5e7eb;
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #1e293b;
+  transform: translateY(-1px);
+}
+
+.workspace-trigger-btn:active {
+  transform: translateY(0);
 }
 
 .workspace-trigger-btn.active {
-  background: #eef2ff;
-  border-color: var(--primary);
-  color: var(--primary);
+  background: #eff6ff;
+  border-color: #3b82f6;
+  color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+}
+
+/* Nav links in popover */
+.nav-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  font-size: 14px;
+  color: #334155;
+  text-decoration: none;
+  border-radius: 8px;
+  transition: all 0.2s;
+  background: transparent;
+}
+
+.nav-dropdown-item:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+  transform: translateX(4px);
+}
+
+.nav-dropdown-item.active {
+  background: #f0f7ff;
+  color: #0066cc;
+  font-weight: 600;
 }
 
 /* Home layout adjustments migrated from App.css */

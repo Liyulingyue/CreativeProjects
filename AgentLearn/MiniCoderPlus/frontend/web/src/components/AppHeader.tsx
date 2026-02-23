@@ -52,6 +52,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
   const [absolutePath, setAbsolutePath] = React.useState<string>('');
   const [inputValue, setInputValue] = React.useState<string>(workspace || '');
   const [showPopover, setShowPopover] = React.useState<boolean>(false);
+  const [showPagePicker, setShowPagePicker] = React.useState<boolean>(false);
   const [showClearConfirm, setShowClearConfirm] = React.useState<boolean>(false);
   const [showFilesPopover, setShowFilesPopover] = React.useState<boolean>(false);
   const [showHistoryPopover, setShowHistoryPopover] = React.useState<boolean>(false);
@@ -61,6 +62,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
   const clearConfirmRef = React.useRef<HTMLDivElement>(null);
   const filesPopoverRef = React.useRef<HTMLDivElement>(null);
   const historyPopoverRef = React.useRef<HTMLDivElement>(null);
+  const pagePickerRef = React.useRef<HTMLDivElement>(null);
 
   // keep internal input synced when parent workspace prop changes
   React.useEffect(() => {
@@ -136,12 +138,15 @@ const AppHeader: React.FC<AppHeaderProps> = ({
       if (historyPopoverRef.current && !historyPopoverRef.current.contains(e.target as Node)) {
         setShowHistoryPopover(false);
       }
+      if (pagePickerRef.current && !pagePickerRef.current.contains(e.target as Node)) {
+        setShowPagePicker(false);
+      }
     };
-    if (showPopover || showClearConfirm || showFilesPopover || showHistoryPopover) {
+    if (showPopover || showClearConfirm || showFilesPopover || showHistoryPopover || showPagePicker) {
       document.addEventListener('mousedown', handleOutsideClick);
     }
     return () => document.removeEventListener('mousedown', handleOutsideClick);
-  }, [showPopover, showClearConfirm, showFilesPopover, showHistoryPopover]);
+  }, [showPopover, showClearConfirm, showFilesPopover, showHistoryPopover, showPagePicker]);
 
   const handleUpdate = () => {
     if (onWorkspaceChange) onWorkspaceChange(inputValue);
@@ -151,13 +156,36 @@ const AppHeader: React.FC<AppHeaderProps> = ({
 
   return (
     <header className="app-header">
-      <div className="logo-container">{title}</div>
-      <div className="nav-links">
-        {links.map((ln, idx) => (
-          <Link key={idx} to={ln.to} className="nav-btn">
-            {ln.label}
-          </Link>
-        ))}
+      <div className="logo-container" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div style={{ fontWeight: 700 }}>{title}</div>
+          <div ref={pagePickerRef} style={{ position: 'relative', display: 'inline-block' }}>
+            <button
+              className={`workspace-trigger-btn ${showPagePicker ? 'active' : ''}`}
+              onClick={() => setShowPagePicker(!showPagePicker)}
+              title="Open page picker"
+            >
+              📑 更多页面 ▾
+            </button>
+            {showPagePicker && (
+              <div className="workspace-popover" style={{ width: '220px', left: '0', top: '36px' }}>
+                {/* <h4>� 快速切换页面</h4> */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                  {links.map((ln, idx) => (
+                    <Link 
+                      key={idx} 
+                      to={ln.to} 
+                      className="nav-dropdown-item" 
+                      onClick={() => setShowPagePicker(false)}
+                    >
+                      {ln.label}
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
       <div className="session-info" style={{ position: 'relative' }} ref={popoverRef}>
         {onToggleExplorer && (
@@ -168,11 +196,11 @@ const AppHeader: React.FC<AppHeaderProps> = ({
               style={{ marginRight: '8px' }}
               title="File viewing settings"
             >
-              📂 Files Tool
+              📂 文件工具
             </button>
             {showFilesPopover && (
               <div className="workspace-popover" style={{ width: '220px', right: '4px' }}>
-                <h4>📂 Files Settings</h4>
+                <h4>📂 文件设置</h4>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '4px' }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px' }}>
                     <input 
@@ -180,7 +208,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                       checked={!!showExplorer} 
                       onChange={(e) => onToggleExplorer!(e.target.checked)} 
                     />
-                    Enable File Tree
+                    开启文件树
                   </label>
                   <label style={{ 
                     display: 'flex', 
@@ -196,7 +224,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                       checked={!!showFileViewer} 
                       onChange={(e) => onToggleFileViewer!(e.target.checked)} 
                     />
-                     Enable File Preview
+                     开启文件预览
                   </label>
                   {onToggleTerminal && (
                     <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px' }}>
@@ -205,7 +233,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                         checked={!!showTerminal} 
                         onChange={(e) => onToggleTerminal(e.target.checked)} 
                       />
-                      Enable Terminal
+                      开启终端 (PTY)
                     </label>
                   )}
                 </div>
@@ -220,13 +248,13 @@ const AppHeader: React.FC<AppHeaderProps> = ({
               onClick={() => setShowClearConfirm(!showClearConfirm)}
               title="Clear current chat history"
             >
-              🧹 Clear Chat
+              🧹 清除会话
             </button>
             {showClearConfirm && (
               <div className="workspace-popover" style={{ width: '240px', right: '4px' }}>
-                <h4>🧹 Clear Chat?</h4>
+                <h4>🧹 确定清除?</h4>
                 <p style={{ fontSize: '12px', color: '#6b7280', margin: '4px 0 12px 0' }}>
-                  This will remove all current messages.
+                  这将移除当前所有聊天记录。
                 </p>
                 <div className="workspace-popover-actions">
                   <button 
@@ -234,7 +262,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                     onClick={() => setShowClearConfirm(false)}
                       style={{ padding: '4px 8px' }}
                   >
-                    Cancel
+                    取消
                   </button>
                   <button 
                     className="workspace-popover-btn primary" 
@@ -244,7 +272,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                       setShowClearConfirm(false);
                     }}
                   >
-                    Confirm
+                    确认
                   </button>
                 </div>
               </div>
@@ -258,7 +286,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
               onClick={() => setShowHistoryPopover(!showHistoryPopover)}
               title="Load a saved session"
             >
-              📜 历史
+              📜 历史会话
             </button>
             {showHistoryPopover && (
               <div className="workspace-popover" style={{ width: '320px', right: '4px' }}>

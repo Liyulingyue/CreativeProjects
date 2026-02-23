@@ -235,7 +235,11 @@ const FeedbackAnalysis: React.FC = () => {
     <div className="mini-coder-app">
       <AppHeader
         title="📊 反馈分析"
-        links={[{ to: '/', label: '🔙 Back to Chat' }, { to: '/workbench', label: '🛠️ Try Workbench' }]}
+        links={[
+          { to: '/', label: '🏠 首页' },
+          { to: '/workbench', label: '🛠️ 工作台' },
+          { to: '/feedback-analysis', label: '📊 反馈分析' }
+        ]}
         workspace={undefined}
       />
 

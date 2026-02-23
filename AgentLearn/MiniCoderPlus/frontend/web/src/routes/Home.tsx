@@ -368,8 +368,9 @@ function Home() {
       <AppHeader
         title="🚀 MiniCoder Plus"
         links={[
-          { to: '/workbench', label: '🛠️ Try Workbench' },
-          { to: '/feedback-analysis', label: '📊 Feedback' }
+          { to: '/', label: '🏠 首页' },
+          { to: '/workbench', label: '🛠️ 工作台' },
+          { to: '/feedback-analysis', label: '📊 反馈分析' }
         ]}
         workspace={workspace}
         onWorkspaceChange={setWorkspace}
