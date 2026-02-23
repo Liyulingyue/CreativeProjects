@@ -373,14 +373,67 @@
   background: #4338ca;
 }
 
-.abs-path-display {
+.terminal-tabs-container {
+  display: flex;
+  background: #252526;
+  border-bottom: 1px solid #3c3c3c;
+  overflow-x: auto;
+  scrollbar-width: none; /* Hide scrollbar for Chrome/Safari */
+}
+
+.terminal-tabs-container::-webkit-scrollbar {
+  display: none;
+}
+
+.terminal-tab {
+  padding: 6px 14px;
+  cursor: pointer;
   font-size: 12px;
-  color: #6b7280;
-  background: #f3f4f6;
-  padding: 8px;
-  border-radius: 6px;
-  word-break: break-all;
-  border: 1px solid #e5e7eb;
+  color: #969696;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  border-right: 1px solid #3c3c3c;
+  transition: all 0.2s;
+}
+
+.terminal-tab:hover {
+  background: #2d2d2d;
+  color: #cccccc;
+}
+
+.terminal-tab.active {
+  color: #ffffff;
+  background: #1e1e1e;
+  border-bottom: 2px solid #007acc;
+}
+
+.terminal-tab .close-icon {
+  opacity: 0.4;
+  transition: opacity 0.2s;
+  border-radius: 4px;
+}
+
+.terminal-tab .close-icon:hover {
+  opacity: 1;
+  background: #3c3c3c;
+}
+
+.add-terminal-btn {
+  background: transparent;
+  border: none;
+  color: #969696;
+  cursor: pointer;
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  transition: color 0.2s;
+}
+
+.add-terminal-btn:hover {
+  color: #ffffff;
 }
 
 .workspace-trigger-btn {
@@ -442,6 +495,18 @@
   background: #f0f7ff;
   color: #0066cc;
   font-weight: 600;
+}
+
+.abs-path-display {
+  font-size: 12px;
+  color: #64748b;
+  background: #f8fafc;
+  padding: 10px;
+  border-radius: 8px;
+  word-break: break-all;
+  white-space: pre-wrap;
+  border: 1px solid #e2e8f0;
+  line-height: 1.5;
 }
 
 /* Home layout adjustments migrated from App.css */

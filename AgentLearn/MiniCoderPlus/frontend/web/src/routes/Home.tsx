@@ -21,9 +21,12 @@ function Home() {
   const [workspace, setWorkspace] = useState(queryParams.get('workspace') || '');
   const [sessionId, setSessionId] = useState(createSessionId());
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const viewerTermRef = useRef<HTMLDivElement>(null);
-  const terminalInstance = useRef<Terminal | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+
+  // Multi-terminal State
+  const [terminalTabs, setTerminalTabs] = useState<{ id: string; title: string }[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const terminalsRef = useRef<Map<string, { term: Terminal; ws: WebSocket; fit: FitAddon; cleanup?: () => void }>>(new Map());
+  const containersRef = useRef<Map<string, HTMLDivElement | null>>(new Map());
 
   // File Explorer State
   const [showExplorer, setShowExplorer] = useState(false);
@@ -99,114 +102,107 @@ function Home() {
     }
   };
 
-  // Handle Terminal Connection
-  useEffect(() => {
-    // Only initialize terminal if showTerminal is true
-    if (!showTerminal || !viewerTermRef.current) {
-        // Cleanup if hidden
-        if (wsRef.current) wsRef.current.close();
-        if (terminalInstance.current) {
-            terminalInstance.current.dispose();
-            terminalInstance.current = null;
-        }
-        return;
+  const handleAddTerminal = () => {
+    const newId = `term-${Math.random().toString(36).substr(2, 5)}`;
+    const nextNum = terminalTabs.length + 1;
+    setTerminalTabs((prev) => [...prev, { id: newId, title: `终端 ${nextNum}` }]);
+    setActiveTabId(newId);
+    initTerminalSession(newId);
+  };
+
+  const handleCloseTerminal = (id: string) => {
+    const session = terminalsRef.current.get(id);
+    if (session) {
+      session.cleanup?.();
+      session.ws.close();
+      session.term.dispose();
+      terminalsRef.current.delete(id);
     }
+    containersRef.current.delete(id);
+
+    setTerminalTabs((prev) => {
+      const filtered = prev.filter((t) => t.id !== id);
+      if (activeTabId === id) {
+        setActiveTabId(filtered.length > 0 ? filtered[filtered.length - 1].id : null);
+      }
+      return filtered;
+    });
+  };
+
+  const initTerminalSession = (id: string) => {
+    if (terminalsRef.current.has(id)) return;
 
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 13,
       fontFamily: 'Menlo, Monaco, "Courier New", monospace',
-      theme: {
-        background: '#1e1e1e',
-      },
+      theme: { background: '#1e1e1e' },
       convertEol: true,
       scrollback: 5000,
     });
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
-    
-    // Delay opening to ensure container is ready
-    const initTimer = setTimeout(() => {
-        if (!viewerTermRef.current) return;
-        
-        term.open(viewerTermRef.current);
-        
-        let resizeTimeout: any = null;
-        const doFit = () => {
-            if (viewerTermRef.current && viewerTermRef.current.offsetWidth > 0 && viewerTermRef.current.offsetHeight > 0) {
-                try {
-                    fitAddon.fit();
-                    const cols = term.cols;
-                    const rows = term.rows;
-                    if (cols > 0 && rows > 0 && wsRef.current?.readyState === WebSocket.OPEN) {
-                        wsRef.current.send(JSON.stringify({ type: 'resize', cols, rows }));
-                    }
-                } catch (e) {
-                    console.warn("Fit failed", e);
-                }
-            }
-        };
-
-        const debouncedFit = () => {
-            if (resizeTimeout) clearTimeout(resizeTimeout);
-            resizeTimeout = setTimeout(doFit, 100);
-        };
-
-        const resizeObserver = new ResizeObserver(() => {
-            debouncedFit();
-        });
-        
-        resizeObserver.observe(viewerTermRef.current);
-        setTimeout(doFit, 200);
-
-        savedCleanup = () => {
-            resizeObserver.disconnect();
-            if (resizeTimeout) clearTimeout(resizeTimeout);
-        };
-    }, 100);
-
-    let savedCleanup: () => void = () => {};
-    terminalInstance.current = term;
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const backendPort = "8000"; 
     const backendHost = window.location.hostname === 'localhost' ? `localhost:${backendPort}` : window.location.host;
-    const wsUrl = `${protocol}//${backendHost}/ws/terminal/${sessionId}${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''}`;
-    
+    const wsUrl = `${protocol}//${backendHost}/ws/terminal/${sessionId}_${id}${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''}`;
+
     const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
+    terminalsRef.current.set(id, { term, ws, fit: fitAddon });
 
     ws.onopen = () => {
+      term.write("\r\n\x1b[32m[已开启新终端 - ID: " + id + "]\x1b[0m\r\n");
       if (term.cols > 0 && term.rows > 0) {
         ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
       }
-      term.write("\r\n\x1b[32m[Manual Terminal Session - Session: " + sessionId + "]\x1b[0m\r\n");
     };
-
-    ws.onmessage = (event) => {
-      term.write(event.data);
-    };
-
-    ws.onclose = () => {
-      term.write("\r\n\x1b[31m[Disconnected]\x1b[0m\r\n");
-    };
-
+    ws.onmessage = (event) => term.write(event.data);
+    ws.onclose = () => term.write("\r\n\x1b[31m[终端连接已断开]\x1b[0m\r\n");
     term.onData((data) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(data);
-      }
+      if (ws.readyState === WebSocket.OPEN) ws.send(data);
     });
+  };
 
-    return () => {
-      clearTimeout(initTimer);
-      savedCleanup();
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.close();
+  const handleSetTermRef = (id: string, el: HTMLDivElement | null) => {
+    containersRef.current.set(id, el);
+    if (el && terminalsRef.current.has(id)) {
+      const session = terminalsRef.current.get(id)!;
+      if (!session.term.element) {
+        session.term.open(el);
+        const resizeObserver = new ResizeObserver(() => {
+          if (el.offsetWidth > 0 && el.offsetHeight > 0) {
+            try {
+              session.fit.fit();
+              if (session.ws.readyState === WebSocket.OPEN) {
+                session.ws.send(JSON.stringify({ type: 'resize', cols: session.term.cols, rows: session.term.rows }));
+              }
+            } catch (e) { /* ignore fit errors */ }
+          }
+        });
+        resizeObserver.observe(el);
+        session.cleanup = () => resizeObserver.disconnect();
+        setTimeout(() => session.fit.fit(), 200);
       }
-      term.dispose();
-      terminalInstance.current = null;
+    }
+  };
+
+  useEffect(() => {
+    if (showTerminal && terminalTabs.length === 0) {
+      handleAddTerminal();
+    }
+  }, [showTerminal]);
+
+  useEffect(() => {
+    return () => {
+      terminalsRef.current.forEach((s) => {
+        s.cleanup?.();
+        s.ws.close();
+        s.term.dispose();
+      });
+      terminalsRef.current.clear();
     };
-  }, [showTerminal, sessionId, workspace]);
+  }, []);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -415,7 +411,12 @@ function Home() {
             onClearSelection={() => setSelectedFilePath(null)}
             onSave={() => setShowSaveModal(true)}
             onContentChange={setFileContent}
-            termRef={viewerTermRef}
+            terminalTabs={terminalTabs}
+            activeTerminalId={activeTabId || undefined}
+            onSelectTerminal={setActiveTabId}
+            onAddTerminal={handleAddTerminal}
+            onCloseTerminal={handleCloseTerminal}
+            setTermRef={handleSetTermRef}
             panelId="home-viewer-column"
             panelGroupId="home-viewer-v-group"
             autoSaveId="home-viewer-layout"

@@ -1,5 +1,11 @@
 import React from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
+import { Plus, X } from 'lucide-react';
+
+export interface TerminalTab {
+  id: string;
+  title: string;
+}
 
 interface ViewerTerminalStackProps {
   showFileViewer: boolean;
@@ -12,7 +18,15 @@ interface ViewerTerminalStackProps {
   onClearSelection: () => void;
   onSave?: () => void;
   onContentChange?: (content: string) => void;
-  termRef: React.RefObject<HTMLDivElement | null>;
+  termRef?: React.RefObject<HTMLDivElement | null>;
+  // Multi-terminal support
+  terminalTabs?: TerminalTab[];
+  activeTerminalId?: string;
+  onSelectTerminal?: (id: string) => void;
+  onAddTerminal?: () => void;
+  onCloseTerminal?: (id: string) => void;
+  setTermRef?: (id: string, el: HTMLDivElement | null) => void;
+  
   panelId?: string;
   order?: number;
   minSize?: number;
@@ -36,6 +50,12 @@ const ViewerTerminalStack: React.FC<ViewerTerminalStackProps> = ({
   onSave,
   onContentChange,
   termRef,
+  terminalTabs = [],
+  activeTerminalId,
+  onSelectTerminal,
+  onAddTerminal,
+  onCloseTerminal,
+  setTermRef,
   panelId,
   order = 2,
   minSize = 30,
@@ -59,15 +79,15 @@ const ViewerTerminalStack: React.FC<ViewerTerminalStackProps> = ({
                     <div className="viewer-actions">
                       {!isEditing ? (
                         <button onClick={onToggleEdit} className="edit-btn" title="Enter edit mode">
-                          ✏️ Edit
+                          ✏️ 编辑
                         </button>
                       ) : (
                         <>
                           <button onClick={onSave} className="save-btn" title="Save changes">
-                            💾 Save
+                            💾 保存
                           </button>
                           <button onClick={onCancel || onToggleEdit} className="cancel-btn" title="Cancel editing">
-                            ❌ Cancel
+                            ❌ 取消
                           </button>
                         </>
                       )}
@@ -94,7 +114,7 @@ const ViewerTerminalStack: React.FC<ViewerTerminalStackProps> = ({
                 <div className="viewer-placeholder">
                   <div className="placeholder-content">
                     <span className="icon">📄</span>
-                    <p>Select a file to preview</p>
+                    <p>选择一个文件进行预览</p>
                   </div>
                 </div>
               )}
@@ -106,8 +126,56 @@ const ViewerTerminalStack: React.FC<ViewerTerminalStackProps> = ({
 
       {showTerminal && (
         <Panel id={terminalPanelId} order={2} minSize={15} defaultSize={showFileViewer ? 40 : 100}>
-          <div className="terminal-wrapper" style={{ height: '100%', background: '#1e1e1e' }}>
-            <div ref={termRef} className="xterm-container" style={{ height: '100%' }} />
+          <div className="terminal-wrapper" style={{ height: '100%', background: '#1e1e1e', display: 'flex', flexDirection: 'column' }}>
+            {/* Terminal Tab Bar */}
+            {terminalTabs.length > 0 && (
+              <div className="terminal-tabs-container">
+                {terminalTabs.map(tab => (
+                  <div 
+                    key={tab.id}
+                    className={`terminal-tab ${activeTerminalId === tab.id ? 'active' : ''}`}
+                    onClick={() => onSelectTerminal?.(tab.id)}
+                  >
+                    <span>{tab.title}</span>
+                    <X 
+                      size={14} 
+                      className="close-icon"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onCloseTerminal?.(tab.id);
+                      }}
+                    />
+                  </div>
+                ))}
+                <button 
+                  onClick={onAddTerminal}
+                  className="add-terminal-btn"
+                  title="Open new terminal"
+                >
+                  <Plus size={16} />
+                </button>
+              </div>
+            )}
+
+            <div style={{ flex: 1, position: 'relative' }}>
+              {/* Backward compatibility for single terminal */}
+              {terminalTabs.length === 0 && termRef && (
+                <div ref={termRef} className="xterm-container" style={{ height: '100%' }} />
+              )}
+              
+              {/* Multi-terminal containers */}
+              {terminalTabs.map(tab => (
+                <div 
+                  key={tab.id}
+                  ref={el => setTermRef?.(tab.id, el)}
+                  className="xterm-container"
+                  style={{ 
+                    height: '100%', 
+                    display: activeTerminalId === tab.id ? 'block' : 'none' 
+                  }}
+                />
+              ))}
+            </div>
           </div>
         </Panel>
       )}
