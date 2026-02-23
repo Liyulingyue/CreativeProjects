@@ -328,7 +328,10 @@ function Workbench() {
     <div className="workbench-app">
       <AppHeader
         title="🛠️ MiniCoder Workbench"
-        links={[{ to: '/', label: '🔙 Back to Chat' }]}
+        links={[
+          { to: '/', label: '🔙 Back to Chat' },
+          { to: '/feedback-analysis', label: '📊 Feedback' }
+        ]}
         workspace={workspace}
         onWorkspaceChange={setWorkspace}
         onRefreshChat={handleRefreshChat}
@@ -381,6 +384,27 @@ function Workbench() {
           onSend={handleSend}
           messagesEndRef={messagesEndRef}
           sessionId={sessionId}
+          onFeedbackSubmit={async (mid, f, c, context) => {
+            // Enhanced feedback submission with context snapshot sent as JSON body
+            const url = `/api/v1/chat/feedback`;
+            const payload = {
+              message_id: mid,
+              session_id: sessionId,
+              feedback: f,
+              comment: c,
+              context_snapshot: JSON.stringify(context)
+            };
+            
+            try {
+              await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+              });
+            } catch (e) {
+              console.error('Failed to save context feedback', e);
+            }
+          }}
           panelId="wb-chat-panel"
           handleId="wb-handle-chat-h"
           emptyState={

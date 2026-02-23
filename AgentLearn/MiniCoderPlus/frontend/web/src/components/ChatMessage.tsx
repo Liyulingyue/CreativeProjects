@@ -5,6 +5,7 @@ interface ChatMessageProps {
   msg: Message;
   sessionId?: string;
   onFeedbackChange?: (messageId: number, feedback: string) => void;
+  onFeedbackSubmit?: (messageId: number, feedback: string, comment?: string) => void;
 }
 
 const THUMBS_UP = '👍';
@@ -12,7 +13,7 @@ const THUMBS_DOWN = '👎';
 const USER_ICON = '👤';
 const ROBOT_ICON = '🤖';
 
-const ChatMessage: React.FC<ChatMessageProps> = ({ msg, sessionId, onFeedbackChange }) => {
+const ChatMessage: React.FC<ChatMessageProps> = ({ msg, sessionId, onFeedbackChange, onFeedbackSubmit }) => {
   const [givenFeedback, setGivenFeedback] = useState<string | undefined>(msg.feedback);
   const [showCommentInput, setShowCommentInput] = useState(false);
   const [pendingFeedback, setPendingFeedback] = useState<string | null>(null);
@@ -67,25 +68,27 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ msg, sessionId, onFeedbackCha
     if (!msg.id || !sessionId || !pendingFeedback) return;
 
     const comment = commentText.trim() || undefined;
-    setGivenFeedback(pendingFeedback);
-    onFeedbackChange?.(msg.id, pendingFeedback);
+    const feedback = pendingFeedback;
+    setGivenFeedback(feedback);
+    onFeedbackChange?.(msg.id, feedback);
 
-    // Send feedback to backend for training data collection
+    // If onFeedbackSubmit is provided, it handles the API call (usually with context)
+    if (onFeedbackSubmit) {
+      onFeedbackSubmit(msg.id, feedback, comment);
+      setShowCommentInput(false);
+      setPendingFeedback(null);
+      return;
+    }
+
+    // Fallback for when no callback is provided
     const commentParam = comment ? `&comment=${encodeURIComponent(comment)}` : '';
-    const feedbackUrl = `/api/v1/chat/feedback?message_id=${msg.id}&session_id=${encodeURIComponent(sessionId)}&feedback=${encodeURIComponent(pendingFeedback)}${commentParam}`;
-    console.log('[handleFeedback] Sending POST to:', feedbackUrl);
+    const feedbackUrl = `/api/v1/chat/feedback?message_id=${msg.id}&session_id=${encodeURIComponent(sessionId)}&feedback=${encodeURIComponent(feedback)}${commentParam}`;
+    console.log('[handleFeedback] Sending fallback POST to:', feedbackUrl);
     
     try {
       const resp = await fetch(feedbackUrl, { method: 'POST' });
-      console.log('[handleFeedback] Response status:', resp.status);
-      
       if (!resp.ok) {
-        const errText = await resp.text();
-        console.error('[handleFeedback] Failed to save feedback. Status:', resp.status, 'Body:', errText);
         setGivenFeedback(undefined);
-      } else {
-        const result = await resp.json();
-        console.log('[handleFeedback] Success:', result);
       }
     } catch (e) {
       console.error('[handleFeedback] Error:', e);

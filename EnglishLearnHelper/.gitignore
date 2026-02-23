@@ -1,5 +1,7 @@
 # reference codes
 MiniRAG
+backend/Data/*
+!backend/Data/.gitkeep
 
 # virtual environment
 venv/

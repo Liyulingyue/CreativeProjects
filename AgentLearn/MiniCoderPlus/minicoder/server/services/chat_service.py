@@ -161,12 +161,46 @@ class ChatService:
         """Get list of unique sessions with metadata."""
         return self.db.get_sessions()
     
-    def save_feedback(self, message_id: int, session_id: str, feedback: str, comment: Optional[str] = None) -> int:
+    def save_feedback(
+        self, 
+        message_id: int, 
+        session_id: str, 
+        feedback: str, 
+        comment: Optional[str] = None,
+        context_snapshot: Optional[str] = None
+    ) -> int:
         """Save user feedback for a message (training data collection).
         
         This stores user evaluations (thumbs up/down) and optional comments for model improvement analysis.
         """
-        return self.db.save_feedback(message_id, session_id, feedback, comment)
+        return self.db.save_feedback(message_id, session_id, feedback, comment, context_snapshot)
+    
+    def get_feedbacks(
+        self,
+        feedback_type: Optional[str] = None,
+        session_id: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+        order_by: str = 'timestamp DESC'
+    ) -> List[Dict]:
+        """Get all feedbacks with optional filtering for analysis."""
+        return self.db.get_all_feedbacks(feedback_type, session_id, limit, offset, order_by)
+    
+    def get_feedbacks_count(
+        self,
+        feedback_type: Optional[str] = None,
+        session_id: Optional[str] = None
+    ) -> int:
+        """Get total count of feedbacks with optional filtering."""
+        return self.db.get_feedbacks_count(feedback_type, session_id)
+    
+    def delete_feedback(self, feedback_id: int) -> bool:
+        """Delete a feedback record by ID."""
+        return self.db.delete_feedback(feedback_id)
+
+    def delete_feedbacks_batch(self, feedback_ids: List[int]) -> int:
+        """Delete multiple feedback records by IDs."""
+        return self.db.delete_feedbacks_batch(feedback_ids)
     
     def _resolve_workspace(self, workspace: Optional[str]) -> Optional[Path]:
         """Convert workspace string to Path object."""

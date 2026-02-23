@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 """routers/chat.py — Chat and chat history routes."""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Body
 from fastapi.responses import StreamingResponse
 from typing import Dict, List, Optional
-from ..models import ChatRequest, ChatResponse, ChatHistoryResponse, ChatHistoryItem, DeleteResponse, SessionInfo
+from ..models import ChatRequest, ChatResponse, ChatHistoryResponse, ChatHistoryItem, DeleteResponse, SessionInfo, FeedbackRequest
 from ..services.chat_service import ChatService
 
 router = APIRouter(tags=["chat"])
@@ -93,33 +93,104 @@ async def get_sessions():
 
 
 @router.post("/chat/feedback")
-async def save_feedback(
-    message_id: int,
-    session_id: str,
-    feedback: str,
-    comment: Optional[str] = None
-):
+async def save_feedback(request: FeedbackRequest):
     """Save user feedback for a message (training data collection).
     
     Args:
-        message_id: ID of the chat message being evaluated
-        session_id: Session ID for context
-        feedback: Feedback string (e.g. '👍', '👎', 'good', 'bad', etc.)
-        comment: Optional user comment/explanation for the feedback
+        request: Feedback data containing message_id, session_id, feedback, comment, and context_snapshot
     
     Returns:
         Success response with feedback ID for deduplication
     """
     try:
-        print(f"[DEBUG] Received feedback request: message_id={message_id}, session_id={session_id}, feedback={feedback}, comment={comment}")
-        feedback_id = service.save_feedback(message_id, session_id, feedback, comment)
-        print(f"[DEBUG] Saved feedback with ID: {feedback_id}")
+        feedback_id = service.save_feedback(
+            request.message_id, 
+            request.session_id, 
+            request.feedback, 
+            request.comment, 
+            request.context_snapshot
+        )
         return {
             "success": True,
             "feedback_id": feedback_id,
-            "message": f"Feedback '{feedback}' saved for message {message_id}"
+            "message": f"Feedback '{request.feedback}' saved for message {request.message_id}"
         }
     except Exception as e:
-        print(f"[DEBUG] Error saving feedback: {e}")
+        print(f"[ERROR] Error saving feedback: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/chat/feedbacks")
+async def get_feedbacks(
+    feedback_type: Optional[str] = None,
+    session_id: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+    order_by: str = 'timestamp DESC'
+):
+    """Get all feedbacks with optional filtering for analysis.
+    
+    Args:
+        feedback_type: Filter by '👍', '👎' or None for all
+        session_id: Filter by specific session or None for all
+        limit: Number of results per page
+        offset: Pagination offset
+        order_by: Sort order (e.g., 'timestamp DESC', 'feedback ASC')
+    
+    Returns:
+        List of feedbacks with message content and metadata
+    """
+    try:
+        print(f"[DEBUG] get_feedbacks called: feedback_type={feedback_type}, session_id={session_id}, limit={limit}, offset={offset}, order_by={order_by}")
+        items = service.get_feedbacks(feedback_type, session_id, limit, offset, order_by)
+        total = service.get_feedbacks_count(feedback_type, session_id)
+        
+        print(f"[DEBUG] Got {len(items)} feedbacks, total={total}")
+        return {
+            "items": items,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "filters": {
+                "feedback_type": feedback_type,
+                "session_id": session_id
+            }
+        }
+    except Exception as e:
+        import traceback
+        print(f"[ERROR] Failed to get feedbacks: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/chat/feedback/{feedback_id}", response_model=DeleteResponse)
+async def delete_feedback(feedback_id: int):
+    """Delete a feedback record."""
+    try:
+        success = service.delete_feedback(feedback_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Feedback not found")
+        return DeleteResponse(
+            message="Feedback record deleted",
+            deleted_count=1
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERROR] Failed to delete feedback {feedback_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/chat/feedbacks/batch", response_model=DeleteResponse)
+async def delete_feedbacks_batch(feedback_ids: List[int] = Body(...)):
+    """Delete multiple feedback records."""
+    try:
+        deleted_count = service.delete_feedbacks_batch(feedback_ids)
+        return DeleteResponse(
+            message=f"Deleted {deleted_count} feedback records",
+            deleted_count=deleted_count
+        )
+    except Exception as e:
+        print(f"[ERROR] Failed to batch delete feedbacks: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 

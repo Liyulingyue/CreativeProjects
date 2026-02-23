@@ -14,6 +14,7 @@ interface ChatColumnProps {
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
   sessionId?: string;
   onFeedbackChange?: (messageId: number, feedback: string) => void;
+  onFeedbackSubmit?: (messageId: number, feedback: string, comment?: string, context?: Message[]) => void;
   panelId?: string;
   order?: number;
   defaultSize?: number;
@@ -33,6 +34,7 @@ const ChatColumn: React.FC<ChatColumnProps> = ({
   messagesEndRef,
   sessionId,
   onFeedbackChange,
+  onFeedbackSubmit,
   panelId,
   order = 3,
   defaultSize = 30,
@@ -71,6 +73,12 @@ const ChatColumn: React.FC<ChatColumnProps> = ({
                 msg={msg} 
                 sessionId={sessionId}
                 onFeedbackChange={onFeedbackChange}
+                onFeedbackSubmit={(mid, f, c) => {
+                  // Keep at most 5 messages as context (current message + 4 preceding)
+                  // This captures enough context for analysis while saving storage space
+                  const context = messages.slice(Math.max(0, i - 4), i + 1);
+                  onFeedbackSubmit?.(mid, f, c, context);
+                }}
               />
             ))}
             {loading && <LoadingIndicator />}
