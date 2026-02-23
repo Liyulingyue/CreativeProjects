@@ -61,6 +61,7 @@ class ChatDatabase:
                 session_id TEXT NOT NULL,
                 feedback TEXT NOT NULL,
                 comment TEXT,
+                context_snapshot TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (message_id) REFERENCES chat_messages(id)
             )
@@ -69,6 +70,12 @@ class ChatDatabase:
         # Try to add comment column if it doesn't exist (for migration)
         try:
             cursor.execute("ALTER TABLE message_feedback ADD COLUMN comment TEXT")
+        except:
+            pass
+
+        # Try to add context_snapshot column if it doesn't exist (for migration)
+        try:
+            cursor.execute("ALTER TABLE message_feedback ADD COLUMN context_snapshot TEXT")
         except:
             pass
         
@@ -318,9 +325,10 @@ class ChatDatabase:
         message_id: int,
         session_id: str,
         feedback: str,
-        comment: Optional[str] = None
+        comment: Optional[str] = None,
+        context_snapshot: Optional[str] = None
     ) -> int:
-        """Save or update user feedback for a message (e.g. '👍', '👎') with optional comment.
+        """Save or update user feedback for a message (e.g. '👍', '👎') with optional comment and context.
         
         If feedback already exists for this message, it will be updated.
         Otherwise, a new feedback record will be created.
@@ -331,11 +339,7 @@ class ChatDatabase:
         cursor = conn.cursor()
         
         # Check if feedback already exists for this message
-        cursor.execute("""
-            SELECT id FROM message_feedback
-            WHERE message_id = ?
-        """, (message_id,))
-        
+        cursor.execute("SELECT id FROM message_feedback WHERE message_id = ?", (message_id,))
         existing = cursor.fetchone()
         
         if existing:
@@ -343,18 +347,16 @@ class ChatDatabase:
             feedback_id = existing[0]
             cursor.execute("""
                 UPDATE message_feedback
-                SET feedback = ?, comment = ?, timestamp = CURRENT_TIMESTAMP
+                SET feedback = ?, comment = ?, context_snapshot = ?, timestamp = CURRENT_TIMESTAMP
                 WHERE id = ?
-            """, (feedback, comment, feedback_id))
-            print(f"[DEBUG] Updated feedback for message {message_id}: {feedback}")
+            """, (feedback, comment, context_snapshot, feedback_id))
         else:
             # Insert new feedback
             cursor.execute("""
-                INSERT INTO message_feedback (message_id, session_id, feedback, comment)
-                VALUES (?, ?, ?, ?)
-            """, (message_id, session_id, feedback, comment))
+                INSERT INTO message_feedback (message_id, session_id, feedback, comment, context_snapshot)
+                VALUES (?, ?, ?, ?, ?)
+            """, (message_id, session_id, feedback, comment, context_snapshot))
             feedback_id = cursor.lastrowid
-            print(f"[DEBUG] Created new feedback for message {message_id}: {feedback}")
         
         conn.commit()
         conn.close()
@@ -385,4 +387,151 @@ class ChatDatabase:
                 "timestamp": row["timestamp"]
             }
         return None
+
+    def get_all_feedbacks(
+        self,
+        feedback_type: Optional[str] = None,
+        session_id: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+        order_by: str = 'timestamp DESC'
+    ) -> List[Dict]:
+        """Get all feedbacks with optional filtering.
+        
+        Args:
+            feedback_type: Filter by '👍', '👎' or None for all
+            session_id: Filter by session_id or None for all
+            limit: Number of results per page
+            offset: Pagination offset
+            order_by: Order clause (default: 'timestamp DESC')
+        
+        Returns:
+            List of feedback records with message content
+        """
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Build WHERE clause
+        where_clauses = []
+        params = []
+        
+        if feedback_type:
+            where_clauses.append("f.feedback = ?")
+            params.append(feedback_type)
+        
+        if session_id:
+            where_clauses.append("f.session_id = ?")
+            params.append(session_id)
+        
+        where_clause = " AND ".join(where_clauses) if where_clauses else "1=1"
+        
+        # Ensure order_by references the feedback table to avoid ambiguity
+        order_by_clause = order_by
+        if not order_by_clause.startswith('f.') and not order_by_clause.startswith('m.'):
+            order_by_clause = f"f.{order_by_clause}"
+        
+        query = f"""
+            SELECT f.id, f.message_id, f.session_id, f.feedback, f.comment, f.context_snapshot, f.timestamp,
+                   m.content as message_content, m.role
+            FROM message_feedback f
+            LEFT JOIN chat_messages m ON f.message_id = m.id
+            WHERE {where_clause}
+            ORDER BY {order_by_clause}
+            LIMIT ? OFFSET ?
+        """
+        
+        params.extend([limit, offset])
+        print(f"[DEBUG] get_all_feedbacks query: {query}")
+        print(f"[DEBUG] get_all_feedbacks params: {params}")
+        try:
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            conn.close()
+            
+            result = []
+            for row in rows:
+                result.append({
+                    "id": row["id"],
+                    "message_id": row["message_id"],
+                    "session_id": row["session_id"],
+                    "feedback": row["feedback"],
+                    "comment": row["comment"],
+                    "context_snapshot": row["context_snapshot"],
+                    "timestamp": row["timestamp"],
+                    "message_content": row["message_content"],
+                    "role": row["role"]
+                })
+            print(f"[DEBUG] get_all_feedbacks result count: {len(result)}")
+            return result
+        except Exception as e:
+            print(f"[ERROR] get_all_feedbacks failed: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+            conn.close()
+            raise
+        return result
+    
+    def get_feedbacks_count(
+        self,
+        feedback_type: Optional[str] = None,
+        session_id: Optional[str] = None
+    ) -> int:
+        """Get total count of feedbacks with optional filtering."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        where_clauses = []
+        params = []
+        
+        if feedback_type:
+            where_clauses.append("f.feedback = ?")
+            params.append(feedback_type)
+        
+        if session_id:
+            where_clauses.append("f.session_id = ?")
+            params.append(session_id)
+        
+        where_clause = " AND ".join(where_clauses) if where_clauses else "1=1"
+        
+        query = f"""
+            SELECT COUNT(*) as cnt FROM message_feedback f
+            WHERE {where_clause}
+        """
+        print(f"[DEBUG] get_feedbacks_count query: {query}, params: {params}")
+        cursor.execute(query, params)
+        
+        result = cursor.fetchone()
+        conn.close()
+        count_val = result[0] if result else 0
+        print(f"[DEBUG] get_feedbacks_count result: {count_val}")
+        return count_val
+
+    def delete_feedback(self, feedback_id: int) -> bool:
+        """Delete a feedback record by ID. Returns True if deleted."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute("DELETE FROM message_feedback WHERE id = ?", (feedback_id,))
+        count = cursor.rowcount
+        
+        conn.commit()
+        conn.close()
+        return count > 0
+
+    def delete_feedbacks_batch(self, feedback_ids: List[int]) -> int:
+        """Delete multiple feedback records by IDs. Returns count of deleted records."""
+        if not feedback_ids:
+            return 0
+            
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        placeholders = ",".join(["?" for _ in feedback_ids])
+        cursor.execute(f"DELETE FROM message_feedback WHERE id IN ({placeholders})", feedback_ids)
+        count = cursor.rowcount
+        
+        conn.commit()
+        conn.close()
+        return count
 

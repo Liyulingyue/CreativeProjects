@@ -81,3 +81,12 @@ class SessionInfo(BaseModel):
     last_activity: str
     good_count: int = 0  # Number of positive feedbacks
     bad_count: int = 0   # Number of negative feedbacks
+
+
+class FeedbackRequest(BaseModel):
+    """User feedback for a message."""
+    message_id: int
+    session_id: str
+    feedback: str
+    comment: Optional[str] = None
+    context_snapshot: Optional[str] = None

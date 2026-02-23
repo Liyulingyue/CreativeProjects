@@ -9,8 +9,8 @@ export interface LinkItem {
 interface AppHeaderProps {
   title: string;                     // can contain emoji/text
   links: LinkItem[];                // navigation links on left side
-  workspace: string;                // current workspace value
-  onWorkspaceChange: (ws: string) => void;
+  workspace?: string;               // current workspace value
+  onWorkspaceChange?: (ws: string) => void;
   onRefreshChat?: () => void;       // optional: callback to clear/refresh chat
   showExplorer?: boolean;           // current explorer state
   onToggleExplorer?: (val: boolean) => void;
@@ -46,7 +46,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
   statusText,
 }) => {
   const [absolutePath, setAbsolutePath] = React.useState<string>('');
-  const [inputValue, setInputValue] = React.useState<string>(workspace);
+  const [inputValue, setInputValue] = React.useState<string>(workspace || '');
   const [showPopover, setShowPopover] = React.useState<boolean>(false);
   const [showClearConfirm, setShowClearConfirm] = React.useState<boolean>(false);
   const [showFilesPopover, setShowFilesPopover] = React.useState<boolean>(false);
@@ -60,7 +60,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
 
   // keep internal input synced when parent workspace prop changes
   React.useEffect(() => {
-    setInputValue(workspace);
+    setInputValue(workspace || '');
   }, [workspace]);
 
   const resolveAbsolute = React.useCallback(async (pathToResolve: string) => {
@@ -81,7 +81,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
   }, []);
 
   React.useEffect(() => {
-    resolveAbsolute(workspace);
+    resolveAbsolute(workspace || '');
   }, [workspace, resolveAbsolute]);
 
   const fetchSessions = React.useCallback(async () => {
@@ -140,7 +140,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
   }, [showPopover, showClearConfirm, showFilesPopover, showHistoryPopover]);
 
   const handleUpdate = () => {
-    onWorkspaceChange(inputValue);
+    if (onWorkspaceChange) onWorkspaceChange(inputValue);
     resolveAbsolute(inputValue);
     setShowPopover(false);
   };
@@ -268,17 +268,19 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                           <span style={{ fontSize: '13px', fontWeight: 600, width: '100%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                             {session.session_id}
                           </span>
-                          <span style={{ fontSize: '11px', color: '#6b7280' }}>
-                            {session.workspace ? `${session.workspace} · ` : ''}
-                            {formatTimestamp(session.last_activity)}
-                          </span>
-                          {(session.good_count !== undefined || session.bad_count !== undefined) && (
-                            (session.good_count || 0) + (session.bad_count || 0) > 0 && (
-                              <span style={{ fontSize: '11px', color: '#059669', marginTop: '2px' }}>
-                                👍 {session.good_count || 0} &nbsp; 👎 {session.bad_count || 0}
-                              </span>
-                            )
-                          )}
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', gap: '8px' }}>
+                            <span style={{ fontSize: '11px', color: '#6b7280', flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {session.workspace ? `${session.workspace} · ` : ''}
+                              {formatTimestamp(session.last_activity)}
+                            </span>
+                            {(session.good_count !== undefined || session.bad_count !== undefined) && (
+                              (session.good_count || 0) + (session.bad_count || 0) > 0 && (
+                                <span style={{ fontSize: '11px', color: '#059669', whiteSpace: 'nowrap' }}>
+                                  👍 {session.good_count || 0} 👎 {session.bad_count || 0}
+                                </span>
+                              )
+                            )}
+                          </div>
                         </button>
                         <button
                           className="workspace-popover-btn"
@@ -313,50 +315,54 @@ const AppHeader: React.FC<AppHeaderProps> = ({
           </div>
         )}
         &nbsp;
-        <div 
-          className={`workspace-trigger-btn ${showPopover ? 'active' : ''}`}
-          onClick={() => setShowPopover(!showPopover)}
-        >
-          📂 {workspace || '工作区'}
-        </div>
-
-        {showPopover && (
-          <div className="workspace-popover">
-            <h4>📂 Workspace Settings</h4>
-            
-            <div className="abs-path-display">
-              <div style={{fontWeight: 'bold', marginBottom: '4px'}}>Absolute Path:</div>
-              {absolutePath || 'Resolving...'}
+        {onWorkspaceChange && (
+          <>
+            <div 
+              className={`workspace-trigger-btn ${showPopover ? 'active' : ''}`}
+              onClick={() => setShowPopover(!showPopover)}
+            >
+              📂 {workspace || '工作区'}
             </div>
 
-            <input
-              type="text"
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              placeholder="e.g. WorkSpace, /tmp, or none"
-              className="workspace-popover-input"
-              autoFocus
-            />
+            {showPopover && (
+              <div className="workspace-popover">
+                <h4>📂 Workspace Settings</h4>
+                
+                <div className="abs-path-display">
+                  <div style={{fontWeight: 'bold', marginBottom: '4px'}}>Absolute Path:</div>
+                  {absolutePath || 'Resolving...'}
+                </div>
 
-            <div className="workspace-popover-actions">
-              <button
-                className="workspace-popover-btn"
-                onClick={() => {
-                  // reset to default workspace name without changing absolute path
-                  const defaultName = 'WorkSpace';
-                  setInputValue(defaultName);
-                }}
-              >
-                🔁 Reset
-              </button>
-              <button
-                className="workspace-popover-btn primary"
-                onClick={handleUpdate}
-              >
-                ✏️ Apply
-              </button>
-            </div>
-          </div>
+                <input
+                  type="text"
+                  value={inputValue}
+                  onChange={(e) => setInputValue(e.target.value)}
+                  placeholder="e.g. WorkSpace, /tmp, or none"
+                  className="workspace-popover-input"
+                  autoFocus
+                />
+
+                <div className="workspace-popover-actions">
+                  <button
+                    className="workspace-popover-btn"
+                    onClick={() => {
+                      // reset to default workspace name without changing absolute path
+                      const defaultName = 'WorkSpace';
+                      setInputValue(defaultName);
+                    }}
+                  >
+                    🔁 Reset
+                  </button>
+                  <button
+                    className="workspace-popover-btn primary"
+                    onClick={handleUpdate}
+                  >
+                    ✏️ Apply
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
         )}
 
         {sessionId && (

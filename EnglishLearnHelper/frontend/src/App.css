@@ -1,42 +1,124 @@
-#root {
-  max-width: 1280px;
+.app {
+  max-width: 900px;
   margin: 0 auto;
-  padding: 2rem;
+  padding: 20px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+header {
   text-align: center;
+  margin-bottom: 30px;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: filter 300ms;
-}
-.logo:hover {
-  filter: drop-shadow(0 0 2em #646cffaa);
-}
-.logo.react:hover {
-  filter: drop-shadow(0 0 2em #61dafbaa);
+header h1 {
+  color: #333;
+  margin-bottom: 10px;
 }
 
-@keyframes logo-spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
+header p {
+  color: #666;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  a:nth-of-type(2) .logo {
-    animation: logo-spin infinite 20s linear;
-  }
+.search-box {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 30px;
+  justify-content: center;
 }
 
-.card {
-  padding: 2em;
+.search-box input {
+  flex: 1;
+  max-width: 400px;
+  padding: 12px 16px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-size: 16px;
 }
 
-.read-the-docs {
-  color: #888;
+.search-box button {
+  padding: 12px 24px;
+  background: #4a90d9;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 16px;
+}
+
+.search-box button:hover {
+  background: #357abd;
+}
+
+.vocab-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.vocab-card {
+  display: grid;
+  grid-template-columns: 150px 120px 60px 1fr;
+  gap: 12px;
+  padding: 16px;
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 8px;
+  align-items: center;
+}
+
+.vocab-card .word {
+  font-size: 20px;
+  font-weight: bold;
+  color: #333;
+}
+
+.vocab-card .phonetic {
+  color: #666;
+  font-size: 14px;
+}
+
+.vocab-card .pos {
+  color: #4a90d9;
+  font-size: 14px;
+  font-style: italic;
+}
+
+.vocab-card .definition {
+  color: #333;
+  font-size: 15px;
+}
+
+.vocab-card .unit {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: #999;
+  border-top: 1px solid #eee;
+  padding-top: 8px;
+  margin-top: 4px;
+}
+
+.pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 20px;
+  margin-top: 30px;
+}
+
+.pagination button {
+  padding: 10px 20px;
+  background: #4a90d9;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.pagination button:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+.pagination span {
+  color: #666;
 }

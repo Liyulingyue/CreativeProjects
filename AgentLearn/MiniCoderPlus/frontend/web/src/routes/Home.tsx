@@ -218,7 +218,10 @@ function Home() {
     <div className="mini-coder-app">
       <AppHeader
         title="🚀 MiniCoder Plus"
-        links={[{ to: '/workbench', label: '🛠️ Try Workbench' }]}
+        links={[
+          { to: '/workbench', label: '🛠️ Try Workbench' },
+          { to: '/feedback-analysis', label: '📊 Feedback' }
+        ]}
         workspace={workspace}
         onWorkspaceChange={setWorkspace}
         onRefreshChat={handleRefreshChat}
@@ -274,6 +277,27 @@ function Home() {
           onSend={handleSend}
           messagesEndRef={messagesEndRef}
           sessionId={sessionId}
+          onFeedbackSubmit={async (mid, f, c, context) => {
+            // Enhanced feedback submission with context snapshot sent as JSON body
+            const url = `/api/v1/chat/feedback`;
+            const payload = {
+              message_id: mid,
+              session_id: sessionId,
+              feedback: f,
+              comment: c,
+              context_snapshot: JSON.stringify(context)
+            };
+            
+            try {
+              await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+              });
+            } catch (e) {
+              console.error('Failed to save context feedback', e);
+            }
+          }}
           panelId="home-chat-panel"
           handleId="home-handle-chat"
           showHandle={showFileViewer && showExplorer}
