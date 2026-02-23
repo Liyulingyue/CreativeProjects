@@ -1,4 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
+import { Terminal } from 'xterm';
+import { FitAddon } from 'xterm-addon-fit';
+import 'xterm/css/xterm.css';
 import { PanelGroup } from 'react-resizable-panels';
 import { Send, Sparkles } from 'lucide-react';
 import type { Message, FileItem } from '../types';
@@ -18,10 +21,13 @@ function Home() {
   const [sessionId, setSessionId] = useState(createSessionId());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const viewerTermRef = useRef<HTMLDivElement>(null);
+  const terminalInstance = useRef<Terminal | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
 
   // File Explorer State
   const [showExplorer, setShowExplorer] = useState(false);
   const [showFileViewer, setShowFileViewer] = useState(false);
+  const [showTerminal, setShowTerminal] = useState(false);
   const [explorerData, setExplorerData] = useState<FileItem[]>([]);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string | null>(null);
@@ -58,6 +64,115 @@ function Home() {
     };
     fetchFile();
   }, [selectedFilePath]);
+
+  // Handle Terminal Connection
+  useEffect(() => {
+    // Only initialize terminal if showTerminal is true
+    if (!showTerminal || !viewerTermRef.current) {
+        // Cleanup if hidden
+        if (wsRef.current) wsRef.current.close();
+        if (terminalInstance.current) {
+            terminalInstance.current.dispose();
+            terminalInstance.current = null;
+        }
+        return;
+    }
+
+    const term = new Terminal({
+      cursorBlink: true,
+      fontSize: 13,
+      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+      theme: {
+        background: '#1e1e1e',
+      },
+      convertEol: true,
+      scrollback: 5000,
+    });
+    const fitAddon = new FitAddon();
+    term.loadAddon(fitAddon);
+    
+    // Delay opening to ensure container is ready
+    const initTimer = setTimeout(() => {
+        if (!viewerTermRef.current) return;
+        
+        term.open(viewerTermRef.current);
+        
+        let resizeTimeout: any = null;
+        const doFit = () => {
+            if (viewerTermRef.current && viewerTermRef.current.offsetWidth > 0 && viewerTermRef.current.offsetHeight > 0) {
+                try {
+                    fitAddon.fit();
+                    const cols = term.cols;
+                    const rows = term.rows;
+                    if (cols > 0 && rows > 0 && wsRef.current?.readyState === WebSocket.OPEN) {
+                        wsRef.current.send(JSON.stringify({ type: 'resize', cols, rows }));
+                    }
+                } catch (e) {
+                    console.warn("Fit failed", e);
+                }
+            }
+        };
+
+        const debouncedFit = () => {
+            if (resizeTimeout) clearTimeout(resizeTimeout);
+            resizeTimeout = setTimeout(doFit, 100);
+        };
+
+        const resizeObserver = new ResizeObserver(() => {
+            debouncedFit();
+        });
+        
+        resizeObserver.observe(viewerTermRef.current);
+        setTimeout(doFit, 200);
+
+        savedCleanup = () => {
+            resizeObserver.disconnect();
+            if (resizeTimeout) clearTimeout(resizeTimeout);
+        };
+    }, 100);
+
+    let savedCleanup: () => void = () => {};
+    terminalInstance.current = term;
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const backendPort = "8000"; 
+    const backendHost = window.location.hostname === 'localhost' ? `localhost:${backendPort}` : window.location.host;
+    const wsUrl = `${protocol}//${backendHost}/ws/terminal/${sessionId}${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''}`;
+    
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      if (term.cols > 0 && term.rows > 0) {
+        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      }
+      term.write("\r\n\x1b[32m[Manual Terminal Session - Session: " + sessionId + "]\x1b[0m\r\n");
+    };
+
+    ws.onmessage = (event) => {
+      term.write(event.data);
+    };
+
+    ws.onclose = () => {
+      term.write("\r\n\x1b[31m[Disconnected]\x1b[0m\r\n");
+    };
+
+    term.onData((data) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(data);
+      }
+    });
+
+    return () => {
+      clearTimeout(initTimer);
+      savedCleanup();
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.close();
+      }
+      term.dispose();
+      terminalInstance.current = null;
+    };
+  }, [showTerminal, sessionId, workspace]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -234,6 +349,8 @@ function Home() {
           setShowFileViewer(val);
           if (!val) setSelectedFilePath(null);
         }}
+        showTerminal={showTerminal}
+        onToggleTerminal={setShowTerminal}
         sessionId={sessionId}
       />
 
@@ -251,7 +368,7 @@ function Home() {
           />
         )}
 
-        {(showFileViewer && showExplorer) && (
+        {(showFileViewer || showTerminal) && (
           <ViewerTerminalStack
             showFileViewer={showFileViewer && showExplorer}
             selectedFilePath={selectedFilePath}
@@ -265,7 +382,7 @@ function Home() {
             viewerPanelId="home-viewer-panel"
             viewerHandleId="home-handle-viewer"
             terminalPanelId="home-terminal-panel"
-            showTerminal={false}
+            showTerminal={showTerminal}
           />
         )}
 
