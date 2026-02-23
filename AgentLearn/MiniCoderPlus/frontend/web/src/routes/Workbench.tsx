@@ -9,6 +9,7 @@ import AppHeader from '../components/AppHeader';
 import FileExplorerColumn from '../components/FileExplorerColumn';
 import ViewerTerminalStack from '../components/ViewerTerminalStack';
 import ChatColumn from '../components/ChatColumn';
+import Modal from '../components/Modal';
 
 function Workbench() {
   const createSessionId = () => `session_${Math.random().toString(36).substr(2, 9)}`;
@@ -28,6 +29,9 @@ function Workbench() {
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [fileLoading, setFileLoading] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [showSaveModal, setShowSaveModal] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   const termRef = useRef<HTMLDivElement>(null);
   const terminalInstance = useRef<Terminal | null>(null);
@@ -48,23 +52,52 @@ function Workbench() {
   }, [showExplorer, workspace]);
 
   // Fetch file content
+  const fetchFile = async (path: string) => {
+    setFileLoading(true);
+    try {
+      const resp = await fetch(`/api/v1/files/read?path=${encodeURIComponent(path)}`);
+      if (!resp.ok) throw new Error('Not found');
+      const data = await resp.json();
+      setFileContent(data.content);
+    } catch (e) {
+      setFileContent('Error loading file.');
+    } finally {
+      setFileLoading(false);
+    }
+  };
+
   useEffect(() => {
-    const fetchFile = async () => {
-      if (!selectedFilePath) return;
-      setFileLoading(true);
-      try {
-        const resp = await fetch(`/api/v1/files/read?path=${encodeURIComponent(selectedFilePath)}`);
-        if (!resp.ok) throw new Error('Not found');
-        const data = await resp.json();
-        setFileContent(data.content);
-      } catch (e) {
-        setFileContent('Error loading file.');
-      } finally {
-        setFileLoading(false);
-      }
-    };
-    fetchFile();
+    if (!selectedFilePath) return;
+    setIsEditing(false); // Reset editing mode on file change
+    fetchFile(selectedFilePath);
   }, [selectedFilePath]);
+
+  const handleCancelEdit = () => {
+    setIsEditing(false);
+    if (selectedFilePath) fetchFile(selectedFilePath);
+  };
+
+  const handleSaveFile = async () => {
+    if (!selectedFilePath || fileContent === null) return;
+    setIsSaving(true);
+    try {
+      const resp = await fetch('/api/v1/files/write', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          path: selectedFilePath,
+          content: fileContent
+        })
+      });
+      if (!resp.ok) throw new Error('Save failed');
+      setShowSaveModal(false);
+    } catch (e) {
+      console.error('Error saving file', e);
+      alert('Failed to save file');
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
   // Initialize Terminal
   useEffect(() => {
@@ -370,7 +403,12 @@ function Workbench() {
             selectedFilePath={selectedFilePath}
             fileContent={fileContent}
             fileLoading={fileLoading}
+            isEditing={isEditing}
+            onToggleEdit={() => setIsEditing(!isEditing)}
+            onCancel={handleCancelEdit}
             onClearSelection={() => setSelectedFilePath(null)}
+            onSave={() => setShowSaveModal(true)}
+            onContentChange={setFileContent}
             termRef={termRef}
             panelId="wb-middle-column"
             panelGroupId="wb-middle-vertical-group"
@@ -455,6 +493,37 @@ function Workbench() {
           )}
         />
       </PanelGroup>
+
+      {showSaveModal && (
+        <Modal
+          isOpen={showSaveModal}
+          title="Save Changes?"
+          onClose={() => setShowSaveModal(false)}
+          footer={
+            <>
+              <button 
+                className="modal-footer-btn" 
+                onClick={() => setShowSaveModal(false)}
+                disabled={isSaving}
+              >
+                Cancel
+              </button>
+              <button 
+                className="modal-footer-btn primary" 
+                onClick={handleSaveFile}
+                disabled={isSaving}
+              >
+                {isSaving ? 'Saving...' : 'Confirm Save'}
+              </button>
+            </>
+          }
+        >
+          <p>Are you sure you want to save changes to <strong>{selectedFilePath?.split(/[/\\]/).pop()}</strong>?</p>
+          <p style={{ fontSize: '12px', color: '#64748b', marginTop: '8px' }}>
+            This will overwrite the file with the current text content.
+          </p>
+        </Modal>
+      )}
     </div>
   );
 }

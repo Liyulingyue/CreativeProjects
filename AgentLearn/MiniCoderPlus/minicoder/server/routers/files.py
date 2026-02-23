@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 """routers/files.py — File listing and reading routes."""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Body
 from typing import Optional
 from pathlib import Path
 from ...core.settings import settings
-from ..models import FileListResponse, FileReadResponse, FileItem
+from ..models import FileListResponse, FileReadResponse, FileItem, DeleteResponse
 
 router = APIRouter(tags=["files"])
 
@@ -58,3 +58,21 @@ async def read_file_content(path: str):
         return FileReadResponse(content=content, path=str(p))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
+
+
+@router.post("/files/write")
+async def write_file_content(
+    path: str = Body(...),
+    content: str = Body(...)
+):
+    """Write content to a file."""
+    p = Path(path)
+    
+    # Check if path is within a valid directory if needed, 
+    # but for now we follow the same logic as read (if exists or parent exists)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding='utf-8')
+        return {"success": True, "message": f"Successfully saved to {path}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error writing file: {str(e)}")

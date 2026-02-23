@@ -6,7 +6,12 @@ interface ViewerTerminalStackProps {
   selectedFilePath: string | null;
   fileContent: string | null;
   fileLoading: boolean;
+  isEditing?: boolean;
+  onToggleEdit?: () => void;
+  onCancel?: () => void;
   onClearSelection: () => void;
+  onSave?: () => void;
+  onContentChange?: (content: string) => void;
   termRef: React.RefObject<HTMLDivElement | null>;
   panelId?: string;
   order?: number;
@@ -24,7 +29,12 @@ const ViewerTerminalStack: React.FC<ViewerTerminalStackProps> = ({
   selectedFilePath,
   fileContent,
   fileLoading,
+  isEditing = false,
+  onToggleEdit,
+  onCancel,
   onClearSelection,
+  onSave,
+  onContentChange,
   termRef,
   panelId,
   order = 2,
@@ -46,13 +56,39 @@ const ViewerTerminalStack: React.FC<ViewerTerminalStackProps> = ({
                 <>
                   <div className="viewer-header">
                     <span>{selectedFilePath.split(/[/\\]/).pop()}</span>
-                    <button onClick={onClearSelection} className="close-btn">
-                      ×
-                    </button>
+                    <div className="viewer-actions">
+                      {!isEditing ? (
+                        <button onClick={onToggleEdit} className="edit-btn" title="Enter edit mode">
+                          ✏️ Edit
+                        </button>
+                      ) : (
+                        <>
+                          <button onClick={onSave} className="save-btn" title="Save changes">
+                            💾 Save
+                          </button>
+                          <button onClick={onCancel || onToggleEdit} className="cancel-btn" title="Cancel editing">
+                            ❌ Cancel
+                          </button>
+                        </>
+                      )}
+                      <button onClick={onClearSelection} className="close-btn">
+                        ×
+                      </button>
+                    </div>
                   </div>
-                  <pre className="viewer-content">
-                    {fileLoading ? 'Loading...' : fileContent}
-                  </pre>
+                  {isEditing && onContentChange ? (
+                    <textarea 
+                      className="viewer-content editor-mode"
+                      value={fileLoading ? 'Loading...' : (fileContent || '')}
+                      onChange={(e) => onContentChange(e.target.value)}
+                      disabled={fileLoading}
+                      spellCheck={false}
+                    />
+                  ) : (
+                    <pre className="viewer-content">
+                      {fileLoading ? 'Loading...' : fileContent}
+                    </pre>
+                  )}
                 </>
               ) : (
                 <div className="viewer-placeholder">
