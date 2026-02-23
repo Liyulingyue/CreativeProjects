@@ -23,6 +23,7 @@ function Workbench() {
   // File Explorer State
   const [showExplorer, setShowExplorer] = useState(false);
   const [showFileViewer, setShowFileViewer] = useState(false);
+  const [showTerminal, setShowTerminal] = useState(true);
   const [explorerData, setExplorerData] = useState<FileItem[]>([]);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string | null>(null);
@@ -344,6 +345,8 @@ function Workbench() {
           setShowFileViewer(val);
           if (!val) setSelectedFilePath(null);
         }}
+        showTerminal={showTerminal}
+        onToggleTerminal={setShowTerminal}
         sessionId={sessionId}
       />
 
@@ -361,20 +364,23 @@ function Workbench() {
           />
         )}
 
-        <ViewerTerminalStack
-          showFileViewer={showFileViewer && showExplorer}
-          selectedFilePath={selectedFilePath}
-          fileContent={fileContent}
-          fileLoading={fileLoading}
-          onClearSelection={() => setSelectedFilePath(null)}
-          termRef={termRef}
-          panelId="wb-middle-column"
-          panelGroupId="wb-middle-vertical-group"
-          autoSaveId="wb-middle-v-layout"
-          viewerPanelId="wb-viewer-panel"
-          viewerHandleId="wb-handle-viewer-v"
-          terminalPanelId="wb-terminal-panel"
-        />
+        {(showTerminal || (showFileViewer && showExplorer)) && (
+          <ViewerTerminalStack
+            showFileViewer={showFileViewer && showExplorer}
+            selectedFilePath={selectedFilePath}
+            fileContent={fileContent}
+            fileLoading={fileLoading}
+            onClearSelection={() => setSelectedFilePath(null)}
+            termRef={termRef}
+            panelId="wb-middle-column"
+            panelGroupId="wb-middle-vertical-group"
+            autoSaveId="wb-middle-v-layout"
+            viewerPanelId="wb-viewer-panel"
+            viewerHandleId="wb-handle-viewer-v"
+            terminalPanelId="wb-terminal-panel"
+            showTerminal={showTerminal}
+          />
+        )}
 
         <ChatColumn
           messages={messages}

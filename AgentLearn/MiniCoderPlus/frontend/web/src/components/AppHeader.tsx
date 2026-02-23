@@ -16,6 +16,8 @@ interface AppHeaderProps {
   onToggleExplorer?: (val: boolean) => void;
   showFileViewer?: boolean;         // current file viewer state
   onToggleFileViewer?: (val: boolean) => void;
+  showTerminal?: boolean;           // current terminal state
+  onToggleTerminal?: (val: boolean) => void;
   onLoadSession?: (sessionId: string) => void;
   onSessionDeleted?: (sessionId: string) => void;
   sessionId?: string;               // optional session display
@@ -40,6 +42,8 @@ const AppHeader: React.FC<AppHeaderProps> = ({
   onToggleExplorer,
   showFileViewer,
   onToggleFileViewer,
+  showTerminal,
+  onToggleTerminal,
   onLoadSession,
   onSessionDeleted,
   sessionId,
@@ -192,8 +196,18 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                       checked={!!showFileViewer} 
                       onChange={(e) => onToggleFileViewer!(e.target.checked)} 
                     />
-                    Enable File Preview
+                     Enable File Preview
                   </label>
+                  {onToggleTerminal && (
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px' }}>
+                      <input 
+                        type="checkbox" 
+                        checked={!!showTerminal} 
+                        onChange={(e) => onToggleTerminal(e.target.checked)} 
+                      />
+                      Enable Terminal
+                    </label>
+                  )}
                 </div>
               </div>
             )}
