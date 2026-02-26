@@ -105,3 +105,9 @@ def get_vocab_by_page(page: int = 1, page_size: int = 50) -> dict:
         "page_size": page_size,
         "total_pages": (total + page_size - 1) // page_size
     }
+
+import random
+
+def get_random_vocab(count: int = 10) -> List[Vocabulary]:
+    vocab_list = parse_vocab_file()
+    return random.sample(vocab_list, min(count, len(vocab_list)))
