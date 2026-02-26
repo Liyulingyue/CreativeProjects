@@ -6,6 +6,11 @@ interface OCRResult {
   image_url: string
 }
 
+interface LayoutResult {
+  markdown: string
+  type: string
+}
+
 interface VocabItem {
   word: string
   phonetic: string
@@ -13,18 +18,23 @@ interface VocabItem {
   definition: string
 }
 
+type OCRMode = 'v5' | 'vl' | 'structure'
+
 export default function OCR() {
   const [file, setFile] = useState<File | null>(null)
-  const [results, setResults] = useState<OCRResult[]>([])
+  const [ocrV5Results, setOcrV5Results] = useState<OCRResult[]>([])
+  const [layoutResults, setLayoutResults] = useState<LayoutResult[]>([])
   const [loading, setLoading] = useState(false)
   const [converting, setConverting] = useState(false)
   const [vocabulary, setVocabulary] = useState<VocabItem[]>([])
   const [error, setError] = useState('')
+  const [mode, setMode] = useState<OCRMode>('v5')
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       setFile(e.target.files[0])
-      setResults([])
+      setOcrV5Results([])
+      setLayoutResults([])
       setVocabulary([])
       setError('')
     }
@@ -39,8 +49,14 @@ export default function OCR() {
     const formData = new FormData()
     formData.append('file', file)
     
+    const endpoints: Record<OCRMode, string> = {
+      'v5': '/api/v1/ocr/v5',
+      'vl': '/api/v1/ocr/vl',
+      'structure': '/api/v1/ocr/structure'
+    }
+    
     try {
-      const res = await fetch('/api/v1/ocr/image', {
+      const res = await fetch(endpoints[mode], {
         method: 'POST',
         body: formData
       })
@@ -49,7 +65,11 @@ export default function OCR() {
       if (data.error) {
         setError(data.error)
       } else if (data.results) {
-        setResults(data.results)
+        if (mode === 'v5') {
+          setOcrV5Results(data.results)
+        } else {
+          setLayoutResults(data.results)
+        }
       } else {
         setError('未知响应格式')
       }
@@ -62,18 +82,24 @@ export default function OCR() {
   }
 
   const handleConvert = async () => {
-    if (results.length === 0) return
+    let texts: string[] = []
+    
+    if (mode === 'v5') {
+      texts = ocrV5Results.flatMap(r => r.texts)
+    } else {
+      texts = layoutResults.map(r => r.markdown)
+    }
+    
+    if (texts.length === 0) return
     
     setConverting(true)
     setError('')
-    
-    const allTexts = results.flatMap(r => r.texts)
     
     try {
       const res = await fetch('/api/v1/ocr/convert', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(allTexts)
+        body: JSON.stringify(texts)
       })
       const data = await res.json()
       
@@ -92,9 +118,31 @@ export default function OCR() {
     setConverting(false)
   }
 
+  const hasResults = mode === 'v5' ? ocrV5Results.length > 0 : layoutResults.length > 0
+
   return (
     <div className="page-container">
       <div className="page-controls">
+        <div className="mode-selector">
+          <button 
+            className={`mode-btn ${mode === 'v5' ? 'active' : ''}`}
+            onClick={() => setMode('v5')}
+          >
+            OCRv5
+          </button>
+          <button 
+            className={`mode-btn ${mode === 'vl' ? 'active' : ''}`}
+            onClick={() => setMode('vl')}
+          >
+            OCRVL
+          </button>
+          <button 
+            className={`mode-btn ${mode === 'structure' ? 'active' : ''}`}
+            onClick={() => setMode('structure')}
+          >
+            PPStructureV3
+          </button>
+        </div>
         <input
           type="file"
           accept="image/*"
@@ -108,7 +156,7 @@ export default function OCR() {
         >
           {loading ? '识别中...' : '开始识别'}
         </button>
-        {results.length > 0 && (
+        {hasResults && (
           <button 
             className="vocab-search-btn" 
             onClick={handleConvert}
@@ -140,14 +188,26 @@ export default function OCR() {
         </div>
       )}
 
-      {results.length > 0 && vocabulary.length === 0 && (
+      {hasResults && vocabulary.length === 0 && mode === 'v5' && (
         <div className="ocr-results">
-          <h3>OCR 识别结果</h3>
-          {results.map((result, idx) => (
+          <h3>OCRv5 识别结果</h3>
+          {ocrV5Results.map((result, idx) => (
             <div key={idx} className="ocr-item">
               {result.texts.map((text, i) => (
                 <div key={i} className="ocr-text">{text}</div>
               ))}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {hasResults && vocabulary.length === 0 && mode !== 'v5' && (
+        <div className="ocr-results">
+          <h3>{mode === 'vl' ? 'OCRVL' : 'PPStructureV3'} 识别结果</h3>
+          {layoutResults.map((result, idx) => (
+            <div key={idx} className="ocr-item">
+              <div className="ocr-type">类型: {result.type}</div>
+              <pre className="ocr-text">{result.markdown}</pre>
             </div>
           ))}
         </div>

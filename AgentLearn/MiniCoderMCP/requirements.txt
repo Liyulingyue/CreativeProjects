@@ -1,0 +1,7 @@
+# MiniCoder 依赖
+openai
+python-dotenv
+mcp   # MCP Python SDK for tool/server communication
+# 可选依赖
+# gradio>=4.0.0  # 如果需要Web界面
+# rich>=13.0.0   # 如果需要美化输出

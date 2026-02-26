@@ -20,3 +20,7 @@ def search_vocabulary(q: str = Query(..., min_length=1)):
 def get_count():
     vocab_list = vocab_service.get_all_vocab()
     return {"total": len(vocab_list)}
+
+@router.get("/random")
+def get_random_vocabulary(count: int = Query(10, ge=1, le=100)):
+    return {"items": vocab_service.get_random_vocab(count)}

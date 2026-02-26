@@ -28,7 +28,7 @@ export default function Home() {
           随机抽取
         </Link>
       </div>
-      
+       
       <div className="hero-stats">
         <div className="hero-stat">
           <div className="hero-stat-value">3000+</div>
