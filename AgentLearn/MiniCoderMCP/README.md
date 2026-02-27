@@ -55,6 +55,30 @@ python mini_coder.py
 
 文件：`AgentLearn/MiniCoderMCP/README.md`
 
+## 单独运行 server（示例）
+如果你希望 `mcp_server` 单独常驻运行而不是由 `mini_coder.py` 启动，可以使用本仓库提供的 FastAPI PoC：
+
+1) 安装额外依赖（在虚拟环境中）：
+```powershell
+pip install fastapi uvicorn requests
+```
+2) 启动 HTTP 服务：
+```powershell
+cd AgentLearn\MiniCoderMCP
+python mcp_server_fastapi.py
+```
+服务默认监听 `127.0.0.1:8000`，你可以改为 `uvicorn mcp_server_fastapi:app --host 0.0.0.0 --port 8000` 来自定义。
+
+3) 在 agent 端使用 `mcp_http_client.py` 调用服务：
+```python
+from mcp_http_client import MCPHttpClient
+c = MCPHttpClient("http://127.0.0.1:8000")
+print(c.list_tools())
+print(c.call_tool("list_files", {"path": "."}))
+```
+
+把 server 单独运行后，`mini_coder.py` 不必以子进程形式启动 `mcp_server.py`，可改造 `agent.py` 以优先使用 HTTP 客户端（或在配置中切换 stdio/http 模式）。
+
 ---
 
 文件：`AgentLearn/MiniCoderMCP/README.md`

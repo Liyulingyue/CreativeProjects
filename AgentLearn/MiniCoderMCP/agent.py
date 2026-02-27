@@ -10,17 +10,26 @@ import traceback
 from typing import List, Dict, Optional, Any
 
 from llm_client import LLMClient
+try:
+    from mcp_http_client import MCPHttpClient
+except Exception:
+    MCPHttpClient = None
 
 # MCP client abstraction. Focus on a stable, dependency-free implementation
 # that uses JSON-over-stdio to communicate with `mcp_server.py`.
 class MCPClient:
-    def __init__(self, proc: asyncio.subprocess.Process):
+    """MCP client abstraction supporting either stdio subprocess or HTTP backend.
+
+    To use the HTTP backend, set the environment variable `MINICODER_MCP_URL`
+    to the server base (e.g. http://127.0.0.1:8000). When set, the client will
+    use `MCPHttpClient` in a threadpool to avoid blocking the event loop.
+    """
+    def __init__(self, proc: Optional[asyncio.subprocess.Process] = None, http_client: Optional[Any] = None):
         self.proc = proc
+        self.http_client = http_client
         self._lock = asyncio.Lock()
 
-        # small helper logger for debugging MCP interactions
         self._log = logging.getLogger("MCPClient")
-        # allow runtime control of logging verbosity via env var
         level_name = os.environ.get("MINICODER_LOG_LEVEL", "INFO").upper()
         level = getattr(logging, level_name, logging.INFO)
         if not logging.getLogger().handlers:
@@ -28,47 +37,49 @@ class MCPClient:
 
     @classmethod
     async def connect(cls, cmd: Optional[List[str]] = None) -> "MCPClient":
-        """Start the server subprocess and return a client wrapper."""
+        url = os.environ.get("MINICODER_MCP_URL")
+        if url and MCPHttpClient is not None:
+            # Use HTTP client (synchronous requests) but call it via executor
+            http = MCPHttpClient(url)
+            return cls(proc=None, http_client=http)
+
+        # Fallback to original stdio subprocess if no URL provided.
         if cmd is None:
-            # assume server script is next to this file
             path = os.path.join(os.path.dirname(__file__), "mcp_server.py")
             cmd = [sys.executable, "-u", path]
-        
-        # We redirect stderr to DEVNULL to prevents any non-JSON logs from 
-        # the server from being interpreted as responses by our JSON parser.
+
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL
+            stderr=asyncio.subprocess.DEVNULL,
         )
-        return cls(proc)
+        return cls(proc=proc, http_client=None)
 
     async def _read_json(self) -> Any:
-        """Read lines until a valid JSON object is parsed."""
-        assert self.proc.stdout is not None
+        assert self.proc is not None and self.proc.stdout is not None
         while True:
             line = await self.proc.stdout.readline()
             if not line:
                 raise RuntimeError("MCP server process terminated")
             text = line.decode().strip()
-            # debug: show raw line received from server
             self._log.debug("_read_json raw: %r", text)
             if not text:
                 continue
             try:
                 return json.loads(text)
             except json.JSONDecodeError:
-                # log the failure so the user can see non-json output
                 self._log.debug("_read_json JSON decode failed for text: %r", text)
                 continue
 
     async def _send(self, message: dict) -> Any:
         async with self._lock:
+            if self.proc is None:
+                raise RuntimeError("stdio MCP client not connected")
+
             if self.proc.returncode is not None:
-                 raise RuntimeError(f"Server exited with code {self.proc.returncode}")
-            
-            # detailed checks for debugging
+                raise RuntimeError(f"Server exited with code {self.proc.returncode}")
+
             if self.proc.stdin is None:
                 tb = "".join(traceback.format_stack())
                 self._log.error("stdin is None on subprocess; cannot send message. stack:\n%s", tb)
@@ -88,9 +99,15 @@ class MCPClient:
             return resp
 
     async def list_tools(self) -> List[Dict]:
+        if self.http_client is not None:
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, self.http_client.list_tools)
         return await self._send({"type": "list_tools"})
 
     async def call_tool(self, name: str, arguments: dict) -> Any:
+        if self.http_client is not None:
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, lambda: self.http_client.call_tool(name, arguments))
         return await self._send({"type": "call_tool", "name": name, "arguments": arguments})
 
 __all__ = ["MCPClient"]
