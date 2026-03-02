@@ -1,9 +1,0 @@
-.env
-
-# OpenClaw data directories
-# These directories contain sensitive configuration and keys
-config/
-workspace/
-
-# OS files
-.DS_Store
