@@ -6,6 +6,7 @@
 v0 使用 JSON-over-stdio 的子进程模式把工具以元数据注册给代理（LLM），代理通过函数调用样式发起工具请求并接收结果。
 
 ## 快速上手（最短路径）
+### 1. v0 (Stdio 模式)
 1) 在项目根创建并激活虚拟环境（PowerShell）：
 ```powershell
 python -m venv .venv
@@ -24,10 +25,36 @@ python mini_coder.py
 ```
 说明：`mini_coder.py` 通常会在需要时自动以子进程方式启动 `mcp_server.py`。
 
+### 2. v1 (FastAPI/HTTP 模式)
+v1 版本将 stdio 通信迁移到了 FastAPI 异步后端，提升了稳定性和可观测性。
+
+1) 启动 FastAPI 服务器：
+```powershell
+cd AgentLearn\MiniCoderMCP
+uvicorn mcp_server_fastapi:app --host 127.0.0.1 --port 8000
+```
+2) 使用 HTTP 客户端接入的 Agent：
+```powershell
+# 确保已配置 .env 中的 API 密钥
+python mini_coder.py
+```
+*注意：在 v1 模式下，Agent 会通过 `mcp_http_client.py` 与远程/本地的 FastAPI 服务通信。*
+
 ## v0 设计速览
 - 协议：JSON-over-stdio；工具以 JSON 元数据 `list_tools` 的形式被发现。
 - 典型工具：`read_file`, `write_file`, `list_files`, `execute_bash`, `search_files`。
 - 场景：本地调试、交互式 REPL、原型验证。
+
+## v1 功能特性
+- **异步驱动**：基于 FastAPI 和 `asyncio`，支持高并发工具调用。
+- **解耦部署**：Server 与 Agent 可不在同一进程甚至不在同一机器。
+- **标准接口**：
+  - `GET /list_tools`: 获取工具元数据。
+  - `POST /call_tool`: 调用指定工具。
+- **组件化**：
+  - `mcp_server_fastapi.py`: 提供 HTTP 接口的工具服务器。
+  - `mcp_http_client.py`: 封装了与服务器交互的客户端逻辑。
+  - `llm_client.py`: 处理大模型（如 Ernie/OpenAI）的 Tool Call 转换。
 
 ## 常见问题与快速解决
 - Windows asyncio/proactor 报错（`'NoneType' object has no attribute 'send'`）：
