@@ -6,13 +6,47 @@ import os
 import asyncio
 import threading
 import logging
+import os
 from typing import List, Dict, Optional, Any
 
 from mcp import ClientSession
 from mcp.client.sse import sse_client
-from llm_client import LLMClient
 
-# MCP HUB abstraction. Manages multiple MCP Server connections.
+# --- LLM Client Integration ---
+
+MODEL_KEY = os.getenv("MODEL_KEY", "")
+BASE_URL = os.getenv("MODEL_URL", "https://api.openai.com/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4")
+
+class LLMClient:
+    """Thin wrapper around the LLM API."""
+    def __init__(self, api_key: str = None, base_url: str = None, model_name: str = None):
+        self.api_key = api_key or MODEL_KEY
+        self.base_url = base_url or BASE_URL
+        self.model_name = model_name or MODEL_NAME
+
+    def chat(self, messages: List[Dict], tools: List[Dict] = None, temperature: float = 0.7):
+        if not self.api_key:
+            return "⚠️  请先设置 MODEL_KEY 环境变量"
+
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+            
+            params = {
+                "model": self.model_name,
+                "messages": messages,
+                "temperature": temperature,
+            }
+            if tools:
+                params["tools"] = tools
+
+            response = client.chat.completions.create(**params)
+            return response.choices[0].message
+        except Exception as e:
+            return f"⚠️  API调用失败: {str(e)}"
+
+# --- MCP HUB abstraction ---
 class MCPHub:
     """Manages multiple MCP connections and aggregates their tools."""
     def __init__(self, urls: List[str]):

@@ -96,15 +96,10 @@ python mcp_server_fastapi.py
 ```
 服务默认监听 `127.0.0.1:8000`，你可以改为 `uvicorn mcp_server_fastapi:app --host 0.0.0.0 --port 8000` 来自定义。
 
-3) 在 agent 端使用 `mcp_http_client.py` 调用服务：
-```python
-from mcp_http_client import MCPHttpClient
-c = MCPHttpClient("http://127.0.0.1:8000")
-print(c.list_tools())
-print(c.call_tool("list_files", {"path": "."}))
-```
+3) 在 agent 端使用 `mcp` 库调用服务：
+（由于 `mcp_http_client.py` 已移除，建议直接运行 `agent.py`，它已配置为通过 SSE/HTTP 连接 MCP 服务器）。
 
-把 server 单独运行后，`mini_coder.py` 不必以子进程形式启动 `mcp_server.py`，可改造 `agent.py` 以优先使用 HTTP 客户端（或在配置中切换 stdio/http 模式）。
+把 server 单独运行后，`mini_coder.py` 不必以子进程形式启动 `mcp_server.py`，可改造 `agent.py` 以优先使用 HTTP 客户端。
 
 ---
 
