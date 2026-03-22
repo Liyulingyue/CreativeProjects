@@ -6,200 +6,140 @@ import os
 import asyncio
 import threading
 import logging
-import traceback
+import os
 from typing import List, Dict, Optional, Any
 
-from llm_client import LLMClient
-try:
-    from mcp_http_client import MCPHttpClient
-except Exception:
-    MCPHttpClient = None
+from mcp import ClientSession
+from mcp.client.sse import sse_client
 
-# MCP client abstraction. Focus on a stable, dependency-free implementation
-# that uses JSON-over-stdio to communicate with `mcp_server.py`.
-class MCPClient:
-    """MCP client abstraction supporting either stdio subprocess or HTTP backend.
+# --- LLM Client Integration ---
 
-    To use the HTTP backend, set the environment variable `MINICODER_MCP_URL`
-    to the server base (e.g. http://127.0.0.1:8000). When set, the client will
-    use `MCPHttpClient` in a threadpool to avoid blocking the event loop.
-    """
-    def __init__(self, proc: Optional[asyncio.subprocess.Process] = None, http_client: Optional[Any] = None):
-        self.proc = proc
-        self.http_client = http_client
-        self._lock = asyncio.Lock()
+MODEL_KEY = os.getenv("MODEL_KEY", "")
+BASE_URL = os.getenv("MODEL_URL", "https://api.openai.com/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4")
 
-        self._log = logging.getLogger("MCPClient")
-        level_name = os.environ.get("MINICODER_LOG_LEVEL", "INFO").upper()
-        level = getattr(logging, level_name, logging.INFO)
-        if not logging.getLogger().handlers:
-            logging.basicConfig(level=level)
+class LLMClient:
+    """Thin wrapper around the LLM API."""
+    def __init__(self, api_key: str = None, base_url: str = None, model_name: str = None):
+        self.api_key = api_key or MODEL_KEY
+        self.base_url = base_url or BASE_URL
+        self.model_name = model_name or MODEL_NAME
 
-    @classmethod
-    async def connect(cls, cmd: Optional[List[str]] = None) -> "MCPClient":
-        url = os.environ.get("MINICODER_MCP_URL")
-        if url and MCPHttpClient is not None:
-            # Use HTTP client (synchronous requests) but call it via executor
-            http = MCPHttpClient(url)
-            return cls(proc=None, http_client=http)
+    def chat(self, messages: List[Dict], tools: List[Dict] = None, temperature: float = 0.7):
+        if not self.api_key:
+            return "⚠️  请先设置 MODEL_KEY 环境变量"
 
-        # Fallback to original stdio subprocess if no URL provided.
-        if cmd is None:
-            path = os.path.join(os.path.dirname(__file__), "mcp_server.py")
-            cmd = [sys.executable, "-u", path]
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+            
+            params = {
+                "model": self.model_name,
+                "messages": messages,
+                "temperature": temperature,
+            }
+            if tools:
+                params["tools"] = tools
 
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        return cls(proc=proc, http_client=None)
+            response = client.chat.completions.create(**params)
+            return response.choices[0].message
+        except Exception as e:
+            return f"⚠️  API调用失败: {str(e)}"
 
-    async def _read_json(self) -> Any:
-        assert self.proc is not None and self.proc.stdout is not None
-        while True:
-            line = await self.proc.stdout.readline()
-            if not line:
-                raise RuntimeError("MCP server process terminated")
-            text = line.decode().strip()
-            self._log.debug("_read_json raw: %r", text)
-            if not text:
-                continue
+# --- MCP HUB abstraction ---
+class MCPHub:
+    """Manages multiple MCP connections and aggregates their tools."""
+    def __init__(self, urls: List[str]):
+        self.urls = urls
+        self._sessions: Dict[str, ClientSession] = {}
+        self._exit_stacks: List[asyncio.ExitStack] = []
+        self._tool_to_session: Dict[str, str] = {} # tool_name -> server_url
+        self._log = logging.getLogger("MCPHub")
+
+    async def __aenter__(self):
+        for url in self.urls:
             try:
-                return json.loads(text)
-            except json.JSONDecodeError:
-                self._log.debug("_read_json JSON decode failed for text: %r", text)
-                continue
-
-    async def _send(self, message: dict) -> Any:
-        async with self._lock:
-            if self.proc is None:
-                raise RuntimeError("stdio MCP client not connected")
-
-            if self.proc.returncode is not None:
-                raise RuntimeError(f"Server exited with code {self.proc.returncode}")
-
-            if self.proc.stdin is None:
-                tb = "".join(traceback.format_stack())
-                self._log.error("stdin is None on subprocess; cannot send message. stack:\n%s", tb)
-                raise RuntimeError("MCP subprocess stdin is not available")
-
-            out_text = json.dumps(message)
-            try:
-                self._log.debug("_send -> %s", out_text)
-                self.proc.stdin.write((out_text + "\n").encode())
-                await self.proc.stdin.drain()
+                stack = asyncio.ExitStack()
+                self._exit_stacks.append(stack)
+                # 使用高层封装 sse_client
+                read, write = await stack.enter_async_context(sse_client(url))
+                session = await stack.enter_async_context(ClientSession(read, write))
+                await session.initialize()
+                self._sessions[url] = session
+                self._log.info(f"Connected to MCP Server: {url}")
             except Exception as e:
-                self._log.exception("Exception writing to MCP stdin: %s", e)
-                raise
+                self._log.error(f"Failed to connect to {url}: {e}")
+        return self
 
-            resp = await self._read_json()
-            self._log.debug("_send <- %s", resp)
-            return resp
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        for stack in self._exit_stacks:
+            await stack.aclose()
 
-    async def list_tools(self) -> List[Dict]:
-        if self.http_client is not None:
-            loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(None, self.http_client.list_tools)
-        return await self._send({"type": "list_tools"})
+    async def list_all_tools(self) -> List[Any]:
+        all_tools = []
+        for url, session in self._sessions.items():
+            result = await session.list_tools()
+            for tool in result.tools:
+                # 记录工具属于哪个 server，以便后续路由
+                self._tool_to_session[tool.name] = url
+                all_tools.append(tool)
+        return all_tools
 
     async def call_tool(self, name: str, arguments: dict) -> Any:
-        if self.http_client is not None:
-            loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(None, lambda: self.http_client.call_tool(name, arguments))
-        return await self._send({"type": "call_tool", "name": name, "arguments": arguments})
+        url = self._tool_to_session.get(name)
+        if not url:
+            raise ValueError(f"Unknown tool: {name}")
+        session = self._sessions[url]
+        return await session.call_tool(name, arguments)
 
-__all__ = ["MCPClient"]
+__all__ = ["MCPHub"]
 
 
 class MiniCoderAgent:
-    """An agent that can use tools to solve coding tasks via an MCP server."""
+    """An agent that can use tools from multiple MCP servers to solve tasks."""
 
-    def __init__(self, llm_client: Optional[LLMClient] = None):
+    def __init__(self, 
+                 llm_client: Optional[LLMClient] = None,
+                 mcp_urls: Optional[List[str]] = None):
         self.llm = llm_client or LLMClient()
+        # 默认地址列表
+        self.mcp_urls = mcp_urls or [os.environ.get("MINICODER_MCP_URL", "http://127.0.0.1:8000/sse")]
         self.system_prompt = (
             "You are MiniCoder, a world-class autonomous coding agent.\n"
-            "Your goal is to solve the user's request by taking action in the local environment.\n\n"
+            "Your goal is to solve the user's request by taking action in the local or remote environment.\n\n"
             "RULES:\n"
-            "1. ALWAYS use tools to accomplish tasks. If the user asks for code, do not JUST print it; use `write_file` to create the script.\n"
-            "2. START by exploring the environment if needed (use `list_files` or `execute_bash`).\n"
-            "3. After writing code, VERIFY it. Run it or check the file content.\n"
-            "4. If a task is complex, break it down: Plan -> Action -> Verify.\n"
-            "5. Be concise and professional. If you have a thought process, keep it brief.\n"
-            f"Current working directory: {__import__('os').getcwd()}"
+            "1. ALWAYS use tools to accomplish tasks.\n"
+            "2. You have access to multiple toolsets via MCP; use them as needed.\n"
+            "3. After taking action, VERIFY the results.\n"
+            f"Current working directory: {os.getcwd()}"
         )
 
-        # placeholder for the MCP client and discovered tools
-        self.mcp: Optional[MCPClient] = None
+        self.hub: Optional[MCPHub] = None
         self.tools: Optional[List[Dict]] = None
         self._log = logging.getLogger("MiniCoderAgent")
 
-        # Start a dedicated asyncio event loop in a background thread so
-        # subprocess pipes remain attached to a persistent loop. This avoids
-        # creating/closing event loops on each synchronous `run()` call which
-        # can leave subprocess transports with a closed proactor.
         self._loop = asyncio.new_event_loop()
         self._loop_thread = threading.Thread(target=self._start_loop, daemon=True)
         self._loop_thread.start()
 
     async def _ensure_mcp(self):
-        """Establish connection to the MCP server and fetch tool metadata.
-
-        The MCP server returns a minimal description (name, description,
-        parameters as annotation mapping). OpenAI's function-calling API
-        requires each tool to be wrapped in a `type:function` envelope with a
-        JSON Schema describing its arguments.  We also drop any "return"
-        annotation since it is not part of the input parameters.
-        """
-        if self.mcp is None:
-            # debug: create MCP client and log process cmd
-            self._log.debug("Connecting to MCP server...")
-            self.mcp = await MCPClient.connect()
-            try:
-                proc = self.mcp.proc
-                self._log.debug("MCP subprocess: pid=%s, returncode=%s, stdin=%s, stdout=%s",
-                                getattr(proc, 'pid', None), getattr(proc, 'returncode', None),
-                                getattr(proc, 'stdin', None) is not None, getattr(proc, 'stdout', None) is not None)
-            except Exception:
-                self._log.exception("Failed to log MCP subprocess details")
+        if self.hub is None:
+            self.hub = MCPHub(self.mcp_urls)
+            await self.hub.__aenter__()
+            
         if self.tools is None:
-            raw = await self.mcp.list_tools()
-            self._log.debug("Raw tools metadata: %r", raw)
+            mcp_tools = await self.hub.list_all_tools()
             normalized: List[Dict] = []
 
-            for t in raw:
-                # ensure we have a plain dict form
-                if not isinstance(t, dict):
-                    t = {
-                        "name": getattr(t, "name", None) or getattr(t, "tool_name", None),
-                        "description": getattr(t, "description", ""),
-                        "parameters": getattr(t, "parameters", {}),
-                    }
-
-                name = t.get("name")
-                desc = t.get("description", "")
-                params_ann: Dict = t.get("parameters", {}) or {}
-                # remove return annotation if present
-                params_ann.pop("return", None)
-
-                # build a simple JSON schema where every argument is treated as
-                # a string (MCP annotation values are already simple names).
-                props: Dict[str, Dict] = {}
-                for key, val in params_ann.items():
-                    props[key] = {"type": "string", "description": str(val)}
-
-                schema: Dict = {"type": "object", "properties": props}
-
+            for t in mcp_tools:
                 normalized.append({
                     "type": "function",
                     "function": {
-                        "name": name,
-                        "description": desc,
-                        "parameters": schema,
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.inputSchema,
                     },
                 })
-
             self.tools = normalized
 
     async def run_async(self, prompt: str, history: List[Dict] = None) -> str:
@@ -245,12 +185,8 @@ class MiniCoderAgent:
                     args = json.loads(tool_call.function.arguments)
                     print(f"\033[32m[Tool Call] {name}({args})\033[0m")
 
-                    result_obj = await self.mcp.call_tool(name, args)
-                    # client stub returns {"result": ...} or raw value
-                    if isinstance(result_obj, dict) and "result" in result_obj:
-                        result = result_obj["result"]
-                    else:
-                        result = result_obj
+                    result_obj = await self.hub.call_tool(name, args)
+                    result = str(result_obj.content)
 
                     history.append({
                         "role": "tool",

@@ -4,7 +4,7 @@ python-dotenv
 mcp   # MCP Python SDK for tool/server communication
 fastapi
 pydantic
-# requests  # 原用于 MCPHttpClient，现已删除
+requests  # 用于 MCPHttpClient 的 HTTP 通信
 uvicorn[standard]  # 用于启动 FastAPI 服务器
 # 可选依赖
 # gradio>=4.0.0  # 如果需要Web界面
