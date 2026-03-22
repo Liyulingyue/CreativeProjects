@@ -144,8 +144,8 @@ function Home() {
     term.loadAddon(fitAddon);
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const backendPort = "8000"; 
-    const backendHost = window.location.hostname === 'localhost' ? `localhost:${backendPort}` : window.location.host;
+    // Use the actual host and port from location (e.g., localhost:10080)
+    const backendHost = window.location.host;
     const wsUrl = `${protocol}//${backendHost}/ws/terminal/${sessionId}_${id}${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''}`;
 
     const ws = new WebSocket(wsUrl);

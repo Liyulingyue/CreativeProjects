@@ -169,8 +169,8 @@ function Workbench() {
 
     // Connect WebSocket
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const backendPort = "8000"; 
-    const backendHost = window.location.hostname === 'localhost' ? `localhost:${backendPort}` : window.location.host;
+    // Use the actual host and port if provided by the environment, otherwise let Nginx handle it via relative path
+    const backendHost = window.location.host;
     
     // Pass workspace as query param to WebSocket
     const wsUrl = `${protocol}//${backendHost}/ws/terminal/${sessionId}${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''}`;

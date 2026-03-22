@@ -12,45 +12,58 @@ MiniCoder Plus 是一个极简但功能强大的自主编程代理（Autonomous 
     - `search_files`: 基于 `grep` 的全量文本搜索。
 - **交互式 Shell**：支持多轮对话、上下文记忆和实时思考过程（Thought）展示。
 
-## 🚀 安装与设置
+## 🚀 混合部署模式 (推荐)
 
-1. **安装依赖**:
+为了让 Agent 获得与主机完全一致的权限和路径访问能力，我们采用了 **“本地后端 + Docker 前端”** 的混合架构：
+- **后端**：直接运行在物理机，拥有完整系统权限。
+- **前端**：运行在 Docker 容器，通过 Nginx 转发请求。
+
+### 一键部署
+
+1. **配置环境**:
+   复制 `.env.example` 为 `.env` 并填入您的 API 密钥。
+
+2. **执行安装脚本**:
    ```bash
-   pip install -r requirements.txt
+   chmod +x install_hybrid.sh
+   ./install_hybrid.sh
+   ```
+   该脚本会自动：
+   - 安装 Python 依赖。
+   - 注册 `minicoder-backend.service` 系统服务（开机自启）。
+   - 启动前端 Docker 容器。
+
+3. **访问**:
+   - **前端 Web 界面**: [http://localhost:20081](http://localhost:20081)
+   - **后端 API 地址**: [http://localhost:20080](http://localhost:20080)
+
+### 常用管理命令
+- **查看后端日志**: `tail -f logs/backend.log`
+- **重启后端**: `sudo systemctl restart minicoder-backend.service`
+- **重启前端**: `docker compose restart frontend`
+- **一键卸载**: `./uninstall_hybrid.sh`
+
+## 💻 物理机手动启动 (调试用)
+
+1. **启动交互式 CLI**:
+   ```bash
+   python main.py cli
    ```
 
-2. **环境变量**:
-   复制 `.env.example` 为 `.env` 并配置您的 LLM 密钥：
+2. **启动 Web API 服务**:
    ```bash
-   MODEL_KEY=your_api_key_here
-   MODEL_URL=https://api.openai.com/v1 # 或您的代理地址
-   MODEL_NAME=gpt-4o # 推荐使用具备强大 Function Calling 能力的模型
+   python run.py server --port 20080
    ```
-
-## 💻 快速开始
-
-启动交互式 CLI：
-```bash
-python main.py cli
-```
-
-启动 Web API 服务（供 MiniCoderWeb 使用）：
-```bash
-python main.py server --port 8000
-```
-
-### 示例指令：
-- "帮我创建一个 python 脚本，用于把当前目录下所有 .docx 转为 .pdf，并运行测试它。"
-- "分析当前项目结构，并告诉我 tools.py 里有哪些函数。"
 
 ## 📂 文件架构
 
-- `main.py` — **统一入口**，根据参数选择 CLI 或 Server 模式。
+- `run.py` — **统一入口**，根据参数选择 CLI 或 Server 模式。
+- `install_hybrid.sh` — **混合部署脚本**。
 - `minicoder/` — **核心业务逻辑包**。
-    - `agents/` — 🤖 **多角色代理目录**。目前包含通用代理 `agent.py` 及角色演进规划 `TODO.md`。
-    - `tools.py` — 🛠️ 工具箱定义与执行实现。
-    - `llm_client.py` — 📡 统一的大模型 API 客户端。
-    - `cli/` — 🖥️ CLI 专属交互界面逻辑。
+    - `agents/` — 🤖 **多角色代理目录**。
+    - `tools.py` — 🛠️ 工具箱定义与实现。
     - `server/` — 🌐 FastAPI 实现的 Web 后端接口。
+- `frontend/web/` — 🎨 **React+Vite 前端界面** (含 Nginx 配置)。
+- `docker-compose.yml` — 🚀 仅用于启动前端容器。
 
 ---

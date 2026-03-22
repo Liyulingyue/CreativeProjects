@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  frontend:
+    build:
+      context: ./frontend/web
+      dockerfile: Dockerfile
+    image: minicoder-plus-frontend:latest
+    container_name: minicoder_frontend
+    ports:
+      - "20081:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
