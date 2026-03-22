@@ -1,63 +1,31 @@
 #!/usr/bin/env python
 """mcp_server_fastapi.py
 
-Minimal FastAPI-based MCP server (HTTP) to run independently from the agent.
+FastAPI-based MCP server using the official MCP Python SDK.
+Supports SSE (Server-Sent Events) transport.
 
-Endpoints:
-- GET  /list_tools -> list available tools and their parameter metadata
-- POST /call_tool -> call a tool by name with JSON arguments
-
-Run: `uvicorn mcp_server_fastapi:app --host 127.0.0.1 --port 8000`
+Usage:
+    uvicorn mcp_server_fastapi:app --host 127.0.0.1 --port 8000
 """
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
 import asyncio
 import os
+import logging
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import List, Optional
 
-app = FastAPI(title="MiniCoder MCP (HTTP)")
+from fastapi import FastAPI
+from mcp.server import Server
+from mcp.server.fastapi import McpFastApi
+from mcp.types import Tool, TextContent, ImageContent, EmbeddedResource
 
+# Initialize logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("mcp-fastapi-server")
 
-class CallRequest(BaseModel):
-    name: str
-    arguments: Dict[str, Any] = {}
+# 1. Create the MCP Server
+mcp_server = Server("MiniCoder-HTTP-Server")
 
-
-def _tools_metadata():
-    return [
-        {"name": "execute_bash", "description": "Execute a shell command.", "parameters": {"command": "str"}},
-        {"name": "read_file", "description": "Read file content.", "parameters": {"path": "str"}},
-        {"name": "write_file", "description": "Write file content.", "parameters": {"path": "str", "content": "str"}},
-        {"name": "list_files", "description": "List files in directory.", "parameters": {"path": "str"}},
-        {"name": "search_files", "description": "Search string in files.", "parameters": {"query": "str", "path": "str"}},
-    ]
-
-
-@app.get("/list_tools")
-async def list_tools():
-    return _tools_metadata()
-
-
-@app.post("/call_tool")
-async def call_tool(req: CallRequest):
-    name = req.name
-    args = req.arguments or {}
-    try:
-        if name == "execute_bash":
-            return {"result": await _execute_bash(args.get("command", ""))}
-        if name == "read_file":
-            return {"result": await _read_file(args.get("path", ""))}
-        if name == "write_file":
-            return {"result": await _write_file(args.get("path", ""), args.get("content", ""))}
-        if name == "list_files":
-            return {"result": await _list_files(args.get("path", "."))}
-        if name == "search_files":
-            return {"result": await _search_files(args.get("query", ""), args.get("path", "."))}
-        raise HTTPException(status_code=404, detail=f"tool '{name}' not found")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
+# --- Tool Implementations ---
 
 async def _execute_bash(command: str) -> str:
     try:
@@ -72,7 +40,6 @@ async def _execute_bash(command: str) -> str:
     except Exception as e:
         return f"Error executing command: {e}"
 
-
 async def _read_file(path: str) -> str:
     try:
         p = Path(path)
@@ -82,7 +49,6 @@ async def _read_file(path: str) -> str:
     except Exception as e:
         return f"Error reading file: {e}"
 
-
 async def _write_file(path: str, content: str) -> str:
     try:
         p = Path(path)
@@ -91,7 +57,6 @@ async def _write_file(path: str, content: str) -> str:
         return f"Successfully wrote to {path}"
     except Exception as e:
         return f"Error writing file: {e}"
-
 
 async def _list_files(path: str = ".") -> str:
     try:
@@ -108,10 +73,8 @@ async def _list_files(path: str = ".") -> str:
     except Exception as e:
         return f"Error listing files: {e}"
 
-
 async def _search_files(query: str, path: str = ".") -> str:
     try:
-        # Try Python-based search first for portability
         if not query:
             return "No query provided."
         matches = []
@@ -130,8 +93,99 @@ async def _search_files(query: str, path: str = ".") -> str:
     except Exception as e:
         return f"Error searching files: {e}"
 
+# --- MCP Tool Registration ---
+
+@mcp_server.list_tools()
+async def handle_list_tools() -> list[Tool]:
+    """List available tools."""
+    return [
+        Tool(
+            name="execute_bash",
+            description="Execute a shell command.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "The command to run"}
+                },
+                "required": ["command"]
+            }
+        ),
+        Tool(
+            name="read_file",
+            description="Read file content.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the file"}
+                },
+                "required": ["path"]
+            }
+        ),
+        Tool(
+            name="write_file",
+            description="Write file content.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the file"},
+                    "content": {"type": "string", "description": "Content to write"}
+                },
+                "required": ["path", "content"]
+            }
+        ),
+        Tool(
+            name="list_files",
+            description="List files in directory.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Directory path", "default": "."}
+                }
+            }
+        ),
+        Tool(
+            name="search_files",
+            description="Search string in files.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "String to search for"},
+                    "path": {"type": "string", "description": "Search directory", "default": "."}
+                },
+                "required": ["query"]
+            }
+        )
+    ]
+
+@mcp_server.call_tool()
+async def handle_call_tool(name: str, arguments: dict | None) -> list[TextContent | ImageContent | EmbeddedResource]:
+    """Execute a tool call."""
+    if not arguments:
+        arguments = {}
+        
+    try:
+        if name == "execute_bash":
+            res = await _execute_bash(arguments.get("command", ""))
+        elif name == "read_file":
+            res = await _read_file(arguments.get("path", ""))
+        elif name == "write_file":
+            res = await _write_file(arguments.get("path", ""), arguments.get("content", ""))
+        elif name == "list_files":
+            res = await _list_files(arguments.get("path", "."))
+        elif name == "search_files":
+            res = await _search_files(arguments.get("query", ""), arguments.get("path", "."))
+        else:
+            raise ValueError(f"Unknown tool: {name}")
+
+        return [TextContent(type="text", text=str(res))]
+    except Exception as e:
+        logger.error(f"Error calling tool {name}: {e}")
+        return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+# 2. Integrate with FastAPI
+app = FastAPI(title="MiniCoder MCP (HTTP/SSE)")
+mcp_fastapi = McpFastApi(mcp_server, app)
 
 if __name__ == "__main__":
     import uvicorn
-
-    uvicorn.run("mcp_server_fastapi:app", host="127.0.0.1", port=8000, reload=False)
+    uvicorn.run(app, host="127.0.0.1", port=8000)

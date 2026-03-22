@@ -1,0 +1,4 @@
+deepeval
+litellm
+requests
+python-dotenv
