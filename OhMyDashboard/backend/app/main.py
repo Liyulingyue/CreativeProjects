@@ -34,6 +34,13 @@ async def get_startup_stats():
     """获取负载和开机/运行相关的状态统计"""
     return SystemService.get_startup_info()
 
+@app.post("/api/system/docker/{container_id}/{action}")
+async def container_action(container_id: str, action: str):
+    """控制容器启动、停止、重启"""
+    if action not in ["start", "stop", "restart"]:
+        return {"status": "error", "message": "Invalid action"}
+    return SystemService.manage_docker_container(container_id, action)
+
 @app.get("/api/status")
 async def get_status():
     """通用状态检测路由"""
