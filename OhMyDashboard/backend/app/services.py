@@ -94,9 +94,29 @@ class SystemService:
         return processes[:limit]
 
     @staticmethod
+    def get_startup_items():
+        """
+        获取 Linux 开机启动项 (基于 systemd), 示例实现部分。
+        """
+        try:
+            items = []
+            # 简单示例，扫描 systemd enabled 服务
+            import subprocess
+            res = subprocess.run(['systemctl', 'list-unit-files', '--type=service', '--state=enabled'], 
+                                 capture_output=True, text=True)
+            for line in res.stdout.splitlines():
+                if '.service' in line:
+                    parts = line.split()
+                    items.append({"name": parts[0], "status": "enabled"})
+            return items
+        except Exception as e:
+            return {"error": str(e)}
+
+    @staticmethod
     def get_startup_info():
         # 获取系统负载、活跃用户等
         return {
             "load_avg": os.getloadavg() if hasattr(os, 'getloadavg') else None,
-            "users": [u._asdict() for u in psutil.users()],
+            "startup_items": SystemService.get_startup_items(),
+            "users": [u._asdict() for u in psutil.users()]
         }
