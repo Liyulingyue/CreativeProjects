@@ -66,6 +66,13 @@ class OpenAIJsonWrapper:
         if not text:
             return "", None, "Empty content"
 
+        # 处理思考链：如果存在 </think>，则只保留其之后的内容
+        think_end_marker = "</think>"
+        if think_end_marker in text:
+            # 找到最后一个 </think> 的位置并截取其后的内容
+            parts = text.split(think_end_marker)
+            text = parts[-1].strip()
+
         # 1) 查找特定的 Markdown JSON 块
         # 使用正则匹配 ```json ... ```，尽量抓取内部内容
         md_pattern = r"```json\s*([\s\S]*?)\s*```"
