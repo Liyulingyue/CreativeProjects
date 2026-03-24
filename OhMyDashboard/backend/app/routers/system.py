@@ -20,6 +20,18 @@ async def get_process_list(limit: int = 50):
     from ..services import SystemService
     return SystemService.get_running_processes(limit=limit)
 
+@router.post("/processes/{pid}/kill")
+async def kill_process(pid: int):
+    """结束指定进程"""
+    from ..services import SystemService
+    return SystemService.kill_process(pid)
+
+@router.get("/network")
+async def get_network_info():
+    """获取网络接口和连接统计"""
+    from ..services import SystemService
+    return SystemService.get_network_info()
+
 @router.get("/startup")
 async def get_startup_stats():
     """获取负载和开机/运行相关的状态统计"""
