@@ -48,6 +48,29 @@ async def container_action(container_id: str, action: str):
 
 @router.get("/startup/{name}/logs")
 async def get_service_logs(name: str, lines: int = 100):
-    """获取指定 systemd 服务的日志"""
+    """获取指定 systemd 服务的 journal 日志"""
     from ..services import SystemService
     return SystemService.get_service_logs(name, lines)
+
+@router.post("/docker/auth")
+async def docker_auth(body: dict):
+    """提交 sudo 密码进行 Docker 认证"""
+    import subprocess
+    from ..services import _docker_authenticated
+    password = body.get("password", "")
+    _docker_authenticated["password"] = password
+    result = subprocess.run(
+        ["sudo", "-S", "-k", "docker", "info"],
+        input=password + "\n", capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        _docker_authenticated["password"] = None
+        return {"status": "error", "message": "密码错误或权限不足"}
+    return {"status": "ok"}
+
+@router.delete("/docker/auth")
+async def docker_logout():
+    """清除认证状态"""
+    from ..services import _docker_authenticated
+    _docker_authenticated["password"] = None
+    return {"status": "ok"}

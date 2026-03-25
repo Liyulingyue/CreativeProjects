@@ -7,8 +7,20 @@ export const api = {
     const res = await fetch(`${API_BASE}/system/info`);
     return res.json();
   },
-  async getDockerInfo(): Promise<DockerContainer[] | { error: string }> {
-    const res = await fetch(`${API_BASE}/system/docker`);
+  async getDockerInfo(): Promise<DockerContainer[] | { error: string; need_auth?: boolean }> {
+    const res = await fetch(`${API_BASE}/system/docker`, { signal: AbortSignal.timeout(10000) });
+    return res.json();
+  },
+  async dockerAuth(password: string): Promise<{ status: string; message?: string }> {
+    const res = await fetch(`${API_BASE}/system/docker/auth`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    return res.json();
+  },
+  async dockerLogout(): Promise<{ status: string }> {
+    const res = await fetch(`${API_BASE}/system/docker/auth`, { method: 'DELETE' });
     return res.json();
   },
   async getStartupInfo(): Promise<{ load_avg: number[], startup_items: StartupItem[] }> {
@@ -27,7 +39,7 @@ export const api = {
     const res = await fetch(`${API_BASE}/system/processes/${pid}/kill`, { method: 'POST' });
     return res.json();
   },
-  async manageDocker(containerId: string, action: 'start' | 'stop' | 'restart'): Promise<{ status: string }> {
+  async manageDocker(containerId: string, action: 'start' | 'stop' | 'restart'): Promise<{ status: string; message?: string; need_auth?: boolean }> {
     const res = await fetch(`${API_BASE}/system/docker/${containerId}/${action}`, {
       method: 'POST',
     });
