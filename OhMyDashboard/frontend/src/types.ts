@@ -76,4 +76,22 @@ export type NetworkInfo = {
     tcp: number;
     udp: number;
   };
+  listening_ports: ListeningPort[];
+  active_connections: ActiveConnection[];
+};
+
+export type ListeningPort = {
+  port: number;
+  protocol: string;
+  pid: number | null;
+  process: string;
+  address: string;
+};
+
+export type ActiveConnection = {
+  protocol: string;
+  laddr: string;
+  raddr: string;
+  status: string;
+  pid: number | null;
 };

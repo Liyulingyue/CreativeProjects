@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { api } from '../api'
 import type { DockerContainer } from '../types'
-import { Box, Play, Square, RotateCcw, AlertTriangle, Layers, RefreshCw, LayoutGrid, List, Search, Terminal } from 'lucide-react'
+import { Box, Play, Square, RotateCcw, AlertTriangle, Layers, RefreshCw, LayoutGrid, List, Search, Terminal, Lock, X } from 'lucide-react'
 
 type ViewMode = 'card' | 'list'
 type FilterMode = 'all' | 'running' | 'stopped'
@@ -9,21 +9,58 @@ type FilterMode = 'all' | 'running' | 'stopped'
 export const Docker = () => {
   const [containers, setContainers] = useState<DockerContainer[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [needAuth, setNeedAuth] = useState(false)
+  const [authError, setAuthError] = useState<string | null>(null)
+  const [password, setPassword] = useState('')
+  const [authLoading, setAuthLoading] = useState(false)
   const [filter, setFilter] = useState<FilterMode>('all')
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   const [search, setSearch] = useState('')
 
   const fetchDocker = async () => {
     setIsLoading(true)
+    setError(null)
     const data = await api.getDockerInfo()
     if (Array.isArray(data)) {
       setContainers(data)
+    } else if (data && typeof data === 'object' && 'error' in data) {
+      const d = data as { error: string; need_auth?: boolean }
+      if (d.need_auth) {
+        setNeedAuth(true)
+        setIsLoading(false)
+        return
+      }
+      setError(d.error)
     }
     setIsLoading(false)
   }
 
+  const handleAuth = async () => {
+    if (!password) return
+    setAuthLoading(true)
+    setAuthError(null)
+    const res = await api.dockerAuth(password)
+    if (res.status === 'ok') {
+      setNeedAuth(false)
+      setPassword('')
+      fetchDocker()
+    } else {
+      setAuthError(res.message || '认证失败')
+    }
+    setAuthLoading(false)
+  }
+
+  useEffect(() => {
+    fetchDocker()
+  }, [])
+
   const handleAction = async (id: string, action: 'start' | 'stop' | 'restart') => {
-    await api.manageDocker(id, action)
+    const res = await api.manageDocker(id, action)
+    if (res.need_auth) {
+      setNeedAuth(true)
+      return
+    }
     fetchDocker()
   }
 
@@ -106,6 +143,40 @@ export const Docker = () => {
 
       {isLoading ? (
         <div className="py-12 text-center text-slate-400">加载中...</div>
+      ) : needAuth ? (
+        <div className="py-12 flex flex-col items-center gap-4">
+          <div className="w-16 h-16 rounded-full bg-red-50 flex items-center justify-center">
+            <Lock size={32} className="text-red-400" />
+          </div>
+          <div className="text-center">
+            <h3 className="font-bold text-slate-800 mb-1">需要认证</h3>
+            <p className="text-sm text-slate-400">Docker 需要 sudo 权限，请输入当前用户密码</p>
+          </div>
+          <div className="w-full max-w-xs space-y-3">
+            <input
+              type="password"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleAuth()}
+              placeholder="输入 sudo 密码"
+              className="w-full px-4 py-2.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              autoFocus
+            />
+            {authError && <p className="text-xs text-red-500 text-center">{authError}</p>}
+            <div className="flex gap-2">
+              <button onClick={() => setNeedAuth(false)} className="flex-1 py-2 text-sm text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors">取消</button>
+              <button onClick={handleAuth} disabled={authLoading || !password} className="flex-1 py-2 text-sm text-white bg-blue-500 hover:bg-blue-600 disabled:opacity-50 rounded-lg transition-colors">
+                {authLoading ? '认证中...' : '确认'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : error ? (
+        <div className="py-12 text-center text-red-400 flex flex-col items-center gap-2">
+          <AlertTriangle size={24} />
+          <span>{error}</span>
+          <button onClick={fetchDocker} className="text-sm text-blue-500 hover:underline">重试</button>
+        </div>
       ) : filtered.length === 0 ? (
         <div className="py-12 text-center text-slate-400 flex flex-col items-center gap-2">
           <AlertTriangle size={24} className="text-slate-200" />

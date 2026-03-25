@@ -3,7 +3,10 @@ import docker
 import platform
 import os
 import socket
+import subprocess
 from datetime import datetime
+
+_docker_authenticated: dict = {}
 
 class SystemService:
     @staticmethod
@@ -45,38 +48,54 @@ class SystemService:
         }
 
     @staticmethod
+    def _check_permission_error(error: str) -> bool:
+        return "Permission denied" in error or "PermissionError(13" in error
+
+    @staticmethod
+    def _run_docker_cmd(args: list) -> subprocess.CompletedProcess:
+        pwd = _docker_authenticated.get("password")
+        if pwd:
+            return subprocess.run(
+                ["sudo", "-S", "-k"] + args,
+                input=pwd + "\n", capture_output=True, text=True
+            )
+        return subprocess.run(args, capture_output=True, text=True)
+
+    @staticmethod
     def get_docker_containers():
         try:
-            client = docker.from_env()
-            containers = client.containers.list(all=True)
-            return [
-                {
-                    "id": c.short_id,
-                    "name": c.name,
-                    "status": c.status,
-                    "image": c.image.tags[0] if c.image.tags else "unknown",
-                    "state": c.attrs.get('State', {}),
-                    "ports": c.ports,
-                    "created": c.attrs.get('Created')
-                } for c in containers
-            ]
+            res = SystemService._run_docker_cmd(["docker", "ps", "-a", "--format", "{{.ID}}|{{.Names}}|{{.Status}}|{{.Image}}|{{.Ports}}|{{.CreatedAt}}|{{.State}}"])
+            if res.returncode != 0:
+                err = res.stderr.strip()
+                if "permission denied" in err.lower() or "cannot connect" in err.lower():
+                    return {"error": "Docker not accessible: Permission denied", "need_auth": True}
+                return {"error": f"Docker error: {err}"}
+            containers = []
+            for line in res.stdout.strip().splitlines():
+                parts = line.split("|")
+                if len(parts) >= 6:
+                    containers.append({
+                        "id": parts[0],
+                        "name": parts[1],
+                        "status": "running" if "Up" in parts[2] else "exited",
+                        "image": parts[3],
+                        "ports": parts[4],
+                        "created": parts[5],
+                        "state": {"Status": parts[6].lower()} if len(parts) > 6 else {},
+                    })
+            return containers
         except Exception as e:
-            return {"error": f"Docker not accessible: {str(e)}"}
+            return {"error": f"Docker error: {str(e)}"}
 
     @staticmethod
     def manage_docker_container(container_id: str, action: str):
-        try:
-            client = docker.from_env()
-            container = client.containers.get(container_id)
-            if action == "start":
-                container.start()
-            elif action == "stop":
-                container.stop()
-            elif action == "restart":
-                container.restart()
-            return {"status": "success", "action": action, "id": container_id}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
+        res = SystemService._run_docker_cmd(["docker", action, container_id])
+        if res.returncode != 0:
+            err = res.stderr.strip()
+            if "permission denied" in err.lower():
+                return {"status": "error", "message": "Permission denied", "need_auth": True}
+            return {"status": "error", "message": err}
+        return {"status": "success", "action": action, "id": container_id}
 
     @staticmethod
     def get_running_processes(limit=50):
@@ -205,11 +224,53 @@ class SystemService:
                 "errin": io.get("errin", 0),
                 "errout": io.get("errout", 0),
             }
+
         connections = psutil.net_connections()
-        tcp = len([c for c in connections if c.type == socket.SOCK_STREAM])
-        udp = len([c for c in connections if c.type == socket.SOCK_DGRAM])
+        tcp_conns = [c for c in connections if c.type == socket.SOCK_STREAM]
+        udp_conns = [c for c in connections if c.type == socket.SOCK_DGRAM]
+
+        listening_ports = {}
+        for c in connections:
+            if c.status == 'LISTEN':
+                laddr = c.laddr
+                port = laddr.port if laddr else 0
+                key = f"{c.family.name}_{port}"
+                if key not in listening_ports:
+                    pid_name = ''
+                    if c.pid:
+                        try:
+                            pid_name = psutil.Process(c.pid).name()
+                        except Exception:
+                            pid_name = str(c.pid)
+                    listening_ports[key] = {
+                        "port": port,
+                        "protocol": "TCP" if c.type == socket.SOCK_STREAM else "UDP",
+                        "pid": c.pid,
+                        "process": pid_name,
+                        "address": laddr.ip if laddr else '0.0.0.0',
+                    }
+
+        active_connections = []
+        for c in connections:
+            laddr = c.laddr
+            raddr = c.raddr
+            if c.status not in ('LISTEN', 'CLOSED') or raddr:
+                active_connections.append({
+                    "protocol": "TCP" if c.type == socket.SOCK_STREAM else "UDP",
+                    "laddr": f"{laddr.ip}:{laddr.port}" if laddr else "-",
+                    "raddr": f"{raddr.ip}:{raddr.port}" if raddr else "-",
+                    "status": c.status,
+                    "pid": c.pid,
+                })
+
         return {
             "total": net_io,
             "interfaces": net_if,
-            "connections": {"total": len(connections), "tcp": tcp, "udp": udp}
+            "connections": {
+                "total": len(connections),
+                "tcp": len(tcp_conns),
+                "udp": len(udp_conns)
+            },
+            "listening_ports": list(listening_ports.values()),
+            "active_connections": active_connections,
         }
