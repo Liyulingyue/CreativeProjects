@@ -7,11 +7,10 @@ import asyncio
 import threading
 import logging
 import os
-from typing import List, Dict, Optional, Any, Union
+from typing import List, Dict, Optional, Any
 
-from mcp import ClientSession, StdioServerParameters
+from mcp import ClientSession
 from mcp.client.sse import sse_client
-from mcp.client.stdio import stdio_client
 
 # --- LLM Client Integration ---
 
@@ -49,43 +48,27 @@ class LLMClient:
 
 # --- MCP HUB abstraction ---
 class MCPHub:
-    """Manages multiple MCP connections (SSE or Stdio) and aggregates their tools."""
-    def __init__(self, configs: List[Union[str, Dict]]):
-        """
-        :param configs list of URLs (string) or Stdio parameters (dict)
-        Example stdio config: {"command": "python", "args": ["mcp_server_time.py"]}
-        """
-        self.configs = configs
+    """Manages multiple MCP connections and aggregates their tools."""
+    def __init__(self, urls: List[str]):
+        self.urls = urls
         self._sessions: Dict[str, ClientSession] = {}
         self._exit_stacks: List[asyncio.ExitStack] = []
-        self._tool_to_session: Dict[str, str] = {} # tool_name -> identifier
+        self._tool_to_session: Dict[str, str] = {} # tool_name -> server_url
         self._log = logging.getLogger("MCPHub")
 
     async def __aenter__(self):
-        for cfg in self.configs:
+        for url in self.urls:
             try:
                 stack = asyncio.ExitStack()
                 self._exit_stacks.append(stack)
-
-                if isinstance(cfg, str): # SSE URL
-                    read, write = await stack.enter_async_context(sse_client(cfg))
-                    identifier = cfg
-                else: # Stdio Config
-                    # 从配置字典提取命令和参数
-                    params = StdioServerParameters(
-                        command=cfg.get("command"),
-                        args=cfg.get("args", []),
-                        env=cfg.get("env")
-                    )
-                    read, write = await stack.enter_async_context(stdio_client(params))
-                    identifier = f"stdio:{cfg.get('command')}"
-
+                # 使用高层封装 sse_client
+                read, write = await stack.enter_async_context(sse_client(url))
                 session = await stack.enter_async_context(ClientSession(read, write))
                 await session.initialize()
-                self._sessions[identifier] = session
-                self._log.info(f"Connected to MCP Server: {identifier}")
+                self._sessions[url] = session
+                self._log.info(f"Connected to MCP Server: {url}")
             except Exception as e:
-                self._log.error(f"Failed to connect to {cfg}: {e}")
+                self._log.error(f"Failed to connect to {url}: {e}")
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -94,19 +77,19 @@ class MCPHub:
 
     async def list_all_tools(self) -> List[Any]:
         all_tools = []
-        for identifier, session in self._sessions.items():
+        for url, session in self._sessions.items():
             result = await session.list_tools()
             for tool in result.tools:
                 # 记录工具属于哪个 server，以便后续路由
-                self._tool_to_session[tool.name] = identifier
+                self._tool_to_session[tool.name] = url
                 all_tools.append(tool)
         return all_tools
 
     async def call_tool(self, name: str, arguments: dict) -> Any:
-        identifier = self._tool_to_session.get(name)
-        if not identifier:
+        url = self._tool_to_session.get(name)
+        if not url:
             raise ValueError(f"Unknown tool: {name}")
-        session = self._sessions[identifier]
+        session = self._sessions[url]
         return await session.call_tool(name, arguments)
 
 __all__ = ["MCPHub"]
@@ -117,16 +100,10 @@ class MiniCoderAgent:
 
     def __init__(self, 
                  llm_client: Optional[LLMClient] = None,
-                 mcp_configs: Optional[List[Union[str, Dict]]] = None):
+                 mcp_urls: Optional[List[str]] = None):
         self.llm = llm_client or LLMClient()
-        # 默认配置列表，包含一个远程 SSE 和一个本地 Stdio
-        self.mcp_configs = mcp_configs or [
-            os.environ.get("MINICODER_MCP_URL", "http://127.0.0.1:8000/sse"),
-            {
-                "command": sys.executable,
-                "args": [os.path.join(os.path.dirname(__file__), "mcp_server_time.py")]
-            }
-        ]
+        # 默认地址列表
+        self.mcp_urls = mcp_urls or [os.environ.get("MINICODER_MCP_URL", "http://127.0.0.1:8000/sse")]
         self.system_prompt = (
             "You are MiniCoder, a world-class autonomous coding agent.\n"
             "Your goal is to solve the user's request by taking action in the local or remote environment.\n\n"
@@ -147,7 +124,7 @@ class MiniCoderAgent:
 
     async def _ensure_mcp(self):
         if self.hub is None:
-            self.hub = MCPHub(self.mcp_configs)
+            self.hub = MCPHub(self.mcp_urls)
             await self.hub.__aenter__()
             
         if self.tools is None:
