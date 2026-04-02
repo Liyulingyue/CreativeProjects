@@ -1,0 +1,13 @@
+[project]
+name = "mydeepeval"
+version = "0.1.0"
+description = "基于 OpenAIJsonWrapper 的轻量级评估库"
+authors = [ { name = "Your Name" } ]
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+]
+
+[build-system]
+requires = ["setuptools>=42","wheel"]
+build-backend = "setuptools.build_meta"

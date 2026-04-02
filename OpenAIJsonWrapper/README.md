@@ -10,10 +10,10 @@
 pip install -e .
 ```
 
-或直接从本仓库的 GitHub Release 安装已构建的 wheel：
+或通过 Git 直接安装：
 
 ```bash
-pip install "https://github.com/Liyulingyue/CreativeProjects/releases/download/OpenAIJsonWrapper/openai_json_wrapper-0.1.0-py3-none-any.whl"
+pip install "git+https://github.com/Liyulingyue/CreativeProjects.git#egg=openai_json_wrapper&subdirectory=OpenAIJsonWrapper"
 ```
 
 ## 打包与分发
@@ -33,6 +33,8 @@ pip install "https://github.com/Liyulingyue/CreativeProjects/releases/download/O
 ## 功能与用法
 
 提供一个 `OpenAIJsonWrapper` 对象，自动注入 System Prompt 并解析模型输出的 JSON。
+
+### 基本用法
 
 ```python
 from openai import OpenAI
@@ -66,8 +68,32 @@ else:
     print("解析出错:", result["error"])
 ```
 
+### 进阶功能
+
+`OpenAIJsonWrapper` 支持在初始化或调用时传入 `background`（背景信息）和 `requirements`（特定需求）。
+
+```python
+# 在初始化时定义默认配置
+wrapper = OpenAIJsonWrapper(
+    client, 
+    model="gpt-4o", 
+    background="你是一个资深的简历分析专家。",
+    requirements=["提取内容必须客观", "年龄若未知请填 0"]
+)
+
+# 在 chat 调用时覆盖或补充配置
+result = wrapper.chat(
+    messages, 
+    target_structure=new_structure,      # 覆盖默认结构
+    extra_requirements="补充一项新要求",   # 补充到默认需求中
+    background="覆盖初始化时的背景信息"     # 覆盖默认背景
+)
+```
+
 ## 特性
 
-- **自动提示词注入**: 自动在 System Prompt 中包含 JSON 结构定义和标准的 Markdown JSON 代码块标记。
-- **健壮解析**: 使用正则表达式精准提取 ` ```json ` 块，并具备自动容错（修复末尾逗号等）和回退提取（寻找最后一个合法的 JSON 对象/数组）能力。
+- **自动提示词注入**: 自动在 System Prompt 中包含 JSON 结构定义、背景信息和需求说明。
+- **DeepSeek 兼容**: 自动处理 `</think>` 标记，精准分离思维链内容。
+- **健壮解析**: 使用正则表达式提取 ` ```json ` 块，具备自动容错（修复末尾逗号等）和回退提取（寻找最后一个合法的 JSON 对象/数组）能力。
+- **灵活配置**: 支持在实例级别或调用级别设置结构、需求和背景，支持多需求合并。
 - **极简设计**: 专注于 LLM 工具调用/结构化数据提取任务。
