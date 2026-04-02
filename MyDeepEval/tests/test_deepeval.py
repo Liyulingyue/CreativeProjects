@@ -1,10 +1,12 @@
 from MyDeepEval import DeepEval
 from openai import OpenAI
 
-MODEL_URL="https://api-inference.modelscope.cn/v1"
-MODEL_KEY="**************************"
-MODEL_NAME="Qwen/Qwen3-30B-A3B-Instruct-2507"
-
+# MODEL_URL="https://api-inference.modelscope.cn/v1"
+# MODEL_KEY="**************************"
+# MODEL_NAME="Qwen/Qwen3-30B-A3B-Instruct-2507"
+MODEL_URL="https://qianfan.baidubce.com/v2/coding"
+MODEL_KEY="***************************"
+MODEL_NAME="minimax-m2.5"
 
 def test_deepeval_real_api():
     """使用真实 API 进行集成测试"""
