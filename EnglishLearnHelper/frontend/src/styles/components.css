@@ -107,6 +107,221 @@
   background: var(--bg-tertiary);
 }
 
+/* Tab Bar */
+.tab-bar {
+  display: flex;
+  background: var(--bg-tertiary);
+  padding: 4px;
+  border-radius: var(--radius-md);
+  margin-bottom: 16px;
+  align-items: center;
+  gap: 4px;
+}
+
+.tab-item {
+  flex: 1;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.2s;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.tab-item.active {
+  background: white;
+  color: var(--accent);
+  box-shadow: var(--shadow-sm);
+}
+
+.tab-expand-toggle {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.tab-expand-toggle:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.tab-expand-toggle.active {
+  color: var(--accent);
+  background: white;
+  box-shadow: var(--shadow-sm);
+}
+
+/* Control Bar */
+.control-bar {
+  margin-bottom: 24px;
+  background: #fff;
+  border-radius: 16px;
+  padding: 12px;
+  box-shadow: 
+    0 4px 6px -1px rgba(0, 0, 0, 0.05),
+    0 2px 4px -1px rgba(0, 0, 0, 0.03);
+  border: 1px solid rgba(0, 0, 0, 0.04);
+}
+
+.control-bar-main {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+}
+
+.control-bar-main .vocab-search-btn {
+  flex: 1;
+  padding: 10px;
+  height: 42px;
+  font-size: 14px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: var(--accent);
+  box-shadow: none;
+}
+
+.expand-toggle {
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  border: 1px solid var(--border-light);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.expand-toggle.active {
+  background: var(--accent-subtle);
+  color: var(--accent);
+  border-color: var(--accent-light);
+}
+
+.control-bar-secondary {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  overflow-x: auto;
+  padding: 12px 2px 4px 2px;
+  margin-top: 4px;
+  /* 隐藏滚动条但允许滚动 */
+  scrollbar-width: none; 
+  -ms-overflow-style: none;
+}
+
+.control-bar-secondary::-webkit-scrollbar {
+  display: none;
+}
+
+.action-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border-radius: 10px;
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.2s;
+  flex-shrink: 0;
+  white-space: nowrap;
+  height: 36px;
+}
+
+.action-chip.active {
+  background: var(--accent-subtle);
+  color: var(--accent);
+  border-color: var(--accent-light);
+}
+
+.action-chip:active {
+  transform: scale(0.95);
+}
+
+/* Floating Action Button */
+.fab {
+  position: fixed;
+  right: 20px;
+  bottom: 80px;
+  width: 56px;
+  height: 56px;
+  border-radius: 28px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  cursor: pointer;
+  z-index: 100;
+}
+
+/* Mobile toolbar specifics */
+.mode-slider {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.mode-slider-input {
+  width: 180px;
+}
+.mode-slider-labels {
+  display: inline-flex;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.mode-slider-labels .active {
+  color: var(--accent);
+}
+
+.menu-dropdown {
+  position: absolute;
+  top: 60px;
+  right: 8px;
+  width: 180px;
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow-md);
+  z-index: 300;
+  padding: 6px 0;
+}
+.menu-item {
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.menu-item:hover {
+  background: var(--accent-subtle);
+}
+
 /* Modal */
 .modal-overlay {
   position: fixed;
@@ -224,6 +439,7 @@
   font-size: 20px;
   font-weight: 600;
   color: var(--text-primary);
+  word-break: break-word;
 }
 
 .vocab-phonetic {

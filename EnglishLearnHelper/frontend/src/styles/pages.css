@@ -126,6 +126,21 @@
   max-width: 1000px;
   margin: 0 auto;
   padding: 24px;
+  position: relative;
+  min-height: calc(100vh - 57px);
+}
+
+.vocab-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+  margin-top: 20px;
+}
+
+@media (max-width: 600px) {
+  .page-container {
+    padding: 16px 12px;
+  }
 }
 
 .page-search {
@@ -165,6 +180,18 @@
   
   .hero-stats {
     gap: 32px;
+  }
+  /* Random page mobile optimizations */
+  .page-controls {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .page-controls .mode-btn {
+    width: 100%;
+  }
+  .vocab-grid {
+    padding: 0 8px;
   }
 }
 

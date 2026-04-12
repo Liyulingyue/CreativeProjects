@@ -1,5 +1,6 @@
 import { useState, useRef } from 'react'
 import VocabCard from '../components/VocabCard'
+import ModeSlider from '../components/ModeSlider'
 
 interface Vocabulary {
   id: number
@@ -23,6 +24,7 @@ export default function Random() {
   const [showChineseArticle, setShowChineseArticle] = useState(true)
   const [showEnglishArticle, setShowEnglishArticle] = useState(true)
   const [mode, setMode] = useState<Mode>('word')
+  const [showMenu, setShowMenu] = useState(false)
   const [article, setArticle] = useState<{english: string, chinese: string} | null>(null)
   const [articleLoading, setArticleLoading] = useState(false)
   const [showWordsInArticle, setShowWordsInArticle] = useState(true)
@@ -32,6 +34,7 @@ export default function Random() {
   const [showAddWord, setShowAddWord] = useState(false)
   const [newWordEnglish, setNewWordEnglish] = useState('')
   const [newWordChinese, setNewWordChinese] = useState('')
+  const [showAdvancedControls, setShowAdvancedControls] = useState(true)
   const chineseInputRef = useRef<HTMLInputElement>(null)
 
   const processImageFile = async (file: File) => {
@@ -187,94 +190,139 @@ export default function Random() {
 
   return (
     <div className="page-container">
-      <div className="page-controls">
+      {/* 顶部标签栏 */}
+      <div className="tab-bar">
         <button 
-          className={`mode-btn ${mode === 'word' ? 'active' : ''}`}
+          className={`tab-item ${mode === 'word' ? 'active' : ''}`}
           onClick={() => setMode('word')}
         >
-          单词模式
+          🔤 单词学习
         </button>
         <button 
-          className={`mode-btn ${mode === 'article' ? 'active' : ''}`}
+          className={`tab-item ${mode === 'article' ? 'active' : ''}`}
           onClick={() => setMode('article')}
         >
-          短文模式
+          📝 短文生成
         </button>
-        <div style={{ flex: 1 }} />
         <button 
-          className="icon-btn" 
-          onClick={() => setShowSettings(true)}
-          title="设置"
+          className={`tab-expand-toggle ${showAdvancedControls ? 'active' : ''}`} 
+          onClick={() => setShowAdvancedControls(!showAdvancedControls)}
+          aria-label="Toggle controls"
         >
-          ⚙️
+          {showAdvancedControls ? '▲' : '▼'}
         </button>
       </div>
 
-      <div className="page-controls">
+      <div className="control-bar">
         {mode === 'word' ? (
           <>
-            <button className="vocab-search-btn" onClick={fetchRandom} disabled={loading || capturing}>
-              {loading ? '抽取中...' : '🎲 抽取单词'}
-            </button>
-            <button className="vocab-search-btn" onClick={() => setShowAddWord(true)}>
-              ✏️ 录入单词
-            </button>
-            <label className="vocab-search-btn" style={{ cursor: capturing ? 'wait' : 'pointer', display: 'inline-flex' }}>
-              {capturing ? '识别中...' : '📷 拍照取词'}
-              <input
-                type="file"
-                accept="image/*"
-                capture="environment"
-                onChange={handleCameraCapture}
-                style={{ display: 'none' }}
-              />
-            </label>
-            <label className="vocab-search-btn" style={{ cursor: uploading ? 'wait' : 'pointer', display: 'inline-flex' }}>
-              {uploading ? '上传中...' : '📤 传图取词'}
-              <input
-                type="file"
-                accept="image/*"
-                onChange={handleFileUpload}
-                style={{ display: 'none' }}
-              />
-            </label>
-            <button className="vocab-search-btn" onClick={() => setWordModeWords([])}>
-              🗑️ 清空
-            </button>
-            <label className="checkbox-label">
-              <input type="checkbox" checked={incrementalMode} onChange={(e) => setIncrementalMode(e.target.checked)} />
-              增量
-            </label>
-            <label className="checkbox-label">
-              <input type="checkbox" checked={showEnglishWord} onChange={(e) => setShowEnglishWord(e.target.checked)} />
-              英文
-            </label>
-            <label className="checkbox-label">
-              <input type="checkbox" checked={showChineseWord} onChange={(e) => setShowChineseWord(e.target.checked)} />
-              中文
-            </label>
+            {showAdvancedControls ? (
+              <div className="control-bar-main">
+                <button className="vocab-search-btn" onClick={fetchRandom} disabled={loading || capturing}>
+                  {loading ? '抽取中' : '🎲 随机抽取'}
+                </button>
+                <button className="vocab-search-btn" onClick={() => setShowAddWord(true)} style={{ background: 'var(--success)' }}>
+                  ✏️ 录入
+                </button>
+              </div>
+            ) : (
+              <div className="page-result-info" style={{ margin: 0, padding: '8px 0' }}>
+                {wordModeWords.length > 0 
+                  ? `当前列表已有 ${wordModeWords.length} 个单词，点击展开按钮查看操作` 
+                  : '列表为空，点击上方展开按钮开始获取单词'}
+              </div>
+            )}
+            
+            {showAdvancedControls && (
+              <div className="control-bar-secondary">
+                <label className="action-chip">
+                  📷 拍照
+                  <input
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    onChange={handleCameraCapture}
+                    style={{ display: 'none' }}
+                  />
+                </label>
+                <label className="action-chip">
+                  📤 传图
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handleFileUpload}
+                    style={{ display: 'none' }}
+                  />
+                </label>
+                <button className="action-chip" onClick={() => setShowSettings(true)}>
+                  ⚙️ 设置 ({count})
+                </button>
+                <div 
+                  className={`action-chip ${incrementalMode ? 'active' : ''}`}
+                  onClick={() => setIncrementalMode(!incrementalMode)}
+                >
+                  {incrementalMode ? '🔄 增量' : '🔄 覆盖'}
+                </div>
+                <div 
+                  className={`action-chip ${showEnglishWord ? 'active' : ''}`}
+                  onClick={() => setShowEnglishWord(!showEnglishWord)}
+                >
+                  ABC {showEnglishWord ? '显' : '隐'}
+                </div>
+                <div 
+                  className={`action-chip ${showChineseWord ? 'active' : ''}`}
+                  onClick={() => setShowChineseWord(!showChineseWord)}
+                >
+                  中 {showChineseWord ? '显' : '隐'}
+                </div>
+                <button className="action-chip" onClick={() => setWordModeWords([])} style={{ color: 'var(--danger)' }}>
+                  🗑️ 清空
+                </button>
+              </div>
+            )}
           </>
         ) : (
           <>
-            <button 
-              className="vocab-search-btn" 
-              onClick={() => generateArticle(wordModeWords)} 
-              disabled={articleLoading || wordModeWords.length === 0}
-            >
-              {articleLoading ? '生成中...' : '📝 生成短文'}
-            </button>
-            <label className="checkbox-label">
-              <input type="checkbox" checked={showWordsInArticle} onChange={(e) => setShowWordsInArticle(e.target.checked)} />
-              单词
-            </label>
-            <label className="checkbox-label">
-              <input type="checkbox" checked={showEnglishArticle} onChange={(e) => setShowEnglishArticle(e.target.checked)} />
-              英文
-            </label>
-            <label className="checkbox-label">
-              <input type="checkbox" checked={showChineseArticle} onChange={(e) => setShowChineseArticle(e.target.checked)} />
-              中文
-            </label>
+            {showAdvancedControls ? (
+              <div className="control-bar-main">
+                <button 
+                  className="vocab-search-btn" 
+                  onClick={() => generateArticle(wordModeWords)} 
+                  disabled={articleLoading || wordModeWords.length === 0}
+                >
+                  {articleLoading ? '写作中...' : '✍️ 生成阅读短文'}
+                </button>
+              </div>
+            ) : (
+              <div className="page-result-info" style={{ margin: 0, padding: '8px 0' }}>
+                {wordModeWords.length > 0 
+                  ? `当前已选中 ${wordModeWords.length} 个单词，点击上方展开按钮生成短文` 
+                  : '请先在单词学习模式中抽取单词'}
+              </div>
+            )}
+            
+            {showAdvancedControls && (
+              <div className="control-bar-secondary">
+                <div 
+                  className={`action-chip ${showEnglishArticle ? 'active' : ''}`}
+                  onClick={() => setShowEnglishArticle(!showEnglishArticle)}
+                >
+                  ENG: {showEnglishArticle ? '显' : '隐'}
+                </div>
+                <div 
+                  className={`action-chip ${showChineseArticle ? 'active' : ''}`}
+                  onClick={() => setShowChineseArticle(!showChineseArticle)}
+                >
+                  中: {showChineseArticle ? '显' : '隐'}
+                </div>
+                <div 
+                  className={`action-chip ${showWordsInArticle ? 'active' : ''}`}
+                  onClick={() => setShowWordsInArticle(!showWordsInArticle)}
+                >
+                  单词表: {showWordsInArticle ? '显' : '隐'}
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -369,43 +417,44 @@ export default function Random() {
       )}
 
       {loading ? (
-        <div className="loading">
+        <div className="loading" style={{ padding: '40px 0' }}>
           <div className="loading-spinner"></div>
-          加载中...
+          正在加载单词...
         </div>
-      ) : wordModeWords.length === 0 ? (
+      ) : (mode === 'word' && wordModeWords.length === 0) ? (
         <div className="empty-state">
           <div className="empty-state-icon">🎲</div>
-          <p className="empty-state-text">请点击"抽取单词"按钮开始</p>
+          <p className="empty-state-text">列表为空，请随机抽取或手动录入</p>
         </div>
       ) : (
         <>
-          {mode === 'article' && articleModeWords.length > 0 && showWordsInArticle && (article || articleLoading) && (
-            <div className="article-section-wrapper">
+          {mode === 'article' && (article || articleLoading) && (
+            <div className="article-section-wrapper" style={{ background: 'white', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-light)', marginBottom: '24px' }}>
               {articleLoading && (
                 <div className="loading" style={{ marginBottom: '16px' }}>
                   <div className="loading-spinner"></div>
-                  生成短文中...
+                  AI 正在努力撰写短文中...
                 </div>
               )}
               {article && (
-                <div className="article-content">
+                <div className="article-content" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
                   {showEnglishArticle && (
                     <div className="article-section">
-                      <div className="article-label">英文短文</div>
-                      <div className="article-text">{article.english}</div>
+                      <h3 style={{ marginBottom: '12px', fontSize: '18px', color: 'var(--accent)', borderLeft: '4px solid var(--accent)', paddingLeft: '12px' }}>English Passage</h3>
+                      <div style={{ lineHeight: '1.8', fontSize: '16px', textAlign: 'justify', whiteSpace: 'pre-wrap' }}>{article.english}</div>
                     </div>
                   )}
                   {showChineseArticle && (
-                    <div className="article-section">
-                      <div className="article-label">中文释义</div>
-                      <div className="article-text">{article.chinese}</div>
+                    <div className="article-section" style={{ borderTop: '1px solid var(--border-light)', paddingTop: '20px' }}>
+                      <h3 style={{ marginBottom: '12px', fontSize: '18px', color: 'var(--accent)', borderLeft: '4px solid var(--accent-light)', paddingLeft: '12px' }}>中文对照</h3>
+                      <div style={{ lineHeight: '1.8', fontSize: '16px', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{article.chinese}</div>
                     </div>
                   )}
                 </div>
               )}
             </div>
           )}
+          
           {(mode === 'word' || (articleModeWords.length > 0 && showWordsInArticle)) && (
             <div className="vocab-grid">
               {(mode === 'word' ? wordModeWords : articleModeWords).map((word, idx) => (
@@ -416,13 +465,25 @@ export default function Random() {
                   phonetic={word.phonetic}
                   part_of_speech={word.part_of_speech}
                   definition={word.definition}
-                  showChinese={mode === 'word' ? showChineseWord : showChineseArticle}
-                  showEnglish={mode === 'word' ? showEnglishWord : showEnglishArticle}
+                  showChinese={mode === 'word' ? showChineseWord : true}
+                  showEnglish={mode === 'word' ? showEnglishWord : true}
                 />
               ))}
             </div>
           )}
         </>
+      )}
+
+      {/* 悬浮按钮 - 快捷刷新 */}
+      {mode === 'word' && wordModeWords.length > 0 && (
+        <button 
+          className="fab" 
+          onClick={fetchRandom} 
+          disabled={loading}
+          style={{ bottom: '20px' }}
+        >
+          {loading ? '...' : '🔄'}
+        </button>
       )}
     </div>
   )
