@@ -22,7 +22,6 @@ export default function Vocab() {
   const [vocabList, setVocabList] = useState<Vocabulary[]>([])
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
-  const [total, setTotal] = useState(0)
   const [search, setSearch] = useState('')
   const [searchResult, setSearchResult] = useState<Vocabulary[]>([])
   const [isSearching, setIsSearching] = useState(false)
@@ -41,7 +40,6 @@ export default function Vocab() {
       const data: VocabResponse = await res.json()
       setVocabList(data.items)
       setTotalPages(data.total_pages)
-      setTotal(data.total)
     } catch (e) {
       console.error('Failed to fetch vocabulary:', e)
     }

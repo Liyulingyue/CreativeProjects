@@ -11,30 +11,28 @@ interface Vocabulary {
   unit: string | null
 }
 
-type Mode = 'word' | 'article'
+type Mode = 'word' | 'article' | 'mixed'
 
 export default function Random() {
   const [count, setCount] = useState(10)
   const [wordModeWords, setWordModeWords] = useState<Vocabulary[]>([])
-  const [articleModeWords, setArticleModeWords] = useState<Vocabulary[]>([])
   const [loading, setLoading] = useState(false)
   const [capturing, setCapturing] = useState(false)
   const [showChineseWord, setShowChineseWord] = useState(true)
   const [showEnglishWord, setShowEnglishWord] = useState(true)
   const [showChineseArticle, setShowChineseArticle] = useState(true)
   const [showEnglishArticle, setShowEnglishArticle] = useState(true)
-  const [mode, setMode] = useState<Mode>('word')
-  const [showMenu, setShowMenu] = useState(false)
   const [article, setArticle] = useState<{english: string, chinese: string} | null>(null)
   const [articleLoading, setArticleLoading] = useState(false)
-  const [showWordsInArticle, setShowWordsInArticle] = useState(true)
-  const [incrementalMode, setIncrementalMode] = useState(false)
+  const [incrementalMode, setIncrementalMode] = useState(true)
   const [uploading, setUploading] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showAddWord, setShowAddWord] = useState(false)
   const [newWordEnglish, setNewWordEnglish] = useState('')
   const [newWordChinese, setNewWordChinese] = useState('')
   const [showAdvancedControls, setShowAdvancedControls] = useState(true)
+  const [showArticleSection, setShowArticleSection] = useState(true)
+  const [showVocabSection, setShowVocabSection] = useState(true)
   const chineseInputRef = useRef<HTMLInputElement>(null)
 
   const processImageFile = async (file: File) => {
@@ -167,9 +165,8 @@ export default function Random() {
     const shuffled = [...vocabList].sort(() => Math.random() - 0.5)
     const wordList = shuffled.map(v => v.word)
     
-    setArticleModeWords([...vocabList])
     setArticleLoading(true)
-    setShowWordsInArticle(true)
+    setShowArticleSection(true)
     try {
       const res = await fetch('/api/v1/article', {
         method: 'POST',
@@ -184,146 +181,101 @@ export default function Random() {
     setArticleLoading(false)
   }
 
-  const handleModeChange = (newMode: Mode) => {
-    setMode(newMode)
-  }
-
   return (
     <div className="page-container">
-      {/* 顶部标签栏 */}
+      {/* 顶部标签栏 - 统一为控制面板切换 */}
       <div className="tab-bar">
         <button 
-          className={`tab-item ${mode === 'word' ? 'active' : ''}`}
-          onClick={() => setMode('word')}
-        >
-          🔤 单词学习
-        </button>
-        <button 
-          className={`tab-item ${mode === 'article' ? 'active' : ''}`}
-          onClick={() => setMode('article')}
-        >
-          📝 短文生成
-        </button>
-        <button 
-          className={`tab-expand-toggle ${showAdvancedControls ? 'active' : ''}`} 
+          className={`tab-item ${showAdvancedControls ? 'active' : ''}`}
           onClick={() => setShowAdvancedControls(!showAdvancedControls)}
-          aria-label="Toggle controls"
+          style={{ flex: 1, justifyContent: 'center', fontWeight: 'bold' }}
         >
-          {showAdvancedControls ? '▲' : '▼'}
+          {showAdvancedControls ? '▲ 隐藏控制面板' : '▼ 展开控制面板'}
         </button>
       </div>
 
       <div className="control-bar">
-        {mode === 'word' ? (
+        {showAdvancedControls ? (
           <>
-            {showAdvancedControls ? (
-              <div className="control-bar-main">
-                <button className="vocab-search-btn" onClick={fetchRandom} disabled={loading || capturing}>
-                  {loading ? '抽取中' : '🎲 随机抽取'}
-                </button>
-                <button className="vocab-search-btn" onClick={() => setShowAddWord(true)} style={{ background: 'var(--success)' }}>
-                  ✏️ 录入
-                </button>
+            <div className="control-bar-main">
+              <button 
+                className="vocab-search-btn" 
+                onClick={fetchRandom} 
+                disabled={loading || capturing}
+              >
+                {loading ? '抽取中' : '🎲 随机抽取'}
+              </button>
+              
+              <button 
+                className="vocab-search-btn" 
+                onClick={() => generateArticle(wordModeWords)} 
+                disabled={articleLoading || wordModeWords.length === 0}
+                style={{ background: 'var(--accent)' }}
+              >
+                {articleLoading ? '写作中...' : '✍️ 生成短文'}
+              </button>
+
+              <button 
+                className="vocab-search-btn" 
+                onClick={() => setShowAddWord(true)} 
+                style={{ background: 'var(--success)' }}
+              >
+                ✏️ 录入
+              </button>
+            </div>
+
+            <div className="control-bar-secondary">
+              <label className="action-chip">
+                📷 拍照
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={handleCameraCapture}
+                  style={{ display: 'none' }}
+                />
+              </label>
+              <label className="action-chip">
+                📤 传图
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleFileUpload}
+                  style={{ display: 'none' }}
+                />
+              </label>
+              <button className="action-chip" onClick={() => setShowSettings(true)}>
+                ⚙️ 数量({count})
+              </button>
+              <div 
+                className={`action-chip ${incrementalMode ? 'active' : ''}`}
+                onClick={() => setIncrementalMode(!incrementalMode)}
+              >
+                {incrementalMode ? '🔄 增量' : '🔄 覆盖'}
               </div>
-            ) : (
-              <div className="page-result-info" style={{ margin: 0, padding: '8px 0' }}>
-                {wordModeWords.length > 0 
-                  ? `当前列表已有 ${wordModeWords.length} 个单词，点击展开按钮查看操作` 
-                  : '列表为空，点击上方展开按钮开始获取单词'}
+              <div 
+                className={`action-chip ${showEnglishWord ? 'active' : ''}`}
+                onClick={() => setShowEnglishWord(!showEnglishWord)}
+              >
+                英 {showEnglishWord ? '显' : '隐'}
               </div>
-            )}
-            
-            {showAdvancedControls && (
-              <div className="control-bar-secondary">
-                <label className="action-chip">
-                  📷 拍照
-                  <input
-                    type="file"
-                    accept="image/*"
-                    capture="environment"
-                    onChange={handleCameraCapture}
-                    style={{ display: 'none' }}
-                  />
-                </label>
-                <label className="action-chip">
-                  📤 传图
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={handleFileUpload}
-                    style={{ display: 'none' }}
-                  />
-                </label>
-                <button className="action-chip" onClick={() => setShowSettings(true)}>
-                  ⚙️ 设置 ({count})
-                </button>
-                <div 
-                  className={`action-chip ${incrementalMode ? 'active' : ''}`}
-                  onClick={() => setIncrementalMode(!incrementalMode)}
-                >
-                  {incrementalMode ? '🔄 增量' : '🔄 覆盖'}
-                </div>
-                <div 
-                  className={`action-chip ${showEnglishWord ? 'active' : ''}`}
-                  onClick={() => setShowEnglishWord(!showEnglishWord)}
-                >
-                  ABC {showEnglishWord ? '显' : '隐'}
-                </div>
-                <div 
-                  className={`action-chip ${showChineseWord ? 'active' : ''}`}
-                  onClick={() => setShowChineseWord(!showChineseWord)}
-                >
-                  中 {showChineseWord ? '显' : '隐'}
-                </div>
-                <button className="action-chip" onClick={() => setWordModeWords([])} style={{ color: 'var(--danger)' }}>
-                  🗑️ 清空
-                </button>
+              <div 
+                className={`action-chip ${showChineseWord ? 'active' : ''}`}
+                onClick={() => setShowChineseWord(!showChineseWord)}
+              >
+                中 {showChineseWord ? '显' : '隐'}
               </div>
-            )}
+              <button className="action-chip" onClick={() => setWordModeWords([])} style={{ color: 'var(--danger)' }}>
+                🗑️ 清空
+              </button>
+            </div>
           </>
         ) : (
-          <>
-            {showAdvancedControls ? (
-              <div className="control-bar-main">
-                <button 
-                  className="vocab-search-btn" 
-                  onClick={() => generateArticle(wordModeWords)} 
-                  disabled={articleLoading || wordModeWords.length === 0}
-                >
-                  {articleLoading ? '写作中...' : '✍️ 生成阅读短文'}
-                </button>
-              </div>
-            ) : (
-              <div className="page-result-info" style={{ margin: 0, padding: '8px 0' }}>
-                {wordModeWords.length > 0 
-                  ? `当前已选中 ${wordModeWords.length} 个单词，点击上方展开按钮生成短文` 
-                  : '请先在单词学习模式中抽取单词'}
-              </div>
-            )}
-            
-            {showAdvancedControls && (
-              <div className="control-bar-secondary">
-                <div 
-                  className={`action-chip ${showEnglishArticle ? 'active' : ''}`}
-                  onClick={() => setShowEnglishArticle(!showEnglishArticle)}
-                >
-                  ENG: {showEnglishArticle ? '显' : '隐'}
-                </div>
-                <div 
-                  className={`action-chip ${showChineseArticle ? 'active' : ''}`}
-                  onClick={() => setShowChineseArticle(!showChineseArticle)}
-                >
-                  中: {showChineseArticle ? '显' : '隐'}
-                </div>
-                <div 
-                  className={`action-chip ${showWordsInArticle ? 'active' : ''}`}
-                  onClick={() => setShowWordsInArticle(!showWordsInArticle)}
-                >
-                  单词表: {showWordsInArticle ? '显' : '隐'}
-                </div>
-              </div>
-            )}
-          </>
+          <div className="page-result-info" style={{ margin: 0, padding: '8px 0', textAlign: 'center' }}>
+            {wordModeWords.length > 0 
+              ? `已加载 ${wordModeWords.length} 个单词 ${article ? ' | 已生成短文' : ''}` 
+              : '列表为空，点击上方展开按钮开始'}
+          </div>
         )}
       </div>
 
@@ -421,61 +373,121 @@ export default function Random() {
           <div className="loading-spinner"></div>
           正在加载单词...
         </div>
-      ) : (mode === 'word' && wordModeWords.length === 0) ? (
+      ) : (wordModeWords.length === 0) ? (
         <div className="empty-state">
           <div className="empty-state-icon">🎲</div>
           <p className="empty-state-text">列表为空，请随机抽取或手动录入</p>
         </div>
       ) : (
         <>
-          {mode === 'article' && (article || articleLoading) && (
+          {(article || articleLoading) && (
             <div className="article-section-wrapper" style={{ background: 'white', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-light)', marginBottom: '24px' }}>
-              {articleLoading && (
-                <div className="loading" style={{ marginBottom: '16px' }}>
-                  <div className="loading-spinner"></div>
-                  AI 正在努力撰写短文中...
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <h3 
+                  style={{ margin: 0, fontSize: '18px', display: 'flex', alignItems: 'center', cursor: 'pointer' }}
+                  onClick={() => setShowArticleSection(!showArticleSection)}
+                >
+                  {showArticleSection ? '▼' : '▶'} AI 阅读短文
+                </h3>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button 
+                    className={`action-chip ${showEnglishArticle ? 'active' : ''}`}
+                    onClick={() => setShowEnglishArticle(!showEnglishArticle)}
+                    style={{ fontSize: '12px', padding: '4px 8px' }}
+                  >
+                    英
+                  </button>
+                  <button 
+                    className={`action-chip ${showChineseArticle ? 'active' : ''}`}
+                    onClick={() => setShowChineseArticle(!showChineseArticle)}
+                    style={{ fontSize: '12px', padding: '4px 8px' }}
+                  >
+                    中
+                  </button>
                 </div>
-              )}
-              {article && (
-                <div className="article-content" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                  {showEnglishArticle && (
-                    <div className="article-section">
-                      <h3 style={{ marginBottom: '12px', fontSize: '18px', color: 'var(--accent)', borderLeft: '4px solid var(--accent)', paddingLeft: '12px' }}>English Passage</h3>
-                      <div style={{ lineHeight: '1.8', fontSize: '16px', textAlign: 'justify', whiteSpace: 'pre-wrap' }}>{article.english}</div>
+              </div>
+
+              {showArticleSection && (
+                <>
+                  {articleLoading && (
+                    <div className="loading" style={{ marginBottom: '16px' }}>
+                      <div className="loading-spinner"></div>
+                      AI 正在努力撰写短文中...
                     </div>
                   )}
-                  {showChineseArticle && (
-                    <div className="article-section" style={{ borderTop: '1px solid var(--border-light)', paddingTop: '20px' }}>
-                      <h3 style={{ marginBottom: '12px', fontSize: '18px', color: 'var(--accent)', borderLeft: '4px solid var(--accent-light)', paddingLeft: '12px' }}>中文对照</h3>
-                      <div style={{ lineHeight: '1.8', fontSize: '16px', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{article.chinese}</div>
+                  {article && (
+                    <div className="article-content" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                      {showEnglishArticle && (
+                        <div className="article-section">
+                          <h3 style={{ marginBottom: '12px', fontSize: '16px', color: 'var(--accent)', borderLeft: '4px solid var(--accent)', paddingLeft: '12px' }}>English Passage</h3>
+                          <div style={{ lineHeight: '1.8', fontSize: '16px', textAlign: 'justify', whiteSpace: 'pre-wrap' }}>{article.english}</div>
+                        </div>
+                      )}
+                      {showChineseArticle && (
+                        <div className="article-section" style={{ borderTop: '1px solid var(--border-light)', paddingTop: '20px' }}>
+                          <h3 style={{ marginBottom: '12px', fontSize: '16px', color: 'var(--accent)', borderLeft: '4px solid var(--accent-light)', paddingLeft: '12px' }}>中文对照</h3>
+                          <div style={{ lineHeight: '1.8', fontSize: '16px', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{article.chinese}</div>
+                        </div>
+                      )}
                     </div>
                   )}
-                </div>
+                </>
               )}
             </div>
           )}
           
-          {(mode === 'word' || (articleModeWords.length > 0 && showWordsInArticle)) && (
-            <div className="vocab-grid">
-              {(mode === 'word' ? wordModeWords : articleModeWords).map((word, idx) => (
-                <VocabCard
-                  key={idx}
-                  index={idx}
-                  word={word.word}
-                  phonetic={word.phonetic}
-                  part_of_speech={word.part_of_speech}
-                  definition={word.definition}
-                  showChinese={mode === 'word' ? showChineseWord : true}
-                  showEnglish={mode === 'word' ? showEnglishWord : true}
-                />
-              ))}
+          {wordModeWords.length > 0 && (
+            <div className="vocab-section-wrapper">
+              <div 
+                style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}
+              >
+                <h3 
+                  style={{ margin: 0, fontSize: '18px', cursor: 'pointer' }}
+                  onClick={() => setShowVocabSection(!showVocabSection)}
+                >
+                  {showVocabSection ? '▼' : '▶'} 单词列表 ({wordModeWords.length})
+                </h3>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button 
+                    className={`action-chip ${showEnglishWord ? 'active' : ''}`}
+                    onClick={() => setShowEnglishWord(!showEnglishWord)}
+                    style={{ fontSize: '12px', padding: '4px 8px' }}
+                  >
+                    英
+                  </button>
+                  <button 
+                    className={`action-chip ${showChineseWord ? 'active' : ''}`}
+                    onClick={() => setShowChineseWord(!showChineseWord)}
+                    style={{ fontSize: '12px', padding: '4px 8px' }}
+                  >
+                    中
+                  </button>
+                </div>
+              </div>
+              
+              {showVocabSection && (
+                <div className="vocab-grid">
+                  {wordModeWords.map((word, idx) => (
+                    <VocabCard
+                      key={idx}
+                      index={idx}
+                      word={word.word}
+                      phonetic={word.phonetic}
+                      part_of_speech={word.part_of_speech}
+                      definition={word.definition}
+                      showChinese={showChineseWord}
+                      showEnglish={showEnglishWord}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </>
       )}
 
       {/* 悬浮按钮 - 快捷刷新 */}
-      {mode === 'word' && wordModeWords.length > 0 && (
+      {wordModeWords.length > 0 && (
         <button 
           className="fab" 
           onClick={fetchRandom} 
