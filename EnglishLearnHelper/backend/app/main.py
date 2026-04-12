@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routers import vocabulary
 from app.routers import article
 from app.routers import ocr
+from app.routers import config
 
 app = FastAPI(title="English Learning Helper API")
 
@@ -18,6 +19,7 @@ api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(vocabulary.router)
 api_router.include_router(article.router)
 api_router.include_router(ocr.router)
+api_router.include_router(config.router)
 
 app.include_router(api_router)
 

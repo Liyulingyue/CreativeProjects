@@ -49,6 +49,14 @@ VOCAB_SYSTEM_PROMPT = f"""你是一个英语词典助手，擅长从文本中提
 
 JSON_BLOCK_PATTERN = re.compile(r"```json\s*(.*?)\s*```", re.IGNORECASE | re.DOTALL)
 
+def reload_config() -> None:
+    global api_key, base_url, model_name, client
+    api_key = os.getenv("MODEL_KEY")
+    base_url = os.getenv("MODEL_URL", "https://api.openai.com/v1")
+    model_name = os.getenv("MODEL_NAME", "gpt-4")
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    print(f"[AI Service] Reloaded with model: {model_name}, base_url: {base_url}")
+
 def generate_article(words: list[str]) -> dict:
     word_list = ", ".join(words)
     print(f"[AI Service] Generating article for words: {word_list[:50]}...")
