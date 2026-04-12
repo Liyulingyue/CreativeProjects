@@ -1,4 +1,5 @@
 @import './base.css';
-@import './navbar.css';
+@import './header.css';
+@import './siderbar.css';
 @import './pages.css';
 @import './components.css';

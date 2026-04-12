@@ -184,7 +184,7 @@
   border-radius: var(--radius);
   padding: 20px 24px;
   display: grid;
-  grid-template-columns: 40px 120px 140px 60px 1fr;
+  grid-template-columns: 40px 2fr 1fr 3fr;
   gap: 16px;
   align-items: center;
   transition: all 0.2s;
@@ -358,12 +358,35 @@
 
 /* Responsive */
 @media (max-width: 768px) {
+  /* Mobile: stack vocab card content and improve readability */
   .vocab-card {
-    grid-template-columns: 1fr;
+    grid-template-columns: 40px 2fr 1fr 3fr;
     gap: 8px;
-    padding: 16px;
+    padding: 18px;
+    border-radius: 12px;
   }
-  
+
+  /* Typography tweaks for better readability on small screens */
+  .vocab-word {
+    font-size: 22px;
+  }
+  .vocab-phonetic {
+    font-size: 12px;
+  }
+  .vocab-pos {
+    font-size: 12px;
+  }
+  .vocab-definition {
+    font-size: 15px;
+    line-height: 1.65;
+  }
+
+  .vocab-index {
+    width: 28px;
+    height: 28px;
+    font-size: 12px;
+  }
+
   .page-search,
   .page-controls {
     flex-direction: column;

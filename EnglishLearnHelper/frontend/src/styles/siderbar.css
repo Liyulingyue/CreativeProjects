@@ -1,0 +1,139 @@
+@media (min-width: 768px) {
+  .sider-toggle,
+  .siderbar,
+  .siderbar-overlay {
+    display: none;
+  }
+}
+
+.sider-toggle {
+  position: fixed;
+  top: 20px;
+  left: 20px;
+  z-index: 200;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s ease;
+}
+
+.sider-toggle:hover {
+  background: var(--accent-subtle);
+  border-color: var(--accent);
+}
+
+.sider-toggle.open {
+  left: 260px;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.sider-toggle.open .sider-toggle-icon {
+  color: white;
+}
+
+.sider-toggle-icon {
+  font-size: 18px;
+  color: var(--text-secondary);
+  transition: transform 0.3s ease;
+}
+
+.siderbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 150;
+  width: 240px;
+  height: 100vh;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border-light);
+  transform: translateX(-100%);
+  transition: transform 0.3s ease;
+  display: flex;
+  flex-direction: column;
+}
+
+.siderbar.open {
+  transform: translateX(0);
+}
+
+.siderbar-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 20px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.siderbar-icon {
+  width: 28px;
+  height: 28px;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-light) 100%);
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}
+
+.siderbar-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.siderbar-nav {
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  gap: 4px;
+}
+
+.siderbar-link {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.siderbar-link:hover {
+  color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+.siderbar-link.active {
+  color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+.siderbar-link-icon {
+  font-size: 16px;
+}
+
+.siderbar-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0, 0, 0, 0.3);
+  z-index: 100;
+}
+
+.main-content {
+  margin-left: 0;
+  transition: margin-left 0.3s ease;
+}

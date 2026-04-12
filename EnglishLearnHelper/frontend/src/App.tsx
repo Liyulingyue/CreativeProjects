@@ -1,5 +1,5 @@
 import { Routes, Route } from 'react-router-dom'
-import Header from './components/Header'
+import SiderBar from './components/SiderBar'
 import Home from './pages/Home'
 import Vocab from './pages/Vocab'
 import Random from './pages/Random'
@@ -8,7 +8,7 @@ import Settings from './pages/Settings'
 function App() {
   return (
     <div className="app">
-      <Header />
+      <SiderBar />
       <main className="main-content">
         <Routes>
           <Route path="/" element={<Home />} />

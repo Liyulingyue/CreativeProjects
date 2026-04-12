@@ -11,7 +11,6 @@ interface VocabCardProps {
 export default function VocabCard({ 
   word, 
   phonetic, 
-  part_of_speech, 
   definition, 
   index,
   showChinese = true,
@@ -24,7 +23,6 @@ export default function VocabCard({
       )}
       <div className="vocab-word">{word}</div>
       <div className="vocab-phonetic">{phonetic || ''}</div>
-      <div className="vocab-pos">{part_of_speech || ''}</div>
       <div className="vocab-definition">{definition}</div>
     </div>
   )
