@@ -1,0 +1,347 @@
+/**
+ * JSON Tree Viewer - 样式表
+ * 负责所有 UI 样式定义
+ */
+
+/* ========== CSS 变量 ========== */
+:root {
+    --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    --panel-bg: white;
+    --text-primary: #1a1a1a;
+    --text-secondary: #666;
+    --text-muted: #999;
+    --border-color: #e0e0e0;
+    --shadow-sm: 0 2px 8px rgba(0,0,0,0.1);
+    --shadow-md: 0 10px 40px rgba(0,0,0,0.2);
+    --radius-sm: 6px;
+    --radius-md: 12px;
+    
+    /* 语法高亮颜色 */
+    --color-string: #c41a16;
+    --color-number: #1c00cf;
+    --color-boolean: #0d22aa;
+    --color-null: #808080;
+    --color-key: #881391;
+    --color-bracket: #666;
+    --color-error: #c0392b;
+}
+
+/* ========== 基础重置 ========== */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: var(--primary-gradient);
+    min-height: 100vh;
+    padding: 20px;
+    color: var(--text-primary);
+}
+
+/* ========== 布局 ========== */
+.container {
+    max-width: 1400px;
+    margin: 0 auto;
+}
+
+header {
+    text-align: center;
+    margin-bottom: 20px;
+}
+
+header h1 {
+    color: white;
+    font-size: 2rem;
+    text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+}
+
+header p {
+    color: rgba(255,255,255,0.8);
+    margin-top: 8px;
+}
+
+.main-content {
+    display: flex;
+    gap: 20px;
+    height: calc(100vh - 150px);
+}
+
+/* ========== 面板组件 ========== */
+.panel {
+    flex: 1;
+    background: var(--panel-bg);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-md);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.panel-header {
+    background: var(--primary-gradient);
+    color: white;
+    padding: 15px 20px;
+    font-weight: 600;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.panel-content {
+    flex: 1;
+    overflow: auto;
+    padding: 0;
+}
+
+.panel-content > * {
+    height: 100%;
+}
+
+/* ========== 按钮组件 ========== */
+.btn {
+    background: rgba(255,255,255,0.2);
+    border: 1px solid rgba(255,255,255,0.3);
+    color: white;
+    padding: 6px 12px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 0.85rem;
+    transition: all 0.3s ease;
+    font-family: inherit;
+}
+
+.btn:hover {
+    background: rgba(255,255,255,0.3);
+}
+
+.btn:active {
+    transform: scale(0.98);
+}
+
+/* 文件上传按钮 */
+.btn-upload {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+}
+
+.btn-upload:hover {
+    background: rgba(255,255,255,0.3);
+}
+
+.btn-upload input[type="file"] {
+    display: none;
+}
+
+/* ========== 错误面板 ========== */
+.error-panel {
+    background: #fee;
+    border-left: 4px solid #e74c3c;
+    color: var(--color-error);
+    padding: 15px 20px;
+    display: none;
+    font-family: 'Courier New', monospace;
+    font-size: 0.9rem;
+}
+
+.error-panel.show {
+    display: block;
+}
+
+/* ========== 树形视图 ========== */
+#tree-view {
+    padding: 20px;
+    font-family: 'Courier New', monospace;
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+.tree-node {
+    margin-left: 20px;
+    position: relative;
+}
+
+.tree-node::before {
+    content: '';
+    position: absolute;
+    left: -12px;
+    top: 0;
+    height: 100%;
+    border-left: 1px dashed #ccc;
+}
+
+.tree-key {
+    color: var(--color-key);
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.tree-key:hover {
+    color: var(--color-error);
+    text-decoration: underline;
+}
+
+/* ========== 语法高亮 ========== */
+.tree-value { color: var(--text-primary); }
+.tree-value.string { color: var(--color-string); }
+.tree-value.number { color: var(--color-number); }
+.tree-value.boolean { color: var(--color-boolean); }
+.tree-value.null { color: var(--color-null); font-style: italic; }
+
+/* ========== 展开/折叠 ========== */
+.tree-toggle {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    text-align: center;
+    line-height: 14px;
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-weight: bold;
+    user-select: none;
+    border-radius: 3px;
+}
+
+.tree-toggle:hover {
+    background: rgba(102, 126, 234, 0.2);
+}
+
+.tree-children {
+    display: block;
+}
+
+.tree-children.collapsed {
+    display: none;
+}
+
+.tree-item {
+    padding: 4px 0;
+}
+
+.tree-bracket {
+    color: var(--color-bracket);
+}
+
+.tree-count {
+    color: var(--text-muted);
+    font-size: 0.85em;
+    margin-left: 8px;
+}
+
+/* ========== 空状态 ========== */
+.empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text-muted);
+}
+
+.empty-state svg {
+    width: 80px;
+    height: 80px;
+    margin-bottom: 20px;
+    opacity: 0.5;
+}
+
+.empty-state p {
+    line-height: 1.8;
+}
+
+/* ========== JSONEditor 覆盖样式 ========== */
+.jsoneditor {
+    border: none !important;
+}
+
+.jsoneditor .tree {
+    padding: 10px !important;
+}
+
+.jsoneditor-modal .pane.header {
+    background: var(--primary-gradient) !important;
+}
+
+/* ========== 响应式布局 ========== */
+@media (max-width: 768px) {
+    .main-content {
+        flex-direction: column;
+        height: auto;
+    }
+    
+    .panel {
+        min-height: 400px;
+    }
+    
+    header h1 {
+        font-size: 1.5rem;
+    }
+}
+
+/* ========== 加载动画 ========== */
+.loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px;
+}
+
+.loading::after {
+    content: '';
+    width: 40px;
+    height: 40px;
+    border: 3px solid rgba(102, 126, 234, 0.2);
+    border-top-color: #667eea;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* ========== 工具类 ========== */
+.hidden { display: none !important; }
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0,0,0,0);
+    border: 0;
+}
+
+/* ========== JSONL 样式 ========== */
+.jsonl-container {
+    padding: 0;
+}
+
+.jsonl-header,
+.jsonl-footer {
+    padding: 4px 0;
+}
+
+.jsonl-line {
+    position: relative;
+    border-left: none;
+    margin-left: 0;
+}
+
+.jsonl-line::before {
+    display: none;
+}
+
+.jsonl-line-number {
+    display: inline-block;
+    min-width: 30px;
+    padding: 2px 6px;
+    margin-right: 8px;
+    background: rgba(102, 126, 234, 0.1);
+    color: #667eea;
+    border-radius: 4px;
+    font-size: 0.85em;
+    text-align: center;
+}

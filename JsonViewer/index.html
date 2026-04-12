@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JSON 树形预览器</title>
+    
+    <!-- JSONEditor 样式 (CDN) -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/jsoneditor@9.10.2/dist/jsoneditor.min.css">
+    
+    <!-- 应用样式 -->
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <div class="container">
+        <!-- 头部 -->
+        <header>
+            <h1>🌲 JSON 树形预览器</h1>
+            <p>输入 JSON 数据，实时查看树形结构视图</p>
+        </header>
+        
+        <!-- 主内容区 -->
+        <div class="main-content">
+            <!-- 左侧：JSON 输入面板 -->
+            <div class="panel">
+                <div class="panel-header">
+                    <span>📝 JSON 输入</span>
+                    <div class="header-actions">
+                        <label class="btn btn-upload" title="上传 JSON/JSONL 文件">
+                            📤 上传
+                            <input type="file" id="file-input" accept=".json,.jsonl,.txt" hidden>
+                        </label>
+                        <button class="btn" id="btn-sample" title="加载示例数据">📋 示例</button>
+                        <button class="btn" id="btn-clear" title="清空编辑器">🗑️ 清空</button>
+                    </div>
+                </div>
+                <div class="panel-content">
+                    <div id="json-editor"></div>
+                </div>
+                <div id="error-panel" class="error-panel"></div>
+            </div>
+            
+            <!-- 右侧：树形视图面板 -->
+            <div class="panel">
+                <div class="panel-header">
+                    <span>🌳 树形视图</span>
+                    <div class="header-actions">
+                        <button class="btn" id="btn-expand" title="展开所有节点">📂 全部展开</button>
+                        <button class="btn" id="btn-collapse" title="折叠所有节点">📁 全部折叠</button>
+                    </div>
+                </div>
+                <div class="panel-content">
+                    <div id="tree-view">
+                        <!-- 树形视图将在这里渲染 -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- JSONEditor 库 (CDN) -->
+    <script src="https://cdn.jsdelivr.net/npm/jsoneditor@9.10.2/dist/jsoneditor.min.js"></script>
+    
+    <!-- 应用脚本 (模块化) -->
+    <script src="js/utils/json-parser.js"></script>
+    <script src="js/tree-renderer.js"></script>
+    <script src="js/sample-data.js"></script>
+    <script src="js/app.js"></script>
+    
+    <!-- 内联初始化脚本 -->
+    <script>
+        // 等待 DOM 加载完成，确保应用已初始化
+        document.addEventListener('DOMContentLoaded', () => {
+            // 等待 app 实例创建
+            const checkApp = setInterval(() => {
+                if (window.app) {
+                    clearInterval(checkApp);
+                    
+                    // 绑定按钮事件
+                    document.getElementById('btn-sample')?.addEventListener('click', () => {
+                        app.loadSampleMenu();
+                    });
+                    
+                    document.getElementById('btn-clear')?.addEventListener('click', () => {
+                        app.clearEditor();
+                    });
+                    
+                    document.getElementById('btn-expand')?.addEventListener('click', () => {
+                        app.expandAll();
+                    });
+                    
+                    document.getElementById('btn-collapse')?.addEventListener('click', () => {
+                        app.collapseAll();
+                    });
+                    
+                    // 自动加载默认示例
+                    app.loadSample('default');
+                    
+                    console.log('✅ JSON Tree Viewer 启动完成');
+                }
+            }, 50);
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+{"name": "Alice", "age": 30, "city": "Beijing", "active": true}
+{"name": "Bob", "age": 25, "city": "Shanghai", "active": false}
+{"name": "Charlie", "age": 35, "city": "Guangzhou", "active": true}
+{"name": "Diana", "age": 28, "city": "Shenzhen", "skills": ["JavaScript", "Python", "Go"], "active": true}
+{"name": "Evan", "age": 42, "city": "Chengdu", "salary": 85000, "active": false}
