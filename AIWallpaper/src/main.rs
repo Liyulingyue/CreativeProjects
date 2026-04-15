@@ -9,6 +9,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SetParent, SetWindowPos, GetWindowLongPtrA, SetWindowLongPtrA,
     GWL_EXSTYLE, WS_EX_TOOLWINDOW, WS_EX_NOACTIVATE,
     HWND_BOTTOM, SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE, SWP_SHOWWINDOW,
+    SystemParametersInfoW, SPI_GETDESKWALLPAPER,
 };
 use tokio::sync::mpsc;
 use tray_icon::{
@@ -37,6 +38,16 @@ struct IpcMessage {
 // (img_url, success, error_msg)
 type AppEvent = (String, bool, String);
 
+fn load_icon(path: &std::path::Path) -> Result<tray_icon::icon::Icon, Box<dyn std::error::Error>> {
+    let (icon_rgba, icon_width, icon_height) = {
+        let image = image::open(path)?.into_rgba8();
+        let (width, height) = image.dimensions();
+        let rgba = image.into_raw();
+        (rgba, width, height)
+    };
+    tray_icon::icon::Icon::from_rgba(icon_rgba, icon_width, icon_height).map_err(|e| e.into())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_path = "config.json";
@@ -58,10 +69,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let quit_id = quit_item.id();
     tray_menu.append_items(&[&show_item, &PredefinedMenuItem::separator(), &quit_item]);
 
-    let _tray_icon = TrayIconBuilder::new()
+    let mut tray_builder = TrayIconBuilder::new()
         .with_menu(Box::new(tray_menu))
-        .with_tooltip("AIWallpaper")
-        .build()?;
+        .with_tooltip("AIWallpaper");
+
+    // 修改: 使用 image crate 手动加载像素，以规避 Windows GDI+ 路径加载问题
+    match load_icon(std::path::Path::new("assets/app_icon.png")) {
+        Ok(icon) => {
+            println!("成功加载图标像素: assets/app_icon.png");
+            tray_builder = tray_builder.with_icon(icon);
+        }
+        Err(e) => {
+            eprintln!("无法加载图标: {:?}. 检查 assets/app_icon.png 是否有效。", e);
+        }
+    }
+
+    let _tray_icon = tray_builder.build()?;
 
     // 1. 创建背景窗口 (WebView2 壁纸层)
     let bg_window = WindowBuilder::new()
@@ -94,17 +117,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bg_webview = WebViewBuilder::new(bg_window)?
         .with_transparent(true) // 尝试背景透明以减少合并问题
         .with_html(include_str!("../bg/index.html"))?
+        // 读取当前系统壁纸路径并注入，避免注入后出现黑屏
+        .with_initialization_script(&{
+            let file_url = unsafe {
+                let mut buf = vec![0u16; 260];
+                SystemParametersInfoW(SPI_GETDESKWALLPAPER, 260, buf.as_mut_ptr() as *mut _, 0);
+                let path = String::from_utf16_lossy(&buf)
+                    .trim_end_matches('\0')
+                    .to_string();
+                if path.is_empty() { String::new() }
+                else { format!("file:///{}", path.replace('\\', "/")) }
+            };
+            if file_url.is_empty() { String::new() }
+            else { format!("window.__initialWallpaper = '{}'", file_url) }
+        })
         .build()?;
 
-    // 2. 创建控制面板窗口
+    // 2. 创建控制面板窗口，初始隐藏避免黑屏闪烁
     let control_window = WindowBuilder::new()
         .with_title("AIWallpaper 控制中心")
         .with_inner_size(tao::dpi::LogicalSize::new(400.0, 620.0))
+        .with_visible(false)
         .build(&event_loop)?;
 
     let (tx, mut rx) = mpsc::channel::<String>(32);
     let control_webview = WebViewBuilder::new(control_window)?
         .with_html(include_str!("../ui/index.html"))?
+        // 页面内容加载完成后通知 Rust 显示窗口
+        .with_initialization_script(r#"
+            window.addEventListener('load', function() {
+                requestAnimationFrame(function() {
+                    requestAnimationFrame(function() {
+                        window.ipc.postMessage(JSON.stringify({ type: 'ready', value: '' }));
+                    });
+                });
+            });
+        "#)
         .with_ipc_handler(move |_window, request| {
             let _ = tx.try_send(request);
         })
@@ -117,6 +165,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         while let Some(msg_raw) = rx.recv().await {
             if let Ok(msg) = serde_json::from_str::<IpcMessage>(&msg_raw) {
                 match msg.msg_type.as_str() {
+                    "ready" => {
+                        // 通过事件代理通知主线程显示窗口
+                        let _ = proxy.send_event(("__ready__".into(), true, "".into()));
+                    }
                     "save_key" => {
                         let mut cfg = config_task.lock().unwrap();
                         cfg.api_key = msg.value.clone();
@@ -170,7 +222,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 control_webview.window().set_visible(false);
             }
             Event::UserEvent((img_url, success, err_msg)) => {
-                if success {
+                if img_url == "__ready__" {
+                    // WebView 首帧已渲染，显示窗口消除黑屏闪烁
+                    control_webview.window().set_visible(true);
+                } else if success {
                     let js_ui = format!("window.onGenerationComplete(true, '', '{}')", img_url.replace('\'', "\\'"));
                     let _ = control_webview.evaluate_script(&js_ui);
                     

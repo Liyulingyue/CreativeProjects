@@ -5,43 +5,111 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Wallpaper Layer</title>
     <style>
-        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background-color: #000; }
-        .wallpaper {
-            position: absolute;
-            top: 0; left: 0;
-            width: 100%; height: 100%;
-            background-size: cover;
-            background-position: center;
-            transition: opacity 1.5s ease-in-out;
-            opacity: 0;
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background-color: #050a1a; }
+        #canvas { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; transition: opacity 2s ease; }
+        .brand-overlay {
+            position: absolute; inset: 0; display: flex; flex-direction: column; 
+            align-items: center; justify-content: center; z-index: 2;
+            font-family: 'Inter', sans-serif; color: white; transition: opacity 2s ease;
         }
-        .active { opacity: 1; margin: 0; padding: 0; }
+        .brand-overlay h1 { font-size: 84px; font-weight: 800; letter-spacing: -2px; margin: 0; opacity: 0.8; }
+        .brand-overlay p { font-size: 14px; opacity: 0.4; text-transform: uppercase; letter-spacing: 4px; }
+        
+        .wallpaper {
+            position: absolute; top: 0; left: 0;
+            width: 100%; height: 100%;
+            background-size: cover; background-position: center;
+            transition: opacity 2s ease-in-out; opacity: 0; z-index: 0;
+        }
+        .active { opacity: 1; z-index: 3; }
         .prompt-info { 
-            position: absolute; bottom: 20px; right: 20px; 
+            position: absolute; bottom: 30px; right: 40px; 
             color: rgba(255, 255, 255, 0.4); font-family: sans-serif; 
             font-size: 12px; pointer-events: none; z-index: 10;
         }
     </style>
 </head>
 <body>
-    <div id="bg1" class="wallpaper active"></div>
+    <canvas id="canvas"></canvas>
+    <div id="brand" class="brand-overlay">
+        <h1>AIWallpaper</h1>
+        <p>Connecting Creativity with Intelligence</p>
+    </div>
+    <div id="bg1" class="wallpaper"></div>
     <div id="bg2" class="wallpaper"></div>
     <div class="prompt-info" id="promptDisplay"></div>
 
     <script>
+        // 粒子特效实现
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        let particles = [];
+        
+        function initCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        
+        class Particle {
+            constructor() {
+                this.x = Math.random() * canvas.width;
+                this.y = Math.random() * canvas.height;
+                this.size = Math.random() * 2 + 0.5;
+                this.speedX = Math.random() * 0.5 - 0.25;
+                this.speedY = Math.random() * 0.5 - 0.25;
+                this.opacity = Math.random() * 0.5 + 0.2;
+            }
+            update() {
+                this.x += this.speedX;
+                this.y += this.speedY;
+                if (this.x > canvas.width) this.x = 0;
+                if (this.x < 0) this.x = canvas.width;
+                if (this.y > canvas.height) this.y = 0;
+                if (this.y < 0) this.y = canvas.height;
+            }
+            draw() {
+                ctx.fillStyle = `rgba(255, 255, 255, ${this.opacity})`;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        function createParticles() {
+            for (let i = 0; i < 150; i++) particles.push(new Particle());
+        }
+
+        function animate() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            particles.forEach(p => {
+                p.update();
+                p.draw();
+            });
+            requestAnimationFrame(animate);
+        }
+
+        initCanvas();
+        createParticles();
+        animate();
+        window.addEventListener('resize', initCanvas);
+
         let currentIdx = 1;
         window.setWallpaper = function(url, promptText) {
+            // 第一次生成成功后，隐藏特效层
+            document.getElementById('canvas').style.opacity = '0';
+            document.getElementById('brand').style.opacity = '0';
+
             const nextIdx = currentIdx === 1 ? 2 : 1;
             const currentEl = document.getElementById('bg' + currentIdx);
             const nextEl = document.getElementById('bg' + nextIdx);
 
             nextEl.style.backgroundImage = `url('${url}')`;
             nextEl.classList.add('active');
+            // 注意：第一次 currentEl 可能没有背景，不影响
             currentEl.classList.remove('active');
             
             document.getElementById('promptDisplay').innerText = promptText;
             currentIdx = nextIdx;
-            console.log("Wallpaper updated:", url);
         };
     </script>
 </body>

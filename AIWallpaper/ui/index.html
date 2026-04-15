@@ -1,94 +1,265 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Wall-E AI Wallpaper Control</title>
+    <title>AIWallpaper 控制中心</title>
+    <!-- 引入 Tailwind CSS 和 Lucide 图标 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: #f4f7f6; display: flex; flex-direction: column; align-items: center; padding: 20px; }
-        .card { background: white; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); padding: 20px; width: 100%; max-width: 320px; }
-        h1 { font-size: 1.5rem; text-align: center; color: #333; }
-        textarea { width: 100%; border: 1px solid #ddd; border-radius: 4px; padding: 10px; resize: none; }
-        button { margin-top: 15px; width: 100%; background: #007bff; color: white; border: none; padding: 10px; border-radius: 4px; cursor: pointer; transition: background 0.3s; }
-        button:hover { background: #0056b3; }
-        #preview-wrap { margin-top: 16px; display: none; }
-        #preview-wrap img { width: 100%; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); animation: fadeIn 0.5s ease; }
-        #preview-label { font-size: 0.78rem; color: #999; text-align: center; margin-top: 4px; }
-        @keyframes fadeIn { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: scale(1); } }
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
+        body { font-family: 'Inter', sans-serif; -webkit-user-select: none; user-select: none; }
+        .glass { background: rgba(255, 255, 255, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.3); }
+        .tab-active { color: #3b82f6; border-bottom: 2px solid #3b82f6; }
+        .loading-shimmer { background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; }
+        @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+        .preview-card { transition: transform 0.3s ease; }
+        .preview-card:hover { transform: translateY(-4px); }
     </style>
 </head>
-<body>
-    <div class="card">
-        <h1>AI 壁纸控制面板</h1>
-        <div style="margin-bottom: 10px;">
-            <input type="password" id="apiKey" placeholder="输入文心 API Key (设置后保存)" style="width: 100%; padding: 8px; box-sizing: border-box;">
-            <button onclick="saveKey()" style="background: #28a745; margin-top: 5px;">保存 Key</button>
+<body class="bg-slate-50 min-h-screen text-slate-800">
+    <!-- 顶部导航 -->
+    <div class="glass sticky top-0 z-50 px-6 py-4 flex justify-between items-center">
+        <div class="flex items-center gap-2">
+            <div class="bg-blue-600 p-1.5 rounded-lg shadow-blue-200 shadow-lg">
+                <i data-lucide="sparkles" class="text-white w-5 h-5"></i>
+            </div>
+            <h1 class="font-bold text-lg tracking-tight">AIWallpaper <span class="text-blue-600 text-[10px] align-top px-1.5 py-0.5 rounded bg-blue-50">PRO</span></h1>
         </div>
-        <hr>
-        <textarea id="prompt" rows="4" placeholder="在此输入生成壁纸的提示词..."></textarea>
-        <div id="status" style="margin-top: 10px; font-size: 0.9rem; color: #666; text-align: center; min-height: 1.2rem;"></div>
-        <button id="genBtn" onclick="generate()">生成并设为壁纸</button>
-        <div id="preview-wrap">
-            <img id="preview-img" src="" alt="生成的壁纸预览">
-            <div id="preview-label">↑ 已设置为桌面壁纸</div>
+        <div class="flex gap-4">
+            <button onclick="switchTab('create')" id="tab-create" class="text-sm font-medium px-2 py-1 transition tab-active">创作</button>
+            <button onclick="switchTab('settings')" id="tab-settings" class="text-sm font-medium px-2 py-1 transition text-slate-400 hover:text-slate-600">设置</button>
         </div>
     </div>
 
-    <script>
-        const statusDiv = document.getElementById('status');
-        const genBtn = document.getElementById('genBtn');
+    <!-- 主要内容区域 -->
+    <main class="p-6 max-w-md mx-auto">
+        <!-- 创作面板 -->
+        <div id="page-create" class="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div class="space-y-3">
+                <label class="text-xs font-bold text-slate-400 uppercase tracking-widest px-1">壁纸创意提示词</label>
+                <div class="relative group">
+                    <textarea id="prompt" rows="4" 
+                        class="w-full bg-white border border-slate-200 rounded-2xl p-4 text-sm focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all outline-none resize-none shadow-sm"
+                        placeholder="例如：赛博朋克风格的空中花园，日落时分，周围环绕着极光，高画质，电影感..."></textarea>
+                    <div class="absolute bottom-3 right-3 flex gap-2">
+                        <button onclick="getRandomPrompt()" class="p-1.5 rounded-lg hover:bg-slate-100 text-blue-500 transition title='随机灵感'">
+                            <i data-lucide="dice-5" class="w-4 h-4"></i>
+                        </button>
+                        <button onclick="clearPrompt()" class="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 transition" title="清空">
+                            <i data-lucide="rotate-ccw" class="w-4 h-4"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
 
-        function setStatus(text, isError = false) {
-            statusDiv.innerText = text;
-            statusDiv.style.color = isError ? "#dc3545" : "#666";
+            <!-- 操作按钮 -->
+            <button id="genBtn" onclick="generate()" 
+                class="w-full bg-slate-900 hover:bg-black text-white py-4 rounded-2xl font-medium flex items-center justify-center gap-3 shadow-xl shadow-slate-200 active:scale-[0.98] transition-all group overflow-hidden relative">
+                <div class="absolute inset-0 bg-gradient-to-r from-blue-600/20 to-purple-600/20 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                <i data-lucide="wand-2" id="btnIcon" class="w-5 h-5 text-blue-400 relative z-10"></i>
+                <span id="btnText" class="relative z-10">生成并设置为桌面</span>
+            </button>
+
+            <!-- 状态提示 -->
+            <div id="statusWrap" class="hidden animate-in fade-in zoom-in duration-300">
+                <div id="status" class="text-center p-3 rounded-xl bg-blue-50 text-blue-600 text-xs font-medium border border-blue-100 italic"></div>
+            </div>
+
+            <!-- 预览区域 -->
+            <div id="previewWrap" class="hidden space-y-3">
+                <label class="text-xs font-bold text-slate-400 uppercase tracking-widest px-1">当前壁纸预览</label>
+                <div class="preview-card bg-white rounded-2xl overflow-hidden shadow-2xl border border-white relative group">
+                    <img id="previewImg" src="" class="w-full aspect-[16/10] object-cover bg-slate-200">
+                    <div class="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent flex items-end p-4 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                        <div class="flex w-full justify-between items-center text-white">
+                            <span class="text-[10px] font-medium backdrop-blur-md bg-white/10 px-2 py-1 rounded-md flex items-center gap-1 border border-white/20">
+                                <i data-lucide="monitor" class="w-3 h-3"></i> 桌面已同步
+                            </span>
+                            <div class="flex gap-2">
+                                <button onclick="downloadCurr()" class="p-2 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-md transition border border-white/20">
+                                    <i data-lucide="eye" class="w-4 h-4"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 设置面板 -->
+        <div id="page-settings" class="hidden space-y-8 animate-in fade-in duration-300">
+            <div class="space-y-4">
+                <div class="flex items-center gap-3 px-1">
+                    <div class="p-2 bg-slate-100 rounded-xl text-slate-600 shadow-inner">
+                        <i data-lucide="shield-check" class="w-5 h-5"></i>
+                    </div>
+                    <div>
+                        <h3 class="font-semibold text-sm">AI Studio API Token</h3>
+                        <a href="https://aistudio.baidu.com/account/accessToken" target="_blank"
+                            class="text-[10px] text-blue-400 hover:text-blue-600 tracking-tighter flex items-center gap-0.5 transition">
+                            <i data-lucide="external-link" class="w-2.5 h-2.5 inline"></i>
+                            前往 aistudio.baidu.com 获取 Token
+                        </a>
+                    </div>
+                </div>
+                <div class="flex flex-col gap-3">
+                    <div class="relative">
+                        <input type="password" id="apiKey" 
+                            class="w-full bg-white border border-slate-200 rounded-xl pl-4 pr-12 py-3 text-sm focus:ring-2 focus:ring-blue-500/20 outline-none transition"
+                            placeholder="输入您的 API Token">
+                        <div class="absolute right-3 top-3 text-slate-300">
+                            <i data-lucide="lock" class="w-4 h-4"></i>
+                        </div>
+                    </div>
+                    <button onclick="saveKey()" class="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl text-sm font-medium transition shadow-lg shadow-blue-100 active:scale-[0.99]">
+                        保存密钥
+                    </button>
+                </div>
+            </div>
+
+            <div class="border-t border-slate-200 pt-6 space-y-4">
+                 <div class="flex items-center gap-3 px-1">
+                    <div class="p-2 bg-slate-100 rounded-xl text-slate-600">
+                        <i data-lucide="git-branch" class="w-5 h-5"></i>
+                    </div>
+                    <div>
+                        <h3 class="font-semibold text-sm">系统信息</h3>
+                        <p class="text-[10px] text-slate-400 uppercase">AIWallpaper v1.1.0-STABLE</p>
+                    </div>
+                </div>
+                <div class="bg-slate-100 rounded-2xl p-4 text-[11px] text-slate-500 leading-relaxed border border-slate-200/50 shadow-inner">
+                    <p class="mb-2 uppercase font-bold text-[9px] text-slate-400">核心架构</p>
+                    1. 基于 Rust 高性能异步后端<br>
+                    2. Win32 消息钩子 (0x052C) 桌面注入<br>
+                    3. WebView2 GPU 加速渲染层 (Win11 24H2 优化版本)
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        lucide.createIcons();
+
+        function switchTab(tab) {
+            const createBtn = document.getElementById('tab-create');
+            const settingsBtn = document.getElementById('tab-settings');
+            const createPage = document.getElementById('page-create');
+            const settingsPage = document.getElementById('page-settings');
+
+            if (tab === 'create') {
+                createBtn.classList.add('tab-active');
+                createBtn.classList.remove('text-slate-400', 'hover:text-slate-600');
+                settingsBtn.classList.remove('tab-active');
+                settingsBtn.classList.add('text-slate-400', 'hover:text-slate-600');
+                createPage.classList.remove('hidden');
+                settingsPage.classList.add('hidden');
+            } else {
+                settingsBtn.classList.add('tab-active');
+                settingsBtn.classList.remove('text-slate-400', 'hover:text-slate-600');
+                createBtn.classList.remove('tab-active');
+                createBtn.classList.add('text-slate-400', 'hover:text-slate-600');
+                settingsPage.classList.remove('hidden');
+                createPage.classList.add('hidden');
+            }
+        }
+
+        function setStatus(text, type='info') {
+            const statusWrap = document.getElementById('statusWrap');
+            const status = document.getElementById('status');
+            if(!text) {
+                statusWrap.classList.add('hidden');
+                return;
+            }
+            statusWrap.classList.remove('hidden');
+            status.innerText = text;
+            if(type === 'error') {
+                status.className = "text-center p-3 rounded-xl bg-red-50 text-red-600 text-[11px] font-medium border border-red-100";
+            } else {
+                status.className = "text-center p-3 rounded-xl bg-blue-50 text-blue-600 text-[11px] font-medium border border-blue-100 italic";
+            }
+        }
+
+        const PRESET_PROMPTS = [
+            "赛博朋克风格的空中花园，日落时分，周围环绕着极光，高画质，电影感",
+            "莫奈印象派风格的睡莲池塘，清晨薄雾，梦幻般的光影，色彩丰富",
+            "写实风格的深海亚特兰蒂斯遗迹，发光的深海生物，幽蓝调，极致细节",
+            "浮世绘风格的富士山与巨浪，樱花飘落，古典日本艺术感，极简构图",
+            "科幻电影感，巨大的环形空间站俯视地球，宁静的宇宙，群星闪烁",
+            "虚幻引擎5渲染，原始森林中的神秘发光图腾，丁达尔效应，极高精度纹理",
+            "蒸汽朋克风格的维多利亚时代伦敦，巨大的铜质飞艇，雾气萦绕的街道",
+            "3D 风格的梦幻棉花糖城堡，粉紫色调，可爱的云朵，糖果森林",
+            "赛博朋克风格的霓虹雨夜街道，东京街头感，路面倒影，高对比度",
+            "极简主义，雪山之巅的孤独小木屋，黑白调，空虚而致远"
+        ];
+
+        function getRandomPrompt() {
+            console.log("Random prompt requested");
+            const current = document.getElementById('prompt').value;
+            let randomPrompt;
+            do {
+                randomPrompt = PRESET_PROMPTS[Math.floor(Math.random() * PRESET_PROMPTS.length)];
+            } while (randomPrompt === current && PRESET_PROMPTS.length > 1);
+            
+            document.getElementById('prompt').value = randomPrompt;
+            setStatus("已为你随机到灵感提示词 ✨");
+            setTimeout(() => setStatus(""), 2000);
+        }
+
+        function clearPrompt() {
+            document.getElementById('prompt').value = '';
+        }
+
+        function generate() {
+            const prompt = document.getElementById('prompt').value;
+            const btn = document.getElementById('genBtn');
+            const btnText = document.getElementById('btnText');
+            
+            if (!prompt) {
+                setStatus("请输入创意提示词，例如：『莫奈风格的莲池』", 'error');
+                return;
+            }
+
+            btn.disabled = true;
+            btn.classList.add('opacity-50', 'cursor-not-allowed');
+            btnText.innerText = "智能构画中...";
+            setStatus("正在调用 ERNIE-Image 绘图引擎，构思光影与构图...");
+
+            window.ipc.postMessage(JSON.stringify({ type: "generate", value: prompt }));
         }
 
         function saveKey() {
             const key = document.getElementById('apiKey').value;
-            if (key) {
-                window.ipc.postMessage(JSON.stringify({ type: "save_key", value: key }));
-                setStatus("Key 已保存");
-            }
+            if(!key) return;
+            window.ipc.postMessage(JSON.stringify({ type: "save_key", value: key }));
+            setStatus("安全令牌已成功保存并重新加载。");
+            setTimeout(() => setStatus(""), 4000);
         }
 
-        function generate() {
-            const promptValue = document.getElementById('prompt').value;
-            if (!promptValue) {
-                setStatus("请输入提示词", true);
-                return;
-            }
-            
-            genBtn.disabled = true;
-            genBtn.innerText = "正在生成中...";
-            setStatus("正在调用文心大模型生成图片，请稍候...");
-            
-            window.ipc.postMessage(JSON.stringify({ type: "generate", value: promptValue }));
-        }
-
-        // 监听来自 Rust 的消息（如果需要反馈更具体的状态）
-        window.addEventListener('message', (event) => {
-            // 目前主要通过 Rust 执行 evaluate_script 来改变 UI 状态
-        });
-
-        // 供 Rust 调用的反馈方法
         window.onGenerationComplete = function(success, errorMsg, imageUrl) {
-            genBtn.disabled = false;
-            genBtn.innerText = "生成并设为壁纸";
+            const btn = document.getElementById('genBtn');
+            const btnText = document.getElementById('btnText');
+            btn.disabled = false;
+            btn.classList.remove('opacity-50', 'cursor-not-allowed');
+            btnText.innerText = "生成并设置为桌面";
+
             if (success) {
-                setStatus("壁纸已更新！");
-                setTimeout(() => setStatus(""), 4000);
+                setStatus("艺术创作已完成，桌面已经焕然一新！");
                 if (imageUrl) {
-                    const wrap = document.getElementById('preview-wrap');
-                    const img = document.getElementById('preview-img');
-                    img.src = imageUrl;
-                    wrap.style.display = 'block';
+                    document.getElementById('previewWrap').classList.remove('hidden');
+                    document.getElementById('previewImg').src = imageUrl;
                 }
+                setTimeout(() => setStatus(""), 6000);
             } else {
-                setStatus("生成失败: " + errorMsg, true);
+                setStatus("生成遭遇阻碍: " + errorMsg, 'error');
             }
         };
+
+        function downloadCurr() {
+            const url = document.getElementById('previewImg').src;
+            if(url) window.open(url, '_blank');
+        }
     </script>
-
 </body>
-
 </html>
