@@ -1,0 +1,15 @@
+# Rust artifacts
+/target/
+Cargo.lock
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Environment variables (Sensitive data)
+.env
+
+# Application logs
+*.log

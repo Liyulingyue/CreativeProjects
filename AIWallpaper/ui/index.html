@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wall-E AI Wallpaper Control</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: #f4f7f6; display: flex; flex-direction: column; align-items: center; padding: 20px; }
+        .card { background: white; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); padding: 20px; width: 100%; max-width: 320px; }
+        h1 { font-size: 1.5rem; text-align: center; color: #333; }
+        textarea { width: 100%; border: 1px solid #ddd; border-radius: 4px; padding: 10px; resize: none; }
+        button { margin-top: 15px; width: 100%; background: #007bff; color: white; border: none; padding: 10px; border-radius: 4px; cursor: pointer; transition: background 0.3s; }
+        button:hover { background: #0056b3; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>AI 壁纸控制面板</h1>
+        <div style="margin-bottom: 10px;">
+            <input type="password" id="apiKey" placeholder="输入文心 API Key (设置后保存)" style="width: 100%; padding: 8px; box-sizing: border-box;">
+            <button onclick="saveKey()" style="background: #28a745; margin-top: 5px;">保存 Key</button>
+        </div>
+        <hr>
+        <textarea id="prompt" rows="4" placeholder="在此输入生成壁纸的提示词..."></textarea>
+        <button onclick="generate()">生成并设为壁纸</button>
+    </div>
+
+    <script>
+        function saveKey() {
+            const key = document.getElementById('apiKey').value;
+            if (key) {
+                window.ipc.postMessage(JSON.stringify({ type: "save_key", value: key }));
+                alert("Key 已发送保存");
+            }
+        }
+
+        function generate() {
+            const promptValue = document.getElementById('prompt').value;
+            window.ipc.postMessage(JSON.stringify({ type: "generate", value: promptValue }));
+        }
+
+        // 接收来自 Rust 的 Key 回显（可选）
+        window.addEventListener('load', () => {
+            // 这里可以添加逻辑让 Rust 启动时把现有的 Key 发给前端显示
+        });
+    </script>
+</body>
+
+</html>
