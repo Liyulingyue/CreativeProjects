@@ -21,7 +21,7 @@ struct ErnieImageResponse {
     data: Vec<ErnieImageData>,
 }
 
-pub async fn generate_image(prompt: &str, api_key: &str) -> Result<String, Box<dyn Error>> {
+pub async fn generate_image(prompt: &str, api_key: &str) -> Result<String, Box<dyn Error + Send + Sync>> {
     let client = Client::new();
     let url = "https://aistudio.baidu.com/llm/lmapi/v3/images/generations";
 

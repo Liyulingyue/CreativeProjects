@@ -11,6 +11,10 @@
         textarea { width: 100%; border: 1px solid #ddd; border-radius: 4px; padding: 10px; resize: none; }
         button { margin-top: 15px; width: 100%; background: #007bff; color: white; border: none; padding: 10px; border-radius: 4px; cursor: pointer; transition: background 0.3s; }
         button:hover { background: #0056b3; }
+        #preview-wrap { margin-top: 16px; display: none; }
+        #preview-wrap img { width: 100%; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); animation: fadeIn 0.5s ease; }
+        #preview-label { font-size: 0.78rem; color: #999; text-align: center; margin-top: 4px; }
+        @keyframes fadeIn { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: scale(1); } }
     </style>
 </head>
 <body>
@@ -22,28 +26,69 @@
         </div>
         <hr>
         <textarea id="prompt" rows="4" placeholder="在此输入生成壁纸的提示词..."></textarea>
-        <button onclick="generate()">生成并设为壁纸</button>
+        <div id="status" style="margin-top: 10px; font-size: 0.9rem; color: #666; text-align: center; min-height: 1.2rem;"></div>
+        <button id="genBtn" onclick="generate()">生成并设为壁纸</button>
+        <div id="preview-wrap">
+            <img id="preview-img" src="" alt="生成的壁纸预览">
+            <div id="preview-label">↑ 已设置为桌面壁纸</div>
+        </div>
     </div>
 
     <script>
+        const statusDiv = document.getElementById('status');
+        const genBtn = document.getElementById('genBtn');
+
+        function setStatus(text, isError = false) {
+            statusDiv.innerText = text;
+            statusDiv.style.color = isError ? "#dc3545" : "#666";
+        }
+
         function saveKey() {
             const key = document.getElementById('apiKey').value;
             if (key) {
                 window.ipc.postMessage(JSON.stringify({ type: "save_key", value: key }));
-                alert("Key 已发送保存");
+                setStatus("Key 已保存");
             }
         }
 
         function generate() {
             const promptValue = document.getElementById('prompt').value;
+            if (!promptValue) {
+                setStatus("请输入提示词", true);
+                return;
+            }
+            
+            genBtn.disabled = true;
+            genBtn.innerText = "正在生成中...";
+            setStatus("正在调用文心大模型生成图片，请稍候...");
+            
             window.ipc.postMessage(JSON.stringify({ type: "generate", value: promptValue }));
         }
 
-        // 接收来自 Rust 的 Key 回显（可选）
-        window.addEventListener('load', () => {
-            // 这里可以添加逻辑让 Rust 启动时把现有的 Key 发给前端显示
+        // 监听来自 Rust 的消息（如果需要反馈更具体的状态）
+        window.addEventListener('message', (event) => {
+            // 目前主要通过 Rust 执行 evaluate_script 来改变 UI 状态
         });
+
+        // 供 Rust 调用的反馈方法
+        window.onGenerationComplete = function(success, errorMsg, imageUrl) {
+            genBtn.disabled = false;
+            genBtn.innerText = "生成并设为壁纸";
+            if (success) {
+                setStatus("壁纸已更新！");
+                setTimeout(() => setStatus(""), 4000);
+                if (imageUrl) {
+                    const wrap = document.getElementById('preview-wrap');
+                    const img = document.getElementById('preview-img');
+                    img.src = imageUrl;
+                    wrap.style.display = 'block';
+                }
+            } else {
+                setStatus("生成失败: " + errorMsg, true);
+            }
+        };
     </script>
+
 </body>
 
 </html>

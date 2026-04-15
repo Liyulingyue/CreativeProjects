@@ -13,3 +13,6 @@ Thumbs.db
 
 # Application logs
 *.log
+
+# references
+references/
