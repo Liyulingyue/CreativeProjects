@@ -19,22 +19,70 @@
     </style>
 </head>
 <body class="bg-slate-50 min-h-screen text-slate-800">
+    <div id="preview-modal" class="fixed inset-0 z-[110] hidden">
+        <div class="absolute inset-0 bg-slate-950/75 backdrop-blur-sm" onclick="closePreviewModal()"></div>
+        <div class="absolute inset-0 flex items-center justify-center p-6">
+            <div class="relative w-full max-w-5xl rounded-3xl overflow-hidden bg-slate-950 shadow-2xl border border-white/10">
+                <button onclick="closePreviewModal()" class="absolute top-4 right-4 z-10 rounded-full bg-black/40 hover:bg-black/60 text-white px-3 py-1.5 text-sm transition">关闭</button>
+                <img id="preview-modal-img" src="" class="block w-full max-h-[85vh] object-contain bg-slate-950">
+            </div>
+        </div>
+    </div>
+
+    <!-- API Key 配置提醒 Modal -->
+    <div id="api-modal" class="fixed inset-0 z-[100] hidden">
+        <div class="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"></div>
+        <div class="absolute inset-0 flex items-center justify-center p-6">
+            <div class="bg-white rounded-3xl p-8 max-w-sm w-full shadow-2xl animate-in zoom-in duration-300">
+                <div class="bg-blue-50 w-16 h-16 rounded-2xl flex items-center justify-center mb-6 mx-auto shadow-inner text-blue-600">
+                    <i data-lucide="key" class="w-8 h-8"></i>
+                </div>
+                <h2 class="text-xl font-bold text-center mb-2">需要 API Token</h2>
+                <p class="text-slate-500 text-center text-sm mb-8 leading-relaxed">
+                    欢迎使用 AIWallpaper！为了构画您的桌面，请先前往 <span class="text-blue-600 font-medium">设置</span> 页面配置您的 AI Studio Token。
+                </p>
+                <div class="space-y-3">
+                    <button onclick="goToSettings()" class="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-2xl font-semibold transition active:scale-[0.98] shadow-lg shadow-blue-100">
+                        立即去配置
+                    </button>
+                    <button onclick="closeApiModal()" class="w-full py-3 text-slate-400 text-sm font-medium hover:text-slate-600 transition">
+                        稍后再说
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- 顶部导航 -->
-    <div class="glass sticky top-0 z-50 px-6 py-4 flex justify-between items-center">
+    <div class="glass sticky top-0 z-50 px-6 py-4 flex justify-between items-center group">
         <div class="flex items-center gap-2">
             <div class="bg-blue-600 p-1.5 rounded-lg shadow-blue-200 shadow-lg">
                 <i data-lucide="sparkles" class="text-white w-5 h-5"></i>
             </div>
-            <h1 class="font-bold text-lg tracking-tight">AIWallpaper <span class="text-blue-600 text-[10px] align-top px-1.5 py-0.5 rounded bg-blue-50">PRO</span></h1>
+            <h1 class="font-bold text-lg tracking-tight">AIWallpaper <span class="text-blue-600 text-[10px] align-top px-1.5 py-0.5 rounded bg-blue-50 uppercase">Pro</span></h1>
         </div>
-        <div class="flex gap-4">
-            <button onclick="switchTab('create')" id="tab-create" class="text-sm font-medium px-2 py-1 transition tab-active">创作</button>
-            <button onclick="switchTab('settings')" id="tab-settings" class="text-sm font-medium px-2 py-1 transition text-slate-400 hover:text-slate-600">设置</button>
+        
+        <div class="flex items-center gap-6">
+            <div class="flex gap-4 border-r border-slate-200 pr-6 mr-2">
+                <button onclick="switchTab('create')" id="tab-create" class="text-sm font-medium px-2 py-1 transition tab-active">创作</button>
+                <button onclick="switchTab('settings')" id="tab-settings" class="text-sm font-medium px-2 py-1 transition text-slate-400 hover:text-slate-600">设置</button>
+            </div>
+            <!-- 窗口控制按钮 (回到右侧，使用更轻巧的设计) -->
+            <div class="flex items-center gap-2">
+                <button onclick="window.ipc.postMessage(JSON.stringify({type:'minimize'}))" 
+                    class="p-2 hover:bg-slate-100 rounded-xl text-slate-400 hover:text-slate-600 transition active:scale-90" title="最小化">
+                    <i data-lucide="minus" class="w-4 h-4"></i>
+                </button>
+                <button onclick="window.ipc.postMessage(JSON.stringify({type:'close'}))" 
+                    class="p-2 hover:bg-red-50 rounded-xl text-slate-400 hover:text-red-500 transition active:scale-90" title="退出程序">
+                    <i data-lucide="power" class="w-4 h-4"></i>
+                </button>
+            </div>
         </div>
     </div>
 
     <!-- 主要内容区域 -->
-    <main class="p-6 max-w-md mx-auto">
+    <main class="p-6 max-w-lg mx-auto">
         <!-- 创作面板 -->
         <div id="page-create" class="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
             <div class="space-y-3">
@@ -78,7 +126,10 @@
                                 <i data-lucide="monitor" class="w-3 h-3"></i> 桌面已同步
                             </span>
                             <div class="flex gap-2">
-                                <button onclick="downloadCurr()" class="p-2 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-md transition border border-white/20">
+                                <button onclick="saveCurrentImage()" class="p-2 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-md transition border border-white/20" title="保存图片">
+                                    <i data-lucide="download" class="w-4 h-4"></i>
+                                </button>
+                                <button onclick="openPreviewModal()" class="p-2 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-md transition border border-white/20">
                                     <i data-lucide="eye" class="w-4 h-4"></i>
                                 </button>
                             </div>
@@ -120,9 +171,9 @@
             </div>
 
             <div class="border-t border-slate-200 pt-6 space-y-4">
-                 <div class="flex items-center gap-3 px-1">
-                    <div class="p-2 bg-slate-100 rounded-xl text-slate-600">
-                        <i data-lucide="git-branch" class="w-5 h-5"></i>
+                <div class="flex items-center gap-3 px-1">
+                    <div class="p-2 bg-slate-100 rounded-xl text-slate-600 shadow-inner">
+                        <i data-lucide="monitor" class="w-5 h-5"></i>
                     </div>
                     <div>
                         <h3 class="font-semibold text-sm">系统信息</h3>
@@ -135,12 +186,28 @@
                     2. Win32 消息钩子 (0x052C) 桌面注入<br>
                     3. WebView2 GPU 加速渲染层 (Win11 24H2 优化版本)
                 </div>
+
+                <div class="flex items-center gap-3 px-1 pt-2">
+                    <div class="p-2 bg-slate-100 rounded-xl text-slate-600 shadow-inner">
+                        <i data-lucide="git-branch" class="w-5 h-5"></i>
+                    </div>
+                    <div>
+                        <h3 class="font-semibold text-sm">开源与开发者</h3>
+                        <a href="https://github.com/Liyulingyue/" target="_blank" 
+                            class="text-[10px] text-slate-400 hover:text-blue-500 transition flex items-center gap-1">
+                            <i data-lucide="github" class="w-2.5 h-2.5"></i>
+                            GitHub: @Liyulingyue
+                        </a>
+                    </div>
+                </div>
             </div>
         </div>
     </main>
 
     <script>
         lucide.createIcons();
+        // 所有元素渲染完成后通知后端显示窗口，避免白屏
+        window.ipc.postMessage(JSON.stringify({ type: "ready" }));
 
         function switchTab(tab) {
             const createBtn = document.getElementById('tab-create');
@@ -162,7 +229,43 @@
                 createBtn.classList.add('text-slate-400', 'hover:text-slate-600');
                 settingsPage.classList.remove('hidden');
                 createPage.classList.add('hidden');
+                closeApiModal(); // 切换到设置页时辅助关闭 Modal
             }
+        }
+
+        function goToSettings() {
+            switchTab('settings');
+            const apiKeyInput = document.getElementById('apiKey');
+            if(apiKeyInput) apiKeyInput.focus();
+        }
+
+        function showApiModal() {
+            document.getElementById('api-modal').classList.remove('hidden');
+        }
+
+        function closeApiModal() {
+            document.getElementById('api-modal').classList.add('hidden');
+        }
+
+        function openPreviewModal() {
+            const previewImg = document.getElementById('previewImg');
+            if (!previewImg.src) {
+                return;
+            }
+            document.getElementById('preview-modal-img').src = previewImg.src;
+            document.getElementById('preview-modal').classList.remove('hidden');
+        }
+
+        function closePreviewModal() {
+            const modal = document.getElementById('preview-modal');
+            const modalImg = document.getElementById('preview-modal-img');
+            modal.classList.add('hidden');
+            modalImg.src = '';
+        }
+
+        function saveCurrentImage() {
+            window.ipc.postMessage(JSON.stringify({ type: "save_image" }));
+            setStatus("正在保存图片到本地...", 'info');
         }
 
         function setStatus(text, type='info') {
@@ -237,7 +340,7 @@
             setTimeout(() => setStatus(""), 4000);
         }
 
-        window.onGenerationComplete = function(success, errorMsg, imageUrl) {
+        window.onGenerationComplete = function(success, errorMsg, imagePayload) {
             const btn = document.getElementById('genBtn');
             const btnText = document.getElementById('btnText');
             btn.disabled = false;
@@ -246,9 +349,13 @@
 
             if (success) {
                 setStatus("艺术创作已完成，桌面已经焕然一新！");
-                if (imageUrl) {
+                if (imagePayload) {
+                    const previewUrl = typeof imagePayload === 'string' ? imagePayload : imagePayload.previewUrl;
+                    const viewUrl = typeof imagePayload === 'string' ? imagePayload : (imagePayload.viewUrl || imagePayload.previewUrl);
+                    const previewImg = document.getElementById('previewImg');
                     document.getElementById('previewWrap').classList.remove('hidden');
-                    document.getElementById('previewImg').src = imageUrl;
+                    previewImg.src = previewUrl;
+                    previewImg.dataset.viewUrl = viewUrl;
                 }
                 setTimeout(() => setStatus(""), 6000);
             } else {
@@ -256,10 +363,15 @@
             }
         };
 
-        function downloadCurr() {
-            const url = document.getElementById('previewImg').src;
-            if(url) window.open(url, '_blank');
-        }
+        window.onImageSaved = function(savedPath) {
+            setStatus("图片已保存到: " + savedPath);
+        };
+
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape') {
+                closePreviewModal();
+            }
+        });
     </script>
 </body>
 </html>

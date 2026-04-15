@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 tao = "0.16"            # 窗口管理
-wry = "0.24"            # WebView2 渲染
+wry = "0.24"            # 还原 wry 版本以解决依赖冲突
 tray-icon = "0.2"       # 系统托盘
 image = "0.24.9"          # 用于加载图标像素
 tray-menu = "0.1"       # 托盘菜单
