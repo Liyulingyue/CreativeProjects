@@ -10,11 +10,14 @@ interface CreatePageProps {
   previewUrl: string;
   sendIpc: (cmd: string, arg?: any) => void;
   setActiveTab: (tab: string) => void;
+  setShowViewer: (v: boolean) => void;
+  autoRefreshHours: number;
 }
 
 const CreatePage: React.FC<CreatePageProps> = ({
   prompt, setPrompt, handleRandomPrompt, handleGenerate,
-  isGenerating, statusMsg, previewUrl, sendIpc, setActiveTab
+  isGenerating, statusMsg, previewUrl, sendIpc, setActiveTab,
+  setShowViewer, autoRefreshHours
 }) => {
   return (
     <div className="space-y-10 animate-in fade-in slide-in-from-bottom-6 duration-700">
@@ -55,10 +58,21 @@ const CreatePage: React.FC<CreatePageProps> = ({
             <div className={`w-2.5 h-2.5 rounded-full ${isGenerating ? "bg-blue-500 animate-pulse" : "bg-green-500"}`}></div>
           </div>
           <div className="aspect-video bg-slate-100 rounded-3xl overflow-hidden border border-slate-200 group relative shadow-inner flex items-center justify-center">
-            {previewUrl ? <img src={previewUrl} className="w-full h-full object-cover" alt="Preview" /> : <div className="text-slate-300 text-sm italic">等待生成...</div>}
+            {previewUrl ? <img src={previewUrl} className="w-full h-full object-cover cursor-zoom-in" alt="Preview" onClick={() => setShowViewer(true)} /> : <div className="text-slate-300 text-sm italic">等待生成...</div>}
             {previewUrl && (
               <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-4 border-2 border-transparent group-hover:border-blue-500/50 rounded-3xl">
-                <button onClick={() => sendIpc("save_image")} className="p-3 bg-white rounded-2xl text-slate-900 shadow-xl hover:scale-110 transition-transform">
+                <button 
+                  onClick={() => setShowViewer(true)} 
+                  className="p-3 bg-white rounded-2xl text-slate-900 shadow-xl hover:scale-110 transition-transform flex items-center gap-2 font-bold px-4"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /><line x1="11" y1="8" x2="11" y2="14" /><line x1="8" y1="11" x2="14" y2="11" /></svg>
+                  放大查看
+                </button>
+                <button 
+                  onClick={() => sendIpc("save_image")} 
+                  className="p-3 bg-white/20 backdrop-blur-md border border-white/30 rounded-2xl text-white shadow-xl hover:scale-110 hover:bg-white hover:text-slate-900 transition-all"
+                  title="下载壁纸"
+                >
                   <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" x2="12" y1="15" y2="3" /></svg>
                 </button>
               </div>
@@ -67,23 +81,35 @@ const CreatePage: React.FC<CreatePageProps> = ({
         </div>
         <div className="bg-white border border-slate-200 rounded-[2.5rem] p-8 shadow-lg">
           <div className="flex items-center justify-between mb-6">
-            <h3 className="text-slate-400 text-xs font-black uppercase tracking-[0.2em]">自动化任务</h3>
-            <button onClick={() => setActiveTab("tasks")} className="text-blue-600 text-[10px] font-bold hover:underline">管理全部</button>
+            <h3 className="text-slate-400 text-xs font-black uppercase tracking-[0.2em]">自动化状态</h3>
+            <button onClick={() => setActiveTab("tasks")} className="text-blue-600 text-[10px] font-black hover:underline uppercase tracking-tighter">前往配置</button>
           </div>
           <div className="space-y-4">
-            <div className="flex items-center justify-between p-5 rounded-2xl bg-blue-50 border border-blue-100 border-l-4 border-l-blue-600">
+            <div className={`flex items-center justify-between p-5 rounded-2xl border ${autoRefreshHours > 0 ? 'bg-blue-50 border-blue-100 border-l-4 border-l-blue-600' : 'bg-slate-50 border-slate-100 border-l-4 border-l-slate-300'}`}>
               <div className="flex items-center gap-4">
-                <div className="p-2 bg-white rounded-lg text-blue-600 shadow-sm">
+                <div className={`p-2 rounded-lg shadow-sm ${autoRefreshHours > 0 ? 'bg-white text-blue-600' : 'bg-white text-slate-300'}`}>
                   <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>
                 </div>
                 <div>
-                  <div className="text-sm font-bold text-slate-800">智能自动更新</div>
-                  <div className="text-[10px] text-slate-500">根据您的设置自动运行</div>
+                  <div className={`text-sm font-bold ${autoRefreshHours > 0 ? 'text-slate-800' : 'text-slate-400'}`}>
+                    {autoRefreshHours > 0 ? '智能自动更新中' : '自动更新已关闭'}
+                  </div>
+                  <div className="text-[10px] text-slate-400 font-medium italic">
+                    {autoRefreshHours > 0 ? `每 ${autoRefreshHours} 小时刷新一次` : '前往自动化界面开启'}
+                  </div>
                 </div>
               </div>
-              <div className="h-1.5 w-12 bg-blue-200 rounded-full overflow-hidden">
-                <div className="h-full bg-blue-600 w-[65%]"></div>
-              </div>
+              {autoRefreshHours > 0 && (
+                <div className="h-1.5 w-12 bg-blue-200 rounded-full overflow-hidden">
+                  <div className="h-full bg-blue-600 w-full animate-progress-fast"></div>
+                </div>
+              )}
+            </div>
+            
+            <div className="p-4 bg-slate-50 rounded-2xl border border-dashed border-slate-200 flex items-center justify-center">
+               <div className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
+                  后台守护进程运行中
+               </div>
             </div>
           </div>
         </div>

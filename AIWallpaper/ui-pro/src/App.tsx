@@ -27,14 +27,19 @@ function App() {
   const [cacheLimit, setCacheLimit] = useState(50);
   const [autoRefreshHours, setAutoRefreshHours] = useState(0);
   const [autoPrompt, setAutoPrompt] = useState("");
-  const [galleryImages, setGalleryImages] = useState<string[]>([]);
+  const [galleryPath, setGalleryPath] = useState("");
+  const [galleryImages, setGalleryImages] = useState<any[]>([]);
+  const [showViewer, setShowViewer] = useState(false);
+  const [viewerUrl, setViewerUrl] = useState("");
 
   const sendIpc = useCallback((cmd: string, arg?: any) => {
-    (window as any).ipc?.postMessage(JSON.stringify({ cmd, arg }));
+    const value = arg === undefined ? "" : (typeof arg === "string" ? arg : JSON.stringify(arg));
+    (window as any).ipc?.postMessage(JSON.stringify({ type: cmd, value }));
   }, []);
 
   useEffect(() => {
-    sendIpc("get_config");
+    // 与 Lite 一致，发送 ready 触发 Rust 的 AppEvent::Ready，后者会回调 onConfigLoaded
+    sendIpc("ready");
     // @ts-ignore
     window.onConfigLoaded = (config: any) => {
       if (config.api_key) setApiKey(config.api_key);
@@ -42,19 +47,34 @@ function App() {
       setCacheLimit(config.cache_limit);
       setAutoRefreshHours(config.auto_refresh_hours);
       setAutoPrompt(config.auto_prompt || "");
+      setGalleryPath(config.gallery_path || "");
     };
 
+    // 与 Rust 回调签名对齐: onGenerationComplete(success, errorMsg, imagePayload)
     // @ts-ignore
-    window.onGenerationComplete = (base64Img: string) => {
+    window.onGenerationComplete = (success: boolean, errorMsg: string, imagePayload: any) => {
       setIsGenerating(false);
-      setStatusMsg("生成成功！");
-      setPreviewUrl(base64Img);
-      setTimeout(() => setStatusMsg(""), 3000);
+      if (success && imagePayload?.previewUrl) {
+        setStatusMsg("生成成功！已加入画廊");
+        setPreviewUrl(imagePayload.previewUrl);
+        // 生成成功后自动刷新画廊数据
+        sendIpc("get_gallery");
+        setTimeout(() => setStatusMsg(""), 3000);
+      } else {
+        setStatusMsg("生成失败：" + (errorMsg || "未知错误"));
+        setTimeout(() => setStatusMsg(""), 5000);
+      }
     };
 
     // @ts-ignore
-    window.onGalleryLoaded = (images: string[]) => {
+    window.onGalleryLoaded = (images: any[]) => {
       setGalleryImages(images);
+    };
+
+    // @ts-ignore
+    window.onImageSaved = (path: string) => {
+      setStatusMsg("已保存至: " + path.split(/[\\/]/).pop());
+      setTimeout(() => setStatusMsg(""), 3000);
     };
 
     return () => {
@@ -64,6 +84,8 @@ function App() {
       delete window.onGenerationComplete;
       // @ts-ignore
       delete window.onGalleryLoaded;
+      // @ts-ignore
+      delete window.onImageSaved;
     };
   }, [sendIpc]);
 
@@ -91,7 +113,8 @@ function App() {
       enable_cache: enableCache,
       cache_limit: cacheLimit,
       auto_refresh_hours: autoRefreshHours,
-      auto_prompt: autoPrompt
+      auto_prompt: autoPrompt,
+      gallery_path: galleryPath
     });
     setStatusMsg("配置已同步");
     setTimeout(() => setStatusMsg(""), 2000);
@@ -113,11 +136,24 @@ function App() {
             previewUrl={previewUrl}
             sendIpc={sendIpc}
             setActiveTab={setActiveTab}
+            setShowViewer={(v) => {
+              if (v) setViewerUrl(previewUrl);
+              setShowViewer(v);
+            }}
+            autoRefreshHours={autoRefreshHours}
           />
         )}
 
         {activeTab === "gallery" && (
-          <GalleryPage galleryImages={galleryImages} />
+          <GalleryPage 
+            galleryImages={galleryImages} 
+            sendIpc={sendIpc} 
+            galleryPath={galleryPath} 
+            onZoom={(url) => {
+              setViewerUrl(url);
+              setShowViewer(true);
+            }}
+          />
         )}
 
         {activeTab === "tasks" && (
@@ -138,10 +174,37 @@ function App() {
             setEnableCache={setEnableCache}
             cacheLimit={cacheLimit}
             setCacheLimit={setCacheLimit}
+            galleryPath={galleryPath}
+            setGalleryPath={setGalleryPath}
             handleSaveKey={handleSaveKey}
           />
         )}
       </main>
+
+      {/* 图片查看器 */}
+      {showViewer && (
+        <div 
+          className="fixed inset-0 z-[100] bg-slate-900/90 backdrop-blur-2xl flex items-center justify-center p-10 animate-in fade-in zoom-in-95 duration-300"
+          onClick={() => setShowViewer(false)}
+        >
+          <div className="relative max-w-full max-h-full group" onClick={e => e.stopPropagation()}>
+            <img 
+              src={viewerUrl} 
+              className="max-w-full max-h-[90vh] rounded-[2rem] shadow-2xl border-4 border-white/20 object-contain" 
+              alt="Wallpaper Full" 
+            />
+            <button 
+              onClick={() => setShowViewer(false)}
+              className="absolute -top-4 -right-4 p-3 bg-white text-slate-900 rounded-full hover:scale-110 active:scale-95 transition-all shadow-xl z-[110]"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+            </button>
+            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-white/10 backdrop-blur-md border border-white/20 px-6 py-3 rounded-full opacity-0 group-hover:opacity-100 transition-opacity">
+               <p className="text-white text-xs font-bold tracking-widest uppercase">PRO Masterpiece View</p>
+            </div>
+          </div>
+        </div>
+      )}
 
       <footer className="px-10 py-6 border-t border-slate-100 text-[10px] text-slate-400 font-bold uppercase tracking-widest flex justify-between items-center">
         <div className="flex gap-6">
@@ -150,7 +213,7 @@ function App() {
         </div>
         <div className="flex items-center gap-1.5 bg-blue-50 text-blue-600 px-3 py-1 rounded-full border border-blue-100">
           <div className="w-1.5 h-1.5 bg-blue-600 rounded-full animate-pulse"></div>
-          Powered by Gemini 2.0
+          Powered by AIWallpaper
         </div>
       </footer>
     </div>

@@ -27,6 +27,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
+use include_dir::{include_dir, Dir};
+
+static PRO_DIST: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/ui-pro/dist");
 
 mod api;
 mod platform;
@@ -43,12 +46,15 @@ struct AppConfig {
     auto_refresh_hours: u32,
     #[serde(default = "default_auto_prompt")]
     auto_prompt: String,
+    #[serde(default = "default_gallery_path")]
+    gallery_path: String,
 }
 
 fn default_enable_cache() -> bool { false }
 fn default_cache_limit() -> u32 { 100 }
 fn default_auto_refresh_hours() -> u32 { 24 }
 fn default_auto_prompt() -> String { "Cyberpunk city, neon lights, 8k resolution".to_string() }
+fn default_gallery_path() -> String { String::new() }
 
 #[derive(Serialize, Deserialize)]
 struct IpcMessage {
@@ -66,9 +72,18 @@ enum AppEvent {
     Saved(String),
     Error(String),
     SwitchMode(String),
+    GalleryLoaded(Vec<serde_json::Value>),
 }
 
-fn export_image_dir(app_data_dir: &std::path::Path) -> PathBuf {
+fn export_image_dir(app_data_dir: &std::path::Path, config: &AppConfig) -> PathBuf {
+    if !config.gallery_path.is_empty() {
+        let custom_path = PathBuf::from(&config.gallery_path);
+        // 如果自定义路径存在或者可以创建
+        if custom_path.exists() || fs::create_dir_all(&custom_path).is_ok() {
+            return custom_path;
+        }
+    }
+
     if let Ok(user_profile) = std::env::var("USERPROFILE") {
         let pictures_dir = PathBuf::from(&user_profile).join("Pictures").join("AIWallpaper");
         if pictures_dir.parent().is_some_and(|parent| parent.exists()) {
@@ -84,13 +99,13 @@ fn export_image_dir(app_data_dir: &std::path::Path) -> PathBuf {
     app_data_dir.join("exports")
 }
 
-fn save_generated_image(app_data_dir: &std::path::Path) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
+fn save_generated_image(app_data_dir: &std::path::Path, config: &AppConfig) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
     let source_path = app_data_dir.join("cache").join("current_wallpaper.png");
     if !source_path.exists() {
         return Err("当前没有可保存的图片".into());
     }
 
-    let export_dir = export_image_dir(app_data_dir);
+    let export_dir = export_image_dir(app_data_dir, config);
     fs::create_dir_all(&export_dir)?;
 
     let ts = SystemTime::now()
@@ -164,6 +179,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cache_limit: 100,
                 auto_refresh_hours: 24,
                 auto_prompt: "Cyberpunk city, neon lights, 8k resolution".to_string(),
+                gallery_path: "".to_string(),
             })
     } else {
         dotenvy::dotenv().ok();
@@ -173,10 +189,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             cache_limit: 100,
             auto_refresh_hours: 24,
             auto_prompt: "Cyberpunk city, neon lights, 8k resolution".to_string(),
+            gallery_path: "".to_string(),
         }
     };
 
     let config = Arc::new(Mutex::new(initial_config));
+    // 跟踪当前激活的面板模式（"lite" 或 "pro"）
+    let current_mode = Arc::new(Mutex::new("lite".to_string()));
     let mut event_loop = EventLoop::<AppEvent>::with_user_event();
     
     // 允许平台修改 EventLoop (macOS 必需)
@@ -184,10 +203,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let tray_menu = Menu::new();
     let show_item = MenuItem::new("显示控制面板", true, None);
+    let switch_to_pro_item = MenuItem::new("切换到 Pro 模式", true, None);
+    let switch_to_lite_item = MenuItem::new("切换到 Lite 模式", true, None);
     let quit_item = MenuItem::new("退出", true, None);
     let show_id = show_item.id();
+    let switch_to_pro_id = switch_to_pro_item.id();
+    let switch_to_lite_id = switch_to_lite_item.id();
     let quit_id = quit_item.id();
-    tray_menu.append_items(&[&show_item, &PredefinedMenuItem::separator(), &quit_item]);
+    tray_menu.append_items(&[
+        &show_item,
+        &PredefinedMenuItem::separator(),
+        &switch_to_pro_item,
+        &switch_to_lite_item,
+        &PredefinedMenuItem::separator(),
+        &quit_item,
+    ]);
 
     let mut tray_builder = TrayIconBuilder::new()
         .with_menu(Box::new(tray_menu))
@@ -366,15 +396,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .build()?;
 
-    let pro_dist_path = std::env::current_dir()?.join("ui-pro").join("dist");
-    let pro_dist_path_clone = pro_dist_path.clone();
-
     let pro_webview = WebViewBuilder::new(pro_window)?
         .with_custom_protocol("pro".into(), move |request| {
             let path = request.uri().path();
             let uri = request.uri().to_string();
-            let mut file_path = pro_dist_path_clone.clone();
-            
+
             // 拦截图片预览请求
             if path.contains("current_wallpaper.png") || uri.contains("current_wallpaper.png") {
                 match fs::read(&preview_image_path_pro) {
@@ -386,8 +412,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .body(Cow::Owned(bytes))
                             .map_err(Into::into);
                     }
-                    Err(e) => {
-                        eprintln!("Pro 预览图读取失败: {:?}, 路径: {:?}", e, preview_image_path_pro);
+                    Err(_) => {
                         return Response::builder()
                             .status(StatusCode::NOT_FOUND)
                             .body(Cow::Owned(Vec::new()))
@@ -401,28 +426,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 path.trim_start_matches('/')
             };
-            
-            file_path.push(relative_path);
-            
-            match fs::read(&file_path) {
-                Ok(bytes) => {
-                    let mime = if file_path.extension().is_some_and(|ext| ext == "js") {
+
+            // 从编译时嵌入的 dist 目录中读取 React 产物
+            match PRO_DIST.get_file(relative_path) {
+                Some(file) => {
+                    let mime = if relative_path.ends_with(".js") {
                         "application/javascript"
-                    } else if file_path.extension().is_some_and(|ext| ext == "css") {
+                    } else if relative_path.ends_with(".css") {
                         "text/css"
-                    } else if file_path.extension().is_some_and(|ext| ext == "html") {
+                    } else if relative_path.ends_with(".html") {
                         "text/html"
                     } else {
                         "application/octet-stream"
                     };
-
                     Response::builder()
                         .status(StatusCode::OK)
                         .header(CONTENT_TYPE, mime)
-                        .body(Cow::Owned(bytes))
+                        .body(Cow::Owned(file.contents().to_vec()))
                         .map_err(Into::into)
-                },
-                Err(_) => Response::builder()
+                }
+                None => Response::builder()
                     .status(StatusCode::NOT_FOUND)
                     .body(Cow::Owned(Vec::new()))
                     .map_err(Into::into),
@@ -433,6 +456,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let _ = tx_pro.try_send(request);
         })
         .build()?;
+
+    // 保存窗口 ID，用于事件循环中区分哪个窗口触发了关闭/最小化
+    let control_window_id = control_webview.window().id();
+    let pro_window_id = pro_webview.window().id();
 
     let proxy = event_loop.create_proxy();
     let config_task = config.clone();
@@ -477,32 +504,125 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("API Key 已保存");
                     }
                     "save_image" => {
-                        match save_generated_image(&app_data_dir_task) {
-                            Ok(path) => {
-                                let path_str = path.to_string_lossy().to_string();
-                                let _ = proxy.send_event(AppEvent::Saved(path_str));
+                        let app_data_dir_for_save = app_data_dir_task.clone();
+                        let proxy_for_save = proxy.clone();
+                        let cfg = config_task.lock().unwrap().clone();
+                        tokio::spawn(async move {
+                            match save_generated_image(&app_data_dir_for_save, &cfg) {
+                                Ok(path_buf) => {
+                                    let path_str = path_buf.to_string_lossy().to_string();
+                                    let _ = proxy_for_save.send_event(AppEvent::Saved(path_str));
+                                }
+                                Err(e) => {
+                                    let _ = proxy_for_save.send_event(AppEvent::Error(e.to_string()));
+                                }
                             }
-                            Err(e) => {
-                                let _ = proxy.send_event(AppEvent::Error(e.to_string()));
-                            }
-                        }
+                        });
                     }
                     "generate" => {
                         let current_key = config_task.lock().unwrap().api_key.clone();
-                        if current_key.is_empty() {
-                            let _ = proxy.send_event(AppEvent::Error("API Key 为空".into()));
-                            continue;
-                        }
-                        let gen = api::generate_image(&msg.value, &current_key)
-                            .await.map_err(|e| e.to_string());
-                        match gen {
-                            Ok(image) => {
-                                let _ = proxy.send_event(AppEvent::Generated(image));
+                        let proxy_gen = proxy.clone();
+                        let prompt = msg.value.clone();
+                        let app_data_dir_gen = app_data_dir_task.clone();
+                        let cfg = config_task.lock().unwrap().clone();
+                        tokio::spawn(async move {
+                            if current_key.is_empty() {
+                                let _ = proxy_gen.send_event(AppEvent::Error("API Key 为空".into()));
+                                return;
                             }
-                            Err(e) => {
-                                let _ = proxy.send_event(AppEvent::Error(e));
+                            match api::generate_image(&prompt, &current_key).await {
+                                Ok(image) => {
+                                    // 自动保存到画廊
+                                    let _ = save_generated_image(&app_data_dir_gen, &cfg);
+                                    let _ = proxy_gen.send_event(AppEvent::Generated(image));
+                                }
+                                Err(e) => {
+                                    let _ = proxy_gen.send_event(AppEvent::Error(e.to_string()));
+                                }
                             }
-                        }
+                        });
+                    }
+                    "get_gallery" => {
+                        let cfg = config_task.lock().unwrap().clone();
+                        let app_data_dir_gallery = app_data_dir_task.clone();
+                        let proxy_gallery = proxy.clone();
+                        tokio::spawn(async move {
+                            let gallery_dir = export_image_dir(&app_data_dir_gallery, &cfg);
+                            let mut images = Vec::new();
+                            if let Ok(entries) = fs::read_dir(gallery_dir) {
+                                for entry in entries.flatten() {
+                                    let path = entry.path();
+                                    if path.is_file() && path.extension().is_some_and(|ext| ext == "png") {
+                                        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+                                        if let Ok(bytes) = fs::read(&path) {
+                                            let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+                                            images.push(serde_json::json!({
+                                                "name": file_name,
+                                                "data": format!("data:image/png;base64,{}", b64)
+                                            }));
+                                        }
+                                    }
+                                }
+                            }
+                            images.sort_by(|a, b| b["name"].as_str().cmp(&a["name"].as_str())); 
+                            let _ = proxy_gallery.send_event(AppEvent::GalleryLoaded(images));
+                        });
+                    }
+                    "set_wallpaper" => {
+                        let file_name = msg.value.clone();
+                        let cfg = config_task.lock().unwrap().clone();
+                        let app_data_dir_set = app_data_dir_task.clone();
+                        let proxy_set = proxy.clone();
+                        tokio::spawn(async move {
+                            let gallery_dir = export_image_dir(&app_data_dir_set, &cfg);
+                            let img_path = gallery_dir.join(&file_name);
+                            if img_path.exists() {
+                                let cache_path = app_data_dir_set.join("cache").join("current_wallpaper.png");
+                                match fs::copy(&img_path, &cache_path) {
+                                    Ok(_) => {
+                                        let _ = proxy_set.send_event(AppEvent::Generated(api::GeneratedImage {
+                                            preview_url: "aiwallpaper://localhost/current_wallpaper.png".to_string(),
+                                            wallpaper_url: "".to_string(),
+                                        }));
+                                    }
+                                    Err(e) => {
+                                        let _ = proxy_set.send_event(AppEvent::Error(format!("应用壁纸失败: {}", e)));
+                                    }
+                                }
+                            } else {
+                                let _ = proxy_set.send_event(AppEvent::Error(format!("找不到图片文件: {}", file_name)));
+                            }
+                        });
+                    }
+                    "delete_image" => {
+                        let file_name = msg.value.clone();
+                        let cfg = config_task.lock().unwrap().clone();
+                        let app_data_dir_del = app_data_dir_task.clone();
+                        let proxy_del = proxy.clone();
+                        tokio::spawn(async move {
+                            let gallery_dir = export_image_dir(&app_data_dir_del, &cfg);
+                            let img_path = gallery_dir.join(&file_name);
+                            let _ = fs::remove_file(&img_path);
+                            // 删除后重新加载画廊
+                            let mut images = Vec::new();
+                            if let Ok(entries) = fs::read_dir(&gallery_dir) {
+                                for entry in entries.flatten() {
+                                    let path = entry.path();
+                                    if path.is_file() && path.extension().is_some_and(|ext| ext == "png") {
+                                        let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+                                        if let Ok(bytes) = fs::read(&path) {
+                                            let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+                                            images.push(serde_json::json!({
+                                                "name": fname,
+                                                "data": format!("data:image/png;base64,{}", b64)
+                                            }));
+                                        }
+                                    }
+                                }
+                            }
+                            images.sort_by(|a, b| b["name"].as_str().cmp(&a["name"].as_str()));
+                            let _ = proxy_del.send_event(AppEvent::GalleryLoaded(images));
+                        });
                     }
                     _ => {}
                 }
@@ -515,6 +635,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         while let Ok(menu_event) = menu_event_receiver().try_recv() {
             if menu_event.id == show_id {
+                let mode = current_mode.lock().unwrap().clone();
+                if mode == "pro" {
+                    pro_webview.window().set_visible(true);
+                    pro_webview.window().set_focus();
+                } else {
+                    control_webview.window().set_visible(true);
+                    control_webview.window().set_focus();
+                }
+            } else if menu_event.id == switch_to_pro_id {
+                *current_mode.lock().unwrap() = "pro".to_string();
+                control_webview.window().set_visible(false);
+                pro_webview.window().set_visible(true);
+                pro_webview.window().set_focus();
+            } else if menu_event.id == switch_to_lite_id {
+                *current_mode.lock().unwrap() = "lite".to_string();
+                pro_webview.window().set_visible(false);
                 control_webview.window().set_visible(true);
                 control_webview.window().set_focus();
             } else if menu_event.id == quit_id {
@@ -524,22 +660,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         while let Ok(tray_event) = tray_event_receiver().try_recv() {
             if tray_event.event == ClickEvent::Left {
-                control_webview.window().set_visible(true);
-                control_webview.window().set_focus();
+                let mode = current_mode.lock().unwrap().clone();
+                if mode == "pro" {
+                    pro_webview.window().set_visible(true);
+                    pro_webview.window().set_focus();
+                } else {
+                    control_webview.window().set_visible(true);
+                    control_webview.window().set_focus();
+                }
             }
         }
 
         match event {
-            Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
-                control_webview.window().set_visible(false);
+            // 点击关闭按钮或按 Alt+F4 → 隐藏到托盘，不退出
+            Event::WindowEvent { window_id, event: WindowEvent::CloseRequested, .. } => {
+                if window_id == control_window_id {
+                    control_webview.window().set_visible(false);
+                } else if window_id == pro_window_id {
+                    pro_webview.window().set_visible(false);
+                }
             }
             Event::UserEvent(app_event) => {
                 match app_event {
                     AppEvent::Ready => {
-                        control_webview.window().set_visible(true);
-                        control_webview.window().set_focus();
+                        // 只显示当前激活模式的窗口（避免 Pro 初始化时误弹 Lite）
+                        let mode = current_mode.lock().unwrap().clone();
+                        if mode == "pro" {
+                            pro_webview.window().set_visible(true);
+                            pro_webview.window().set_focus();
+                        } else {
+                            control_webview.window().set_visible(true);
+                            control_webview.window().set_focus();
+                        }
 
-                        // 向 UI 发送当前配置
+                        // 向所有 UI 发送当前配置
                         let cfg = config.lock().unwrap();
                         let js = format!(
                             "if (window.onConfigLoaded) {{ window.onConfigLoaded({}) }}",
@@ -549,17 +703,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let _ = pro_webview.evaluate_script(&js);
                     }
                     AppEvent::Minimize => {
+                        // 最小化 = 隐藏到托盘（两个窗口都隐藏）
                         control_webview.window().set_visible(false);
+                        pro_webview.window().set_visible(false);
                     }
                     AppEvent::Close => {
                         *control_flow = ControlFlow::Exit;
                     }
                     AppEvent::SwitchMode(mode) => {
                         if mode == "pro" {
+                            *current_mode.lock().unwrap() = "pro".to_string();
                             control_webview.window().set_visible(false);
                             pro_webview.window().set_visible(true);
                             pro_webview.window().set_focus();
                         } else {
+                            *current_mode.lock().unwrap() = "lite".to_string();
                             pro_webview.window().set_visible(false);
                             control_webview.window().set_visible(true);
                             control_webview.window().set_focus();
@@ -583,9 +741,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let _ = control_webview.evaluate_script(&js_ui);
                         let _ = pro_webview.evaluate_script(&js_ui);
 
+                        // 直接传 base64 data URL 给背景层，避免 WebView2 URL 缓存问题
+                        // 两条链路（生成/画廊应用）统一走同一路径
                         let js_bg = format!(
                             "window.setWallpaper({}, 'Prompt')",
-                            serde_json::to_string(&image.preview_url).unwrap()
+                            serde_json::to_string(&data_url).unwrap()
                         );
                         let _ = bg_webview.evaluate_script(&js_bg);
                     }
@@ -604,6 +764,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         );
                         let _ = control_webview.evaluate_script(&js_ui);
                         let _ = pro_webview.evaluate_script(&js_ui);
+                    }
+                    AppEvent::GalleryLoaded(images) => {
+                        let js = format!(
+                            "if (window.onGalleryLoaded) {{ window.onGalleryLoaded({}) }}",
+                            serde_json::to_string(&images).unwrap()
+                        );
+                        let _ = pro_webview.evaluate_script(&js);
                     }
                 }
             }
