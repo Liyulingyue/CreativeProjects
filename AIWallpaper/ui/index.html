@@ -148,7 +148,7 @@
                     </div>
                     <div>
                         <h3 class="font-semibold text-sm">AI Studio API Token</h3>
-                        <a href="https://aistudio.baidu.com/account/accessToken" target="_blank"
+                        <a href="https://aistudio.baidu.com/account/accessToken" onclick="return openExternal(this.href)"
                             class="text-[10px] text-blue-400 hover:text-blue-600 tracking-tighter flex items-center gap-0.5 transition">
                             <i data-lucide="external-link" class="w-2.5 h-2.5 inline"></i>
                             前往 aistudio.baidu.com 获取 Token
@@ -177,14 +177,16 @@
                     </div>
                     <div>
                         <h3 class="font-semibold text-sm">系统信息</h3>
-                        <p class="text-[10px] text-slate-400 uppercase">AIWallpaper v1.1.0-STABLE</p>
+                        <p id="systemVersion" class="text-[10px] text-slate-400 uppercase">AIWallpaper v1.1.0-STABLE</p>
                     </div>
                 </div>
                 <div class="bg-slate-100 rounded-2xl p-4 text-[11px] text-slate-500 leading-relaxed border border-slate-200/50 shadow-inner">
                     <p class="mb-2 uppercase font-bold text-[9px] text-slate-400">核心架构</p>
-                    1. 基于 Rust 高性能异步后端<br>
-                    2. Win32 消息钩子 (0x052C) 桌面注入<br>
-                    3. WebView2 GPU 加速渲染层 (Win11 24H2 优化版本)
+                    <div id="systemArchitecture">
+                        1. 基于 Rust 高性能异步后端<br>
+                        2. Win32 消息钩子 (0x052C) 桌面注入<br>
+                        3. WebView2 GPU 加速渲染层 (Win11 24H2 优化版本)
+                    </div>
                 </div>
 
                 <div class="flex items-center gap-3 px-1 pt-2">
@@ -193,10 +195,15 @@
                     </div>
                     <div>
                         <h3 class="font-semibold text-sm">开源与开发者</h3>
-                        <a href="https://github.com/Liyulingyue/" target="_blank" 
+                        <a href="https://github.com/Liyulingyue/" onclick="return openExternal(this.href)" 
                             class="text-[10px] text-slate-400 hover:text-blue-500 transition flex items-center gap-1">
                             <i data-lucide="github" class="w-2.5 h-2.5"></i>
                             GitHub: @Liyulingyue
+                        </a>
+                        <a href="https://github.com/gouzil/" onclick="return openExternal(this.href)" 
+                            class="text-[10px] text-slate-400 hover:text-blue-500 transition flex items-center gap-1">
+                            <i data-lucide="github" class="w-2.5 h-2.5"></i>
+                            GitHub: @gouzil
                         </a>
                     </div>
                 </div>
@@ -206,6 +213,27 @@
 
     <script>
         lucide.createIcons();
+        const PLATFORM_INFO = window.__platformInfo || {
+            version_label: 'AIWallpaper v1.1.0-STABLE',
+            architecture_lines: [
+                '1. 基于 Rust 高性能异步后端',
+                '2. 桌面壁纸层渲染',
+                '3. 系统托盘常驻控制'
+            ]
+        };
+
+        function applyPlatformInfo() {
+            const versionEl = document.getElementById('systemVersion');
+            const architectureEl = document.getElementById('systemArchitecture');
+            if (versionEl && PLATFORM_INFO.version_label) {
+                versionEl.textContent = PLATFORM_INFO.version_label;
+            }
+            if (architectureEl && Array.isArray(PLATFORM_INFO.architecture_lines)) {
+                architectureEl.innerHTML = PLATFORM_INFO.architecture_lines.join('<br>');
+            }
+        }
+
+        applyPlatformInfo();
         // 所有元素渲染完成后通知后端显示窗口，避免白屏
         window.ipc.postMessage(JSON.stringify({ type: "ready" }));
 
@@ -338,6 +366,12 @@
             window.ipc.postMessage(JSON.stringify({ type: "save_key", value: key }));
             setStatus("安全令牌已成功保存并重新加载。");
             setTimeout(() => setStatus(""), 4000);
+        }
+
+        function openExternal(url) {
+            if (!url) return false;
+            window.ipc.postMessage(JSON.stringify({ type: "open_external", value: url }));
+            return false;
         }
 
         window.onGenerationComplete = function(success, errorMsg, imagePayload) {

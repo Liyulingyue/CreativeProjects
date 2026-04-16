@@ -1,3 +1,4 @@
 fn main() {
-    embed_resource::compile("app.rc", embed_resource::NONE);
+    #[cfg(target_os = "windows")]
+    let _ = embed_resource::compile("app.rc", embed_resource::NONE);
 }

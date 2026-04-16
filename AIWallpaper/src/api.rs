@@ -1,8 +1,11 @@
-use serde::{Deserialize, Serialize};
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fs;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::platform;
 
 pub struct GeneratedImage {
     pub preview_url: String,
@@ -28,7 +31,17 @@ struct ErnieImageResponse {
     data: Vec<ErnieImageData>,
 }
 
-pub async fn generate_image(prompt: &str, api_key: &str) -> Result<GeneratedImage, Box<dyn Error + Send + Sync>> {
+pub async fn generate_image(
+    prompt: &str,
+    api_key: &str,
+    cache_dir: &Path,
+) -> Result<GeneratedImage, Box<dyn Error + Send + Sync>> {
+    log::debug!(
+        "[api] start_generate prompt_len={} cache_dir={} key_len={}",
+        prompt.len(),
+        cache_dir.to_string_lossy(),
+        api_key.len()
+    );
     let client = Client::new();
     let url = "https://aistudio.baidu.com/llm/lmapi/v3/images/generations";
 
@@ -37,7 +50,10 @@ pub async fn generate_image(prompt: &str, api_key: &str) -> Result<GeneratedImag
         prompt: prompt.to_string(),
         n: 1,
         response_format: "url".to_string(),
-        size: "1024x1024".to_string(), // 可根据显示器调整，规格支持 1024x1024 等
+        #[cfg(target_os = "macos")]
+        size: "1264x848".to_string(),
+        #[cfg(target_os = "windows")]
+        size: "1024x1024".to_string(),
     };
 
     let response = client
@@ -47,32 +63,36 @@ pub async fn generate_image(prompt: &str, api_key: &str) -> Result<GeneratedImag
         .json(&payload)
         .send()
         .await?;
+    log::debug!("[api] generation_status={}", response.status());
 
     if response.status().is_success() {
         let res_body: ErnieImageResponse = response.json().await?;
+        log::debug!("[api] generation_data_count={}", res_body.data.len());
         if let Some(data) = res_body.data.first() {
-            // 下载图片并保存为固定文件名，以实现覆盖更新
+            log::debug!("[api] download_url={}", data.url);
             let img_bytes = client.get(&data.url).send().await?.bytes().await?;
-            
-            // 使用绝对路径，始终保存到 AppData/AIWallpaper/cache/
-            let cache_dir = std::env::var("LOCALAPPDATA")
-                .map(|ld| std::path::PathBuf::from(ld).join("AIWallpaper").join("cache"))
-                .unwrap_or_else(|_| std::env::temp_dir().join("AIWallpaper").join("cache"));
+            log::debug!("[api] downloaded_bytes={}", img_bytes.len());
+
             if !cache_dir.exists() {
-                fs::create_dir_all(&cache_dir)?;
+                fs::create_dir_all(cache_dir)?;
             }
-            
+
             let save_path = cache_dir.join("current_wallpaper.png");
             fs::write(&save_path, &img_bytes)?;
+            let saved_len = fs::metadata(&save_path).map(|meta| meta.len()).unwrap_or(0);
+            log::debug!(
+                "[api] saved_file={} saved_bytes={}",
+                save_path.to_string_lossy(),
+                saved_len
+            );
 
-            let abs_path = fs::canonicalize(&save_path)?;
-            let path_str = abs_path.to_string_lossy().replace('\\', "/");
-            let wallpaper_url = format!("file:///{}", path_str);
+            let wallpaper_url =
+                platform::path_to_file_url(&save_path).ok_or("Failed to resolve wallpaper path")?;
             let cache_buster = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis();
-            let preview_url = format!("https://aiwallpaper.preview/current_wallpaper.png?ts={}", cache_buster);
+            let preview_url = platform::preview_image_url("current_wallpaper.png", cache_buster);
 
             return Ok(GeneratedImage {
                 preview_url,
@@ -81,6 +101,7 @@ pub async fn generate_image(prompt: &str, api_key: &str) -> Result<GeneratedImag
         }
     } else {
         let err_text = response.text().await?;
+        log::error!("[api] generation_error_body={err_text}");
         return Err(format!("API Error: {}", err_text).into());
     }
 

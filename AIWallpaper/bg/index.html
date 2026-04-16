@@ -40,6 +40,18 @@
     <div class="prompt-info" id="promptDisplay"></div>
 
     <script>
+        function debugLog(message, extra) {
+            const payload = extra ? `${message} | ${extra}` : message;
+            console.log('[bg]', payload);
+            try {
+                if (window.ipc) {
+                    window.ipc.postMessage(payload);
+                }
+            } catch (err) {
+                console.log('[bg] ipc log failed', err);
+            }
+        }
+
         // 粒子特效实现
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
@@ -95,6 +107,7 @@
 
         let currentIdx = 1;
         window.setWallpaper = function(url, promptText) {
+            debugLog('setWallpaper called', url);
             // 第一次生成成功后，隐藏特效层
             document.getElementById('canvas').style.opacity = '0';
             document.getElementById('brand').style.opacity = '0';
@@ -102,6 +115,15 @@
             const nextIdx = currentIdx === 1 ? 2 : 1;
             const currentEl = document.getElementById('bg' + currentIdx);
             const nextEl = document.getElementById('bg' + nextIdx);
+
+            const probe = new Image();
+            probe.onload = function() {
+                debugLog('image preload ok', `${url} ${probe.naturalWidth}x${probe.naturalHeight}`);
+            };
+            probe.onerror = function() {
+                debugLog('image preload failed', url);
+            };
+            probe.src = url;
 
             nextEl.style.backgroundImage = `url('${url}')`;
             nextEl.classList.add('active');
@@ -111,6 +133,13 @@
             document.getElementById('promptDisplay').innerText = promptText;
             currentIdx = nextIdx;
         };
+
+        if (window.__initialWallpaper) {
+            debugLog('initial wallpaper found', window.__initialWallpaper);
+            window.setWallpaper(window.__initialWallpaper, '');
+        } else {
+            debugLog('initial wallpaper missing');
+        }
     </script>
 </body>
 </html>
