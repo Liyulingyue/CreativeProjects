@@ -6,6 +6,9 @@ author: Liyulingyue & Copilot
 license: MIT
 metadata:
   environment: python3
+  platform: windows
+  required-env-vars:
+    BAIDU_API_KEY: "Baidu AIStudio AccessToken"
 allowed-tools:
   - Bash(python3:*)
 ---
@@ -14,10 +17,12 @@ allowed-tools:
 
 ## 核心原则
 - 这是一个专门为 Windows 平台设计的桌面增强能力模块。
+- 当前版本仅支持 Windows；命名为通用 Skill 名称是为了未来可扩展到 macOS / Linux。
 - 必须获取用户的 `prompt`（描述壁纸内容的提示词）。
 - 必须获取 API 访问权限：
   - 提示用户从 [Baidu AIStudio控制台 (AccessToken)](https://aistudio.baidu.com/account/accessToken) 获取 Token。
   - 通过参数 `--api_key` 或环境变量 `BAIDU_API_KEY` 提供。
+- Python 依赖为 `openai` 包；该脚本通过 OpenAI 兼容协议访问百度端点。
 
 ## 执行步骤
 1. **环境检查**: 确认当前系统为 Windows。

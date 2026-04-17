@@ -1,10 +1,15 @@
 import os
-import sys
 import ctypes
-import json
 import base64
 import argparse
 from openai import OpenAI
+
+
+def ensure_windows():
+    if os.name != "nt":
+        print("错误: 当前仅支持 Windows。该脚本会调用 Windows SPI 接口设置壁纸。")
+        return False
+    return True
 
 # 1. 设置壁纸的核心逻辑 (Windows API)
 def set_wallpaper(image_path):
@@ -21,6 +26,7 @@ def set_wallpaper(image_path):
 
 # 2. 调用 API 生成图片
 def generate_wallpaper(args):
+    # 使用 OpenAI Python SDK 访问兼容 OpenAI 协议的图像生成端点。
     client = OpenAI(
         api_key=args.api_key,
         base_url=args.base_url
@@ -77,6 +83,9 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="随机种子")
 
     args = parser.parse_args()
+
+    if not ensure_windows():
+        return
 
     # API Key 检查
     if not args.api_key:
