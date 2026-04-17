@@ -1,4 +1,4 @@
-# Skill: ai-wallpaper-skill-windows
+# Skill: ai-wallpaper-skill
 
 遵循标准 AI Agent Skill 架构定义的 Windows 桌面壁纸增强能力模块。
 

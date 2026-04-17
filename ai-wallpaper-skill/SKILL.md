@@ -1,6 +1,6 @@
 ---
-name: ai-wallpaper-skill-windows
-description: 一个能够根据用户提示词生成 AI 图片并自动将其设置为 Windows 桌面壁纸的能力模块。当用户提到“换壁纸”、“生成桌面”、“设置背景”等需求时触发。
+name: ai-wallpaper-skill
+description: 一个能够根据用户提示词生成 AI 图片并自动将其设置为桌面壁纸的能力模块。当用户提到“换壁纸”、“生成桌面”、“设置背景”等需求时触发。当前实现为 Windows 平台。
 version: "1.0"
 author: Liyulingyue & Copilot
 license: MIT
@@ -16,7 +16,7 @@ allowed-tools:
 - 这是一个专门为 Windows 平台设计的桌面增强能力模块。
 - 必须获取用户的 `prompt`（描述壁纸内容的提示词）。
 - 必须获取 API 访问权限：
-  - 提示用户从 [百度千帆控制台 (AccessToken)](https://aistudio.baidu.com/account/accessToken) 获取 Token。
+  - 提示用户从 [Baidu AIStudio控制台 (AccessToken)](https://aistudio.baidu.com/account/accessToken) 获取 Token。
   - 通过参数 `--api_key` 或环境变量 `BAIDU_API_KEY` 提供。
 
 ## 执行步骤
