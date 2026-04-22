@@ -1,0 +1,30 @@
+.status-bar {
+  display: flex;
+  gap: 24px;
+  padding: 8px 16px;
+  background: var(--card-bg, #fff);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.status-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: var(--text-color, #333);
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.dot.green {
+  background: #4caf50;
+}
+
+.dot.red {
+  background: #f44336;
+}

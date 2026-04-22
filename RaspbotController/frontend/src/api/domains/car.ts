@@ -1,0 +1,58 @@
+import { apiClient } from '../client';
+
+export type Direction = 'forward' | 'backward' | 'left' | 'right' | 'spin_left' | 'spin_right' | 'stop';
+
+export interface MoveParams {
+  direction: Direction;
+  speed: number;
+}
+
+export interface MoveResponse {
+  status: string;
+  direction: string;
+  speed: number;
+}
+
+export interface ManualParams {
+  l_speed: number;
+  r_speed: number;
+}
+
+export interface ManualResponse {
+  status: string;
+  l_speed: number;
+  r_speed: number;
+}
+
+export interface ServoParams {
+  id: number;
+  angle: number;
+}
+
+export interface ServoResponse {
+  status: string;
+  id: number;
+  angle: number;
+}
+
+export const carApi = {
+  move: async (params: MoveParams): Promise<MoveResponse> => {
+    const response = await apiClient.post<MoveResponse>('/car/move', params);
+    return response.data;
+  },
+
+  stop: async (): Promise<{ status: string }> => {
+    const response = await apiClient.post<{ status: string }>('/car/stop');
+    return response.data;
+  },
+
+  manual: async (params: ManualParams): Promise<ManualResponse> => {
+    const response = await apiClient.post<ManualResponse>('/car/manual', params);
+    return response.data;
+  },
+
+  servo: async (params: ServoParams): Promise<ServoResponse> => {
+    const response = await apiClient.post<ServoResponse>('/car/servo', params);
+    return response.data;
+  },
+};
