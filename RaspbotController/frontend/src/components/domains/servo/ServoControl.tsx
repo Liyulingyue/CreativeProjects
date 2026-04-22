@@ -8,13 +8,12 @@ interface ServoChannelProps {
 }
 
 export const ServoControl = () => {
-  const [angles, setAngles] = useState<Record<number, number>>({ 1: 90, 2: 90, 3: 90 });
+  const [angles, setAngles] = useState<Record<number, number>>({ 1: 90, 2: 90 });
   const [activeChannel, setActiveChannel] = useState<number | null>(null);
 
   const channels: ServoChannelProps[] = [
     { id: 1, name: 'Camera H' },
     { id: 2, name: 'Camera V' },
-    { id: 3, name: 'Arm' },
   ];
 
   const handleAngleChange = useCallback((id: number, angle: number) => {
@@ -37,12 +36,11 @@ export const ServoControl = () => {
 
   const handleReset = useCallback(async () => {
     const resetAngle = 90;
-    setAngles({ 1: resetAngle, 2: resetAngle, 3: resetAngle });
+    setAngles({ 1: resetAngle, 2: resetAngle });
     try {
       await Promise.all([
         carApi.servo({ id: 1, angle: resetAngle }),
         carApi.servo({ id: 2, angle: resetAngle }),
-        carApi.servo({ id: 3, angle: resetAngle }),
       ]);
     } catch (err) {
       console.error('[ServoControl] reset error:', err);

@@ -73,4 +73,16 @@ export const carApi = {
     const response = await apiClient.post<BuzzerResponse>('/car/buzzer', params);
     return response.data;
   },
+
+  getDistance: async (): Promise<{ status: string; distance: number }> => {
+    const response = await apiClient.get<{ status: string; distance: number }>('/car/distance');
+    return response.data;
+  },
+
+  led: async (action: string, led: number): Promise<{ status: string; action: string; led: number }> => {
+    const response = await apiClient.post<{ status: string; action: string; led: number }>('/car/led', null, {
+      params: { action, led },
+    });
+    return response.data;
+  },
 };

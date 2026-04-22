@@ -1,0 +1,150 @@
+.distance-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: var(--card-bg, #1a1a2e);
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.distance-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.distance-header h3 {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-secondary, #888);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.distance-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.measure-btn,
+.auto-btn {
+  padding: 6px 14px;
+  border: 1px solid var(--border-color, #444);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-color, #eee);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.measure-btn:hover {
+  background: var(--accent-color, #6c5ce7);
+  border-color: var(--accent-color, #6c5ce7);
+}
+
+.auto-btn.active {
+  background: #00bcd4;
+  border-color: #00bcd4;
+  color: white;
+}
+
+.distance-display {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  background: var(--channel-bg, #16162a);
+  border-radius: 12px;
+  transition: all 0.3s;
+}
+
+.distance-display.safe {
+  border: 1px solid rgba(0, 230, 118, 0.3);
+}
+
+.distance-display.warning {
+  border: 1px solid rgba(255, 193, 7, 0.3);
+}
+
+.distance-display.danger {
+  border: 1px solid rgba(244, 67, 54, 0.3);
+}
+
+.distance-value {
+  font-size: 48px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-color, #eee);
+  transition: color 0.3s;
+}
+
+.distance-display.safe .distance-value {
+  color: #00e676;
+}
+
+.distance-display.warning .distance-value {
+  color: #ffc107;
+}
+
+.distance-display.danger .distance-value {
+  color: #f44336;
+}
+
+.distance-unit {
+  font-size: 16px;
+  color: var(--text-secondary, #888);
+}
+
+.distance-bar {
+  height: 8px;
+  background: var(--slider-bg, #2a2a4a);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.distance-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s ease-out, background 0.3s;
+}
+
+.distance-fill.safe {
+  background: linear-gradient(90deg, #00e676, #69f0ae);
+}
+
+.distance-fill.warning {
+  background: linear-gradient(90deg, #ffc107, #ffeb3b);
+}
+
+.distance-fill.danger {
+  background: linear-gradient(90deg, #f44336, #ff5722);
+}
+
+.distance-scale {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--text-secondary, #666);
+}
+
+.distance-status {
+  text-align: center;
+  font-size: 12px;
+  min-height: 18px;
+}
+
+.distance-status.idle {
+  color: var(--text-secondary, #888);
+}
+
+.distance-status.measuring {
+  color: var(--accent-color, #6c5ce7);
+}
+
+.distance-status.error {
+  color: #f44336;
+}

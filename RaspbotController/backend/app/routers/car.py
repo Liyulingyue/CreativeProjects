@@ -96,3 +96,53 @@ async def buzzer(req: BuzzerRequest):
     except Exception as e:
         print(f"[buzzer] UDP error: {e}")
     return BuzzerResponse(status="ok", action=req.action, frequency=req.frequency)
+
+
+DIST_HOST = "127.0.0.1"
+DIST_PORT = 9003
+DIST_MAGIC = b"DIS1"
+
+
+@router.get("/distance", response_model=dict)
+async def get_distance():
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(1.0)
+        sock.sendto(DIST_MAGIC + bytes([0x01]), (DIST_HOST, DIST_PORT))
+        data, _ = sock.recvfrom(64)
+        sock.close()
+        if len(data) >= 8 and data[:4] == DIST_MAGIC:
+            distance = struct.unpack("<f", data[4:8])[0]
+            return {"status": "ok", "distance": distance}
+        return {"status": "error", "distance": -1}
+    except Exception as e:
+        print(f"[distance] UDP error: {e}")
+        return {"status": "error", "distance": -1}
+
+
+LED_HOST = "127.0.0.1"
+LED_PORT = 9004
+LED_MAGIC = b"LED1"
+
+
+@router.post("/led", response_model=dict)
+async def control_led(action: str, led: int = 1):
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        if action == "on":
+            packet = LED_MAGIC + bytes([0x02] if led == 1 else [0x03]) + bytes([1])
+        elif action == "off":
+            packet = LED_MAGIC + bytes([0x02] if led == 1 else [0x03]) + bytes([0])
+        elif action == "toggle":
+            packet = LED_MAGIC + bytes([0x04]) + bytes([1 << (led - 1)])
+        elif action == "blink":
+            packet = LED_MAGIC + bytes([0x05]) + bytes([1 << (led - 1)]) + struct.pack("<H", 300)
+        else:
+            sock.close()
+            raise HTTPException(status_code=400, detail=f"Invalid action: {action}")
+        print(f"[led] sending {action} led{led}: {packet.hex()}", flush=True)
+        sock.sendto(packet, (LED_HOST, LED_PORT))
+        sock.close()
+    except Exception as e:
+        print(f"[led] UDP error: {e}")
+    return {"status": "ok", "action": action, "led": led}

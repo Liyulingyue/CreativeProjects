@@ -1,0 +1,128 @@
+.led-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: var(--card-bg, #1a1a2e);
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.led-header h3 {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-secondary, #888);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.led-channels {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.led-channel {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--channel-bg, #16162a);
+  border-radius: 10px;
+  transition: all 0.3s;
+}
+
+.led-channel.on {
+  background: var(--channel-active, #1e1e3a);
+}
+
+.led-indicator {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  transition: all 0.3s;
+  opacity: 0.3;
+}
+
+.led-indicator.red {
+  background: #f44336;
+  box-shadow: 0 0 0 rgba(244, 67, 54, 0);
+}
+
+.led-indicator.blue {
+  background: #2196f3;
+  box-shadow: 0 0 0 rgba(33, 150, 243, 0);
+}
+
+.led-channel.on .led-indicator.red {
+  opacity: 1;
+  box-shadow: 0 0 12px rgba(244, 67, 54, 0.8);
+}
+
+.led-channel.on .led-indicator.blue {
+  opacity: 1;
+  box-shadow: 0 0 12px rgba(33, 150, 243, 0.8);
+}
+
+.led-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.led-label {
+  font-size: 13px;
+  color: var(--text-color, #eee);
+  font-weight: 500;
+}
+
+.led-status {
+  font-size: 11px;
+  color: var(--text-secondary, #666);
+}
+
+.led-channel.on .led-status {
+  color: #00e676;
+}
+
+.led-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.led-btn {
+  padding: 6px 10px;
+  border: none;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  background: var(--btn-bg, #2a2a4a);
+  color: var(--text-secondary, #888);
+}
+
+.led-btn:hover {
+  transform: scale(1.05);
+}
+
+.led-btn.on {
+  background: #4caf50;
+  color: white;
+}
+
+.led-btn.off {
+  background: #f44336;
+  color: white;
+}
+
+.led-btn.toggle {
+  background: var(--accent-color, #6c5ce7);
+  color: white;
+}
+
+.led-btn.blink {
+  background: #ff9800;
+  color: white;
+}

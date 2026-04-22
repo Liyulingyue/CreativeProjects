@@ -30,39 +30,25 @@ body {
   min-height: 100vh;
 }
 
-.app {
+.page {
   max-width: 1400px;
   margin: 0 auto;
-  padding: 24px;
 }
 
-.app-header {
-  text-align: center;
-  margin-bottom: 32px;
+.page-header {
+  margin-bottom: 24px;
 }
 
-.app-header h1 {
-  font-size: 32px;
+.page-header h2 {
+  font-size: 24px;
   color: #fff;
-  font-weight: 700;
-  background: linear-gradient(135deg, #fff 0%, #a29bfe 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  font-weight: 600;
+  margin-bottom: 4px;
 }
 
-.app-subtitle {
+.page-desc {
   font-size: 14px;
   color: var(--text-secondary);
-  margin-top: 4px;
-  letter-spacing: 2px;
-  text-transform: uppercase;
-}
-
-.app-main {
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
 }
 
 .content-grid {
@@ -85,12 +71,8 @@ body {
 }
 
 @media (max-width: 600px) {
-  .app {
-    padding: 16px;
-  }
-
-  .app-header h1 {
-    font-size: 24px;
+  .page-header h2 {
+    font-size: 20px;
   }
 
   .content-grid {

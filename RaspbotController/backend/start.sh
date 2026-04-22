@@ -7,6 +7,8 @@ echo "Killing existing processes..."
 sudo pkill -f raspbot.py || true
 pkill -f "camera_udp.py" || true
 pkill -f "buzzer_udp.py" || true
+pkill -f "distance_udp.py" || true
+pkill -f "led_udp.py" || true
 sleep 1
 
 if [ ! -d ".venv" ]; then
@@ -43,6 +45,32 @@ if ps -p $! > /dev/null 2>&1; then
 else
     echo "WARNING: buzzer_udp may have failed"
     cat /tmp/buzzer_udp.log
+fi
+
+echo "Starting Distance UDP Server..."
+nohup sudo /usr/bin/python3 "$SCRIPT_DIR/app/hardware/distance_udp.py" > /tmp/distance_udp.log 2>&1 &
+echo "Distance UDP PID: $!"
+sleep 1
+
+if ps -p $! > /dev/null 2>&1; then
+    echo "Distance UDP started. Log:"
+    tail -1 /tmp/distance_udp.log
+else
+    echo "WARNING: distance_udp may have failed"
+    cat /tmp/distance_udp.log
+fi
+
+echo "Starting LED UDP Server..."
+nohup sudo /usr/bin/python3 "$SCRIPT_DIR/app/hardware/led_udp.py" > /tmp/led_udp.log 2>&1 &
+echo "LED UDP PID: $!"
+sleep 1
+
+if ps -p $! > /dev/null 2>&1; then
+    echo "LED UDP started. Log:"
+    tail -1 /tmp/led_udp.log
+else
+    echo "WARNING: led_udp may have failed"
+    cat /tmp/led_udp.log
 fi
 
 echo "Starting FastAPI..."
