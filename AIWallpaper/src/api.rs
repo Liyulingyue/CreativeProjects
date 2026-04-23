@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct GeneratedImage {
     pub preview_url: String,
     pub wallpaper_url: String,
+    pub size: String,
 }
 
 #[derive(Serialize)]
@@ -28,7 +29,53 @@ struct ErnieImageResponse {
     data: Vec<ErnieImageData>,
 }
 
-pub async fn generate_image(prompt: &str, api_key: &str) -> Result<GeneratedImage, Box<dyn Error + Send + Sync>> {
+/// 根据宽高比选择最合适的文心一言图片规格
+fn select_best_size(width: u32, height: u32) -> &'static str {
+    let ratio = width as f32 / height as f32;
+    
+    // 常见的屏幕比例判断
+    if ratio > 1.7 { // 16:9 左右
+        "1376x768"
+    } else if ratio > 1.4 { // 3:2 左右
+        "1264x848"
+    } else if ratio > 1.3 { // 4:3 左右
+        "1200x896"
+    } else if ratio < 0.6 { // 9:16 左右 (竖屏)
+        "768x1376"
+    } else if ratio < 0.75 { // 2:3 左右 (竖屏)
+        "848x1264"
+    } else if ratio < 0.8 { // 3:4 左右 (竖屏)
+        "896x1200"
+    } else {
+        "1024x1024" // 默认正方形
+    }
+}
+
+pub async fn generate_image(prompt: &str, api_key: &str, size_override: Option<String>) -> Result<GeneratedImage, Box<dyn Error + Send + Sync>> {
+    // 动态识别屏幕尺寸 (Windows 平台)
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+    
+    let best_size = if let Some(size) = size_override {
+        if size == "auto" || size.is_empty() {
+             // 只有当明确配置为 auto 时才执行自动探测
+            let (screen_w, screen_h) = unsafe {
+                (
+                    GetSystemMetrics(SM_CXSCREEN) as u32,
+                    GetSystemMetrics(SM_CYSCREEN) as u32
+                )
+            };
+            let detected = select_best_size(screen_w, screen_h);
+            println!("配置为自动模式，检测到屏幕 {}x{} -> 规格 {}", screen_w, screen_h, detected);
+            detected.to_string()
+        } else {
+            // 否则尊重配置中的值（即使它已经被保存为 1024x1024）
+            println!("使用配置中的图片规格: {}", size);
+            size
+        }
+    } else {
+        "1024x1024".to_string()
+    };
+
     let client = Client::new();
     let url = "https://aistudio.baidu.com/llm/lmapi/v3/images/generations";
 
@@ -37,7 +84,7 @@ pub async fn generate_image(prompt: &str, api_key: &str) -> Result<GeneratedImag
         prompt: prompt.to_string(),
         n: 1,
         response_format: "url".to_string(),
-        size: "1024x1024".to_string(), // 可根据显示器调整，规格支持 1024x1024 等
+        size: best_size.clone(),
     };
 
     let response = client
@@ -77,6 +124,7 @@ pub async fn generate_image(prompt: &str, api_key: &str) -> Result<GeneratedImag
             return Ok(GeneratedImage {
                 preview_url,
                 wallpaper_url,
+                size: best_size,
             });
         }
     } else {

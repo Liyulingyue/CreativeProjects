@@ -9,6 +9,8 @@ interface SettingsPageProps {
   setCacheLimit: (v: number) => void;
   galleryPath: string;
   setGalleryPath: (v: string) => void;
+  imageSize: string;
+  setImageSize: (v: string) => void;
   handleSaveKey: () => void;
 }
 
@@ -17,12 +19,57 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
   enableCache, setEnableCache,
   cacheLimit, setCacheLimit,
   galleryPath, setGalleryPath,
+  imageSize, setImageSize,
   handleSaveKey
 }) => {
   const [showApiKey, setShowApiKey] = React.useState(false);
+  const [saveMsg, setSaveMsg] = React.useState<string | null>(null);
+
+  const sizeOptions = [
+    { label: "自动识别 (推荐)", value: "auto" },
+    { label: "1024x1024 (正方形)", value: "1024x1024" },
+    { label: "1376x768 (宽屏)", value: "1376x768" },
+    { label: "1264x848 (3:2)", value: "1264x848" },
+    { label: "1200x896 (4:3)", value: "1200x896" },
+    { label: "896x1200 (竖屏 3:4)", value: "896x1200" },
+    { label: "848x1264 (竖屏 2:3)", value: "848x1264" },
+    { label: "768x1376 (手机竖屏)", value: "768x1376" },
+  ];
 
   return (
     <div className="max-w-xl mx-auto space-y-10 animate-in fade-in slide-in-from-bottom-6 duration-700">
+      {/* 生成规格配置 */}
+      <div>
+        <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-6">图片生成规格</h3>
+        <div className="bg-white border border-slate-200 rounded-[2rem] p-8 shadow-lg space-y-6">
+          <div className="flex items-start gap-3">
+            <div className="p-2 bg-slate-100 rounded-xl text-slate-600">
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+            </div>
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-slate-700 font-[system-ui]">画面比例与分辨率</p>
+              <p className="text-[10px] text-slate-400 mt-0.5">选择生图尺寸并点击下方“保存配置”生效。自动识别将根据您的屏幕分辨率匹配规格。</p>
+            </div>
+          </div>
+          <div className="relative">
+            <select
+              value={imageSize}
+              onChange={(e) => setImageSize(e.target.value)}
+              className="w-full bg-slate-50 border border-slate-200 rounded-2xl p-4 pr-10 text-sm focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500/50 outline-none transition-all appearance-none cursor-pointer font-medium text-slate-700"
+            >
+              {sizeOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label} ({opt.value === "auto" ? "自动识别" : opt.value})
+                </option>
+              ))}
+            </select>
+            <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* API 配置 */}
       <div>
         <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-6">AI Studio API Token</h3>
@@ -137,7 +184,49 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
         </div>
       </div>
 
-      <button onClick={handleSaveKey} className="w-full bg-slate-900 hover:bg-black text-white py-4 rounded-2xl font-bold text-sm transition-all shadow-xl shadow-slate-100 active:scale-[0.98]">应用并保存所有设置</button>
+      <div className="pt-6">
+        <button
+          onClick={async () => {
+              try {
+                await Promise.resolve(handleSaveKey());
+                setSaveMsg("配置已保存");
+              } catch (e) {
+                setSaveMsg("保存失败，请重试");
+              }
+            }}
+          className="w-full bg-slate-900 hover:bg-black text-white py-5 rounded-[2rem] font-black text-sm transition-all shadow-2xl shadow-blue-900/10 active:scale-[0.98] flex items-center justify-center gap-2 group"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="group-hover:scale-110 transition-transform"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+          保存所有配置
+        </button>
+        <p className="text-center text-[10px] text-slate-400 mt-4 font-medium italic opacity-60">
+          保存后将立即更新本地 config.json 并同步至后台服务
+        </p>
+
+        {saveMsg && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center">
+            <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setSaveMsg(null)} />
+            <div className="relative bg-white rounded-2xl p-6 w-[320px] mx-4 shadow-2xl border">
+              <div className="flex items-center gap-3">
+                <div className={`w-10 h-10 flex items-center justify-center rounded-full ${saveMsg === '配置已保存' ? 'bg-green-100' : 'bg-red-100'}`}>
+                  {saveMsg === '配置已保存' ? (
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-green-600"><path d="M20 6L9 17l-5-5"/></svg>
+                  ) : (
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-red-600"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                  )}
+                </div>
+                <div className="flex-1">
+                  <div className="text-sm font-semibold text-slate-800">{saveMsg}</div>
+                  <div className="text-[11px] text-slate-400 mt-1">已同步到本地配置。</div>
+                </div>
+              </div>
+              <div className="mt-4 flex justify-end">
+                <button onClick={() => setSaveMsg(null)} className="px-4 py-2 bg-slate-100 rounded-lg text-sm hover:bg-slate-200">确定</button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* 系统信息 */}
 

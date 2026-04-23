@@ -28,6 +28,7 @@ function App() {
   const [autoRefreshHours, setAutoRefreshHours] = useState(0);
   const [autoPrompt, setAutoPrompt] = useState("");
   const [galleryPath, setGalleryPath] = useState("");
+  const [imageSize, setImageSize] = useState("auto");
   const [galleryImages, setGalleryImages] = useState<any[]>([]);
   const [showViewer, setShowViewer] = useState(false);
   const [viewerUrl, setViewerUrl] = useState("");
@@ -42,12 +43,14 @@ function App() {
     sendIpc("ready");
     // @ts-ignore
     window.onConfigLoaded = (config: any) => {
+      console.log("收到后端配置:", config);
       if (config.api_key) setApiKey(config.api_key);
       setEnableCache(config.enable_cache);
       setCacheLimit(config.cache_limit);
       setAutoRefreshHours(config.auto_refresh_hours);
       setAutoPrompt(config.auto_prompt || "");
       setGalleryPath(config.gallery_path || "");
+      setImageSize(config.image_size || "auto");
     };
 
     // 与 Rust 回调签名对齐: onGenerationComplete(success, errorMsg, imagePayload)
@@ -55,7 +58,10 @@ function App() {
     window.onGenerationComplete = (success: boolean, errorMsg: string, imagePayload: any) => {
       setIsGenerating(false);
       if (success && imagePayload?.previewUrl) {
-        setStatusMsg("生成成功！已加入画廊");
+        setStatusMsg(`生成成功！(${imagePayload.size || '未知尺寸'})`);
+        if (imagePayload.size && imagePayload.size !== "auto") {
+          setImageSize(imagePayload.size);
+        }
         setPreviewUrl(imagePayload.previewUrl);
         // 生成成功后自动刷新画廊数据
         sendIpc("get_gallery");
@@ -99,7 +105,14 @@ function App() {
     if (!prompt.trim() || isGenerating) return;
     setIsGenerating(true);
     setStatusMsg("正在构思画面...");
-    sendIpc("generate", prompt);
+    
+    // 发送生成指令，同时携带当前选定的 imageSize (可能是 auto 或具体分辨率)
+    const payload = {
+      type: "generate",
+      value: prompt,
+      size: imageSize
+    };
+    (window as any).ipc?.postMessage(JSON.stringify(payload));
   };
 
   const handleRandomPrompt = () => {
@@ -176,6 +189,19 @@ function App() {
             setCacheLimit={setCacheLimit}
             galleryPath={galleryPath}
             setGalleryPath={setGalleryPath}
+            imageSize={imageSize}
+            setImageSize={(v) => {
+              setImageSize(v);
+              sendIpc("save_config", {
+                api_key: apiKey,
+                enable_cache: enableCache,
+                cache_limit: cacheLimit,
+                auto_refresh_hours: autoRefreshHours,
+                auto_prompt: autoPrompt,
+                gallery_path: galleryPath,
+                image_size: v
+              });
+            }}
             handleSaveKey={handleSaveKey}
           />
         )}

@@ -206,8 +206,25 @@
 
     <script>
         lucide.createIcons();
-        // 所有元素渲染完成后通知后端显示窗口，避免白屏
-        window.ipc.postMessage(JSON.stringify({ type: "ready" }));
+
+            // 接收后端配置并回填到页面（例如 API Key）
+            window.onConfigLoaded = function(config) {
+                try {
+                    if (config && config.api_key) {
+                        const apiInput = document.getElementById('apiKey');
+                        if (apiInput) apiInput.value = config.api_key;
+                    }
+                    // 可根据需要回填更多配置项
+                    if (config && typeof config.image_size === 'string') {
+                        // 如果未来需要将 image_size 回填到界面，可在此处理
+                    }
+                } catch (e) {
+                    console.warn('onConfigLoaded handler error', e);
+                }
+            };
+
+            // 所有元素渲染完成后通知后端显示窗口，避免白屏
+            window.ipc.postMessage(JSON.stringify({ type: "ready" }));
 
         function switchTab(tab) {
             const createBtn = document.getElementById('tab-create');

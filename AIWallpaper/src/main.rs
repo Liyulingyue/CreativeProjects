@@ -30,103 +30,12 @@ use include_dir::{include_dir, Dir};
 
 static PRO_DIST: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/ui-pro/dist");
 
-/// 自定义资源协议处理器，支持从本地文件系统加载图片或从嵌入资源加载前端
-fn asset_protocol_handler(
-    request: &wry::http::Request<Vec<u8>>,
-    _app_data_dir: &PathBuf,
-    preview_path: &PathBuf,
-    is_pro: bool,
-) -> Result<Response<Cow<'static, [u8]>>, Box<dyn std::error::Error>> {
-    let uri = request.uri().to_string();
-    let path = request.uri().path();
-
-    // 1. 拦截预览图请求 (通用于所有窗口)
-    if uri.contains("current_wallpaper.png") {
-        return match fs::read(preview_path) {
-            Ok(bytes) => Ok(Response::builder()
-                .header(CONTENT_TYPE, "image/png")
-                .header("Cache-Control", "no-cache, no-store, must-revalidate")
-                .body(bytes.into())?),
-            Err(_) => Ok(Response::builder().status(StatusCode::NOT_FOUND).body(Vec::new().into())?),
-        };
-    }
-
-    // 2. 拦截本地绝对路径请求 (格式: asset://local/C:/path/to/img.png)
-    if uri.starts_with("asset://local/") {
-        let local_path_encoded = uri.replace("asset://local/", "");
-        let local_path = percent_encoding::percent_decode_str(&local_path_encoded).decode_utf8_lossy();
-        return match fs::read(PathBuf::from(local_path.as_ref())) {
-            Ok(bytes) => {
-                let mime = if local_path.ends_with(".png") { "image/png" } 
-                          else if local_path.ends_with(".jpg") || local_path.ends_with(".jpeg") { "image/jpeg" }
-                          else { "application/octet-stream" };
-                Ok(Response::builder().header(CONTENT_TYPE, mime).body(bytes.into())?)
-            },
-            Err(_) => Ok(Response::builder().status(StatusCode::NOT_FOUND).body(Vec::new().into())?),
-        };
-    }
-
-    // 3. 处理 Pro 版的前端资源加载 (仅限 Pro 窗口)
-    if is_pro {
-        let relative_path = if path == "/" || path == "" { "index.html" } else { path.trim_start_matches('/') };
-        return match PRO_DIST.get_file(relative_path) {
-            Some(file) => {
-                let mime = if relative_path.ends_with(".js") { "application/javascript" }
-                          else if relative_path.ends_with(".css") { "text/css" }
-                          else if relative_path.ends_with(".html") { "text/html" }
-                          else { "application/octet-stream" };
-                Ok(Response::builder().header(CONTENT_TYPE, mime).body(file.contents().to_vec().into())?)
-            }
-            None => Ok(Response::builder().status(StatusCode::NOT_FOUND).body(Vec::new().into())?),
-        };
-    }
-
-    Ok(Response::builder().status(StatusCode::NOT_FOUND).body(Vec::new().into())?)
-}
-
 mod api;
+mod app;
 mod platform;
 mod wallpaper_engine;
 
-#[derive(Serialize, Deserialize, Clone)]
-struct AppConfig {
-    api_key: String,
-    #[serde(default = "default_enable_cache")]
-    enable_cache: bool,
-    #[serde(default = "default_cache_limit")]
-    cache_limit: u32,
-    #[serde(default = "default_auto_refresh_hours")]
-    auto_refresh_hours: u32,
-    #[serde(default = "default_auto_prompt")]
-    auto_prompt: String,
-    #[serde(default = "default_gallery_path")]
-    gallery_path: String,
-}
-
-fn default_enable_cache() -> bool { false }
-fn default_cache_limit() -> u32 { 100 }
-fn default_auto_refresh_hours() -> u32 { 24 }
-fn default_auto_prompt() -> String { "Cyberpunk city, neon lights, 8k resolution".to_string() }
-fn default_gallery_path() -> String { String::new() }
-
-#[derive(Serialize, Deserialize)]
-struct IpcMessage {
-    #[serde(rename = "type")]
-    msg_type: String,
-    #[serde(default)]
-    value: String,
-}
-
-enum AppEvent {
-    Ready,
-    Minimize,
-    Close,
-    Generated(api::GeneratedImage),
-    Saved(String),
-    Error(String),
-    SwitchMode(String),
-    GalleryLoaded(Vec<serde_json::Value>),
-}
+pub use app::{AppConfig, IpcMessage, AppEvent};
 
 fn export_image_dir(app_data_dir: &std::path::Path, config: &AppConfig) -> PathBuf {
     if !config.gallery_path.is_empty() {
@@ -236,15 +145,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 auto_refresh_hours: 24,
                 auto_prompt: "Cyberpunk city, neon lights, 8k resolution".to_string(),
                 gallery_path: "".to_string(),
+                image_size: "auto".to_string(),
             })
     } else {
         AppConfig { 
-            api_key: std::env::var("ERNIE_API_KEY").unwrap_or_default(),
+            api_key: "".to_string(),
             enable_cache: false,
             cache_limit: 100,
             auto_refresh_hours: 24,
             auto_prompt: "Cyberpunk city, neon lights, 8k resolution".to_string(),
             gallery_path: "".to_string(),
+            image_size: "auto".to_string(),
         }
     };
 
@@ -254,7 +165,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("默认启动窗口模式: {}", default_window);
     let current_mode = Arc::new(Mutex::new(default_window.clone()));
     
-    let mut event_loop = EventLoop::<AppEvent>::with_user_event();
+    let event_loop = EventLoop::<AppEvent>::with_user_event();
     
     // 允许平台修改 EventLoop (macOS 必需)
     platform::configure_event_loop(&event_loop);
@@ -369,7 +280,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let bg_webview = WebViewBuilder::new(bg_window)?
         .with_custom_protocol("aiwallpaper".into(), move |request| {
-            asset_protocol_handler(request, &app_data_dir_bg, &bg_preview_image_path, false)
+            app::protocol::asset_protocol_handler(request, &app_data_dir_bg, &bg_preview_image_path, false, &PRO_DIST)
                 .map_err(|e| {
                     eprintln!("Asset Protocol Error: {:?}", e);
                     wry::Error::DuplicateCustomProtocol("aiwallpaper".to_string()) // 使用一个存在的错误类型
@@ -420,7 +331,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tx_pro = tx.clone();
     let control_webview = WebViewBuilder::new(control_window)?
         .with_custom_protocol("aiwallpaper".into(), move |request| {
-            asset_protocol_handler(request, &app_data_dir_lite, &preview_image_path_lite, false)
+            app::protocol::asset_protocol_handler(request, &app_data_dir_lite, &preview_image_path_lite, false, &PRO_DIST)
                 .map_err(|e| {
                     eprintln!("Control Asset Error: {:?}", e);
                     wry::Error::DuplicateCustomProtocol("aiwallpaper".to_string())
@@ -435,7 +346,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut pro_webview_builder = WebViewBuilder::new(pro_window)?
         .with_custom_protocol("pro".into(), move |request| {
-            asset_protocol_handler(request, &app_data_dir_pro, &preview_image_path_pro, true)
+            app::protocol::asset_protocol_handler(request, &app_data_dir_pro, &preview_image_path_pro, true, &PRO_DIST)
                 .map_err(|e| {
                     eprintln!("Pro Asset Error: {:?}", e);
                     wry::Error::DuplicateCustomProtocol("pro".to_string())
@@ -463,167 +374,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_data_dir_task = app_data_dir.clone();
 
     tokio::spawn(async move {
+        let ctx = app::ipc::IpcContext {
+            config: config_task,
+            proxy,
+            app_data_dir: app_data_dir_task,
+        };
         while let Some(msg_raw) = rx.recv().await {
-            if let Ok(msg) = serde_json::from_str::<IpcMessage>(&msg_raw) {
-                match msg.msg_type.as_str() {
-                    "ready" => {
-                        let _ = proxy.send_event(AppEvent::Ready);
-                    }
-                    "minimize" => {
-                        let _ = proxy.send_event(AppEvent::Minimize);
-                    }
-                    "close" => {
-                        let _ = proxy.send_event(AppEvent::Close);
-                    }
-                    "switch_mode" => {
-                        let _ = proxy.send_event(AppEvent::SwitchMode(msg.value));
-                    }
-                    "save_config" => {
-                        let mut cfg = config_task.lock().unwrap();
-                        if let Ok(new_cfg) = serde_json::from_str::<AppConfig>(&msg.value) {
-                             *cfg = new_cfg;
-                             let app_data_dir = std::env::var("LOCALAPPDATA")
-                                .map(|ld| std::path::PathBuf::from(ld).join("AIWallpaper"))
-                                .unwrap_or_else(|_| std::env::temp_dir().join("AIWallpaper"));
-                            let cfg_path = app_data_dir.join("config.json");
-                            let _ = fs::write(cfg_path, serde_json::to_string(&*cfg).unwrap());
-                            println!("配置已保存并应用: {:?}", msg.value);
-                        }
-                    }
-                    "save_key" => {
-                        let mut cfg = config_task.lock().unwrap();
-                        cfg.api_key = msg.value.clone();
-                        let app_data_dir = std::env::var("LOCALAPPDATA")
-                            .map(|ld| std::path::PathBuf::from(ld).join("AIWallpaper"))
-                            .unwrap_or_else(|_| std::env::temp_dir().join("AIWallpaper"));
-                        let cfg_path = app_data_dir.join("config.json");
-                        let _ = fs::write(cfg_path, serde_json::to_string(&*cfg).unwrap());
-                        println!("API Key 已保存");
-                    }
-                    "save_image" => {
-                        let app_data_dir_for_save = app_data_dir_task.clone();
-                        let proxy_for_save = proxy.clone();
-                        let cfg = config_task.lock().unwrap().clone();
-                        tokio::spawn(async move {
-                            match save_generated_image(&app_data_dir_for_save, &cfg) {
-                                Ok(path_buf) => {
-                                    let path_str = path_buf.to_string_lossy().to_string();
-                                    let _ = proxy_for_save.send_event(AppEvent::Saved(path_str));
-                                }
-                                Err(e) => {
-                                    let _ = proxy_for_save.send_event(AppEvent::Error(e.to_string()));
-                                }
-                            }
-                        });
-                    }
-                    "generate" => {
-                        let current_key = config_task.lock().unwrap().api_key.clone();
-                        let proxy_gen = proxy.clone();
-                        let prompt = msg.value.clone();
-                        let app_data_dir_gen = app_data_dir_task.clone();
-                        let cfg = config_task.lock().unwrap().clone();
-                        tokio::spawn(async move {
-                            if current_key.is_empty() {
-                                let _ = proxy_gen.send_event(AppEvent::Error("API Key 为空".into()));
-                                return;
-                            }
-                            match api::generate_image(&prompt, &current_key).await {
-                                Ok(image) => {
-                                    // 自动保存到画廊
-                                    let _ = save_generated_image(&app_data_dir_gen, &cfg);
-                                    let _ = proxy_gen.send_event(AppEvent::Generated(image));
-                                }
-                                Err(e) => {
-                                    let _ = proxy_gen.send_event(AppEvent::Error(e.to_string()));
-                                }
-                            }
-                        });
-                    }
-                    "get_gallery" => {
-                        let cfg = config_task.lock().unwrap().clone();
-                        let app_data_dir_gallery = app_data_dir_task.clone();
-                        let proxy_gallery = proxy.clone();
-                        tokio::spawn(async move {
-                            let gallery_dir = export_image_dir(&app_data_dir_gallery, &cfg);
-                            let mut images = Vec::new();
-                            if let Ok(entries) = fs::read_dir(gallery_dir) {
-                                for entry in entries.flatten() {
-                                    let path = entry.path();
-                                    if path.is_file() && path.extension().is_some_and(|ext| ext == "png") {
-                                        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
-                                        if let Ok(bytes) = fs::read(&path) {
-                                            let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
-                                            images.push(serde_json::json!({
-                                                "name": file_name,
-                                                "data": format!("data:image/png;base64,{}", b64)
-                                            }));
-                                        }
-                                    }
-                                }
-                            }
-                            images.sort_by(|a, b| b["name"].as_str().cmp(&a["name"].as_str())); 
-                            let _ = proxy_gallery.send_event(AppEvent::GalleryLoaded(images));
-                        });
-                    }
-                    "set_wallpaper" => {
-                        let file_name = msg.value.clone();
-                        let cfg = config_task.lock().unwrap().clone();
-                        let app_data_dir_set = app_data_dir_task.clone();
-                        let proxy_set = proxy.clone();
-                        tokio::spawn(async move {
-                            let gallery_dir = export_image_dir(&app_data_dir_set, &cfg);
-                            let img_path = gallery_dir.join(&file_name);
-                            if img_path.exists() {
-                                let cache_path = app_data_dir_set.join("cache").join("current_wallpaper.png");
-                                match fs::copy(&img_path, &cache_path) {
-                                    Ok(_) => {
-                                        let _ = proxy_set.send_event(AppEvent::Generated(api::GeneratedImage {
-                                            preview_url: "aiwallpaper://localhost/current_wallpaper.png".to_string(),
-                                            wallpaper_url: "".to_string(),
-                                        }));
-                                    }
-                                    Err(e) => {
-                                        let _ = proxy_set.send_event(AppEvent::Error(format!("应用壁纸失败: {}", e)));
-                                    }
-                                }
-                            } else {
-                                let _ = proxy_set.send_event(AppEvent::Error(format!("找不到图片文件: {}", file_name)));
-                            }
-                        });
-                    }
-                    "delete_image" => {
-                        let file_name = msg.value.clone();
-                        let cfg = config_task.lock().unwrap().clone();
-                        let app_data_dir_del = app_data_dir_task.clone();
-                        let proxy_del = proxy.clone();
-                        tokio::spawn(async move {
-                            let gallery_dir = export_image_dir(&app_data_dir_del, &cfg);
-                            let img_path = gallery_dir.join(&file_name);
-                            let _ = fs::remove_file(&img_path);
-                            // 删除后重新加载画廊
-                            let mut images = Vec::new();
-                            if let Ok(entries) = fs::read_dir(&gallery_dir) {
-                                for entry in entries.flatten() {
-                                    let path = entry.path();
-                                    if path.is_file() && path.extension().is_some_and(|ext| ext == "png") {
-                                        let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
-                                        if let Ok(bytes) = fs::read(&path) {
-                                            let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
-                                            images.push(serde_json::json!({
-                                                "name": fname,
-                                                "data": format!("data:image/png;base64,{}", b64)
-                                            }));
-                                        }
-                                    }
-                                }
-                            }
-                            images.sort_by(|a, b| b["name"].as_str().cmp(&a["name"].as_str()));
-                            let _ = proxy_del.send_event(AppEvent::GalleryLoaded(images));
-                        });
-                    }
-                    _ => {}
-                }
-            }
+            app::ipc::handle_message(&msg_raw, &ctx).await;
         }
     });
 
