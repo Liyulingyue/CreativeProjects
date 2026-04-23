@@ -11,6 +11,14 @@ const GalleryPage: React.FC<GalleryPageProps> = ({ galleryImages, sendIpc, galle
   const displayPath = galleryPath || "Pictures/AIWallpaper";
   const [confirmDeleteName, setConfirmDeleteName] = useState<string | null>(null);
   const [applyingName, setApplyingName] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const handleRefresh = () => {
+    setIsRefreshing(true);
+    sendIpc("get_gallery");
+    // 模拟动画持续时间，之后自动停止，或者让父组件在加载完后重置状态
+    setTimeout(() => setIsRefreshing(false), 1000);
+  };
   
   return (
     <>
@@ -26,11 +34,26 @@ const GalleryPage: React.FC<GalleryPageProps> = ({ galleryImages, sendIpc, galle
           </div>
           <div className="flex items-center gap-4">
             <button 
-              onClick={() => sendIpc("get_gallery")}
-              className="p-3 bg-slate-50 hover:bg-slate-100 rounded-2xl text-slate-600 border border-slate-200 transition-all flex items-center gap-2 font-bold px-5"
+              onClick={handleRefresh}
+              disabled={isRefreshing}
+              className="p-3 bg-slate-50 hover:bg-slate-100 rounded-2xl text-slate-600 border border-slate-200 transition-all flex items-center gap-2 font-bold px-5 active:scale-95 disabled:opacity-50"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56" /><path d="M22 10 16 12l3 5 3-7Z" /></svg>
-              刷新画廊
+              <svg 
+                xmlns="http://www.w3.org/2000/svg" 
+                width="18" 
+                height="18" 
+                viewBox="0 0 24 24" 
+                fill="none" 
+                stroke="currentColor" 
+                strokeWidth="2.5" 
+                strokeLinecap="round" 
+                strokeLinejoin="round"
+                className={isRefreshing ? "animate-spin text-blue-600" : ""}
+              >
+                <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                <path d="M22 10 16 12l3 5 3-7Z" />
+              </svg>
+              {isRefreshing ? "刷新中..." : "刷新画廊"}
             </button>
             <span className="text-xs font-black text-blue-600 bg-blue-50 px-5 py-2.5 rounded-full border border-blue-100 uppercase tracking-widest">
               {galleryImages.length} ITEMS

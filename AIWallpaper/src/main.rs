@@ -14,7 +14,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SetParent, SetWindowPos, GetWindowLongPtrA, SetWindowLongPtrA,
     GWL_EXSTYLE, WS_EX_TOOLWINDOW, WS_EX_NOACTIVATE,
     HWND_BOTTOM, SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE, SWP_SHOWWINDOW,
-    SystemParametersInfoW, SPI_GETDESKWALLPAPER,
 };
 use tokio::sync::mpsc;
 use tray_icon::{
@@ -30,6 +29,60 @@ use serde::{Deserialize, Serialize};
 use include_dir::{include_dir, Dir};
 
 static PRO_DIST: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/ui-pro/dist");
+
+/// 自定义资源协议处理器，支持从本地文件系统加载图片或从嵌入资源加载前端
+fn asset_protocol_handler(
+    request: &wry::http::Request<Vec<u8>>,
+    _app_data_dir: &PathBuf,
+    preview_path: &PathBuf,
+    is_pro: bool,
+) -> Result<Response<Cow<'static, [u8]>>, Box<dyn std::error::Error>> {
+    let uri = request.uri().to_string();
+    let path = request.uri().path();
+
+    // 1. 拦截预览图请求 (通用于所有窗口)
+    if uri.contains("current_wallpaper.png") {
+        return match fs::read(preview_path) {
+            Ok(bytes) => Ok(Response::builder()
+                .header(CONTENT_TYPE, "image/png")
+                .header("Cache-Control", "no-cache, no-store, must-revalidate")
+                .body(bytes.into())?),
+            Err(_) => Ok(Response::builder().status(StatusCode::NOT_FOUND).body(Vec::new().into())?),
+        };
+    }
+
+    // 2. 拦截本地绝对路径请求 (格式: asset://local/C:/path/to/img.png)
+    if uri.starts_with("asset://local/") {
+        let local_path_encoded = uri.replace("asset://local/", "");
+        let local_path = percent_encoding::percent_decode_str(&local_path_encoded).decode_utf8_lossy();
+        return match fs::read(PathBuf::from(local_path.as_ref())) {
+            Ok(bytes) => {
+                let mime = if local_path.ends_with(".png") { "image/png" } 
+                          else if local_path.ends_with(".jpg") || local_path.ends_with(".jpeg") { "image/jpeg" }
+                          else { "application/octet-stream" };
+                Ok(Response::builder().header(CONTENT_TYPE, mime).body(bytes.into())?)
+            },
+            Err(_) => Ok(Response::builder().status(StatusCode::NOT_FOUND).body(Vec::new().into())?),
+        };
+    }
+
+    // 3. 处理 Pro 版的前端资源加载 (仅限 Pro 窗口)
+    if is_pro {
+        let relative_path = if path == "/" || path == "" { "index.html" } else { path.trim_start_matches('/') };
+        return match PRO_DIST.get_file(relative_path) {
+            Some(file) => {
+                let mime = if relative_path.ends_with(".js") { "application/javascript" }
+                          else if relative_path.ends_with(".css") { "text/css" }
+                          else if relative_path.ends_with(".html") { "text/html" }
+                          else { "application/octet-stream" };
+                Ok(Response::builder().header(CONTENT_TYPE, mime).body(file.contents().to_vec().into())?)
+            }
+            None => Ok(Response::builder().status(StatusCode::NOT_FOUND).body(Vec::new().into())?),
+        };
+    }
+
+    Ok(Response::builder().status(StatusCode::NOT_FOUND).body(Vec::new().into())?)
+}
 
 mod api;
 mod platform;
@@ -149,6 +202,9 @@ fn load_window_icon() -> Result<tao::window::Icon, Box<dyn std::error::Error>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 首先尝试加载环境配置
+    dotenvy::dotenv().ok();
+    
     let platform_paths = platform::app_paths();
     // 1. 确保目录存在
     let _ = fs::create_dir_all(&platform_paths.app_data_dir);
@@ -182,7 +238,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 gallery_path: "".to_string(),
             })
     } else {
-        dotenvy::dotenv().ok();
         AppConfig { 
             api_key: std::env::var("ERNIE_API_KEY").unwrap_or_default(),
             enable_cache: false,
@@ -194,8 +249,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let config = Arc::new(Mutex::new(initial_config));
-    // 跟踪当前激活的面板模式（"lite" 或 "pro"）
-    let current_mode = Arc::new(Mutex::new("lite".to_string()));
+    // 跟踪当前激活的面板模式，优先从环境变量读取，默认为 lite
+    let default_window = std::env::var("DEFAULT_WINDOW").unwrap_or_else(|_| "lite".to_string());
+    println!("默认启动窗口模式: {}", default_window);
+    let current_mode = Arc::new(Mutex::new(default_window.clone()));
+    
     let mut event_loop = EventLoop::<AppEvent>::with_user_event();
     
     // 允许平台修改 EventLoop (macOS 必需)
@@ -251,6 +309,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 窗口图标
     let window_icon = load_window_icon().ok();
 
+    // 加载环境配置：判断是否为开发模式 (Tauri-like Dev)
+    let dev_mode = std::env::var("DEV_MODE").unwrap_or_default() == "1";
+    let dev_url = std::env::var("DEV_URL").unwrap_or_else(|_| "http://localhost:5173".into());
+
+    if dev_mode {
+        println!("🚀 开发模式已启动: 正在连接前端开发服务器 {}...", dev_url);
+    }
+
     // 1. 创建背景窗口 (WebView2 壁纸层)
     let bg_builder = WindowBuilder::new()
         .with_title("AIWallpaper Layer")
@@ -299,30 +365,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let bg_preview_image_path = app_data_dir.join("cache").join("current_wallpaper.png");
     let bg_preview_image_path_for_init = bg_preview_image_path.clone();
+    let app_data_dir_bg = app_data_dir.clone();
 
     let bg_webview = WebViewBuilder::new(bg_window)?
         .with_custom_protocol("aiwallpaper".into(), move |request| {
-            let request_path = request.uri().path();
-            let request_uri = request.uri().to_string();
-            if !request_path.contains("current_wallpaper.png") && !request_uri.contains("current_wallpaper.png") {
-                return Response::builder()
-                    .status(StatusCode::NOT_FOUND)
-                    .body(Cow::Owned(Vec::new()))
-                    .map_err(Into::into);
-            }
-
-            match fs::read(&bg_preview_image_path) {
-                Ok(bytes) => Response::builder()
-                    .status(StatusCode::OK)
-                    .header(CONTENT_TYPE, "image/png")
-                    .header("Cache-Control", "no-cache, no-store, must-revalidate")
-                    .body(Cow::Owned(bytes))
-                    .map_err(Into::into),
-                Err(_) => Response::builder()
-                    .status(StatusCode::NOT_FOUND)
-                    .body(Cow::Owned(Vec::new()))
-                    .map_err(Into::into),
-            }
+            asset_protocol_handler(request, &app_data_dir_bg, &bg_preview_image_path, false)
+                .map_err(|e| {
+                    eprintln!("Asset Protocol Error: {:?}", e);
+                    wry::Error::DuplicateCustomProtocol("aiwallpaper".to_string()) // 使用一个存在的错误类型
+                })
         })
         .with_transparent(true) // 尝试背景透明以减少合并问题
         .with_html(include_str!("../bg/index.html"))?
@@ -347,47 +398,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let control_window = WindowBuilder::new()
         .with_title("AIWallpaper 控制中心")
         .with_inner_size(tao::dpi::LogicalSize::new(500.0, 640.0))
-        .with_visible(false)
+        .with_visible(default_window == "lite")
         .with_window_icon(window_icon.clone())
         .build(&event_loop)?;
 
-    // 3. 创建 Pro 版窗口 (默认隐藏)
+    // 3. 创建 Pro 版窗口
     let pro_window = WindowBuilder::new()
         .with_title("AIWallpaper Pro")
         .with_inner_size(tao::dpi::LogicalSize::new(1200.0, 800.0))
-        .with_visible(false)
+        .with_visible(default_window == "pro")
         .with_window_icon(window_icon)
         .build(&event_loop)?;
 
     let preview_image_path = app_data_dir.join("cache").join("current_wallpaper.png");
     let preview_image_path_lite = preview_image_path.clone();
     let preview_image_path_pro = preview_image_path.clone();
+    let app_data_dir_lite = app_data_dir.clone();
+    let app_data_dir_pro = app_data_dir.clone();
 
     let (tx, mut rx) = mpsc::channel::<String>(32);
     let tx_pro = tx.clone();
     let control_webview = WebViewBuilder::new(control_window)?
         .with_custom_protocol("aiwallpaper".into(), move |request| {
-            let request_path = request.uri().path();
-            let request_uri = request.uri().to_string();
-            if !request_path.contains("current_wallpaper.png") && !request_uri.contains("current_wallpaper.png") {
-                return Response::builder()
-                    .status(StatusCode::NOT_FOUND)
-                    .body(Cow::Owned(Vec::new()))
-                    .map_err(Into::into);
-            }
-
-            match fs::read(&preview_image_path_lite) {
-                Ok(bytes) => Response::builder()
-                    .status(StatusCode::OK)
-                    .header(CONTENT_TYPE, "image/png")
-                    .header("Cache-Control", "no-cache, no-store, must-revalidate")
-                    .body(Cow::Owned(bytes))
-                    .map_err(Into::into),
-                Err(_) => Response::builder()
-                    .status(StatusCode::NOT_FOUND)
-                    .body(Cow::Owned(Vec::new()))
-                    .map_err(Into::into),
-            }
+            asset_protocol_handler(request, &app_data_dir_lite, &preview_image_path_lite, false)
+                .map_err(|e| {
+                    eprintln!("Control Asset Error: {:?}", e);
+                    wry::Error::DuplicateCustomProtocol("aiwallpaper".to_string())
+                })
         })
         .with_html(include_str!("../ui/index.html"))?
         .with_initialization_script(show_modal_script)
@@ -396,62 +433,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .build()?;
 
-    let pro_webview = WebViewBuilder::new(pro_window)?
+    let mut pro_webview_builder = WebViewBuilder::new(pro_window)?
         .with_custom_protocol("pro".into(), move |request| {
-            let path = request.uri().path();
-            let uri = request.uri().to_string();
+            asset_protocol_handler(request, &app_data_dir_pro, &preview_image_path_pro, true)
+                .map_err(|e| {
+                    eprintln!("Pro Asset Error: {:?}", e);
+                    wry::Error::DuplicateCustomProtocol("pro".to_string())
+                })
+        });
 
-            // 拦截图片预览请求
-            if path.contains("current_wallpaper.png") || uri.contains("current_wallpaper.png") {
-                match fs::read(&preview_image_path_pro) {
-                    Ok(bytes) => {
-                        return Response::builder()
-                            .status(StatusCode::OK)
-                            .header(CONTENT_TYPE, "image/png")
-                            .header("Cache-Control", "no-cache, no-store, must-revalidate")
-                            .body(Cow::Owned(bytes))
-                            .map_err(Into::into);
-                    }
-                    Err(_) => {
-                        return Response::builder()
-                            .status(StatusCode::NOT_FOUND)
-                            .body(Cow::Owned(Vec::new()))
-                            .map_err(Into::into);
-                    }
-                }
-            }
+    if dev_mode {
+        pro_webview_builder = pro_webview_builder.with_url(&dev_url)?;
+    } else {
+        pro_webview_builder = pro_webview_builder.with_url("pro://localhost/")?;
+    }
 
-            let relative_path = if path == "/" || path == "" {
-                "index.html"
-            } else {
-                path.trim_start_matches('/')
-            };
-
-            // 从编译时嵌入的 dist 目录中读取 React 产物
-            match PRO_DIST.get_file(relative_path) {
-                Some(file) => {
-                    let mime = if relative_path.ends_with(".js") {
-                        "application/javascript"
-                    } else if relative_path.ends_with(".css") {
-                        "text/css"
-                    } else if relative_path.ends_with(".html") {
-                        "text/html"
-                    } else {
-                        "application/octet-stream"
-                    };
-                    Response::builder()
-                        .status(StatusCode::OK)
-                        .header(CONTENT_TYPE, mime)
-                        .body(Cow::Owned(file.contents().to_vec()))
-                        .map_err(Into::into)
-                }
-                None => Response::builder()
-                    .status(StatusCode::NOT_FOUND)
-                    .body(Cow::Owned(Vec::new()))
-                    .map_err(Into::into),
-            }
-        })
-        .with_url("pro://localhost/")?
+    let pro_webview = pro_webview_builder
         .with_ipc_handler(move |_window, request| {
             let _ = tx_pro.try_send(request);
         })
