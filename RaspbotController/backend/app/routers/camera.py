@@ -4,6 +4,8 @@ import threading
 import queue
 import socket
 import struct
+import time
+import asyncio
 
 router = APIRouter(prefix="/api/v1/camera", tags=["Camera"])
 
@@ -92,15 +94,16 @@ async def stream():
     boundary = b"--frame"
 
     async def gen():
+        loop = asyncio.get_event_loop()
         last_frame = b""
         while True:
             try:
-                jpeg = _frame_queue.get(timeout=5)
+                jpeg = await loop.run_in_executor(None, lambda: _frame_queue.get(timeout=5))
                 if jpeg != last_frame:
                     last_frame = jpeg
                     header = b"\r\n" + boundary + b"\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n" % len(jpeg)
                     yield header + jpeg
             except queue.Empty:
-                pass
+                await asyncio.sleep(0.1)
 
     return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")

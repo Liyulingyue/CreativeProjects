@@ -3,6 +3,7 @@ import { Layout } from './components/Layout';
 import { RemotePage } from './pages/RemotePage';
 import { DashboardPage } from './pages/DashboardPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { FollowPage } from './pages/FollowPage';
 import './App.css';
 
 function App() {
@@ -11,7 +12,9 @@ function App() {
   const renderPage = () => {
     switch (activePage) {
       case 'remote':
-        return <RemotePage />;
+        return <RemotePage showCamera={activePage === 'remote'} />;
+      case 'follow':
+        return <FollowPage />;
       case 'dashboard':
         return <DashboardPage />;
       case 'settings':

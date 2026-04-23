@@ -9,19 +9,25 @@ pkill -f "camera_udp.py" || true
 pkill -f "buzzer_udp.py" || true
 pkill -f "distance_udp.py" || true
 pkill -f "led_udp.py" || true
+pkill -f "buzzer_udp.py" || true
+pkill -f "distance_udp.py" || true
+pkill -f "led_udp.py" || true
+pkill -f "uvicorn.*8000" || true
 sleep 1
 
+echo "Installing dependencies (if needed)..."
 if [ ! -d ".venv" ]; then
     echo "Creating virtual environment..."
     python3 -m venv .venv
+    . .venv/bin/activate
+    pip install -r requirements.txt
+elif [ "requirements.txt" -nt ".venv" ]; then
+    . .venv/bin/activate
+    pip install -r requirements.txt
 fi
 
-echo "Installing dependencies..."
-. .venv/bin/activate
-pip install -r requirements.txt
-
 echo "Starting Camera UDP Server..."
-nohup sudo /usr/bin/python3 "$SCRIPT_DIR/app/hardware/camera_udp.py" > /tmp/camera_udp.log 2>&1 &
+nohup sudo /usr/bin/python3 "$SCRIPT_DIR/scripts/camera_udp.py" > /tmp/camera_udp.log 2>&1 &
 echo "Camera UDP PID: $!"
 sleep 2
 
@@ -35,7 +41,7 @@ echo "Camera UDP started. Log:"
 tail -1 /tmp/camera_udp.log
 
 echo "Starting Buzzer UDP Server..."
-nohup sudo /usr/bin/python3 "$SCRIPT_DIR/app/hardware/buzzer_udp.py" > /tmp/buzzer_udp.log 2>&1 &
+nohup sudo /usr/bin/python3 "$SCRIPT_DIR/scripts/buzzer_udp.py" > /tmp/buzzer_udp.log 2>&1 &
 echo "Buzzer UDP PID: $!"
 sleep 1
 
@@ -48,7 +54,7 @@ else
 fi
 
 echo "Starting Distance UDP Server..."
-nohup sudo /usr/bin/python3 "$SCRIPT_DIR/app/hardware/distance_udp.py" > /tmp/distance_udp.log 2>&1 &
+nohup sudo /usr/bin/python3 "$SCRIPT_DIR/scripts/distance_udp.py" > /tmp/distance_udp.log 2>&1 &
 echo "Distance UDP PID: $!"
 sleep 1
 
@@ -61,7 +67,7 @@ else
 fi
 
 echo "Starting LED UDP Server..."
-nohup sudo /usr/bin/python3 "$SCRIPT_DIR/app/hardware/led_udp.py" > /tmp/led_udp.log 2>&1 &
+nohup sudo /usr/bin/python3 "$SCRIPT_DIR/scripts/led_udp.py" > /tmp/led_udp.log 2>&1 &
 echo "LED UDP PID: $!"
 sleep 1
 
@@ -74,4 +80,5 @@ else
 fi
 
 echo "Starting FastAPI..."
-python -m uvicorn app:create_app --host 0.0.0.0 --port 8000
+. .venv/bin/activate
+uvicorn app:create_app --host 0.0.0.0 --port 8000

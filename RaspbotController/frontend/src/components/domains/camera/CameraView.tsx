@@ -6,8 +6,7 @@ type CameraMode = 'snapshot' | 'stream';
 
 export const CameraView = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortedRef = useRef(false);
   const [enabled, setEnabled] = useState(true);
@@ -48,46 +47,14 @@ export const CameraView = () => {
       setConnected(false);
     }
     if (!abortedRef.current && enabled) {
-      pollTimerRef.current = setTimeout(fetchFrame, 300);
+      pollTimerRef.current = setTimeout(fetchFrame, 33);
     }
   }, [quality, enabled]);
-
-  const startStreamMode = useCallback(async () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-    }
-
-    try {
-      const video = videoRef.current;
-      if (!video) return;
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 480 },
-        audio: false,
-      });
-
-      streamRef.current = stream;
-      video.srcObject = stream;
-      await video.play();
-      setConnected(true);
-    } catch {
-      setConnected(false);
-      setMode('snapshot');
-    }
-  }, []);
-
-  const stopStreamMode = useCallback(() => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-    }
-  }, []);
 
   useEffect(() => {
     abortedRef.current = true;
     stopFetching();
-    stopStreamMode();
-  }, [stopFetching, stopStreamMode]);
+  }, [stopFetching]);
 
   useEffect(() => {
     if (!enabled) {
@@ -101,29 +68,15 @@ export const CameraView = () => {
 
     if (mode === 'snapshot') {
       fetchFrame();
-    } else {
-      startStreamMode();
     }
 
     return () => {
       abortedRef.current = true;
       if (mode === 'snapshot') {
         stopFetching();
-      } else {
-        stopStreamMode();
       }
     };
-  }, [enabled, mode, quality, fetchFrame, startStreamMode, stopFetching, stopStreamMode]);
-
-  useEffect(() => {
-    return () => {
-      abortedRef.current = true;
-      stopFetching();
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
-      }
-    };
-  }, [stopFetching]);
+  }, [enabled, mode, quality, fetchFrame, stopFetching]);
 
   const toggleCamera = useCallback(() => {
     setEnabled(prev => !prev);
@@ -190,7 +143,7 @@ export const CameraView = () => {
         {mode === 'snapshot' ? (
           <canvas ref={canvasRef} />
         ) : (
-          <video ref={videoRef} playsInline muted />
+          <img ref={imgRef} src={cameraApi.getStreamUrl()} alt="Camera Stream" />
         )}
         {!enabled && (
           <div className="camera-overlay">
