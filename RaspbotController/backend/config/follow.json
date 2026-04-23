@@ -1,0 +1,8 @@
+{
+  "zone_near": 20,
+  "zone_hold_max": 50,
+  "zone_approach": 100,
+  "zone_far": 120,
+  "speed": 35,
+  "scan_interval": 3
+}

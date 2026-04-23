@@ -67,16 +67,13 @@ def main():
             jpeg = jpeg_encode(frame, quality)
             header = make_frame_header(seq, len(jpeg))
             packet = header + jpeg
-            # Use public IP or explicitly different than 127.0.0.1 if 127.0.0.1 is failing
-            # But normally 127.0.0.1 should work. Let's try sending to localhost.
             try:
                 sock.sendto(packet, ("127.0.0.1", port))
-                if seq % 10 == 0:
-                    print(f"[camera_udp] Sent frame {seq}, size={len(jpeg)} bytes to 127.0.0.1:{port}", flush=True)
+                if seq % 30 == 0:
+                    print(f"[camera_udp] Sent frame {seq}, size={len(jpeg)} bytes", flush=True)
             except Exception as e:
                 print(f"[camera_udp] Send error: {e}", flush=True)
             seq = (seq + 1) % 65536
-            time.sleep(0.1)
     except KeyboardInterrupt:
         pass
     finally:

@@ -7,7 +7,7 @@ import { DistanceSensor } from '../components/domains/distance';
 import { LEDControl } from '../components/domains/led';
 import '../App.css';
 
-export const RemotePage = () => {
+export const RemotePage = ({ showCamera = true }: { showCamera?: boolean }) => {
   return (
     <div className="page">
       <div className="page-header">
@@ -19,7 +19,7 @@ export const RemotePage = () => {
 
       <div className="content-grid">
         <div className="left-panel">
-          <CameraView />
+          {showCamera && <CameraView />}
           <ServoControl />
           <DistanceSensor />
         </div>

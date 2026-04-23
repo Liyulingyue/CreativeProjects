@@ -70,19 +70,45 @@ export const carApi = {
   },
 
   buzzer: async (params: BuzzerParams): Promise<BuzzerResponse> => {
-    const response = await apiClient.post<BuzzerResponse>('/car/buzzer', params);
+    const response = await apiClient.post<BuzzerResponse>('/buzzer/', params);
     return response.data;
   },
 
   getDistance: async (): Promise<{ status: string; distance: number }> => {
-    const response = await apiClient.get<{ status: string; distance: number }>('/car/distance');
+    const response = await apiClient.get<{ status: string; distance: number }>('/distance/');
     return response.data;
   },
 
   led: async (action: string, led: number): Promise<{ status: string; action: string; led: number }> => {
-    const response = await apiClient.post<{ status: string; action: string; led: number }>('/car/led', null, {
-      params: { action, led },
+    const response = await apiClient.post<{ status: string; action: string; led: number }>('/led/', {
+      action,
+      led,
     });
+    return response.data;
+  },
+
+  followStart: async (): Promise<{ status: string }> => {
+    const response = await apiClient.post<{ status: string }>('/follow/start');
+    return response.data;
+  },
+
+  followStop: async (): Promise<{ status: string }> => {
+    const response = await apiClient.post<{ status: string }>('/follow/stop');
+    return response.data;
+  },
+
+  followStatus: async (): Promise<{ status: string; zone: string; distance: number }> => {
+    const response = await apiClient.get<{ status: string; zone: string; distance: number }>('/follow/status');
+    return response.data;
+  },
+
+  followConfig: async (): Promise<object> => {
+    const response = await apiClient.get<object>('/follow/config');
+    return response.data;
+  },
+
+  followConfigUpdate: async (cfg: object): Promise<object> => {
+    const response = await apiClient.put<object>('/follow/config', cfg);
     return response.data;
   },
 };
