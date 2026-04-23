@@ -127,7 +127,8 @@ function App() {
       cache_limit: cacheLimit,
       auto_refresh_hours: autoRefreshHours,
       auto_prompt: autoPrompt,
-      gallery_path: galleryPath
+      gallery_path: galleryPath,
+      image_size: imageSize
     });
     setStatusMsg("配置已同步");
     setTimeout(() => setStatusMsg(""), 2000);

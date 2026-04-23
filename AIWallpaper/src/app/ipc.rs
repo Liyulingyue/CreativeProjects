@@ -169,6 +169,41 @@ pub async fn handle_message(msg_raw: &str, ctx: &IpcContext) {
                     let _ = proxy_del.send_event(AppEvent::GalleryLoaded(images));
                 });
             }
+            "delete_images" => {
+                // msg.value expected to be a JSON array of filenames
+                if let Ok(file_list) = serde_json::from_str::<Vec<String>>(&msg.value) {
+                    let cfg = ctx.config.lock().unwrap().clone();
+                    let app_data_dir_del = ctx.app_data_dir.clone();
+                    let proxy_del = ctx.proxy.clone();
+                    tokio::spawn(async move {
+                        let gallery_dir = export_image_dir(&app_data_dir_del, &cfg);
+                        for fname in file_list.iter() {
+                            let _ = fs::remove_file(gallery_dir.join(fname));
+                        }
+                        // 删除后重新加载画廊
+                        let mut images = Vec::new();
+                        if let Ok(entries) = fs::read_dir(gallery_dir) {
+                            for entry in entries.flatten() {
+                                let path = entry.path();
+                                if path.is_file() && path.extension().is_some_and(|ext| ext == "png") {
+                                    let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+                                    if let Ok(bytes) = fs::read(&path) {
+                                        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+                                        images.push(serde_json::json!({
+                                            "name": fname,
+                                            "data": format!("data:image/png;base64,{}", b64)
+                                        }));
+                                    }
+                                }
+                            }
+                        }
+                        images.sort_by(|a, b| b["name"].as_str().cmp(&a["name"].as_str()));
+                        let _ = proxy_del.send_event(AppEvent::GalleryLoaded(images));
+                    });
+                } else {
+                    eprintln!("delete_images payload parse error: {}", msg.value);
+                }
+            }
             _ => {
                 eprintln!("收到未知的 IPC 指令: {}", msg.msg_type);
             }

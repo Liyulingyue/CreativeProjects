@@ -11,6 +11,8 @@ const GalleryPage: React.FC<GalleryPageProps> = ({ galleryImages, sendIpc, galle
   const displayPath = galleryPath || "Pictures/AIWallpaper";
   const [confirmDeleteName, setConfirmDeleteName] = useState<string | null>(null);
   const [applyingName, setApplyingName] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Record<string, boolean>>({});
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState<string[] | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const handleRefresh = () => {
@@ -33,6 +35,31 @@ const GalleryPage: React.FC<GalleryPageProps> = ({ galleryImages, sendIpc, galle
             <p className="text-slate-400 font-medium mt-2 italic shadow-slate-100">记录您的每一次灵感瞬间 (本地路径: {displayPath})</p>
           </div>
           <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <label className="text-sm text-slate-500">已选: <span className="font-black text-blue-600">{Object.values(selected).filter(Boolean).length}</span></label>
+              <button
+                onClick={() => {
+                  const allSelected = galleryImages.every(img => selected[img.name]);
+                  if (allSelected) {
+                    setSelected({});
+                  } else {
+                    const next: Record<string, boolean> = {};
+                    galleryImages.forEach(img => next[img.name] = true);
+                    setSelected(next);
+                  }
+                }}
+                className="px-3 py-2 bg-slate-50 hover:bg-slate-100 rounded-2xl border border-slate-200 text-sm"
+              >全选/反选</button>
+              <button
+                onClick={() => {
+                  const names = galleryImages.filter(img => selected[img.name]).map(img => img.name);
+                  if (names.length === 0) return;
+                  setConfirmBulkDelete(names);
+                }}
+                className="px-3 py-2 bg-red-500 text-white rounded-2xl hover:bg-red-600 disabled:opacity-50"
+                disabled={Object.values(selected).filter(Boolean).length === 0}
+              >删除所选</button>
+            </div>
             <button 
               onClick={handleRefresh}
               disabled={isRefreshing}
@@ -77,6 +104,14 @@ const GalleryPage: React.FC<GalleryPageProps> = ({ galleryImages, sendIpc, galle
             const imgSrc = imgObj.data;
             return (
               <div key={i} className="group relative bg-white rounded-[2.5rem] overflow-hidden border border-slate-200 shadow-xl hover:shadow-[0_30px_60px_-15px_rgba(0,0,0,0.15)] hover:-translate-y-3 transition-all duration-700">
+                <input
+                  type="checkbox"
+                  checked={!!selected[fileName]}
+                  onChange={(e) => {
+                    setSelected(prev => ({ ...prev, [fileName]: e.target.checked }));
+                  }}
+                  className="absolute left-4 top-4 z-20 w-5 h-5 rounded border-2 border-white bg-white/60 backdrop-blur"
+                />
                 <div className="aspect-video relative overflow-hidden">
                   <img 
                     src={imgSrc} 
@@ -162,6 +197,44 @@ const GalleryPage: React.FC<GalleryPageProps> = ({ galleryImages, sendIpc, galle
               onClick={() => {
                 sendIpc("delete_image", confirmDeleteName);
                 setConfirmDeleteName(null);
+              }}
+              className="flex-1 py-3 bg-red-500 hover:bg-red-600 text-white rounded-2xl font-bold transition-all"
+            >
+              确认删除
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    {/* 批量删除确认 Modal */}
+    {confirmBulkDelete && (
+      <div
+        className="fixed inset-0 z-[210] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center animate-in fade-in duration-200"
+        onClick={() => setConfirmBulkDelete(null)}
+      >
+        <div
+          className="bg-white rounded-[2rem] p-8 shadow-2xl max-w-sm w-full mx-6 animate-in zoom-in-95 duration-200"
+          onClick={e => e.stopPropagation()}
+        >
+          <div className="text-center mb-6">
+            <div className="mx-auto w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mb-4">
+              <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-red-500"><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /></svg>
+            </div>
+            <h3 className="text-xl font-black text-slate-900 mb-2">确认删除所选</h3>
+            <p className="text-slate-400 text-sm leading-relaxed">将从磁盘永久移除 {confirmBulkDelete.length} 张壁纸，无法恢复。</p>
+          </div>
+          <div className="flex gap-3">
+            <button
+              onClick={() => setConfirmBulkDelete(null)}
+              className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-2xl font-bold transition-all"
+            >
+              取消
+            </button>
+            <button
+              onClick={() => {
+                sendIpc("delete_images", confirmBulkDelete);
+                setConfirmBulkDelete(null);
+                setSelected({});
               }}
               className="flex-1 py-3 bg-red-500 hover:bg-red-600 text-white rounded-2xl font-bold transition-all"
             >
