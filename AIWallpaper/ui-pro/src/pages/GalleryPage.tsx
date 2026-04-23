@@ -35,31 +35,6 @@ const GalleryPage: React.FC<GalleryPageProps> = ({ galleryImages, sendIpc, galle
             <p className="text-slate-400 font-medium mt-2 italic shadow-slate-100">记录您的每一次灵感瞬间 (本地路径: {displayPath})</p>
           </div>
           <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <label className="text-sm text-slate-500">已选: <span className="font-black text-blue-600">{Object.values(selected).filter(Boolean).length}</span></label>
-              <button
-                onClick={() => {
-                  const allSelected = galleryImages.every(img => selected[img.name]);
-                  if (allSelected) {
-                    setSelected({});
-                  } else {
-                    const next: Record<string, boolean> = {};
-                    galleryImages.forEach(img => next[img.name] = true);
-                    setSelected(next);
-                  }
-                }}
-                className="px-3 py-2 bg-slate-50 hover:bg-slate-100 rounded-2xl border border-slate-200 text-sm"
-              >全选/反选</button>
-              <button
-                onClick={() => {
-                  const names = galleryImages.filter(img => selected[img.name]).map(img => img.name);
-                  if (names.length === 0) return;
-                  setConfirmBulkDelete(names);
-                }}
-                className="px-3 py-2 bg-red-500 text-white rounded-2xl hover:bg-red-600 disabled:opacity-50"
-                disabled={Object.values(selected).filter(Boolean).length === 0}
-              >删除所选</button>
-            </div>
             <button 
               onClick={handleRefresh}
               disabled={isRefreshing}
@@ -102,55 +77,88 @@ const GalleryPage: React.FC<GalleryPageProps> = ({ galleryImages, sendIpc, galle
           {galleryImages.map((imgObj, i) => {
             const fileName = imgObj.name;
             const imgSrc = imgObj.data;
+            const isSelected = !!selected[fileName];
             return (
-              <div key={i} className="group relative bg-white rounded-[2.5rem] overflow-hidden border border-slate-200 shadow-xl hover:shadow-[0_30px_60px_-15px_rgba(0,0,0,0.15)] hover:-translate-y-3 transition-all duration-700">
-                <input
-                  type="checkbox"
-                  checked={!!selected[fileName]}
-                  onChange={(e) => {
-                    setSelected(prev => ({ ...prev, [fileName]: e.target.checked }));
-                  }}
-                  className="absolute left-4 top-4 z-20 w-5 h-5 rounded border-2 border-white bg-white/60 backdrop-blur"
-                />
+              <div 
+                key={i} 
+                onClick={() => {
+                  if (Object.values(selected).some(Boolean)) {
+                    setSelected(prev => ({ ...prev, [fileName]: !isSelected }));
+                  }
+                }}
+                className={`group relative bg-white rounded-[2.5rem] overflow-hidden border transition-all duration-700 ${
+                  isSelected 
+                    ? "border-blue-500 ring-4 ring-blue-500/10 shadow-2xl scale-[0.98]" 
+                    : "border-slate-200 shadow-xl hover:shadow-[0_30px_60px_-15px_rgba(0,0,0,0.15)] hover:-translate-y-3"
+                }`}
+              >
+                <div className="absolute left-6 top-6 z-20">
+                  <div 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelected(prev => ({ ...prev, [fileName]: !isSelected }));
+                    }}
+                    className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all cursor-pointer ${
+                      isSelected ? "bg-blue-600 border-blue-600 shadow-lg" : "bg-white/40 backdrop-blur-md border-white/60 group-hover:bg-white"
+                    }`}
+                  >
+                    {isSelected && (
+                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                    )}
+                  </div>
+                </div>
                 <div className="aspect-video relative overflow-hidden">
                   <img 
                     src={imgSrc} 
                     className="w-full h-full object-cover transition-transform duration-1000 group-hover:scale-110" 
                     alt={`Gallery ${i}`} 
                   />
-                  <div className="absolute inset-0 bg-slate-900/60 opacity-0 group-hover:opacity-100 transition-all duration-500 flex items-center justify-center gap-3 backdrop-blur-[2px]">
-                    <button 
-                      onClick={() => onZoom(imgSrc)}
-                      className="p-3 bg-white/20 hover:bg-white/40 text-white rounded-2xl shadow-2xl transition-all border border-white/20 font-black text-sm flex flex-col items-center gap-1.5 min-w-[56px]"
-                      title="放大预览"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /><line x1="11" y1="8" x2="11" y2="14" /><line x1="8" y1="11" x2="14" y2="11" /></svg>
-                      <span>预览</span>
-                    </button>
-                    <button 
-                      onClick={() => {
-                        setApplyingName(fileName);
-                        sendIpc("set_wallpaper", fileName);
-                        setTimeout(() => setApplyingName(null), 3000);
-                      }}
-                      className="p-3 bg-white rounded-2xl text-slate-900 shadow-2xl hover:scale-105 active:scale-95 transition-all font-black text-sm flex flex-col items-center gap-1.5 min-w-[56px]"
-                      title="设为壁纸"
-                    >
-                      {applyingName === fileName ? (
-                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
-                      ) : (
-                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="14" x="2" y="3" rx="2" /><line x1="8" x2="16" y1="21" y2="21" /><line x1="12" x2="12" y1="17" y2="21" /></svg>
-                      )}
-                      <span>{applyingName === fileName ? "应用中" : "应用"}</span>
-                    </button>
-                    <button 
-                      onClick={() => setConfirmDeleteName(fileName)}
-                      className="p-3 bg-red-500/90 text-white rounded-2xl shadow-2xl hover:scale-105 hover:bg-red-600 active:scale-95 transition-all font-black text-sm flex flex-col items-center gap-1.5 min-w-[56px]"
-                      title="从磁盘中彻底移除"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /></svg>
-                      <span>删除</span>
-                    </button>
+                  <div className={`absolute inset-0 bg-slate-900/60 transition-all duration-500 flex items-center justify-center gap-3 backdrop-blur-[2px] ${isSelected ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}>
+                    {!isSelected && (
+                      <>
+                        <button 
+                          onClick={(e) => { e.stopPropagation(); onZoom(imgSrc); }}
+                          className="p-3 bg-white/20 hover:bg-white/40 text-white rounded-2xl shadow-2xl transition-all border border-white/20 font-black text-sm flex flex-col items-center gap-1.5 min-w-[56px]"
+                          title="放大预览"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /><line x1="11" y1="8" x2="11" y2="14" /><line x1="8" y1="11" x2="14" y2="11" /></svg>
+                          <span>预览</span>
+                        </button>
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setApplyingName(fileName);
+                            sendIpc("set_wallpaper", fileName);
+                            setTimeout(() => setApplyingName(null), 3000);
+                          }}
+                          className="p-3 bg-white rounded-2xl text-slate-900 shadow-2xl hover:scale-105 active:scale-95 transition-all font-black text-sm flex flex-col items-center gap-1.5 min-w-[56px]"
+                          title="设为壁纸"
+                        >
+                          {applyingName === fileName ? (
+                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                          ) : (
+                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="14" x="2" y="3" rx="2" /><line x1="8" x2="16" y1="21" y2="21" /><line x1="12" x2="12" y1="17" y2="21" /></svg>
+                          )}
+                          <span>{applyingName === fileName ? "应用中" : "应用"}</span>
+                        </button>
+                        <button 
+                          onClick={(e) => { e.stopPropagation(); setConfirmDeleteName(fileName); }}
+                          className="p-3 bg-red-500/90 text-white rounded-2xl shadow-2xl hover:scale-105 hover:bg-red-600 active:scale-95 transition-all font-black text-sm flex flex-col items-center gap-1.5 min-w-[56px]"
+                          title="从磁盘中彻底移除"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /></svg>
+                          <span>删除</span>
+                        </button>
+                      </>
+                    )}
+                    {isSelected && (
+                      <div className="flex flex-col items-center text-white">
+                        <div className="bg-blue-600 rounded-full p-2 mb-2">
+                           <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                        </div>
+                        <span className="font-black text-xs uppercase tracking-tighter">Selected</span>
+                      </div>
+                    )}
                   </div>
                 </div>
                 <div className="p-6 bg-white flex items-center justify-between border-t border-slate-50">
@@ -169,7 +177,62 @@ const GalleryPage: React.FC<GalleryPageProps> = ({ galleryImages, sendIpc, galle
       )}
     </div>
 
-    {/* 删除确认 Modal */}
+      {/* 底部悬浮工具栏 */}
+      {Object.values(selected).some(Boolean) && (
+        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[100] animate-in slide-in-from-bottom-10 fade-in duration-500">
+          <div className="bg-slate-900/90 backdrop-blur-xl border border-white/10 px-8 py-4 rounded-[3rem] shadow-[0_20px_50px_rgba(0,0,0,0.3)] flex items-center gap-8 text-white min-w-[400px]">
+            <div className="flex items-center gap-3">
+              <span className="flex items-center justify-center bg-blue-600 w-8 h-8 rounded-full font-black text-sm">
+                {Object.values(selected).filter(Boolean).length}
+              </span>
+              <span className="text-slate-300 font-bold tracking-wide">项已选中</span>
+            </div>
+            
+            <div className="h-8 w-px bg-white/10" />
+
+            <div className="flex items-center gap-4">
+              <button
+                onClick={() => {
+                  const allSelected = galleryImages.every(img => selected[img.name]);
+                  if (allSelected) {
+                    setSelected({});
+                  } else {
+                    const next: Record<string, boolean> = {};
+                    galleryImages.forEach(img => next[img.name] = true);
+                    setSelected(next);
+                  }
+                }}
+                className="px-4 py-2 hover:bg-white/10 rounded-2xl transition-all font-bold text-sm flex items-center gap-2"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m9 11 3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+                {galleryImages.every(img => selected[img.name]) ? "取消全选" : "全选全部"}
+              </button>
+
+              <button
+                onClick={() => {
+                  const names = galleryImages.filter(img => selected[img.name]).map(img => img.name);
+                  if (names.length === 0) return;
+                  setConfirmBulkDelete(names);
+                }}
+                className="px-6 py-2 bg-red-500 hover:bg-red-600 rounded-2xl transition-all font-black text-sm flex items-center gap-2 shadow-lg shadow-red-500/20"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /></svg>
+                批量删除
+              </button>
+
+              <button
+                onClick={() => setSelected({})}
+                className="p-2 hover:bg-white/10 rounded-full transition-all text-slate-400 hover:text-white"
+                title="关闭选择状态"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 删除确认 Modal */}
     {confirmDeleteName && (
       <div
         className="fixed inset-0 z-[200] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center animate-in fade-in duration-200"
