@@ -27,6 +27,10 @@ pub struct IpcMessage {
     pub value: String,
     #[serde(default)]
     pub size: Option<String>,
+    #[serde(default)]
+    pub data: Option<String>, // 用于传递 Base64 图片数据
+    #[serde(default)]
+    pub set_as_wallpaper: Option<bool>, // 是否设为壁纸
 }
 
 pub enum AppEvent {
@@ -38,4 +42,5 @@ pub enum AppEvent {
     Error(String),
     SwitchMode(String),
     GalleryLoaded(Vec<serde_json::Value>),
+    ToggleDrawing(bool),
 }

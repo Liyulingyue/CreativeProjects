@@ -5,9 +5,10 @@ interface GalleryPageProps {
   sendIpc: (cmd: string, arg?: any) => void;
   galleryPath: string;
   onZoom: (url: string) => void;
+  onEdit: (url: string) => void;
 }
 
-const GalleryPage: React.FC<GalleryPageProps> = ({ galleryImages, sendIpc, galleryPath, onZoom }) => {
+const GalleryPage: React.FC<GalleryPageProps> = ({ galleryImages, sendIpc, galleryPath, onZoom, onEdit }) => {
   const displayPath = galleryPath || "Pictures/AIWallpaper";
   const [confirmDeleteName, setConfirmDeleteName] = useState<string | null>(null);
   const [applyingName, setApplyingName] = useState<string | null>(null);
@@ -116,6 +117,14 @@ const GalleryPage: React.FC<GalleryPageProps> = ({ galleryImages, sendIpc, galle
                   <div className={`absolute inset-0 bg-slate-900/60 transition-all duration-500 flex items-center justify-center gap-3 backdrop-blur-[2px] ${isSelected ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}>
                     {!isSelected && (
                       <>
+                        <button 
+                          onClick={(e) => { e.stopPropagation(); onEdit(imgSrc); }}
+                          className="p-3 bg-white/20 hover:bg-white/40 text-white rounded-2xl shadow-2xl transition-all border border-white/20 font-black text-sm flex flex-col items-center gap-1.5 min-w-[56px]"
+                          title="编辑图片"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                          <span>编辑</span>
+                        </button>
                         <button 
                           onClick={(e) => { e.stopPropagation(); onZoom(imgSrc); }}
                           className="p-3 bg-white/20 hover:bg-white/40 text-white rounded-2xl shadow-2xl transition-all border border-white/20 font-black text-sm flex flex-col items-center gap-1.5 min-w-[56px]"

@@ -4,6 +4,7 @@ import CreatePage from "./pages/CreatePage";
 import GalleryPage from "./pages/GalleryPage";
 import TasksPage from "./pages/TasksPage";
 import SettingsPage from "./pages/SettingsPage";
+import ImageEditorModal from "./components/ImageEditorModal";
 
 const prompts = [
   "Cyberpunk city at night, neon lights, rain on pavement, cinematic lighting, 8k resolution",
@@ -18,6 +19,7 @@ const prompts = [
 
 function App() {
   const [activeTab, setActiveTab] = useState("create");
+  const [editingImageUrl, setEditingImageUrl] = useState("");
   const [prompt, setPrompt] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
@@ -80,6 +82,8 @@ function App() {
     // @ts-ignore
     window.onImageSaved = (path: string) => {
       setStatusMsg("✅ 成功存入画廊并应用为壁纸");
+      sendIpc("get_gallery");
+      setActiveTab("gallery");
       setTimeout(() => setStatusMsg(""), 5000);
     };
 
@@ -167,7 +171,38 @@ function App() {
               setViewerUrl(url);
               setShowViewer(true);
             }}
+            onEdit={(url) => {
+                setEditingImageUrl(url);
+                setActiveTab("edit");
+            }}
           />
+        )}
+
+        {activeTab === "edit" && (
+            <div className="h-[calc(100vh-200px)] relative overflow-hidden rounded-3xl border border-slate-200 bg-white">
+                {editingImageUrl ? (
+                    <ImageEditorModal 
+                        imageUrl={editingImageUrl}
+                        isTabMode={true}
+                        onSave={(data, asWallpaper) => {
+                            sendIpc("save_edited_image", { data, set_as_wallpaper: asWallpaper });
+                            setStatusMsg(asWallpaper ? "正在保存并更新壁纸..." : "正在保存到画廊...");
+                        }}
+                        onCancel={() => setActiveTab("gallery")}
+                    />
+                ) : (
+                    <div className="flex flex-col items-center justify-center h-full text-slate-400 space-y-4">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                        <p className="font-medium text-lg">请先在画廊中选择一张图片进行编辑</p>
+                        <button 
+                            onClick={() => setActiveTab("gallery")}
+                            className="px-6 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors shadow-lg shadow-blue-500/20"
+                        >
+                            去画廊看看
+                        </button>
+                    </div>
+                )}
+            </div>
         )}
 
         {activeTab === "tasks" && (

@@ -6,7 +6,8 @@
     <title>AI Wallpaper Layer</title>
     <style>
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background-color: #050a1a; }
-        #canvas { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; transition: opacity 2s ease; }
+        #canvas { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; transition: opacity 2s ease; pointer-events: none; }
+        #drawCanvas { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 5; background: transparent; cursor: crosshair; display: none; }
         .brand-overlay {
             position: absolute; inset: 0; display: flex; flex-direction: column; 
             align-items: center; justify-content: center; z-index: 2;
@@ -31,6 +32,7 @@
 </head>
 <body>
     <canvas id="canvas"></canvas>
+    <canvas id="drawCanvas"></canvas>
     <div id="brand" class="brand-overlay">
         <h1>AIWallpaper</h1>
         <p>Connecting Creativity with Intelligence</p>
@@ -91,7 +93,55 @@
         initCanvas();
         createParticles();
         animate();
-        window.addEventListener('resize', initCanvas);
+
+        // --- 绘制功能实现 ---
+        const drawCanvas = document.getElementById('drawCanvas');
+        const drawCtx = drawCanvas.getContext('2d');
+        let isDrawing = false;
+        let lastX = 0;
+        let lastY = 0;
+
+        function initDrawCanvas() {
+            drawCanvas.width = window.innerWidth;
+            drawCanvas.height = window.innerHeight;
+            drawCtx.lineCap = 'round';
+            drawCtx.lineJoin = 'round';
+            drawCtx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+            drawCtx.lineWidth = 5;
+        }
+
+        window.toggleDrawingMode = function(enabled) {
+            drawCanvas.style.display = enabled ? 'block' : 'none';
+            if (enabled) {
+                initDrawCanvas();
+            }
+        };
+
+        window.clearDrawing = function() {
+            drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+        };
+
+        drawCanvas.addEventListener('mousedown', (e) => {
+            isDrawing = true;
+            [lastX, lastY] = [e.offsetX, e.offsetY];
+        });
+
+        drawCanvas.addEventListener('mousemove', (e) => {
+            if (!isDrawing) return;
+            drawCtx.beginPath();
+            drawCtx.moveTo(lastX, lastY);
+            drawCtx.lineTo(e.offsetX, e.offsetY);
+            drawCtx.stroke();
+            [lastX, lastY] = [e.offsetX, e.offsetY];
+        });
+
+        drawCanvas.addEventListener('mouseup', () => isDrawing = false);
+        drawCanvas.addEventListener('mouseout', () => isDrawing = false);
+
+        window.addEventListener('resize', () => {
+            initCanvas();
+            initDrawCanvas();
+        });
 
         let currentIdx = 1;
         window.setWallpaper = function(url, promptText) {

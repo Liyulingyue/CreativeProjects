@@ -16,7 +16,13 @@ const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, sendIpc }) => 
                 <span className="font-bold text-xl tracking-tight text-slate-900">AIWallpaper <span className="text-blue-600 text-[10px] font-bold ml-1 px-1.5 py-0.5 rounded bg-blue-50 border border-blue-100 uppercase align-middle">PRO</span></span>
             </div>
             <nav className="flex items-center gap-1 bg-slate-100 p-1 rounded-2xl border border-slate-200 shadow-inner">
-                {[{ id: "create", label: "创作" }, { id: "gallery", label: "画廊" }, { id: "tasks", label: "自动化" }, { id: "settings", label: "设置" }].map(tab => (
+                {[
+                    { id: "create", label: "创作" }, 
+                    { id: "gallery", label: "画廊" }, 
+                    { id: "edit", label: "编辑" },
+                    { id: "tasks", label: "自动化" }, 
+                    { id: "settings", label: "设置" }
+                ].map(tab => (
                     <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`px-5 py-2 rounded-xl text-sm font-semibold transition-all duration-300 ${activeTab === tab.id ? "bg-white text-blue-600 shadow-sm border border-slate-200" : "text-slate-500 hover:text-slate-800 hover:bg-white/50"}`}>{tab.label}</button>
                 ))}
             </nav>

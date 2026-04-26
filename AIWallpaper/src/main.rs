@@ -14,6 +14,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SetParent, SetWindowPos, GetWindowLongPtrA, SetWindowLongPtrA,
     GWL_EXSTYLE, WS_EX_TOOLWINDOW, WS_EX_NOACTIVATE,
     HWND_BOTTOM, SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE, SWP_SHOWWINDOW,
+    SWP_FRAMECHANGED, SWP_NOZORDER,
 };
 use tokio::sync::mpsc;
 use tray_icon::{
@@ -436,6 +437,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Event::UserEvent(app_event) => {
                 match app_event {
+                    AppEvent::ToggleDrawing(enabled) => {
+                        let bg_hwnd = bg_webview.window().hwnd() as isize;
+                        #[cfg(target_os = "windows")]
+                        unsafe {
+                            use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrA, SetWindowLongPtrA, GWL_EXSTYLE, WS_EX_TRANSPARENT, WS_EX_LAYERED};
+                            let mut ex_style = GetWindowLongPtrA(bg_hwnd, GWL_EXSTYLE);
+                            if enabled {
+                                // 开启绘制：移除透明击穿，允许接收鼠标事件
+                                ex_style &= !WS_EX_TRANSPARENT as isize;
+                            } else {
+                                // 关闭绘制：增加透明击穿，鼠标点击桌面图标
+                                ex_style |= WS_EX_TRANSPARENT as isize;
+                            }
+                            SetWindowLongPtrA(bg_hwnd, GWL_EXSTYLE, ex_style);
+                        }
+                        // 同时通知网页端切换模式
+                        let _ = bg_webview.evaluate_script(&format!("if(window.toggleDrawingMode) window.toggleDrawingMode({});", enabled));
+                    }
                     AppEvent::Ready => {
                         // 只显示当前激活模式的窗口（避免 Pro 初始化时误弹 Lite）
                         let mode = current_mode.lock().unwrap().clone();
@@ -455,7 +474,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         );
                         let _ = control_webview.evaluate_script(&js);
                         let _ = pro_webview.evaluate_script(&js);
-                    }
                     AppEvent::Minimize => {
                         // 最小化 = 隐藏到托盘（两个窗口都隐藏）
                         control_webview.window().set_visible(false);

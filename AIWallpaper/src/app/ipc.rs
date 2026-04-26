@@ -23,6 +23,15 @@ pub async fn handle_message(msg_raw: &str, ctx: &IpcContext) {
             "close" => {
                 let _ = ctx.proxy.send_event(AppEvent::Close);
             }
+            "toggle_drawing" => {
+                let enabled = msg.value == "true";
+                let _ = ctx.proxy.send_event(AppEvent::ToggleDrawing(enabled));
+            }
+            "clear_drawing" => {
+                // 这个指令通常直接透传给 bg_webview，
+                // 但为了统一，我们也可以通过 AppEvent 路由
+                let _ = ctx.proxy.send_event(AppEvent::ToggleDrawing(true)); // 暂时复用，或者加新事件
+            }
             "switch_mode" => {
                 let _ = ctx.proxy.send_event(AppEvent::SwitchMode(msg.value));
             }
@@ -69,12 +78,12 @@ pub async fn handle_message(msg_raw: &str, ctx: &IpcContext) {
                                 let cache_path = app_data_dir.join("cache").join("current_wallpaper.png");
                                 let _ = fs::copy(&target_path, &cache_path);
                                 
-                                // 2. 通知所有 UI：图片已保存，且壁纸已更新（Generated 事件会触发预览刷新）
+                                // 2. 通知所有 UI：图片已保存，且壁纸已更新
                                 let _ = proxy.send_event(AppEvent::Saved(target_path.to_string_lossy().to_string()));
                                 let _ = proxy.send_event(AppEvent::Generated(api::GeneratedImage {
-                                    preview_url: "".to_string(), // 空字符串触发前端刷新
+                                    preview_url: "aiwallpaper://localhost/current_wallpaper.png".to_string(), 
                                     wallpaper_url: "".to_string(),
-                                    size: "".to_string(),
+                                    size: "local".to_string(),
                                 }));
                                 let _ = proxy.send_event(AppEvent::Ready); 
                             }
@@ -97,6 +106,60 @@ pub async fn handle_message(msg_raw: &str, ctx: &IpcContext) {
                         }
                         Err(e) => {
                             let _ = proxy_for_save.send_event(AppEvent::Error(e.to_string()));
+                        }
+                    }
+                });
+            }
+            "save_edited_image" => {
+                let proxy = ctx.proxy.clone();
+                let app_data_dir = ctx.app_data_dir.clone();
+                let cfg = ctx.config.lock().unwrap().clone();
+                let base64_data = msg.data.clone().unwrap_or_default();
+                let set_as_wallpaper = msg.set_as_wallpaper.unwrap_or(true); // 默认设为壁纸
+                
+                tokio::spawn(async move {
+                    if base64_data.is_empty() {
+                        let _ = proxy.send_event(AppEvent::Error("没有接收到图片数据".into()));
+                        return;
+                    }
+
+                    // 1. 解码 Base64
+                    let data = base64_data.split(',').last().unwrap_or(&base64_data);
+                    let bytes = match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            let _ = proxy.send_event(AppEvent::Error(format!("解码失败: {}", e)));
+                            return;
+                        }
+                    };
+
+                    // 2. 准备保存目录
+                    let export_dir = export_image_dir(&app_data_dir, &cfg);
+                    let _ = fs::create_dir_all(&export_dir);
+
+                    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+                    let target_path = export_dir.join(format!("edited-{}.png", ts));
+                    
+                    // 3. 写入文件
+                    match fs::write(&target_path, &bytes) {
+                        Ok(_) => {
+                            if set_as_wallpaper {
+                                // 4. 将编辑后的图片拷贝到预览缓存，并立即生效
+                                let cache_path = app_data_dir.join("cache").join("current_wallpaper.png");
+                                let _ = fs::write(&cache_path, &bytes);
+                                
+                                let _ = proxy.send_event(AppEvent::Generated(api::GeneratedImage {
+                                    preview_url: "aiwallpaper://localhost/current_wallpaper.png".to_string(),
+                                    wallpaper_url: "".to_string(),
+                                    size: "local".to_string(),
+                                }));
+                            }
+
+                            let _ = proxy.send_event(AppEvent::Saved(target_path.to_string_lossy().to_string()));
+                            let _ = proxy.send_event(AppEvent::Ready); 
+                        }
+                        Err(e) => {
+                            let _ = proxy.send_event(AppEvent::Error(format!("保存失败: {}", e)));
                         }
                     }
                 });
@@ -137,14 +200,22 @@ pub async fn handle_message(msg_raw: &str, ctx: &IpcContext) {
                     if let Ok(entries) = fs::read_dir(gallery_dir) {
                         for entry in entries.flatten() {
                             let path = entry.path();
-                            if path.is_file() && path.extension().is_some_and(|ext| ext == "png") {
-                                let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
-                                if let Ok(bytes) = fs::read(&path) {
-                                    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
-                                    images.push(serde_json::json!({
-                                        "name": file_name,
-                                        "data": format!("data:image/png;base64,{}", b64)
-                                    }));
+                            if path.is_file() {
+                                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default().to_lowercase();
+                                if ["png", "jpg", "jpeg", "webp"].contains(&ext.as_str()) {
+                                    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+                                    if let Ok(bytes) = fs::read(&path) {
+                                        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+                                        let mime = match ext.as_str() {
+                                            "jpg" | "jpeg" => "image/jpeg",
+                                            "webp" => "image/webp",
+                                            _ => "image/png",
+                                        };
+                                        images.push(serde_json::json!({
+                                            "name": file_name,
+                                            "data": format!("data:{};base64,{}", mime, b64)
+                                        }));
+                                    }
                                 }
                             }
                         }
