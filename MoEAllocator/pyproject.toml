@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "moe-allocator"
+version = "0.1.0"
+description = "MoE Compute Power Scheduler - Distributed MoE inference framework"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "safetensors",
+    "tqdm",
+]
+
+[project.scripts]
+inquisitor = "inquisitor_cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
