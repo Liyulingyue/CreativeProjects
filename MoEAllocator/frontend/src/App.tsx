@@ -1,12 +1,16 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from './api';
-import type { NodeInfo, MasterStatus, NodeStatus } from './types';
+import type { NodeInfo, MasterStatus, NodeStatus, WorkerStatus } from './types';
 import './App.css';
 
-type Tab = 'dashboard' | 'nodes' | 'experts' | 'inference' | 'logs';
+const NUM_LAYERS = 27;
+const NUM_EXPERTS = 64;
+
+type Tab = 'dashboard' | 'node-create' | 'nodes' | 'experts' | 'inference' | 'logs';
 
 const NAV_ITEMS: { id: Tab; label: string; icon: string }[] = [
   { id: 'dashboard', label: '概览', icon: '◈' },
+  { id: 'node-create', label: '节点创建', icon: '＋' },
   { id: 'nodes', label: '节点管理', icon: '◇' },
   { id: 'experts', label: 'Expert 管理', icon: '◉' },
   { id: 'inference', label: '推理', icon: '▸' },
@@ -110,11 +114,14 @@ function App() {
           {tab === 'dashboard' && (
             <DashboardView nodes={nodes} masters={masters} workers={workers} onRefresh={refreshNodes} showToast={showToast} onNavigate={setTab} />
           )}
+          {tab === 'node-create' && (
+            <NodeCreateView masters={masters} onRefresh={refreshNodes} showToast={showToast} />
+          )}
           {tab === 'nodes' && (
             <NodesView nodes={nodes} masters={masters} onRefresh={refreshNodes} showToast={showToast} />
           )}
           {tab === 'experts' && (
-            <ExpertsView masters={masters} showToast={showToast} />
+            <ExpertsView masters={masters} workers={workers} showToast={showToast} />
           )}
           {tab === 'inference' && (
             <InferenceView masters={masters} showToast={showToast} loading={loading} setLoading={setLoading} />
@@ -171,7 +178,7 @@ function DashboardView({ nodes, masters, workers, onRefresh, showToast, onNaviga
           <div className="section-divider"><h3>节点概览</h3></div>
           <div className="nodes-grid mt-3">
             {nodes.slice(0, 6).map(n => (
-              <NodeCard key={n.node_id} node={n} onDelete={() => { onRefresh(); showToast(`已删除 ${n.node_id}`); }} />
+              <NodeCard key={n.node_id} node={n} masters={masters} onDelete={() => { onRefresh(); showToast(`已删除 ${n.node_id}`); }} showToast={showToast} />
             ))}
           </div>
         </div>
@@ -190,8 +197,13 @@ function StatCard({ label, value, sub }: { label: string; value: string; sub: st
   );
 }
 
-function NodeCard({ node, onDelete }: { node: NodeInfo; onDelete: () => void }) {
+function NodeCard({ node, masters, onDelete, showToast }: {
+  node: NodeInfo; masters: NodeInfo[]; onDelete: () => void; showToast: (m: string, t?: string) => void;
+}) {
   const [status, setStatus] = useState<NodeStatus | null>(null);
+  const [connectMasterId, setConnectMasterId] = useState('');
+  const [showConnect, setShowConnect] = useState(false);
+  const [connecting, setConnecting] = useState(false);
 
   useEffect(() => {
     if (!node.alive) return;
@@ -203,9 +215,23 @@ function NodeCard({ node, onDelete }: { node: NodeInfo; onDelete: () => void }) 
     ? status.local_expert_count
     : !isMaster && status && 'loaded_count' in status
     ? status.loaded_count : null;
-  const expertList: string[] = isMaster && status && 'local_experts' in status
-    ? status.local_experts : !isMaster && status && 'loaded_experts' in status
-    ? status.loaded_experts : [];
+  const workerCount = isMaster && status && 'workers' in status ? status.workers : null;
+
+  const reconnectWorker = async () => {
+    if (!connectMasterId) return;
+    const m = masters.find(x => x.node_id === connectMasterId);
+    if (!m) return;
+    setConnecting(true);
+    try {
+      await api.workerConnect(node.node_id, `http://localhost:${m.http_port}`);
+      showToast(`${node.node_id} 已连接到 ${m.node_id}`);
+      setShowConnect(false);
+    } catch (err: unknown) {
+      showToast((err as Error).message, 'error');
+    } finally {
+      setConnecting(false);
+    }
+  };
 
   return (
     <div className="node-card">
@@ -227,26 +253,42 @@ function NodeCard({ node, onDelete }: { node: NodeInfo; onDelete: () => void }) 
             <span>{node.pid}</span>
           </div>
         )}
+        {!isMaster && (
+          <div className="node-card-meta-row">
+            <span className="node-card-meta-key">Master</span>
+            <span>{node.master_id || '未连接'}</span>
+          </div>
+        )}
         {expertCount !== null && (
           <div className="node-card-meta-row">
             <span className="node-card-meta-key">Experts</span>
             <span>{expertCount} 个</span>
           </div>
         )}
-        {isMaster && status && 'workers' in status && (
+        {workerCount !== null && (
           <div className="node-card-meta-row">
             <span className="node-card-meta-key">Workers</span>
-            <span>{status.workers} 个</span>
+            <span>{workerCount} 个</span>
           </div>
         )}
       </div>
-      {expertList.length > 0 && (
-        <div className="node-card-experts">
-          {expertList.slice(0, 8).map((e, i) => (
-            <span key={i} className="expert-chip">{e}</span>
-          ))}
-          {expertList.length > 8 && (
-            <span className="expert-chip">+{expertList.length - 8}</span>
+      {!isMaster && node.alive && (
+        <div className="node-card-connect">
+          {showConnect ? (
+            <div className="connect-form">
+              <select value={connectMasterId} onChange={e => setConnectMasterId(e.target.value)}>
+                <option value="">-- 选择 Master --</option>
+                {masters.filter(m => m.alive).map(m => (
+                  <option key={m.node_id} value={m.node_id}>{m.node_id} (HTTP {m.http_port})</option>
+                ))}
+              </select>
+              <button className="btn-sm" onClick={reconnectWorker} disabled={!connectMasterId || connecting}>
+                {connecting ? '连接中...' : '确认'}
+              </button>
+              <button className="btn-sm" onClick={() => setShowConnect(false)}>取消</button>
+            </div>
+          ) : (
+            <button className="btn-sm" onClick={() => setShowConnect(true)}>连接 Master</button>
           )}
         </div>
       )}
@@ -273,53 +315,63 @@ function NodesView({ nodes, masters, onRefresh, showToast }: {
   };
 
   return (
-    <>
-      <div className="card-grid">
-        <div className="card">
-          <div className="page-header">
-            <div>
-              <div className="page-title">创建 Master</div>
-              <div className="page-desc">启动一个 Master 节点，管理 Experts 和 Workers</div>
-            </div>
-          </div>
-          <MasterForm onDone={() => { onRefresh(); showToast('Master 已启动'); }} showToast={showToast} />
+    <div className="card">
+      <div className="page-header">
+        <div>
+          <div className="page-title">节点管理</div>
+          <div className="page-desc">查看和管理所有节点</div>
         </div>
-        <div className="card">
-          <div className="page-header">
-            <div>
-              <div className="page-title">创建 Worker</div>
-              <div className="page-desc">启动一个 Worker 节点，托管部分 Experts</div>
-            </div>
-          </div>
-          <WorkerForm masters={masters} onDone={() => { onRefresh(); showToast('Worker 已启动'); }} showToast={showToast} />
-        </div>
-        <div className="card">
-          <div className="page-header">
-            <div>
-              <div className="page-title">添加远程节点</div>
-              <div className="page-desc">注册已运行的远程 Master 或 Worker</div>
-            </div>
-          </div>
-          <RemoteNodeForm onDone={() => { onRefresh(); showToast('节点已添加'); }} showToast={showToast} />
-        </div>
+        <div className="stat-pill">{nodes.length} 个节点</div>
       </div>
+      {nodes.length === 0 ? (
+        <div className="empty-state mt-3">
+          <div className="empty-state-icon">◎</div>
+          <div className="empty-state-text">暂无节点</div>
+        </div>
+      ) : (
+        <div className="nodes-grid mt-3">
+          {nodes.map(n => (
+            <NodeCard key={n.node_id} node={n} masters={masters} onDelete={() => deleteNode(n.node_id)} showToast={showToast} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
+function NodeCreateView({ masters, onRefresh, showToast }: {
+  masters: NodeInfo[]; onRefresh: () => void; showToast: (m: string, t?: string) => void;
+}) {
+  return (
+    <div className="card-grid">
       <div className="card">
-        <div className="section-divider"><h3>所有节点 ({nodes.length})</h3></div>
-        {nodes.length === 0 ? (
-          <div className="empty-state">
-            <div className="empty-state-icon">◎</div>
-            <div className="empty-state-text">暂无节点</div>
+        <div className="page-header">
+          <div>
+            <div className="page-title">创建 Master</div>
+            <div className="page-desc">启动一个 Master 节点，管理 Experts 和 Workers</div>
           </div>
-        ) : (
-          <div className="nodes-grid mt-3">
-            {nodes.map(n => (
-              <NodeCard key={n.node_id} node={n} onDelete={() => deleteNode(n.node_id)} />
-            ))}
-          </div>
-        )}
+        </div>
+        <MasterForm onDone={() => { onRefresh(); showToast('Master 已启动'); }} showToast={showToast} />
       </div>
-    </>
+      <div className="card">
+        <div className="page-header">
+          <div>
+            <div className="page-title">创建 Worker</div>
+            <div className="page-desc">启动一个 Worker 节点，托管部分 Experts</div>
+          </div>
+        </div>
+        <WorkerForm masters={masters} onDone={() => { onRefresh(); showToast('Worker 已启动'); }} showToast={showToast} />
+      </div>
+      <div className="card">
+        <div className="page-header">
+          <div>
+            <div className="page-title">添加远程节点</div>
+            <div className="page-desc">注册已运行的远程 Master 或 Worker</div>
+          </div>
+        </div>
+        <RemoteNodeForm onDone={() => { onRefresh(); showToast('节点已添加'); }} showToast={showToast} />
+      </div>
+    </div>
   );
 }
 
@@ -329,6 +381,7 @@ function MasterForm({ onDone, showToast }: {
   const [nodeId, setNodeId] = useState('master-1');
   const [manifest, setManifest] = useState('output/splits/ERNIE-4.5-21B-A3B-PT-full/manifest.json');
   const [port, setPort] = useState('');
+  const [host, setHost] = useState('127.0.0.1');
   const [experts, setExperts] = useState('');
   const [pythonEnv, setPythonEnv] = useState('venv');
   const [customPython, setCustomPython] = useState('');
@@ -349,6 +402,7 @@ function MasterForm({ onDone, showToast }: {
         node_id: nodeId,
         manifest_path: manifest,
         http_port: port ? parseInt(port) : undefined,
+        host,
         expert_ids: experts ? experts.split(',').map(Number) : undefined,
         python_env: pythonEnv,
         custom_python: pythonEnv === 'custom' ? customPython : undefined,
@@ -374,6 +428,13 @@ function MasterForm({ onDone, showToast }: {
       <div className="form-group">
         <label className="form-label">HTTP 端口</label>
         <input type="number" value={port} onChange={e => setPort(e.target.value)} placeholder="留空自动分配" />
+      </div>
+      <div className="form-group">
+        <label className="form-label">绑定地址</label>
+        <select value={host} onChange={e => setHost(e.target.value)}>
+          <option value="127.0.0.1">127.0.0.1 (本地)</option>
+          <option value="0.0.0.0">0.0.0.0 (所有网卡)</option>
+        </select>
       </div>
       <div className="form-group">
         <label className="form-label">Expert IDs</label>
@@ -408,17 +469,14 @@ function WorkerForm({ masters, onDone, showToast }: {
   const [nodeId, setNodeId] = useState('worker-1');
   const [expertsDir, setExpertsDir] = useState('output/splits/ERNIE-4.5-21B-A3B-PT-full');
   const [expertIds, setExpertIds] = useState('');
-  const [masterId, setMasterId] = useState(masters[0]?.node_id || '');
+  const [masterMode, setMasterMode] = useState<'none' | 'select' | 'custom'>('none');
+  const [masterId, setMasterId] = useState('');
+  const [masterUrl, setMasterUrl] = useState('');
+  const [host, setHost] = useState('127.0.0.1');
   const [pythonEnv, setPythonEnv] = useState('venv');
   const [customPython, setCustomPython] = useState('');
   const [pythonEnvs, setPythonEnvs] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (masters.length > 0 && !masters.find(m => m.node_id === masterId)) {
-      setMasterId(masters[0].node_id);
-    }
-  }, [masters, masterId]);
 
   useEffect(() => {
     api.detectPythonEnvs().then(setPythonEnvs).catch(() => {});
@@ -428,15 +486,22 @@ function WorkerForm({ masters, onDone, showToast }: {
     e.preventDefault();
     if (!nodeId) return showToast('请填写节点ID', 'error');
     if (pythonEnv === 'custom' && !customPython) return showToast('请填写自定义 Python 路径', 'error');
+    if (masterMode === 'custom' && !masterUrl) return showToast('请填写 Master URL', 'error');
     setLoading(true);
     try {
-      const master = masters.find(m => m.node_id === masterId);
+      let resolvedMasterUrl: string | undefined;
+      if (masterMode === 'select' && masterId) {
+        const m = masters.find(m => m.node_id === masterId);
+        resolvedMasterUrl = m ? `http://localhost:${m.http_port}` : undefined;
+      } else if (masterMode === 'custom') {
+        resolvedMasterUrl = masterUrl;
+      }
       await api.createWorker({
         node_id: nodeId,
+        host,
         experts_dir: expertsDir || undefined,
         expert_ids: expertIds ? expertIds.split(',').map(Number) : undefined,
-        master_id: master ? masterId : undefined,
-        master_url: master ? `http://localhost:${master.http_port}` : undefined,
+        master_url: resolvedMasterUrl,
         python_env: pythonEnv,
         custom_python: pythonEnv === 'custom' ? customPython : undefined,
       });
@@ -455,22 +520,45 @@ function WorkerForm({ masters, onDone, showToast }: {
         <input value={nodeId} onChange={e => setNodeId(e.target.value)} placeholder="worker-1" />
       </div>
       <div className="form-group">
+        <label className="form-label">绑定地址</label>
+        <select value={host} onChange={e => setHost(e.target.value)}>
+          <option value="127.0.0.1">127.0.0.1 (本地)</option>
+          <option value="0.0.0.0">0.0.0.0 (所有网卡)</option>
+        </select>
+      </div>
+      <div className="form-group">
         <label className="form-label">Experts 目录</label>
-        <input value={expertsDir} onChange={e => setExpertsDir(e.target.value)} />
+        <input value={expertsDir} onChange={e => setExpertsDir(e.target.value)} placeholder="留空，后续动态加载" />
       </div>
       <div className="form-group">
         <label className="form-label">Expert IDs</label>
-        <input value={expertIds} onChange={e => setExpertIds(e.target.value)} placeholder="留空不加载，后续动态加载" />
+        <input value={expertIds} onChange={e => setExpertIds(e.target.value)} placeholder="留空不预加载，如 0,1,2,3" />
       </div>
       <div className="form-group">
         <label className="form-label">注册到 Master</label>
-        <select value={masterId} onChange={e => setMasterId(e.target.value)}>
-          <option value="">-- 不注册 --</option>
-          {masters.map(m => (
-            <option key={m.node_id} value={m.node_id}>{m.node_id} (HTTP {m.http_port})</option>
-          ))}
+        <select value={masterMode} onChange={e => setMasterMode(e.target.value as 'none' | 'select' | 'custom')}>
+          <option value="none">不注册</option>
+          <option value="select">选择 Master</option>
+          <option value="custom">自定义 URL</option>
         </select>
       </div>
+      {masterMode === 'select' && (
+        <div className="form-group">
+          <label className="form-label">选择 Master</label>
+          <select value={masterId} onChange={e => setMasterId(e.target.value)}>
+            <option value="">-- 选择 Master --</option>
+            {masters.map(m => (
+              <option key={m.node_id} value={m.node_id}>{m.node_id} (HTTP {m.http_port})</option>
+            ))}
+          </select>
+        </div>
+      )}
+      {masterMode === 'custom' && (
+        <div className="form-group">
+          <label className="form-label">Master URL</label>
+          <input value={masterUrl} onChange={e => setMasterUrl(e.target.value)} placeholder="http://192.168.1.100:5000" />
+        </div>
+      )}
       <div className="form-group">
         <label className="form-label">Python 环境</label>
         <select value={pythonEnv} onChange={e => setPythonEnv(e.target.value)}>
@@ -556,28 +644,67 @@ function RemoteNodeForm({ onDone, showToast }: {
 }
 
 /* ── Experts ── */
-function ExpertsView({ masters, showToast }: {
-  masters: NodeInfo[]; showToast: (m: string, t?: string) => void;
+type ExpertTarget = { type: 'master-local'; nodeId: string; masterId: string }
+  | { type: 'worker'; nodeId: string; masterId: string };
+
+function ExpertsView({ masters, workers, showToast }: {
+  masters: NodeInfo[]; workers: NodeInfo[]; showToast: (m: string, t?: string) => void;
 }) {
-  const [selected, setSelected] = useState(masters[0]?.node_id || '');
+  const [view, setView] = useState<'master' | 'worker'>('master');
+  const [selectedMaster, setSelectedMaster] = useState(masters[0]?.node_id || '');
+  const [selectedWorker, setSelectedWorker] = useState(workers[0]?.node_id || '');
+  const [subNode, setSubNode] = useState<ExpertTarget | null>(null);
   const [loadedExperts, setLoadedExperts] = useState<Set<string>>(new Set());
   const [loadingId, setLoadingId] = useState<string | null>(null);
+  const headerScrollRef = useRef<HTMLDivElement>(null);
+  const bodyScrollRef = useRef<HTMLDivElement>(null);
+  const leftColRef = useRef<HTMLDivElement>(null);
+
+  const workersForMaster = (masterId: string) =>
+    workers.filter(w => w.master_id === masterId);
+
+  const buildSubOptions = (masterId: string) => {
+    const opts: { label: string; value: string; target: ExpertTarget }[] = [];
+    const master = masters.find(m => m.node_id === masterId);
+    if (master) {
+      opts.push({ label: `${master.node_id} (本地)`, value: `local:${master.node_id}`, target: { type: 'master-local', nodeId: master.node_id, masterId: master.node_id } });
+    }
+    for (const w of workersForMaster(masterId)) {
+      opts.push({ label: `${w.node_id} (Worker)`, value: `worker:${w.node_id}`, target: { type: 'worker', nodeId: w.node_id, masterId } });
+    }
+    return opts;
+  };
+
+  const currentOptions = view === 'master' ? buildSubOptions(selectedMaster) : [];
 
   useEffect(() => {
-    if (masters.length > 0 && !masters.find(m => m.node_id === selected)) {
-      setSelected(masters[0].node_id);
+    if (view === 'master' && masters.length > 0) {
+      const m = masters.find(m => m.node_id === selectedMaster) || masters[0];
+      setSelectedMaster(m.node_id);
+      const opts = buildSubOptions(m.node_id);
+      if (opts.length > 0 && !opts.find(o => o.target.nodeId === subNode?.nodeId)) {
+        setSubNode(opts[0].target);
+      }
     }
-  }, [masters, selected]);
+    if (view === 'worker' && workers.length > 0) {
+      const w = workers.find(w => w.node_id === selectedWorker) || workers[0];
+      setSelectedWorker(w.node_id);
+    }
+  }, [view, masters, workers]);
 
   const refreshExperts = useCallback(async () => {
-    if (!selected) return;
+    if (!subNode) return;
     try {
-      const s = await api.getNodeStatus(selected) as MasterStatus;
-      setLoadedExperts(new Set(s.local_experts || []));
+      const s = await api.getNodeStatus(subNode.nodeId);
+      if ('local_experts' in s) {
+        setLoadedExperts(new Set(s.local_experts || []));
+      } else {
+        setLoadedExperts(new Set((s as WorkerStatus).loaded_experts || []));
+      }
     } catch {
       setLoadedExperts(new Set());
     }
-  }, [selected]);
+  }, [subNode]);
 
   useEffect(() => {
     refreshExperts();
@@ -585,14 +712,38 @@ function ExpertsView({ masters, showToast }: {
     return () => clearInterval(t);
   }, [refreshExperts]);
 
+  useEffect(() => {
+    const body = bodyScrollRef.current;
+    const header = headerScrollRef.current;
+    const left = leftColRef.current;
+    if (!body || !header || !left) return;
+    const syncH = () => {
+      header.scrollLeft = body.scrollLeft;
+    };
+    const syncV = () => {
+      left.scrollTop = body.scrollTop;
+    };
+    body.addEventListener('scroll', syncH);
+    body.addEventListener('scroll', syncV);
+    return () => {
+      body.removeEventListener('scroll', syncH);
+      body.removeEventListener('scroll', syncV);
+    };
+  }, [subNode]);
+
   const toggleExpert = async (layerId: number, expertId: number) => {
+    if (!subNode || layerId == null || expertId == null) return;
     const key = `L${String(layerId).padStart(2, '0')}_E${String(expertId).padStart(3, '0')}`;
     if (loadedExperts.has(key)) {
       setLoadingId(key);
       try {
-        await api.unloadExpert({ node_id: selected, expert_id: expertId, layer_id: layerId });
+        if (subNode.type === 'master-local') {
+          await api.unloadExpert({ node_id: subNode.nodeId, expert_id: expertId, layer_id: layerId });
+        } else {
+          await api.unloadExpertFromWorker({ node_id: subNode.masterId, worker_id: subNode.nodeId, expert_id: expertId, layer_id: layerId });
+        }
         refreshExperts();
-        showToast(`L${layerId}_E${expertId} 已卸载`);
+        showToast(`${key} 已卸载`);
       } catch (err: unknown) {
         showToast((err as Error).message, 'error');
       } finally {
@@ -601,9 +752,15 @@ function ExpertsView({ masters, showToast }: {
     } else {
       setLoadingId(key);
       try {
-        const res = await api.loadExpert({ node_id: selected, expert_id: expertId, layer_id: layerId });
-        setLoadedExperts(new Set(res.local_experts || []));
-        showToast(`${key} 已加载 (${res.size_mb.toFixed(1)} MB)`);
+        if (subNode.type === 'master-local') {
+          const res = await api.loadExpert({ node_id: subNode.nodeId, expert_id: expertId, layer_id: layerId });
+          setLoadedExperts(new Set(res.local_experts || []));
+          showToast(`${key} 已加载 (${res.size_mb.toFixed(1)} MB)`);
+        } else {
+          await api.loadExpertToWorker({ node_id: subNode.masterId, worker_id: subNode.nodeId, expert_id: expertId, layer_id: layerId });
+          showToast(`${key} 正在加载到 Worker...`);
+          refreshExperts();
+        }
       } catch (err: unknown) {
         showToast((err as Error).message, 'error');
       } finally {
@@ -612,76 +769,186 @@ function ExpertsView({ masters, showToast }: {
     }
   };
 
-  const NUM_LAYERS = 27;
-  const NUM_EXPERTS = 64;
+  const toggleColumn = async (expertId: number) => {
+    if (!subNode || expertId == null) return;
+    const allLoaded = Array.from({ length: NUM_LAYERS }, (_, lid) => {
+      const key = `L${String(lid + 1).padStart(2, '0')}_E${String(expertId).padStart(3, '0')}`;
+      return loadedExperts.has(key);
+    }).every(Boolean);
+
+    if (allLoaded) {
+      setLoadingId(`col-${expertId}`);
+      for (let lid = 1; lid <= NUM_LAYERS; lid++) {
+        try {
+          if (subNode.type === 'master-local') {
+            await api.unloadExpert({ node_id: subNode.nodeId, expert_id: expertId, layer_id: lid });
+          } else {
+            await api.unloadExpertFromWorker({ node_id: subNode.masterId, worker_id: subNode.nodeId, expert_id: expertId, layer_id: lid });
+          }
+        } catch {}
+      }
+      refreshExperts();
+      showToast(`E${expertId} 列卸载完成`);
+      setLoadingId(null);
+    } else {
+      setLoadingId(`col-${expertId}`);
+      for (let lid = 1; lid <= NUM_LAYERS; lid++) {
+        try {
+          if (subNode.type === 'master-local') {
+            await api.loadExpert({ node_id: subNode.nodeId, expert_id: expertId, layer_id: lid });
+          } else {
+            await api.loadExpertToWorker({ node_id: subNode.masterId, worker_id: subNode.nodeId, expert_id: expertId, layer_id: lid });
+          }
+        } catch {}
+      }
+      refreshExperts();
+      showToast(`E${expertId} 列加载中...`);
+      setLoadingId(null);
+    }
+  };
+
+  const isLoaded = (layerId: number, expertId: number) => {
+    const key = `L${String(layerId).padStart(2, '0')}_E${String(expertId).padStart(3, '0')}`;
+    return loadedExperts.has(key);
+  };
 
   return (
     <div className="card">
       <div className="page-header">
         <div>
-          <div className="page-title">Expert 管理</div>
-          <div className="page-desc">点击方块加载 / 卸载。共 {NUM_LAYERS} 层 × {NUM_EXPERTS} experts = {NUM_LAYERS * NUM_EXPERTS} 个</div>
+          <div className="page-title">Experts 管理</div>
+          <div className="page-desc">管理 Master 本地 / Worker 节点上的 Experts 动态加载与卸载</div>
         </div>
-        <div className="form-group" style={{ minWidth: 200 }}>
-          <select value={selected} onChange={e => setSelected(e.target.value)}>
-            <option value="">-- 选择 Master --</option>
-            {masters.map(m => (
-              <option key={m.node_id} value={m.node_id}>{m.node_id}</option>
-            ))}
+        <div className="stat-pill">{loadedExperts.size} 已加载</div>
+      </div>
+
+      <div className="form-grid mt-3" style={{ gridTemplateColumns: 'auto 1fr 1fr' }}>
+        <div className="form-group" style={{ marginBottom: 0 }}>
+          <label className="form-label">视图</label>
+          <select value={view} onChange={e => setView(e.target.value as 'master' | 'worker')}>
+            <option value="master">Master 管理</option>
+            <option value="worker">Worker 节点</option>
           </select>
         </div>
+        {view === 'master' ? (
+          <>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">选择 Master</label>
+              <select value={selectedMaster} onChange={e => {
+                setSelectedMaster(e.target.value);
+                const opts = buildSubOptions(e.target.value);
+                if (opts.length > 0) setSubNode(opts[0].target);
+                else setSubNode(null);
+              }}>
+                <option value="">-- 选择 Master --</option>
+                {masters.map(m => (
+                  <option key={m.node_id} value={m.node_id}>{m.node_id} (HTTP {m.http_port})</option>
+                ))}
+              </select>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">子节点</label>
+              <select
+                value={subNode ? `${subNode.type === 'master-local' ? 'local' : 'worker'}:${subNode.nodeId}` : ''}
+                onChange={e => {
+                  const opt = currentOptions.find(o => o.value === e.target.value);
+                  if (opt) setSubNode(opt.target);
+                }}
+              >
+                <option value="">-- 选择节点 --</option>
+                {currentOptions.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+          </>
+        ) : (
+          <div className="form-group" style={{ marginBottom: 0, gridColumn: 'span 2' }}>
+            <label className="form-label">选择 Worker</label>
+            <select value={selectedWorker} onChange={e => {
+              setSelectedWorker(e.target.value);
+              setSubNode({ type: 'worker', nodeId: e.target.value, masterId: workers.find(w => w.node_id === e.target.value)?.master_id || '' });
+            }}>
+              <option value="">-- 选择 Worker --</option>
+              {workers.map(w => (
+                <option key={w.node_id} value={w.node_id}>{w.node_id} ({w.master_id || '未注册'})</option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
-      {masters.length === 0 ? (
-        <div className="empty-state">
-          <div className="empty-state-text">无可用 Master，请先创建节点</div>
-        </div>
-      ) : (
-        <div className="expert-grid-wrap mt-3">
-          {Array.from({ length: NUM_LAYERS }, (_, layerIdx) => {
-            const layerId = layerIdx + 1;
-            const loadedInLayer = Array.from({ length: NUM_EXPERTS }, (_, expIdx) => {
-              const key = `L${String(layerId).padStart(2, '0')}_E${String(expIdx).padStart(3, '0')}`;
-              return loadedExperts.has(key);
-            });
-            const loadedCount = loadedInLayer.filter(Boolean).length;
-            return (
-              <div key={layerId} className="expert-layer-row">
-                <div className="expert-layer-label">
-                  <span className="layer-num">L{layerId}</span>
-                  <span className="layer-count">{loadedCount}/{NUM_EXPERTS}</span>
-                </div>
-                <div className="expert-cells">
-                  {Array.from({ length: NUM_EXPERTS }, (_, expIdx) => {
-                    const key = `L${String(layerId).padStart(2, '0')}_E${String(expIdx).padStart(3, '0')}`;
-                    const isLoaded = loadedExperts.has(key);
-                    const isLoading = loadingId === key;
-                    return (
-                      <button
-                        key={expIdx}
-                        className={`expert-cell ${isLoaded ? 'loaded' : ''} ${isLoading ? 'loading' : ''}`}
-                        onClick={() => toggleExpert(layerId, expIdx)}
-                        disabled={isLoading}
-                        title={`${key}${isLoaded ? ' (点击卸载)' : ' (点击加载)'}`}
-                      >
-                        {isLoading ? '…' : expIdx}
-                      </button>
-                    );
-                  })}
+      {subNode && (
+        <>
+          <div className="expert-grid-wrap mt-3">
+            <div className="expert-grid-outer">
+              <div className="expert-grid-header-row">
+                <div className="expert-grid-corner" />
+                <div className="expert-grid-header-scroll" ref={headerScrollRef}>
+                  {Array.from({ length: NUM_EXPERTS }, (_, eid) => (
+                    <div
+                      key={eid}
+                      className="expert-header-cell"
+                      onClick={() => toggleColumn(eid)}
+                      title={`E${String(eid).padStart(3, '0')}: 整列操作`}
+                    >
+                      E{eid}
+                    </div>
+                  ))}
                 </div>
               </div>
-            );
-          })}
-        </div>
+              <div className="expert-body">
+                <div className="expert-left-col" ref={leftColRef}>
+                  {Array.from({ length: NUM_LAYERS }, (_, lid) => (
+                    <div key={lid} className="expert-layer-label">L{String(lid + 1).padStart(2, '0')}</div>
+                  ))}
+                </div>
+                <div className="expert-scroll-area" ref={bodyScrollRef}>
+                  <div className="expert-grid-body">
+                    {Array.from({ length: NUM_LAYERS }, (_, layerIdx) => {
+                      const lid = layerIdx + 1;
+                      return (
+                        <div key={lid} className="expert-row">
+                          {Array.from({ length: NUM_EXPERTS }, (_, expIdx) => {
+                            const eid = expIdx;
+                            const key = `L${String(lid).padStart(2, '0')}_E${String(eid).padStart(3, '0')}`;
+                            const isL = isLoaded(lid, eid);
+                            const isLoading = loadingId === key;
+                            return (
+                              <button
+                                key={eid}
+                                className={`expert-cell ${isL ? 'loaded' : ''} ${isLoading ? 'loading' : ''}`}
+                                onClick={() => toggleExpert(lid, eid)}
+                                title={key}
+                              >
+                                {isLoading ? '...' : eid}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="section-divider mt-3"><h3>已加载列表 ({loadedExperts.size})</h3></div>
+          <div className="loaded-list">
+            {loadedExperts.size === 0 && <div style={{ color: 'var(--text-tertiary)', fontSize: 13 }}>暂无已加载的 Experts</div>}
+            {Array.from(loadedExperts).map((e, i) => (
+              <span key={i} className="expert-chip">{e}</span>
+            ))}
+          </div>
+        </>
       )}
 
-      <div className="section-divider mt-3"><h3>已加载列表 ({loadedExperts.size})</h3></div>
-      <div className="experts-display">
-        {loadedExperts.size === 0 && <div style={{ color: 'var(--text-tertiary)', fontSize: 13 }}>暂无已加载的 Experts</div>}
-        {Array.from(loadedExperts).map((e, i) => (
-          <span key={i} className="expert-chip">{e}</span>
-        ))}
-      </div>
+      {!subNode && (
+        <div style={{ color: 'var(--text-tertiary)', fontSize: 13, marginTop: 16, textAlign: 'center' }}>
+          {view === 'master' ? '请先选择 Master 和子节点' : '请选择 Worker 节点'}
+        </div>
+      )}
     </div>
   );
 }

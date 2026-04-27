@@ -85,6 +85,7 @@ class ProcessManager:
         return str(log_dir / f'{node_type}_{node_id}.log')
 
     def start_master(self, node_id: str, manifest_path: str, http_port: Optional[int] = None,
+                     host: str = '127.0.0.1',
                      expert_ids: Optional[str] = None, python_env: str = 'venv',
                      custom_python: Optional[str] = None) -> dict:
         if node_id in self._processes:
@@ -99,6 +100,7 @@ class ProcessManager:
             python_path, '-m', 'src.nexus.master',
             '--manifest', manifest_path,
             '--port', str(port),
+            '--host', host,
         ]
         if expert_ids:
             cmd += ['--experts', expert_ids]
@@ -133,6 +135,7 @@ class ProcessManager:
         }
 
     def start_worker(self, node_id: str, http_port: Optional[int] = None, tcp_port: Optional[int] = None,
+                     host: str = '127.0.0.1',
                      experts_dir: Optional[str] = None, expert_ids: Optional[str] = None,
                      master_url: Optional[str] = None, python_env: str = 'venv',
                      custom_python: Optional[str] = None) -> dict:
@@ -149,11 +152,12 @@ class ProcessManager:
             '--id', node_id,
             '--http-port', str(port),
             '--tcp-port', str(tcp),
+            '--host', host,
         ]
         if experts_dir:
             cmd += ['--experts-dir', experts_dir]
         if expert_ids:
-            cmd += ['--expert-ids', expert_ids]
+            cmd += ['--expert-ids', ','.join(str(x) for x in expert_ids)]
         if master_url:
             cmd += ['--master', f'{master_url}/workers']
 

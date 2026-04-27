@@ -7,6 +7,7 @@ export interface NodeInfo {
   pid?: number;
   log_file?: string;
   is_remote?: boolean;
+  master_id?: string;
 }
 
 export interface AddRemoteNodeRequest {
@@ -33,6 +34,7 @@ export interface CreateMasterRequest {
   node_id: string;
   manifest_path: string;
   http_port?: number;
+  host?: string;
   expert_ids?: number[];
   python_env?: string;
   custom_python?: string;
@@ -43,9 +45,9 @@ export interface CreateWorkerRequest {
   experts_dir?: string;
   expert_ids?: number[];
   master_url?: string;
-  master_id?: string;
   python_env?: string;
   custom_python?: string;
+  host?: string;
 }
 
 export interface DetectedPythonEnvs {

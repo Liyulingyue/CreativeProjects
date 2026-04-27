@@ -39,4 +39,10 @@ export const api = {
   inference: (req: InferenceRequest) => request<InferenceResponse>('POST', '/inference', req),
   loadExpert: (req: LoadExpertRequest) => request<LoadExpertResponse>('POST', '/nodes/master/load_expert', req),
   unloadExpert: (req: LoadExpertRequest) => request<void>('POST', '/nodes/master/unload_expert', req),
+  loadExpertToWorker: (req: { node_id: string; worker_id: string; expert_id: number; layer_id: number; file_path?: string }) =>
+    request<unknown>('POST', '/nodes/master/load_expert_to_worker', req),
+  unloadExpertFromWorker: (req: { node_id: string; worker_id: string; expert_id: number; layer_id: number }) =>
+    request<unknown>('POST', '/nodes/master/unload_expert_from_worker', req),
+  workerConnect: (nodeId: string, masterUrl: string) =>
+    request<unknown>('POST', `/nodes/${nodeId}/connect`, { master_url: masterUrl }),
 };

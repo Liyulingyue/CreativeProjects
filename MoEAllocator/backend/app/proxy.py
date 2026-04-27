@@ -3,7 +3,7 @@ import httpx
 
 class ProxyClient:
     def __init__(self):
-        self.client = httpx.Client(timeout=30.0, follow_redirects=True, proxy=None, trust_env=False)
+        self.client = httpx.Client(timeout=None, follow_redirects=True, proxy=None, trust_env=False)
 
     def _url(self, base_url: str, path: str) -> str:
         return f"{base_url.rstrip('/')}/{path.lstrip('/')}"

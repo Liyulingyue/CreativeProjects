@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import math
+import os
 import struct
 import sys
 from dataclasses import dataclass, field
@@ -10,6 +11,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+import aiohttp
 import safetensors.torch as storch
 import torch
 import torch.nn.functional as F
@@ -32,13 +34,16 @@ class WorkerInfo:
     host: str
     http_port: int
     tcp_port: int
+    experts_dir: str = ""
     loaded_experts: set[tuple[int, int]] = field(default_factory=set)
 
 
 class NexusMaster:
-    def __init__(self, manifest_path: str, http_port: int = 5000, local_expert_ids: list[int] | None = None):
+    def __init__(self, manifest_path: str, http_port: int = 5000, bind_host: str = "127.0.0.1",
+                 local_expert_ids: list[int] | None = None):
         self.manifest_path = manifest_path
         self.http_port = http_port
+        self.bind_host = bind_host
         self.local_expert_ids = local_expert_ids or []
 
         with open(manifest_path) as f:
@@ -383,9 +388,10 @@ class NexusMaster:
         try:
             body = await request.json()
             worker_id = body.get("worker_id", f"worker-{len(self.workers)}")
-            host = request.remote or "127.0.0.1"
+            host = body.get("host") or request.remote or "127.0.0.1"
             http_port = body.get("http_port", 8000)
             tcp_port = body.get("tcp_port", 9000)
+            experts_dir = body.get("experts_dir", "")
             experts = body.get("experts", [])
             loaded_experts = set()
             for item in experts:
@@ -396,9 +402,10 @@ class NexusMaster:
                 host=host,
                 http_port=http_port,
                 tcp_port=tcp_port,
+                experts_dir=experts_dir,
                 loaded_experts=loaded_experts,
             )
-            logger.info(f"Worker registered: {worker_id} at {host}:{http_port}/{tcp_port}, experts={len(loaded_experts)}")
+            logger.info(f"Worker registered: {worker_id} at {host}:{http_port}/{tcp_port}, experts_dir={experts_dir}, experts={len(loaded_experts)}")
             return web.json_response({"status": "ok", "worker_id": worker_id})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -410,7 +417,7 @@ class NexusMaster:
                     "host": w.host,
                     "http_port": w.http_port,
                     "tcp_port": w.tcp_port,
-                    "loaded_experts": sorted([f"expert_{e}_layer_{l}" for (l, e) in w.loaded_experts]),
+                    "loaded_experts": sorted([f"L{l:02d}_E{e:03d}" for (l, e) in w.loaded_experts]),
                     "note": "Use /workers/{id}/status for real-time query",
                 }
                 for wid, w in self.workers.items()
@@ -436,6 +443,9 @@ class NexusMaster:
                 "error": f"Failed to query worker: {e}",
             })
 
+    def _expert_file_path(self, expert_id: int, layer_id: int) -> str:
+        return str(self.output_dir / "experts" / f"expert_{expert_id:03d}_layer_{layer_id:03d}.safetensors")
+
     async def _http_handler_worker_load(self, request: web.Request) -> web.Response:
         wid = request.match_info["worker_id"]
         if wid not in self.workers:
@@ -443,8 +453,8 @@ class NexusMaster:
         body = await request.json()
         expert_id = body["expert_id"]
         layer_id = body["layer_id"]
-        file_path = body["file_path"]
         w = self.workers[wid]
+        file_path = body.get("file_path") or self._expert_file_path(int(expert_id), int(layer_id))
         try:
             async with self._session.post(f"http://{w.host}:{w.http_port}/load", json={
                 "expert_id": expert_id, "layer_id": layer_id, "file_path": file_path
@@ -470,8 +480,12 @@ class NexusMaster:
     async def _http_handler_load_expert(self, request: web.Request) -> web.Response:
         try:
             body = await request.json()
-            expert_id = int(body["expert_id"])
-            layer_id = int(body["layer_id"])
+            expert_id = body.get("expert_id")
+            layer_id = body.get("layer_id")
+            if expert_id is None or layer_id is None:
+                return web.json_response({"error": f"expert_id and layer_id are required, got expert_id={expert_id!r}, layer_id={layer_id!r}"}, status=400)
+            expert_id = int(expert_id)
+            layer_id = int(layer_id)
             size_mb = self.load_expert(expert_id, layer_id)
             local_loaded = sorted([f"L{l:02d}_E{e:03d}" for (l, e) in self.local_experts.keys()])
             return web.json_response({
@@ -488,8 +502,12 @@ class NexusMaster:
     async def _http_handler_unload_expert(self, request: web.Request) -> web.Response:
         try:
             body = await request.json()
-            expert_id = int(body["expert_id"])
-            layer_id = int(body["layer_id"])
+            expert_id = body.get("expert_id")
+            layer_id = body.get("layer_id")
+            if expert_id is None or layer_id is None:
+                return web.json_response({"error": f"expert_id and layer_id are required, got expert_id={expert_id!r}, layer_id={layer_id!r}"}, status=400)
+            expert_id = int(expert_id)
+            layer_id = int(layer_id)
             self.unload_expert(expert_id, layer_id)
             local_loaded = sorted([f"L{l:02d}_E{e:03d}" for (l, e) in self.local_experts.keys()])
             return web.json_response({
@@ -499,6 +517,53 @@ class NexusMaster:
                 "loaded_count": len(self.local_experts),
                 "local_experts": local_loaded,
             })
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _http_handler_load_expert_to_worker(self, request: web.Request) -> web.Response:
+        try:
+            body = await request.json()
+            worker_id = body.get("worker_id")
+            expert_id = body.get("expert_id")
+            layer_id = body.get("layer_id")
+            if not worker_id or expert_id is None or layer_id is None:
+                return web.json_response({"error": "worker_id, expert_id, layer_id are required"}, status=400)
+            if worker_id not in self.workers:
+                return web.json_response({"error": f"Worker '{worker_id}' not found"}, status=404)
+            w = self.workers[worker_id]
+            file_path = body.get("file_path") or self._expert_file_path(int(expert_id), int(layer_id))
+            async with self._session.post(
+                f"http://{w.host}:{w.http_port}/load",
+                json={"expert_id": int(expert_id), "layer_id": int(layer_id), "file_path": file_path},
+                timeout=aiohttp.ClientTimeout(total=300),
+            ) as resp:
+                result = await resp.json()
+            if resp.status != 200:
+                return web.json_response(result, status=resp.status)
+            return web.json_response({"status": "ok", "worker_id": worker_id, "expert_id": int(expert_id), "layer_id": int(layer_id), "worker_response": result})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _http_handler_unload_expert_from_worker(self, request: web.Request) -> web.Response:
+        try:
+            body = await request.json()
+            worker_id = body.get("worker_id")
+            expert_id = body.get("expert_id")
+            layer_id = body.get("layer_id")
+            if not worker_id or expert_id is None or layer_id is None:
+                return web.json_response({"error": "worker_id, expert_id, layer_id are required"}, status=400)
+            if worker_id not in self.workers:
+                return web.json_response({"error": f"Worker '{worker_id}' not found"}, status=404)
+            w = self.workers[worker_id]
+            async with self._session.post(
+                f"http://{w.host}:{w.http_port}/unload",
+                json={"expert_id": int(expert_id), "layer_id": int(layer_id)},
+                timeout=aiohttp.ClientTimeout(total=300),
+            ) as resp:
+                result = await resp.json()
+            if resp.status != 200:
+                return web.json_response(result, status=resp.status)
+            return web.json_response({"status": "ok", "worker_id": worker_id, "expert_id": int(expert_id), "layer_id": int(layer_id), "worker_response": result})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
@@ -549,6 +614,8 @@ class NexusMaster:
         app.router.add_post("/inference", self._http_handler_inference)
         app.router.add_post("/load_expert", self._http_handler_load_expert)
         app.router.add_post("/unload_expert", self._http_handler_unload_expert)
+        app.router.add_post("/load_expert_to_worker", self._http_handler_load_expert_to_worker)
+        app.router.add_post("/unload_expert_from_worker", self._http_handler_unload_expert_from_worker)
         app.router.add_post("/workers", self._http_handler_worker_register)
         app.router.add_get("/workers", self._http_handler_workers)
         app.router.add_get("/workers/{worker_id}/status", self._http_handler_worker_status)
@@ -559,7 +626,7 @@ class NexusMaster:
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
-        self._site = web.TCPSite(self._runner, "0.0.0.0", self.http_port)
+        self._site = web.TCPSite(self._runner, self.bind_host, self.http_port)
         await self._site.start()
 
         logger.info(f"Nexus Master ready. HTTP={self.http_port}")
@@ -585,12 +652,13 @@ def main():
     parser.add_argument("--manifest", "-m", type=str,
         default="output/splits/ERNIE-4.5-21B-A3B-PT-k6/manifest.json")
     parser.add_argument("--port", "-p", type=int, default=5000, help="HTTP port")
+    parser.add_argument("--host", type=str, default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
     parser.add_argument("--experts", "-e", type=str, default="",
         help="Comma-separated expert IDs to load locally (empty = no experts loaded)")
     args = parser.parse_args()
 
     expert_ids = [int(x) for x in args.experts.split(",")] if args.experts.strip() else []
-    master = NexusMaster(args.manifest, http_port=args.port, local_expert_ids=expert_ids)
+    master = NexusMaster(args.manifest, http_port=args.port, bind_host=args.host, local_expert_ids=expert_ids)
     print("Loading model...")
     master.load(expert_ids=expert_ids if expert_ids else None)
     print(f"Model loaded. Local experts: {len(master.local_experts)}")
