@@ -474,6 +474,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         );
                         let _ = control_webview.evaluate_script(&js);
                         let _ = pro_webview.evaluate_script(&js);
+                    }
                     AppEvent::Minimize => {
                         // 最小化 = 隐藏到托盘（两个窗口都隐藏）
                         control_webview.window().set_visible(false);

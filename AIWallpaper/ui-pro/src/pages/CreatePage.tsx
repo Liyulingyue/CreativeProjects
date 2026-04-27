@@ -23,10 +23,10 @@ const CreatePage: React.FC<CreatePageProps> = ({
   const [isImporting, setIsImporting] = React.useState(false);
   const [showEditor, setShowEditor] = useState(false);
 
-  const handleEditSave = (base64Data: string) => {
+  const handleEditSave = (base64Data: string, asWallpaper: boolean = false) => {
     setShowEditor(false);
-    // 通过 IPC 发送数据给 Rust 进行保存
-    sendIpc("save_edited_image", { data: base64Data });
+    // 通过 IPC 发送数据给 Rust 进行保存，默认仅保存到画廊
+    sendIpc("save_edited_image", { data: base64Data, set_as_wallpaper: asWallpaper });
   };
 
   return (
