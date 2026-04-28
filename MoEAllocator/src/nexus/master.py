@@ -40,12 +40,16 @@ class WorkerInfo:
 
 class NexusMaster:
     def __init__(self, manifest_path: str, http_port: int = 5000, bind_host: str = "127.0.0.1",
-                 local_expert_ids: list[int] | None = None, dtype: torch.dtype = torch.float32):
+                 local_expert_ids: list[int] | None = None, dtype: torch.dtype = torch.float32,
+                 kv_cache: bool = False):
         self.manifest_path = manifest_path
         self.http_port = http_port
         self.bind_host = bind_host
         self.local_expert_ids = local_expert_ids or []
         self.dtype = dtype
+        self.kv_cache = kv_cache
+        self._past_keys: dict[int, torch.Tensor] = {}
+        self._past_values: dict[int, torch.Tensor] = {}
 
         with open(manifest_path) as f:
             data = json.load(f)
@@ -67,6 +71,7 @@ class NexusMaster:
         self.weights: dict[str, torch.Tensor] = {}
         self.local_experts: dict[tuple[int, int], dict[str, torch.Tensor]] = {}
         self.workers: dict[str, WorkerInfo] = {}
+        self._local_routing: set[tuple[int, int]] = set()
         self._session: Optional[aiohttp.ClientSession] = None
 
     def load_backbone(self):
@@ -98,8 +103,9 @@ class NexusMaster:
                 fp = self.output_dir / "experts" / f"expert_{eid:03d}_layer_{lid:03d}.safetensors"
                 if fp.exists():
                     w = storch.load_file(str(fp))
-                    self.local_experts[(lid, eid)] = {k: v.to(torch.float32) for k, v in w.items()}
-        logger.info(f"  Loaded {len(self.local_experts)} local expert files")
+                    self.local_experts[(lid, eid)] = {k: v.to(self.dtype) for k, v in w.items()}
+                    self._local_routing.add((lid, eid))
+        logger.info(f"  Loaded {len(self.local_experts)} local expert files, _local_routing size={len(self._local_routing)}")
 
     def load(self, expert_ids: list[int] | None = None):
         self.load_backbone()
@@ -114,6 +120,7 @@ class NexusMaster:
             raise FileNotFoundError(f"Expert file not found: {fp}")
         w = storch.load_file(str(fp))
         self.local_experts[(layer_id, expert_id)] = {k: v.to(self.dtype) for k, v in w.items()}
+        self._local_routing.add((layer_id, expert_id))
         size_mb = sum(t.numel() * 4 for t in w.values()) / (1 << 20)
         return size_mb
 
@@ -122,19 +129,27 @@ class NexusMaster:
         if key not in self.local_experts:
             raise KeyError(f"Expert (layer={layer_id}, id={expert_id}) not loaded")
         del self.local_experts[key]
+        self._local_routing.discard(key)
         return True
 
     def _rms_norm(self, x, weight):
+        input_dtype = x.dtype
+        x = x.to(torch.float32)
         variance = x.pow(2).mean(-1, keepdim=True)
-        return x * torch.rsqrt(variance + self.rms_norm_eps) * weight
+        x = x * torch.rsqrt(variance + self.rms_norm_eps)
+        return (weight * x).to(input_dtype)
 
     def _rope_compute(self, seq_len, device):
-        dim = self.head_dim
-        inv_freq = 1.0 / (self.rope_theta ** (torch.arange(0, dim, 2, dtype=torch.float32, device=device) / dim))
+        inv_freq = 1.0 / (self.rope_theta ** (torch.arange(0, self.head_dim, 2, dtype=torch.float32, device=device) / self.head_dim))
         t = torch.arange(seq_len, dtype=torch.float32, device=device)
         freqs = torch.outer(t, inv_freq)
         freqs = torch.cat([freqs, freqs], dim=-1)
         return freqs.cos(), freqs.sin()
+
+    def _rotate_half(self, x):
+        x1 = x[..., 0::2]
+        x2 = x[..., 1::2]
+        return torch.stack((-x2, x1), dim=-1).flatten(-2)
 
     def _attention(self, x, layer_id: int):
         prefix = f"model.layers.{layer_id}.self_attn"
@@ -143,29 +158,30 @@ class NexusMaster:
         v = F.linear(x, self.weights[f"{prefix}.v_proj.weight"])
 
         bsz, seq_len, _ = x.shape
-        q = q.view(bsz, seq_len, self.num_attention_heads, self.head_dim)
-        k = k.view(bsz, seq_len, self.num_kv_heads, self.head_dim)
-
+        import sys; print(f"[DEBUG _attention layer {layer_id}] seq_len={seq_len}", flush=True)
         cos, sin = self._rope_compute(seq_len, x.device)
-        cos = cos.view(seq_len, 1, self.head_dim)
-        sin = sin.view(seq_len, 1, self.head_dim)
-        cos_h, sin_h = cos[..., :self.head_dim // 2], sin[..., :self.head_dim // 2]
-
-        q0, q1 = q[..., :self.head_dim // 2], q[..., self.head_dim // 2:]
-        k0, k1 = k[..., :self.head_dim // 2], k[..., self.head_dim // 2:]
-        q = torch.cat([q0 * cos_h - q1 * sin_h, q0 * sin_h + q1 * cos_h], dim=-1)
-        k = torch.cat([k0 * cos_h - k1 * sin_h, k0 * sin_h + k1 * cos_h], dim=-1)
+        import sys; print(f"[DEBUG _attention layer {layer_id}] cos.shape={cos.shape}, sin.shape={sin.shape}, seq_len_arg={seq_len}", flush=True)
+        print(f"[DEBUG _attention layer {layer_id}] q.shape={q.shape}, k.shape={k.shape}", flush=True)
+        print(f"[DEBUG _attention layer {layer_id}] q_proj={self.weights[prefix+'.q_proj.weight'].shape}, k_proj={self.weights[prefix+'.k_proj.weight'].shape}", flush=True)
+        q = q.view(bsz, seq_len, self.num_attention_heads, self.head_dim).transpose(1, 2)
+        k = k.view(bsz, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        v = v.view(bsz, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        import sys; print(f"[DEBUG _attention layer {layer_id}] AFTER view+transpose: q.shape={q.shape}, k.shape={k.shape}", flush=True)
+        cos = cos.unsqueeze(0).unsqueeze(0)
+        sin = sin.unsqueeze(0).unsqueeze(0)
+        q = (q.float() * cos + self._rotate_half(q).float() * sin).to(q.dtype)
+        k = (k.float() * cos + self._rotate_half(k).float() * sin).to(k.dtype)
 
         if self.num_attention_heads != self.num_kv_heads:
             n_rep = self.num_attention_heads // self.num_kv_heads
             k = k.transpose(1, 2).repeat_interleave(n_rep, dim=1)
-            v = v.view(bsz, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2).repeat_interleave(n_rep, dim=1)
+            v = v.transpose(1, 2).repeat_interleave(n_rep, dim=1)
         else:
             k = k.transpose(1, 2)
-            v = v.view(bsz, seq_len, self.num_attention_heads, self.head_dim).transpose(1, 2)
-        q = q.transpose(1, 2)
+            v = v.transpose(1, 2)
 
-        attn = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        scaling = self.head_dim ** -0.5
+        attn = torch.matmul(q, k.transpose(-2, -1)) * scaling
         attn = F.softmax(attn, dim=-1)
         out = torch.matmul(attn, v).transpose(1, 2).contiguous().view(bsz, seq_len, self.hidden_size)
         return F.linear(out, self.weights[f"{prefix}.o_proj.weight"])
@@ -178,7 +194,7 @@ class NexusMaster:
 
     def _gate_forward(self, x, layer_id: int):
         gate_weight = self.weights[f"model.layers.{layer_id}.mlp.gate.weight"]
-        return F.linear(x, gate_weight)
+        return F.linear(x.float(), gate_weight.float())
 
     def _moe_expert_local(self, x, layer_id: int, expert_id: int):
         key = (layer_id, expert_id)
@@ -257,20 +273,17 @@ class NexusMaster:
         for _ in range(self.num_shared_experts):
             moe_out = moe_out + self._shared_expert(x_norm, layer_id)
 
-        gate_scores = self._gate_forward(x_norm, layer_id)
-        bsz, seq_len, num_experts = gate_scores.shape
+        gate_logits = self._gate_forward(x_norm, layer_id)
+        bsz, seq_len, num_experts = gate_logits.shape
+        logger.info(f"  Layer {layer_id}: _local_routing={len(self._local_routing)}, workers={list(self.workers.keys())}")
 
-        gate_flat = gate_scores.view(-1, num_experts)
-        topk_scores, topk_indices = torch.topk(gate_flat, k=min(self.moe_k, num_experts), dim=-1)
+        gate_flat = gate_logits.view(-1, num_experts)
+        routing_probs = F.softmax(gate_flat, dim=-1)
+        topk_probs, topk_indices = torch.topk(routing_probs, k=min(self.moe_k, num_experts), dim=-1)
         num_tokens = gate_flat.shape[0]
         K = topk_indices.shape[1]
 
         routing = self._build_routing_table()
-        available_experts = {
-            eid for (lid, eid) in self.local_experts.keys()
-        } | {
-            eid for (lid, eid) in routing.keys()
-        }
 
         shown = min(2, num_tokens)
         orig_list = [topk_indices[t][:K].tolist() for t in range(shown)]
@@ -282,46 +295,47 @@ class NexusMaster:
         fallback_total = 0
 
         for tok_idx in range(num_tokens):
-            tok_scores = gate_flat[tok_idx]
-            sorted_indices = torch.argsort(tok_scores, descending=True).tolist()
+            tok_probs = routing_probs[tok_idx]
+            tok_topk_indices = topk_indices[tok_idx]
+            tok_topk_probs = topk_probs[tok_idx]
+            sorted_idx_by_prob = torch.argsort(tok_probs, descending=True)
 
             selected = []
             used_expert_ids = set()
-            for eid in sorted_indices:
+            for eid in sorted_idx_by_prob.tolist():
                 if len(selected) >= K:
                     break
                 key = (layer_id, eid)
-                if key in self.local_experts:
-                    selected.append((eid, "local"))
+                if key in self._local_routing:
+                    selected.append((eid, "local", tok_probs[eid].item()))
                     used_expert_ids.add(eid)
                 elif key in routing:
-                    selected.append((eid, "dispatch"))
+                    selected.append((eid, "dispatch", tok_probs[eid].item()))
                     used_expert_ids.add(eid)
 
             if len(selected) < K:
-                for eid in sorted_indices:
+                for eid in sorted_idx_by_prob.tolist():
                     if len(selected) >= K:
                         break
                     if eid in used_expert_ids:
                         continue
                     key = (layer_id, eid)
-                    if key in self.local_experts:
-                        selected.append((eid, "fallback_local"))
+                    if key in self._local_routing:
+                        selected.append((eid, "fallback_local", tok_probs[eid].item()))
                         used_expert_ids.add(eid)
                         fallback_total += 1
                     elif key in routing:
-                        selected.append((eid, "fallback_dispatch"))
+                        selected.append((eid, "fallback_dispatch", tok_probs[eid].item()))
                         used_expert_ids.add(eid)
                         fallback_total += 1
 
             if tok_idx == 0:
-                logger.info(f"  Layer {layer_id}: token0 selected={[e for e,s in selected]}")
+                logger.info(f"  Layer {layer_id}: token0 selected={[e for e, s, _ in selected]}")
 
-            tok_topk_scores = topk_scores[tok_idx]
+            norm = tok_topk_probs.sum().clamp(min=1e-9)
 
-            for rank, (expert_id, source) in enumerate(selected):
-                score = tok_scores[expert_id].item()
-                weight = torch.sigmoid(torch.tensor(score, dtype=torch.float32))
+            for rank, (expert_id, source, prob) in enumerate(selected):
+                weight = prob / norm
 
                 key = (layer_id, expert_id)
                 if source in ("local", "fallback_local"):
@@ -352,6 +366,7 @@ class NexusMaster:
         return moe_out
 
     async def _transformer_layer(self, x, layer_id: int):
+        import sys; print(f"[DEBUG layer {layer_id}] x.shape={x.shape}", flush=True)
         x_norm = self._rms_norm(x, self.weights[f"model.layers.{layer_id}.input_layernorm.weight"])
         x = x + self._attention(x_norm, layer_id)
 
@@ -372,7 +387,7 @@ class NexusMaster:
 
     @torch.no_grad()
     async def generate(self, input_ids: torch.Tensor, max_new_tokens: int = 50, eos_token_id: int = 2) -> list[int]:
-        print(f"\nGenerating (max_new_tokens={max_new_tokens})...")
+        import sys; print(f"\nGenerating (max_new_tokens={max_new_tokens}), input_ids.shape={input_ids.shape}", flush=True)
         generated = input_ids[0].tolist()
         for step in range(max_new_tokens):
             logits = await self.forward(input_ids)
@@ -586,6 +601,7 @@ class NexusMaster:
             input_ids = tokens["input_ids"]
 
             logger.info(f"Inference: prompt='{prompt}', tokens={input_ids.shape[1]}")
+            logger.info(f"  Routing state: _local_routing={len(self._local_routing)} entries, workers={len(self.workers)}")
             result_ids = await self.generate(input_ids, max_new_tokens=max_tokens)
             result_text = tokenizer.decode(result_ids, skip_special_tokens=True)
 
@@ -660,14 +676,24 @@ def main():
     parser.add_argument("--dtype", "-d", type=str, default="float32",
         choices=["float32", "fp16", "float16", "bf16", "bfloat16"],
         help="Weight precision: float32 (default), fp16/float16, bf16/bfloat16")
+    parser.add_argument("--log-file", type=str, default="",
+        help="Log file path (default: stdout only)")
+    parser.add_argument("--kv-cache", action="store_true",
+        help="Enable KV cache for faster generation (experimental)")
     args = parser.parse_args()
+
+    if args.log_file:
+        Path(args.log_file).parent.mkdir(parents=True, exist_ok=True)
+        fh = logging.FileHandler(args.log_file)
+        fh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
+        logging.getLogger().addHandler(fh)
 
     dtype_map = {"float32": torch.float32, "fp16": torch.float16, "float16": torch.float16,
                   "bf16": torch.bfloat16, "bfloat16": torch.bfloat16}
     dtype = dtype_map[args.dtype]
     expert_ids = [int(x) for x in args.experts.split(",")] if args.experts.strip() else []
     master = NexusMaster(args.manifest, http_port=args.port, bind_host=args.host,
-                         local_expert_ids=expert_ids, dtype=dtype)
+                         local_expert_ids=expert_ids, dtype=dtype, kv_cache=args.kv_cache)
     print("Loading model...")
     master.load(expert_ids=expert_ids if expert_ids else None)
     print(f"Model loaded. Local experts: {len(master.local_experts)}")

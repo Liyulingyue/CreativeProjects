@@ -264,7 +264,15 @@ def main():
     parser.add_argument("--dtype", "-d", type=str, default="float32",
         choices=["float32", "fp16", "float16", "bf16", "bfloat16"],
         help="Weight precision: float32 (default), fp16/float16, bf16/bfloat16")
+    parser.add_argument("--log-file", type=str, default="",
+        help="Log file path (default: stdout only)")
     args = parser.parse_args()
+
+    if args.log_file:
+        Path(args.log_file).parent.mkdir(parents=True, exist_ok=True)
+        fh = logging.FileHandler(args.log_file)
+        fh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
+        logging.getLogger().addHandler(fh)
 
     dtype_map = {"float32": torch.float32, "fp16": torch.float16, "float16": torch.float16,
                   "bf16": torch.bfloat16, "bfloat16": torch.bfloat16}
