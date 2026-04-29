@@ -168,18 +168,17 @@ class ExpertWorker:
 
     async def _tcp_handler(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         addr = writer.get_extra_info('peername')
-        logger.info(f"TCP connection from {addr}")
         try:
             header = await self._read_exact(reader, 24)
             layer_id, expert_id, batch_size, seq_len, hidden_size, dtype_code = struct.unpack("!IIIIII", header)
             dtype_map = {0: torch.float32, 1: torch.float16, 2: torch.bfloat16}
             dtype = dtype_map.get(dtype_code, torch.float32)
+            logger.info(f"TCP recv: expert_{expert_id}_L{layer_id} shape=({batch_size},{seq_len},{hidden_size}) dtype={dtype}")
 
             data_len = await self._read_exact(reader, 4)
             n_bytes = struct.unpack("!I", data_len)[0]
             hidden_data = await self._read_exact(reader, n_bytes)
-
-            hidden = torch.frombuffer(hidden_data, dtype=dtype).reshape(batch_size, seq_len, hidden_size)
+            hidden = torch.frombuffer(hidden_data, dtype=dtype).reshape(batch_size, seq_len, hidden_size).clone()
 
             key = (layer_id, expert_id)
             if key not in self.expert_weights:
@@ -210,7 +209,7 @@ class ExpertWorker:
             writer.write(struct.pack("!I", len(result_bytes)))
             writer.write(result_bytes)
             await writer.drain()
-            logger.debug(f"Processed expert_{expert_id}_layer_{layer_id}, sent {len(result_bytes)} bytes")
+            logger.info(f"TCP send: expert_{expert_id}_L{layer_id} result={down.shape}")
 
         except Exception as e:
             logger.error(f"TCP handler error: {e}")
@@ -278,6 +277,8 @@ def main():
                   "bf16": torch.bfloat16, "bfloat16": torch.bfloat16}
     dtype = dtype_map[args.dtype]
     worker_id = args.id or f"worker-{args.http_port}"
+    logger.info(f"[v=2026-04-29T20:40:00] Worker starting: id={worker_id}, http_port={args.http_port}, tcp_port={args.tcp_port}, "
+                f"host={args.host}, dtype={args.dtype}, experts_dir={args.experts_dir}, expert_ids={args.expert_ids}, master={args.master}")
     worker = ExpertWorker(worker_id, args.http_port, args.tcp_port, bind_host=args.host,
                          advertise_host=args.advertise_host, experts_dir=args.experts_dir, dtype=dtype)
 

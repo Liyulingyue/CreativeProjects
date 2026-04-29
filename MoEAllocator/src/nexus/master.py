@@ -50,6 +50,8 @@ class NexusMaster:
         self.kv_cache = kv_cache
         self._past_keys: dict[int, torch.Tensor] = {}
         self._past_values: dict[int, torch.Tensor] = {}
+        self._routing_table: dict[tuple[int, int], object] = {}
+        self._position_offset: int = 0
 
         with open(manifest_path) as f:
             data = json.load(f)
@@ -139,51 +141,65 @@ class NexusMaster:
         x = x * torch.rsqrt(variance + self.rms_norm_eps)
         return (weight * x).to(input_dtype)
 
-    def _rope_compute(self, seq_len, device):
+    def _rope_compute(self, seq_len, device, position_offset=0):
         inv_freq = 1.0 / (self.rope_theta ** (torch.arange(0, self.head_dim, 2, dtype=torch.float32, device=device) / self.head_dim))
-        t = torch.arange(seq_len, dtype=torch.float32, device=device)
+        t = torch.arange(position_offset, position_offset + seq_len, dtype=torch.float32, device=device)
         freqs = torch.outer(t, inv_freq)
-        freqs = torch.cat([freqs, freqs], dim=-1)
         return freqs.cos(), freqs.sin()
 
-    def _rotate_half(self, x):
-        x1 = x[..., 0::2]
-        x2 = x[..., 1::2]
-        return torch.stack((-x2, x1), dim=-1).flatten(-2)
+    def _apply_rope(self, q, k, cos, sin):
+        x1 = q[..., : q.shape[-1] // 2]
+        x2 = q[..., q.shape[-1] // 2 :]
+        q_embed = torch.cat(((x1 * cos - x2 * sin), (x1 * sin + x2 * cos)), dim=-1)
+        x1 = k[..., : k.shape[-1] // 2]
+        x2 = k[..., k.shape[-1] // 2 :]
+        k_embed = torch.cat(((x1 * cos - x2 * sin), (x1 * sin + x2 * cos)), dim=-1)
+        return q_embed, k_embed
 
-    def _attention(self, x, layer_id: int):
+    def _attention(self, x, layer_id: int, use_cache: bool = False, position_offset: int = 0):
+        assert x.dim() == 3 and x.shape[0] == 1 and x.shape[2] == self.hidden_size, f"Bad x shape: {x.shape}"
         prefix = f"model.layers.{layer_id}.self_attn"
-        q = F.linear(x, self.weights[f"{prefix}.q_proj.weight"])
-        k = F.linear(x, self.weights[f"{prefix}.k_proj.weight"])
-        v = F.linear(x, self.weights[f"{prefix}.v_proj.weight"])
+        q_w = self.weights[f"{prefix}.q_proj.weight"]
+        k_w = self.weights[f"{prefix}.k_proj.weight"]
+        v_w = self.weights[f"{prefix}.v_proj.weight"]
+        q = torch.matmul(x, q_w.t()) if q_w.shape[0] != x.shape[-1] else F.linear(x, q_w)
+        k = torch.matmul(x, k_w.t()) if k_w.shape[0] != x.shape[-1] else F.linear(x, k_w)
+        v = torch.matmul(x, v_w.t()) if v_w.shape[0] != x.shape[-1] else F.linear(x, v_w)
 
         bsz, seq_len, _ = x.shape
-        import sys; print(f"[DEBUG _attention layer {layer_id}] seq_len={seq_len}", flush=True)
-        cos, sin = self._rope_compute(seq_len, x.device)
-        import sys; print(f"[DEBUG _attention layer {layer_id}] cos.shape={cos.shape}, sin.shape={sin.shape}, seq_len_arg={seq_len}", flush=True)
-        print(f"[DEBUG _attention layer {layer_id}] q.shape={q.shape}, k.shape={k.shape}", flush=True)
-        print(f"[DEBUG _attention layer {layer_id}] q_proj={self.weights[prefix+'.q_proj.weight'].shape}, k_proj={self.weights[prefix+'.k_proj.weight'].shape}", flush=True)
-        q = q.view(bsz, seq_len, self.num_attention_heads, self.head_dim).transpose(1, 2)
-        k = k.view(bsz, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
-        v = v.view(bsz, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
-        import sys; print(f"[DEBUG _attention layer {layer_id}] AFTER view+transpose: q.shape={q.shape}, k.shape={k.shape}", flush=True)
-        cos = cos.unsqueeze(0).unsqueeze(0)
-        sin = sin.unsqueeze(0).unsqueeze(0)
-        q = (q.float() * cos + self._rotate_half(q).float() * sin).to(q.dtype)
-        k = (k.float() * cos + self._rotate_half(k).float() * sin).to(k.dtype)
+        q = q.reshape(bsz, seq_len, self.num_attention_heads, self.head_dim).transpose(1, 2)
+        k_new = k.reshape(bsz, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        v_new = v.reshape(bsz, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+
+        cos, sin = self._rope_compute(seq_len, x.device, position_offset)
+        cos = cos.unsqueeze(0).unsqueeze(1)
+        sin = sin.unsqueeze(0).unsqueeze(1)
+        q, k_new = self._apply_rope(q, k_new, cos, sin)
+
+        if use_cache and self.kv_cache:
+            if layer_id in self._past_keys:
+                k_new = torch.cat([self._past_keys[layer_id], k_new], dim=2)
+                v_new = torch.cat([self._past_values[layer_id], v_new], dim=2)
+            self._past_keys[layer_id] = k_new
+            self._past_values[layer_id] = v_new
 
         if self.num_attention_heads != self.num_kv_heads:
             n_rep = self.num_attention_heads // self.num_kv_heads
-            k = k.transpose(1, 2).repeat_interleave(n_rep, dim=1)
-            v = v.transpose(1, 2).repeat_interleave(n_rep, dim=1)
+            k_new = k_new.repeat_interleave(n_rep, dim=1)
+            v_new = v_new.repeat_interleave(n_rep, dim=1)
         else:
-            k = k.transpose(1, 2)
-            v = v.transpose(1, 2)
+            k_new = k_new.transpose(1, 2)
+            v_new = v_new.transpose(1, 2)
 
         scaling = self.head_dim ** -0.5
-        attn = torch.matmul(q, k.transpose(-2, -1)) * scaling
+        attn = torch.matmul(q, k_new.transpose(-2, -1)) * scaling
+        if seq_len > 1:
+            past_len = 0 if layer_id not in self._past_keys else (self._past_keys[layer_id].shape[2] - seq_len)
+            total_len = past_len + seq_len
+            causal = torch.triu(torch.ones(seq_len, total_len, dtype=torch.bool, device=x.device), diagonal=1)
+            attn = attn.masked_fill(causal, float("-inf"))
         attn = F.softmax(attn, dim=-1)
-        out = torch.matmul(attn, v).transpose(1, 2).contiguous().view(bsz, seq_len, self.hidden_size)
+        out = torch.matmul(attn, v_new).transpose(1, 2).contiguous().view(bsz, seq_len, self.hidden_size)
         return F.linear(out, self.weights[f"{prefix}.o_proj.weight"])
 
     def _ffn(self, x, down, up, gate):
@@ -212,12 +228,10 @@ class NexusMaster:
 
     async def _dispatch_expert(self, worker: WorkerInfo, layer_id: int, expert_id: int, hidden: torch.Tensor, rank: int = 0):
         try:
-            logger.info(f"  -> dispatch token-r{rank} expert_{expert_id}_layer_{layer_id} to {worker.worker_id}")
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(worker.host, worker.tcp_port),
-                timeout=30.0
-            )
+            logger.info(f"  -> dispatch expert_{expert_id}_L{layer_id} to {worker.worker_id}")
+            reader, writer = await asyncio.open_connection(worker.host, worker.tcp_port)
             dtype_code = {torch.float32: 0, torch.float16: 1, torch.bfloat16: 2}.get(self.dtype, 0)
+            result_dtype = {0: torch.float32, 1: torch.float16, 2: torch.bfloat16}.get(dtype_code, torch.float32)
             header = struct.pack("!IIIIII", layer_id, expert_id, hidden.shape[0], hidden.shape[1], hidden.shape[2], dtype_code)
             data = hidden.to(self.dtype).numpy().tobytes()
             writer.write(header)
@@ -238,8 +252,8 @@ class NexusMaster:
 
             if size == 0:
                 return None
-            result = torch.frombuffer(result_data, dtype=torch.float32).reshape(hidden.shape)
-            logger.info(f"  <- received token-r{rank} expert_{expert_id}_layer_{layer_id} from {worker.worker_id}")
+            result = torch.frombuffer(result_data, dtype=result_dtype).reshape(hidden.shape).clone()
+            logger.debug(f"  <- expert_{expert_id}_L{layer_id} result={result.shape}")
             return result
         except Exception as e:
             logger.error(f"TCP dispatch to worker {worker.worker_id} failed: {e}")
@@ -275,7 +289,6 @@ class NexusMaster:
 
         gate_logits = self._gate_forward(x_norm, layer_id)
         bsz, seq_len, num_experts = gate_logits.shape
-        logger.info(f"  Layer {layer_id}: _local_routing={len(self._local_routing)}, workers={list(self.workers.keys())}")
 
         gate_flat = gate_logits.view(-1, num_experts)
         routing_probs = F.softmax(gate_flat, dim=-1)
@@ -287,6 +300,7 @@ class NexusMaster:
 
         shown = min(2, num_tokens)
         orig_list = [topk_indices[t][:K].tolist() for t in range(shown)]
+        logger.info(f"  Layer {layer_id}: _local_routing={len(self._local_routing)}, workers={list(self.workers.keys())}")
         logger.info(f"  Layer {layer_id}: first {shown} token(s) gate picks: {orig_list}")
 
         tasks = {}
@@ -329,8 +343,6 @@ class NexusMaster:
                         used_expert_ids.add(eid)
                         fallback_total += 1
 
-            if tok_idx == 0:
-                logger.info(f"  Layer {layer_id}: token0 selected={[e for e, s, _ in selected]}")
 
             norm = tok_topk_probs.sum().clamp(min=1e-9)
 
@@ -346,7 +358,7 @@ class NexusMaster:
                 else:
                     worker = routing[key]
                     task = asyncio.create_task(
-                        self._dispatch_expert(worker, layer_id, expert_id, x_norm, rank=rank)
+                        self._dispatch_expert(worker, layer_id, expert_id, x_norm[:, [tok_idx], :], rank=rank)
                     )
                     tasks[(tok_idx, rank)] = (expert_id, task, weight)
                     dispatched += 1
@@ -365,10 +377,9 @@ class NexusMaster:
 
         return moe_out
 
-    async def _transformer_layer(self, x, layer_id: int):
-        import sys; print(f"[DEBUG layer {layer_id}] x.shape={x.shape}", flush=True)
+    async def _transformer_layer(self, x, layer_id: int, use_cache: bool = False, position_offset: int = 0):
         x_norm = self._rms_norm(x, self.weights[f"model.layers.{layer_id}.input_layernorm.weight"])
-        x = x + self._attention(x_norm, layer_id)
+        x = x + self._attention(x_norm, layer_id, use_cache, position_offset)
 
         x_norm = self._rms_norm(x, self.weights[f"model.layers.{layer_id}.post_attention_layernorm.weight"])
         if layer_id == 0:
@@ -378,27 +389,35 @@ class NexusMaster:
             x = x + moe_out
         return x
 
-    async def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+    async def forward(self, input_ids: torch.Tensor, use_cache: bool = False, position_offset: int = 0) -> torch.Tensor:
         x = F.embedding(input_ids, self.weights["model.embed_tokens.weight"])
         for lid in range(self.num_hidden_layers):
-            x = await self._transformer_layer(x, lid)
+            x = await self._transformer_layer(x, lid, use_cache, position_offset)
         x = self._rms_norm(x, self.weights["model.norm.weight"])
         return F.linear(x, self.weights["model.embed_tokens.weight"])
 
     @torch.no_grad()
     async def generate(self, input_ids: torch.Tensor, max_new_tokens: int = 50, eos_token_id: int = 2) -> list[int]:
-        import sys; print(f"\nGenerating (max_new_tokens={max_new_tokens}), input_ids.shape={input_ids.shape}", flush=True)
-        generated = input_ids[0].tolist()
-        for step in range(max_new_tokens):
-            logits = await self.forward(input_ids)
+        if self.kv_cache:
+            self._past_keys.clear()
+            self._past_values.clear()
+        self._position_offset = 0
+        generated = []
+        logits = await self.forward(input_ids, use_cache=True, position_offset=0)
+        self._position_offset += input_ids.shape[1]
+        next_token = logits[0, -1].argmax().item()
+        generated.append(next_token)
+        if next_token == eos_token_id:
+            return generated
+        new_ids = torch.tensor([[next_token]], dtype=input_ids.dtype)
+        for step in range(max_new_tokens - 1):
+            logits = await self.forward(new_ids, use_cache=True, position_offset=self._position_offset)
+            self._position_offset += 1
             next_token = logits[0, -1].argmax().item()
             generated.append(next_token)
             if next_token == eos_token_id:
                 break
             new_ids = torch.tensor([[next_token]], dtype=input_ids.dtype)
-            input_ids = torch.cat([input_ids, new_ids], dim=1)
-            if (step + 1) % 10 == 0:
-                print(f"  Step {step + 1}/{max_new_tokens}, seq_len={input_ids.shape[1]}")
         return generated
 
     async def _http_handler_worker_register(self, request: web.Request) -> web.Response:
@@ -601,7 +620,6 @@ class NexusMaster:
             input_ids = tokens["input_ids"]
 
             logger.info(f"Inference: prompt='{prompt}', tokens={input_ids.shape[1]}")
-            logger.info(f"  Routing state: _local_routing={len(self._local_routing)} entries, workers={len(self.workers)}")
             result_ids = await self.generate(input_ids, max_new_tokens=max_tokens)
             result_text = tokenizer.decode(result_ids, skip_special_tokens=True)
 
@@ -695,6 +713,7 @@ def main():
     master = NexusMaster(args.manifest, http_port=args.port, bind_host=args.host,
                          local_expert_ids=expert_ids, dtype=dtype, kv_cache=args.kv_cache)
     print("Loading model...")
+    logger.info(f"[v=2026-04-29T20:40:00] manifest={args.manifest}, port={args.port}, host={args.host}, dtype={args.dtype}, experts={expert_ids}, kv_cache={args.kv_cache}")
     master.load(expert_ids=expert_ids if expert_ids else None)
     print(f"Model loaded. Local experts: {len(master.local_experts)}")
     master.start_blocking()
