@@ -3,8 +3,8 @@
 
 set -e
 
-MANIFEST="output/splits/ERNIE-4.5-21B-A3B-PT-full/manifest.json"
-WORKERS_DIR="output/splits/ERNIE-4.5-21B-A3B-PT-full/experts"
+MANIFEST="output/splits/ERNIE-4.5-21B-A3B-PT-k6/manifest.json"
+WORKERS_DIR="output/splits/ERNIE-4.5-21B-A3B-PT-k6/experts"
 LOG_DIR="logs"
 MASTER_LOG="$LOG_DIR/master.log"
 WORKER_LOG="$LOG_DIR/worker.log"
@@ -17,7 +17,7 @@ sleep 2
 rm -rf "$LOG_DIR"
 mkdir -p "$LOG_DIR"
 
-echo "[v=2026-04-29T19:40:00] Step 2: Start Master (experts 0,1,2,3)"
+echo "[v=2026-04-29T19:40:00] Step 2: Start Master (experts 0,1,2)"
 # 若KV_CACHE=true，则master会在内存中缓存专家的key/value，worker每次调用专家时会先从master获取key/value，如果缓存命中则直接返回结果，否则才会调用专家计算并返回结果。这样可以减少worker与master之间的通信开销，提高性能。
 if [ "$KV_CACHE" = "true" ]; then
     echo "  Using KV cache: master will cache expert key/value in memory, worker will first check cache before calling experts."
@@ -26,7 +26,7 @@ if [ "$KV_CACHE" = "true" ]; then
         --port 5000 \
         --host 127.0.0.1 \
         --dtype "$DTYPE" \
-        --experts 0,1,2,3 \
+        --experts 0,1,2 \
         --log-file "$MASTER_LOG" \
         --kv-cache &
 else
@@ -37,7 +37,7 @@ else
         --port 5000 \
         --host 127.0.0.1 \
         --dtype "$DTYPE" \
-        --experts 0,1,2,3 \
+        --experts 0,1,2 \
         --log-file "$MASTER_LOG" &
 fi
 MASTER_PID=$!
@@ -52,7 +52,7 @@ for i in $(seq 1 120); do
     sleep 1
 done
 
-echo "[v=2026-04-29T19:40:00] Step 4: Start Worker (experts 4,5,6)"
+echo "[v=2026-04-29T19:40:00] Step 4: Start Worker (experts 3,4,5)"
 .venv/bin/python src/nexus/worker.py \
     --id worker-1 \
     --http-port 8000 \
@@ -60,7 +60,7 @@ echo "[v=2026-04-29T19:40:00] Step 4: Start Worker (experts 4,5,6)"
     --host 127.0.0.1 \
     --dtype "$DTYPE" \
     --experts-dir "$WORKERS_DIR" \
-    --expert-ids 4,5,6 \
+    --expert-ids 3,4,5 \
     --master http://127.0.0.1:5000/workers \
     --log-file "$WORKER_LOG" &
 WORKER_PID=$!
