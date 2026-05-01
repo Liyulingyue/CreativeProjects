@@ -73,20 +73,35 @@ python scripts/validate_image.py output/italian_recipe_card.png --verbose
 ```
 +---------------------------+
 |         菜名标题          |
-|  +---------------------+  |
-|  | 食材清单 | 烹饪步骤 |  |
-|  |         |          |  |
-|  |  +---------------+  |  |
-|  |  |   您的美食    |  |  |
-|  |  |   照片位置    |  |  |
-|  |  +---------------+  |  |
-|  |         |          |  |
-|  +---------------------+  |
-|   准备时间 |  份量        |
+|                           |
+|   [步骤1 + 对应食材]      |
+|         +-----+           |
+| [步骤2] |     | [步骤3]   |
+| +食材   | 美食 | +食材     |
+|         | 照片 |          |
+|   [步骤4 + 对应食材]      |
+|         +-----+           |
+|                           |
+|    准备时间 |  份量        |
 +---------------------------+
 ```
 
+**核心特点**：
+- 竖屏方向 (896x1200)
+- 圆形中心区域用于放置美食照片
+- 每个步骤与其对应的食材组合在一起
+- 步骤+食材组合按照烹饪顺序顺时针排列
+- 视觉流向遵循烹饪顺序
+
 ## 自定义选项
+
+### 布局样式
+
+| 样式 | 描述 |
+|------|------|
+| **circular** | 食材径向环绕中心排列（默认） |
+| **grid** | 食材网格状环绕中心排列 |
+| **sequential** | 食材顺序环绕中心排列 |
 
 ### 菜系类型
 
@@ -119,6 +134,18 @@ python scripts/validate_image.py output/italian_recipe_card.png --verbose
 | **中性 (neutral)** | 灰米色调，专业平衡 |
 | **鲜艳 (vibrant)** | 明亮饱和，引人注目 |
 
+### 图片尺寸
+
+| 尺寸 | 比例 |
+|------|------|
+| 896x1200 | 竖屏（默认） |
+| 768x1376 | 9:16 竖屏 |
+| 848x1264 | 2:3 竖屏 |
+| 1024x1024 | 正方形 |
+| 1200x896 | 4:3 横屏 |
+| 1264x848 | 3:2 横屏 |
+| 1376x768 | 16:9 横屏 |
+
 ## 使用示例
 
 ### 基础食谱卡片
@@ -126,7 +153,26 @@ python scripts/validate_image.py output/italian_recipe_card.png --verbose
 ```bash
 python scripts/generate_recipe_template.py "Italian" \
     --style modern \
-    --output_dir output/
+    --output-dir output/
+```
+
+### 使用不同布局样式
+
+```bash
+# 环形布局（默认）- 食材径向环绕中心
+python scripts/generate_recipe_template.py "Chinese" \
+    --layout-style circular \
+    --output-dir output/
+
+# 网格布局 - 食材网格状环绕中心
+python scripts/generate_recipe_template.py "Chinese" \
+    --layout-style grid \
+    --output-dir output/
+
+# 顺序布局 - 食材顺序环绕中心
+python scripts/generate_recipe_template.py "Chinese" \
+    --layout-style sequential \
+    --output-dir output/
 ```
 
 ### 高级食谱卡片
@@ -137,8 +183,9 @@ python scripts/generate_recipe_template.py "Japanese" \
     --color-scheme cool \
     --center-ratio 0.5 \
     --num-steps 8 \
+    --layout-style circular \
     --custom-elements "营养信息" "烹饪技巧" \
-    --output_dir output/
+    --output-dir output/
 ```
 
 ### 批量生成
@@ -148,7 +195,7 @@ python scripts/generate_recipe_template.py "Japanese" \
 for cuisine in Italian Chinese Mexican Japanese; do
     python scripts/generate_recipe_template.py "$cuisine" \
         --style modern \
-        --output_dir recipe_collection/
+        --output-dir recipe_collection/
 done
 ```
 

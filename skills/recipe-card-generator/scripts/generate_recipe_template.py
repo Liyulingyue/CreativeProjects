@@ -17,7 +17,8 @@ def generate_recipe_prompt(
     include_ingredients: bool = True,
     include_steps: bool = True,
     num_steps: int = 5,
-    custom_elements: Optional[List[str]] = None
+    custom_elements: Optional[List[str]] = None,
+    layout_style: str = "circular"
 ) -> str:
     """
     Generate an optimized prompt for recipe card generation.
@@ -31,6 +32,7 @@ def generate_recipe_prompt(
         include_steps: Whether to include cooking steps
         num_steps: Number of steps to include
         custom_elements: Additional custom elements to include
+        layout_style: Layout style (circular, grid, sequential)
     
     Returns:
         Optimized prompt string
@@ -52,25 +54,42 @@ def generate_recipe_prompt(
         "vibrant": "bright, saturated colors, energetic, eye-catching"
     }
     
-    # Base prompt
-    base_prompt = f"Professional recipe card template, {styles.get(style, styles['modern'])}, "
+    # Base prompt - vertical orientation
+    base_prompt = f"Professional recipe card template, vertical orientation, portrait format, {styles.get(style, styles['modern'])}, "
     base_prompt += f"{color_schemes.get(color_scheme, color_schemes['warm'])}, "
     base_prompt += f"{cuisine_type} cuisine recipe layout, "
     
     # Center area specification
     center_size = int(center_ratio * 100)
-    base_prompt += f"prominent center area taking {center_size}% of total space, "
+    base_prompt += f"circular center area taking {center_size}% of total space, "
     base_prompt += "clear boundaries, completely empty for user food photo, "
+    
+    # Layout style for ingredients and steps
+    if layout_style == "circular":
+        base_prompt += "cooking steps with their corresponding ingredients arranged in a circular pattern around the center area, "
+        base_prompt += "each step positioned radially around the center with its required ingredients nearby, "
+        base_prompt += "steps ordered clockwise by cooking sequence, "
+        base_prompt += "ingredients visually grouped with their associated step, "
+    elif layout_style == "grid":
+        base_prompt += "cooking steps with their corresponding ingredients arranged in a grid pattern around the center area, "
+        base_prompt += "each step grouped with its required ingredients, "
+        base_prompt += "steps ordered by cooking sequence, "
+    else:  # sequential
+        base_prompt += "cooking steps with their corresponding ingredients arranged sequentially around the center area, "
+        base_prompt += "each step grouped with its required ingredients, "
+        base_prompt += "steps ordered by cooking sequence, "
     
     # Surrounding elements
     elements = []
-    if include_ingredients:
+    if include_ingredients and include_steps:
+        elements.append(f"{num_steps} cooking steps each with its corresponding ingredients arranged around center")
+    elif include_ingredients:
         elements.append("ingredient list with measurements")
-    if include_steps:
+    elif include_steps:
         elements.append(f"step-by-step cooking instructions ({num_steps} steps)")
     
     if elements:
-        base_prompt += f"surrounded by {', '.join(elements)}, "
+        base_prompt += f"with {', '.join(elements)}, "
     
     # Custom elements
     if custom_elements:
@@ -78,7 +97,8 @@ def generate_recipe_prompt(
     
     # Quality specifications
     base_prompt += "high quality, print-ready, 300 DPI, professional typography, "
-    base_prompt += "clear hierarchy, balanced composition, readable text"
+    base_prompt += "clear hierarchy, balanced composition, readable text, "
+    base_prompt += "visual flow following clockwise cooking order"
     
     return base_prompt
 
@@ -86,7 +106,8 @@ def generate_layout_specification(
     center_ratio: float = 0.4,
     include_ingredients: bool = True,
     include_steps: bool = True,
-    num_steps: int = 5
+    num_steps: int = 5,
+    layout_style: str = "circular"
 ) -> Dict:
     """
     Generate layout specification for a recipe card.
@@ -96,18 +117,22 @@ def generate_layout_specification(
         include_ingredients: Whether to include ingredients
         include_steps: Whether to include steps
         num_steps: Number of steps
+        layout_style: Layout style (circular, grid, sequential)
     
     Returns:
         Layout specification dictionary
     """
     layout = {
-        "total_size": {"width": 1200, "height": 1600},
+        "total_size": {"width": 896, "height": 1200},
+        "orientation": "portrait",
         "center_area": {
             "width_percent": center_ratio * 100,
             "height_percent": center_ratio * 100,
             "position": "center",
+            "shape": "circular",
             "content": "user_food_photo"
         },
+        "layout_style": layout_style,
         "sections": []
     }
     
@@ -115,37 +140,39 @@ def generate_layout_specification(
     layout["sections"].append({
         "name": "title",
         "position": "top",
-        "height_percent": 15,
+        "height_percent": 12,
         "content": "recipe_name",
         "typography": "large_decorative"
     })
     
-    # Ingredients section
+    # Ingredients section - arranged around center
     if include_ingredients:
         layout["sections"].append({
             "name": "ingredients",
-            "position": "left",
-            "width_percent": 30,
-            "content": "ingredient_list",
-            "typography": "clear_readable"
+            "position": "around_center",
+            "arrangement": "circular",
+            "content": "ingredient_list_ordered_by_usage",
+            "typography": "clear_readable",
+            "order": "clockwise_by_usage_sequence"
         })
     
-    # Steps section
+    # Steps section - arranged around ingredients
     if include_steps:
         layout["sections"].append({
             "name": "steps",
-            "position": "right",
-            "width_percent": 30,
-            "content": "cooking_steps",
+            "position": "around_ingredients",
+            "arrangement": "circular",
+            "content": "cooking_steps_ordered",
             "num_items": num_steps,
-            "typography": "numbered_list"
+            "typography": "numbered_list",
+            "order": "clockwise_by_step_sequence"
         })
     
     # Info section
     layout["sections"].append({
         "name": "info",
         "position": "bottom",
-        "height_percent": 10,
+        "height_percent": 8,
         "content": "prep_time_cook_time_servings",
         "typography": "small_clear"
     })
@@ -176,6 +203,7 @@ def create_recipe_card_template(
     include_steps: bool = True,
     num_steps: int = 5,
     custom_elements: Optional[List[str]] = None,
+    layout_style: str = "circular",
     output_dir: Optional[str] = None
 ) -> Dict:
     """
@@ -190,6 +218,7 @@ def create_recipe_card_template(
         include_steps: Whether to include steps
         num_steps: Number of steps
         custom_elements: Additional custom elements
+        layout_style: Layout style for ingredients around center
         output_dir: Directory to save template files
     
     Returns:
@@ -205,7 +234,8 @@ def create_recipe_card_template(
         include_ingredients=include_ingredients,
         include_steps=include_steps,
         num_steps=num_steps,
-        custom_elements=custom_elements
+        custom_elements=custom_elements,
+        layout_style=layout_style
     )
     
     # Generate layout
@@ -213,7 +243,8 @@ def create_recipe_card_template(
         center_ratio=center_ratio,
         include_ingredients=include_ingredients,
         include_steps=include_steps,
-        num_steps=num_steps
+        num_steps=num_steps,
+        layout_style=layout_style
     )
     
     # Generate negative prompt
@@ -226,14 +257,16 @@ def create_recipe_card_template(
         "cuisine_type": cuisine_type,
         "style": style,
         "color_scheme": color_scheme,
+        "layout_style": layout_style,
+        "image_size": {"width": 896, "height": 1200},
         "prompts": {
             "main": prompt,
             "negative": negative_prompt,
             "style_variations": {
-                "modern": generate_recipe_prompt(cuisine_type, "modern", color_scheme, center_ratio),
-                "rustic": generate_recipe_prompt(cuisine_type, "rustic", color_scheme, center_ratio),
-                "elegant": generate_recipe_prompt(cuisine_type, "elegant", color_scheme, center_ratio),
-                "playful": generate_recipe_prompt(cuisine_type, "playful", color_scheme, center_ratio)
+                "modern": generate_recipe_prompt(cuisine_type, "modern", color_scheme, center_ratio, layout_style=layout_style),
+                "rustic": generate_recipe_prompt(cuisine_type, "rustic", color_scheme, center_ratio, layout_style=layout_style),
+                "elegant": generate_recipe_prompt(cuisine_type, "elegant", color_scheme, center_ratio, layout_style=layout_style),
+                "playful": generate_recipe_prompt(cuisine_type, "playful", color_scheme, center_ratio, layout_style=layout_style)
             }
         },
         "layout": layout,
@@ -242,7 +275,8 @@ def create_recipe_card_template(
             "styles": ["modern", "rustic", "elegant", "playful"],
             "color_schemes": ["warm", "cool", "neutral", "vibrant"],
             "center_ratios": [0.3, 0.4, 0.5, 0.6],
-            "num_steps": [3, 5, 7, 10]
+            "num_steps": [3, 5, 7, 10],
+            "layout_styles": ["circular", "grid", "sequential"]
         },
         "usage_instructions": {
             "step1": "Generate image using the main prompt",
@@ -297,6 +331,9 @@ def main():
                        help="Number of cooking steps")
     parser.add_argument("--custom-elements", nargs="+",
                        help="Additional custom elements to include")
+    parser.add_argument("--layout-style", default="circular",
+                       choices=["circular", "grid", "sequential"],
+                       help="Layout style for ingredients around center")
     parser.add_argument("--output-dir", 
                        help="Directory to save template files")
     parser.add_argument("--json", action="store_true",
@@ -314,6 +351,7 @@ def main():
         include_steps=not args.no_steps,
         num_steps=args.num_steps,
         custom_elements=args.custom_elements,
+        layout_style=args.layout_style,
         output_dir=args.output_dir
     )
     

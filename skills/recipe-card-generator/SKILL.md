@@ -41,12 +41,12 @@ export BAIDU_API_KEY="your_api_key_from_aistudio"
 python scripts/generate_recipe_template.py "Italian" \
     --style modern \
     --color-scheme warm \
-    --output_dir output/
+    --output-dir output/
 
 # Generate Chinese recipe card with rustic style
 python scripts/generate_recipe_template.py "Chinese" \
     --style rustic \
-    --output_dir output/
+    --output-dir output/
 ```
 
 ### 2. Validate the Generated Image
@@ -65,22 +65,33 @@ python scripts/validate_image.py output/italian_recipe_card.png --verbose
 
 ```
 +---------------------------+
-|      Recipe Title         |
-|  +---------------------+  |
-|  | Ingredients | Steps |  |
-|  |    List     |       |  |
-|  |             |       |  |
-|  |  +---------------+  |  |
-|  |  | Your Food     |  |  |
-|  |  | Photo Here    |  |  |
-|  |  +---------------+  |  |
-|  |             |       |  |
-|  +---------------------+  |
-|   Prep Time | Servings    |
+|        Recipe Title       |
+|                           |
+|   [step1 + ingredients]   |
+|         +-----+           |
+| [step2] |     | [step3]   |
+| +ingr   | Food| +ingr     |
+|         | Photo|          |
+|   [step4 + ingredients]   |
+|         +-----+           |
+|                           |
+|    Prep Time | Servings   |
 +---------------------------+
 ```
 
+**Key Features**:
+- Portrait orientation (896x1200)
+- Circular center area for food photo
+- Each step grouped with its corresponding ingredients
+- Steps and ingredients arranged clockwise by cooking sequence
+- Visual flow follows the cooking order
+
 ## Customization Options
+
+### Layout Styles
+- **Circular**: Ingredients arranged radially around center (default)
+- **Grid**: Ingredients arranged in grid pattern around center
+- **Sequential**: Ingredients arranged sequentially around center
 
 ### Cuisine Types
 - Italian, Chinese, Mexican, Japanese, Indian
@@ -98,27 +109,44 @@ python scripts/validate_image.py output/italian_recipe_card.png --verbose
 - **Neutral**: Grays and beiges, professional, balanced
 - **Vibrant**: Bright, saturated, eye-catching
 
+### Image Sizes
+- Default: 896x1200 (portrait)
+- Supported: 768x1376, 848x1264, 896x1200, 1024x1024, 1200x896, 1264x848, 1376x768
+
 ## Example Prompts
 
-### Italian Recipe Card (Modern)
+### Italian Recipe Card (Modern, Circular Layout)
 ```
-Professional recipe card template, minimalist design, clean lines, 
-sans-serif fonts, white space, geometric elements, warm earth tones, 
-Italian cuisine recipe layout, center area taking 40% of total space, 
-clear boundaries, completely empty for user food photo, surrounded by 
-ingredient list and cooking steps, high quality, print-ready, 300 DPI, 
-professional typography, clear hierarchy, balanced composition
+Professional recipe card template, vertical orientation, portrait format, 
+minimalist design, clean lines, sans-serif fonts, white space, geometric 
+elements, warm earth tones, golden accents, cozy atmosphere, Italian 
+cuisine recipe layout, circular center area taking 40% of total space, 
+clear boundaries, completely empty for user food photo, cooking steps 
+with their corresponding ingredients arranged in a circular pattern 
+around the center area, each step positioned radially around the center 
+with its required ingredients nearby, steps ordered clockwise by cooking 
+sequence, ingredients visually grouped with their associated step, 
+with 5 cooking steps each with its corresponding ingredients arranged 
+around center, high quality, print-ready, 300 DPI, professional 
+typography, clear hierarchy, balanced composition, readable text, 
+visual flow following clockwise cooking order
 ```
 
-### Chinese Recipe Card (Rustic)
+### Chinese Recipe Card (Rustic, Circular Layout)
 ```
-Professional recipe card template, vintage paper texture, 
-handwritten-style fonts, warm earth tones, aged look, artisan feel, 
-organic shapes, Chinese cuisine recipe layout, center area taking 
-40% of total space, clear boundaries, completely empty for user food 
-photo, surrounded by ingredient list and cooking steps, high quality, 
-print-ready, 300 DPI, professional typography, clear hierarchy, 
-balanced composition
+Professional recipe card template, vertical orientation, portrait format, 
+vintage paper texture, handwritten-style fonts, warm earth tones, aged 
+look, artisan feel, organic shapes, Chinese cuisine recipe layout, 
+circular center area taking 40% of total space, clear boundaries, 
+completely empty for user food photo, cooking steps with their 
+corresponding ingredients arranged in a circular pattern around the 
+center area, each step positioned radially around the center with its 
+required ingredients nearby, steps ordered clockwise by cooking sequence, 
+ingredients visually grouped with their associated step, with 5 cooking 
+steps each with its corresponding ingredients arranged around center, 
+high quality, print-ready, 300 DPI, professional typography, clear 
+hierarchy, balanced composition, readable text, visual flow following 
+clockwise cooking order
 ```
 
 ## Advanced Features
@@ -129,7 +157,7 @@ For complex recipes with many steps:
 python scripts/generate_recipe_template.py "French" \
     --style elegant \
     --num-steps 10 \
-    --output_dir output/
+    --output-dir output/
 ```
 
 ### Custom Elements
@@ -138,7 +166,26 @@ Add specific elements to your recipe card:
 python scripts/generate_recipe_template.py "Japanese" \
     --style modern \
     --custom-elements "nutritional-info" "cooking-tips" "serving-suggestions" \
-    --output_dir output/
+    --output-dir output/
+```
+
+### Different Layout Styles
+Choose different layout styles for ingredients:
+```bash
+# Circular layout (default)
+python scripts/generate_recipe_template.py "Chinese" \
+    --layout-style circular \
+    --output-dir output/
+
+# Grid layout
+python scripts/generate_recipe_template.py "Chinese" \
+    --layout-style grid \
+    --output-dir output/
+
+# Sequential layout
+python scripts/generate_recipe_template.py "Chinese" \
+    --layout-style sequential \
+    --output-dir output/
 ```
 
 ### Different Center Ratios
@@ -147,7 +194,7 @@ Adjust the size of the center area for your food photo:
 python scripts/generate_recipe_template.py "Mexican" \
     --style playful \
     --center-ratio 0.5 \
-    --output_dir output/
+    --output-dir output/
 ```
 
 ## Validation and Quality Control
@@ -232,7 +279,7 @@ Create a collection of recipe cards:
 for cuisine in Italian Chinese Mexican Japanese; do
     python scripts/generate_recipe_template.py "$cuisine" \
         --style modern \
-        --output_dir recipe_collection/
+        --output-dir recipe_collection/
 done
 ```
 
