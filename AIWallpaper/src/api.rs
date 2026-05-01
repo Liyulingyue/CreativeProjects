@@ -175,55 +175,19 @@ pub async fn enhance_prompt(url: &str, api_key: &str, model: &str, prompt: &str)
         format!("{}/chat/completions", base)
     };
 
-    // 尝试多种鉴权头（有些服务需要 'bearer {key}', 有些可能直接使用 key 或 X-API-Key）
-    let mut last_err_text = String::new();
-    let mut resp_opt: Option<reqwest::Response> = None;
+    // 标准 OpenAI 鉴权。注意：绝大多数兼容厂商要求 "Bearer " 前缀。
+    // 如果遇到少数不带前缀的特殊厂商，可能需要将下行改为 .header("Authorization", api_key)
+    let resp = client.post(&full_url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await?;
 
-    let mut auth_candidates: Vec<Option<String>> = Vec::new();
-    if api_key.is_empty() {
-        auth_candidates.push(None);
-    } else {
-        auth_candidates.push(Some(format!("bearer {}", api_key)));
-        auth_candidates.push(Some(format!("Bearer {}", api_key)));
-        auth_candidates.push(Some(api_key.to_string())); // no prefix
+    if !resp.status().is_success() {
+        let err_text = resp.text().await.unwrap_or_default();
+        return Err(format!("PE API Error: {} (url: {})", err_text, full_url).into());
     }
-
-    for auth in auth_candidates.into_iter() {
-        let mut req = client.post(&full_url)
-            .header("Content-Type", "application/json")
-            .json(&body);
-        if let Some(a) = auth {
-            req = req.header("Authorization", a);
-        }
-
-        let resp = req.send().await?;
-        if resp.status().is_success() {
-            resp_opt = Some(resp);
-            break;
-        } else {
-            last_err_text = resp.text().await.unwrap_or_default();
-        }
-    }
-
-    // 最后尝试常见备选 header: X-API-Key（部分服务使用此 header）
-    if resp_opt.is_none() && !api_key.is_empty() {
-        let resp = client.post(&full_url)
-            .header("Content-Type", "application/json")
-            .header("X-API-Key", api_key)
-            .json(&body)
-            .send()
-            .await?;
-        if resp.status().is_success() {
-            resp_opt = Some(resp);
-        } else {
-            last_err_text = resp.text().await.unwrap_or_default();
-        }
-    }
-
-    let resp = match resp_opt {
-        Some(r) => r,
-        None => return Err(format!("PE API Error: {} (url: {})", last_err_text, full_url).into()),
-    };
 
     let json: ChatCompletionResponse = resp.json().await?;
     if let Some(choice) = json.choices.into_iter().next() {

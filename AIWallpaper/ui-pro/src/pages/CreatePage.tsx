@@ -7,6 +7,8 @@ interface CreatePageProps {
   handleRandomPrompt: () => void;
   handleGenerate: () => void;
   isGenerating: boolean;
+  isEnhancing: boolean;
+  setIsEnhancing: (v: boolean) => void;
   statusMsg: string;
   previewUrl: string;
   sendIpc: (cmd: string, arg?: any) => void;
@@ -21,12 +23,11 @@ interface CreatePageProps {
 
 const CreatePage: React.FC<CreatePageProps> = ({
   prompt, setPrompt, handleRandomPrompt, handleGenerate,
-  isGenerating, statusMsg, previewUrl, sendIpc, setActiveTab,
+  isGenerating, isEnhancing, setIsEnhancing, statusMsg, previewUrl, sendIpc, setActiveTab,
   setShowViewer, autoRefreshHours, peUrl, peKey, peModel, showMessage
 }) => {
   const [isImporting, setIsImporting] = React.useState(false);
   const [showEditor, setShowEditor] = useState(false);
-  const [isEnhancing, setIsEnhancing] = useState(false);
 
   const handleEditSave = (base64Data: string, asWallpaper: boolean = false) => {
     setShowEditor(false);
@@ -73,9 +74,8 @@ const CreatePage: React.FC<CreatePageProps> = ({
                 }
                 setIsEnhancing(true);
                 sendIpc("prompt_enhance", prompt);
-                setTimeout(() => setIsEnhancing(false), 8000);
               }}
-              disabled={isEnhancing}
+              disabled={isEnhancing || isGenerating}
               className="flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-white border border-slate-200 hover:bg-slate-50 text-sm font-semibold transition-all active:scale-95 text-slate-600 disabled:opacity-50"
               title="优化当前提示词的表述"
             >

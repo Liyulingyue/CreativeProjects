@@ -24,6 +24,7 @@ function App() {
   const [prompt, setPrompt] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isEnhancing, setIsEnhancing] = useState(false);
   const [statusMsg, setStatusMsg] = useState("");
   const [message, setMessage] = useState("");
   const [messageVisible, setMessageVisible] = useState(false);
@@ -68,6 +69,7 @@ function App() {
     // @ts-ignore
     window.onGenerationComplete = (success: boolean, errorMsg: string, imagePayload: any) => {
       setIsGenerating(false);
+      setIsEnhancing(false); // 确保生成完成时也重置优化按钮状态
       if (success && imagePayload?.previewUrl) {
         setStatusMsg(`生成成功！(${imagePayload.size || '未知尺寸'})`);
         if (imagePayload.size && imagePayload.size !== "auto") {
@@ -102,15 +104,24 @@ function App() {
       setGalleryImages(images);
     };
 
-    // Prompt Enhance 回调
     // @ts-ignore
     window.onPromptEnhanced = (enhanced: string) => {
       setIsGenerating(false);
+      setIsEnhancing(false); // 确保重置优化按钮状态
       if (enhanced) {
         setPrompt(enhanced);
         setStatusMsg("提示词已优化");
         setTimeout(() => setStatusMsg(""), 3000);
       }
+    };
+
+    // 错误处理统一增加状态重置
+    // @ts-ignore
+    window.onGenerationError = (msg: string) => {
+      setIsGenerating(false);
+      setIsEnhancing(false);
+      setStatusMsg(msg);
+      setTimeout(() => setStatusMsg(""), 5000);
     };
 
     // @ts-ignore
@@ -130,6 +141,10 @@ function App() {
       delete window.onGalleryLoaded;
       // @ts-ignore
       delete window.onImageSaved;
+      // @ts-ignore
+      delete window.onPromptEnhanced;
+      // @ts-ignore
+      delete window.onGenerationError;
     };
   }, [sendIpc]);
 
@@ -211,6 +226,8 @@ function App() {
             handleRandomPrompt={handleRandomPrompt}
             handleGenerate={handleGenerate}
             isGenerating={isGenerating}
+            isEnhancing={isEnhancing}
+            setIsEnhancing={setIsEnhancing}
             statusMsg={statusMsg}
             previewUrl={previewUrl}
             sendIpc={sendIpc}
