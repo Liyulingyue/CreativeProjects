@@ -20,10 +20,16 @@ pub struct AppConfig {
     pub pe_model: String,
     #[serde(default = "default_image_size")]
     pub image_size: String,
+    #[serde(default = "default_ui_mode")]
+    pub ui_mode: String,
 }
 
 fn default_image_size() -> String {
     "1024x1024".to_string()
+}
+
+fn default_ui_mode() -> String {
+    "lite".to_string()
 }
 
 #[derive(Serialize, Deserialize, Debug)]

@@ -25,6 +25,7 @@ use std::borrow::Cow;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use include_dir::{include_dir, Dir};
@@ -150,6 +151,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 pe_url: "".to_string(),
                 pe_key: "".to_string(),
                 pe_model: "".to_string(),
+                ui_mode: "lite".to_string(),
             })
     } else {
         AppConfig { 
@@ -163,14 +165,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             pe_url: "".to_string(),
             pe_key: "".to_string(),
             pe_model: "".to_string(),
+            ui_mode: "lite".to_string(),
         }
     };
 
-    let config = Arc::new(Mutex::new(initial_config));
-    // 跟踪当前激活的面板模式，优先从环境变量读取，默认为 lite
-    let default_window = std::env::var("DEFAULT_WINDOW").unwrap_or_else(|_| "lite".to_string());
+    // 从 config 读取上次使用的模式，非法值回退为 lite
+    let default_window = if initial_config.ui_mode == "pro" {
+        "pro".to_string()
+    } else {
+        "lite".to_string()
+    };
     println!("默认启动窗口模式: {}", default_window);
+    let config = Arc::new(Mutex::new(initial_config));
     let current_mode = Arc::new(Mutex::new(default_window.clone()));
+    let ready_handled = Arc::new(AtomicBool::new(false));
     
     let event_loop = EventLoop::<AppEvent>::with_user_event();
     
@@ -287,7 +295,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let bg_webview = WebViewBuilder::new(bg_window)?
         .with_custom_protocol("aiwallpaper".into(), move |request| {
-            app::protocol::asset_protocol_handler(request, &app_data_dir_bg, &bg_preview_image_path, false, &PRO_DIST)
+            app::protocol::asset_protocol_handler(request, &app_data_dir_bg, &bg_preview_image_path, &PRO_DIST)
                 .map_err(|e| {
                     eprintln!("Asset Protocol Error: {:?}", e);
                     wry::Error::DuplicateCustomProtocol("aiwallpaper".to_string()) // 使用一个存在的错误类型
@@ -338,13 +346,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tx_pro = tx.clone();
     let control_webview = WebViewBuilder::new(control_window)?
         .with_custom_protocol("aiwallpaper".into(), move |request| {
-            app::protocol::asset_protocol_handler(request, &app_data_dir_lite, &preview_image_path_lite, false, &PRO_DIST)
+            app::protocol::asset_protocol_handler(request, &app_data_dir_lite, &preview_image_path_lite, &PRO_DIST)
                 .map_err(|e| {
                     eprintln!("Control Asset Error: {:?}", e);
                     wry::Error::DuplicateCustomProtocol("aiwallpaper".to_string())
                 })
-        })
-        .with_html(include_str!("../ui/index.html"))?
+        });
+
+    let control_webview = if dev_mode {
+        control_webview.with_url(&dev_url)?
+    } else {
+        control_webview.with_url("aiwallpaper://localhost/")?
+    };
+
+    let control_webview = control_webview
         .with_initialization_script(show_modal_script)
         .with_ipc_handler(move |_window, request| {
             let _ = tx.try_send(request);
@@ -352,18 +367,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     let mut pro_webview_builder = WebViewBuilder::new(pro_window)?
-        .with_custom_protocol("pro".into(), move |request| {
-            app::protocol::asset_protocol_handler(request, &app_data_dir_pro, &preview_image_path_pro, true, &PRO_DIST)
+        .with_custom_protocol("aiwallpaper".into(), move |request| {
+            app::protocol::asset_protocol_handler(request, &app_data_dir_pro, &preview_image_path_pro, &PRO_DIST)
                 .map_err(|e| {
                     eprintln!("Pro Asset Error: {:?}", e);
-                    wry::Error::DuplicateCustomProtocol("pro".to_string())
+                    wry::Error::DuplicateCustomProtocol("aiwallpaper".to_string())
                 })
         });
 
     if dev_mode {
         pro_webview_builder = pro_webview_builder.with_url(&dev_url)?;
     } else {
-        pro_webview_builder = pro_webview_builder.with_url("pro://localhost/")?;
+        pro_webview_builder = pro_webview_builder.with_url("aiwallpaper://localhost/")?;
     }
 
     let pro_webview = pro_webview_builder
@@ -462,24 +477,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let _ = bg_webview.evaluate_script(&format!("if(window.toggleDrawingMode) window.toggleDrawingMode({});", enabled));
                     }
                     AppEvent::Ready => {
-                        // 只显示当前激活模式的窗口（避免 Pro 初始化时误弹 Lite）
-                        let mode = current_mode.lock().unwrap().clone();
-                        if mode == "pro" {
-                            pro_webview.window().set_visible(true);
-                            pro_webview.window().set_focus();
+                        // 只处理第一次 ready（两个窗口的 React 都会发，只响应一次）
+                        if ready_handled.swap(true, Ordering::SeqCst) {
+                            // 向新触发 ready 的窗口也补发配置，但不再重复处理窗口可见性
+                            let cfg = config.lock().unwrap();
+                            let js = format!(
+                                "if (window.onConfigLoaded) {{ window.onConfigLoaded({}) }}",
+                                serde_json::to_string(&*cfg).unwrap()
+                            );
+                            let _ = control_webview.evaluate_script(&js);
+                            let _ = pro_webview.evaluate_script(&js);
                         } else {
-                            control_webview.window().set_visible(true);
-                            control_webview.window().set_focus();
-                        }
+                            let mode = current_mode.lock().unwrap().clone();
+                            if mode == "pro" {
+                                control_webview.window().set_visible(false);
+                                pro_webview.window().set_visible(true);
+                                pro_webview.window().set_focus();
+                                let _ = pro_webview.evaluate_script("if(window.__syncUiMode) window.__syncUiMode('pro');");
+                            } else {
+                                pro_webview.window().set_visible(false);
+                                control_webview.window().set_visible(true);
+                                control_webview.window().set_focus();
+                                let _ = control_webview.evaluate_script("if(window.__syncUiMode) window.__syncUiMode('lite');");
+                            }
 
-                        // 向所有 UI 发送当前配置
-                        let cfg = config.lock().unwrap();
-                        let js = format!(
-                            "if (window.onConfigLoaded) {{ window.onConfigLoaded({}) }}",
-                            serde_json::to_string(&*cfg).unwrap()
-                        );
-                        let _ = control_webview.evaluate_script(&js);
-                        let _ = pro_webview.evaluate_script(&js);
+                            let cfg = config.lock().unwrap();
+                            let js = format!(
+                                "if (window.onConfigLoaded) {{ window.onConfigLoaded({}) }}",
+                                serde_json::to_string(&*cfg).unwrap()
+                            );
+                            let _ = control_webview.evaluate_script(&js);
+                            let _ = pro_webview.evaluate_script(&js);
+                        }
                     }
                     AppEvent::Minimize => {
                         // 最小化 = 隐藏到托盘（两个窗口都隐藏）
@@ -495,11 +524,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             control_webview.window().set_visible(false);
                             pro_webview.window().set_visible(true);
                             pro_webview.window().set_focus();
+                            let _ = pro_webview.evaluate_script("if(window.__syncUiMode) window.__syncUiMode('pro');");
                         } else {
                             *current_mode.lock().unwrap() = "lite".to_string();
                             pro_webview.window().set_visible(false);
                             control_webview.window().set_visible(true);
                             control_webview.window().set_focus();
+                            let _ = control_webview.evaluate_script("if(window.__syncUiMode) window.__syncUiMode('lite');");
                         }
                     }
                     AppEvent::Generated(image) => {

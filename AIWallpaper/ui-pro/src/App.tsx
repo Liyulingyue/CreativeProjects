@@ -19,28 +19,41 @@ const prompts = [
 ];
 
 function App() {
+  const [uiMode, setUiMode] = useState<'lite' | 'pro'>(() => {
+    return (localStorage.getItem('ui-mode') as 'lite' | 'pro') || 'pro';
+  });
   const [activeTab, setActiveTab] = useState("create");
   const [editingImageUrl, setEditingImageUrl] = useState("");
   const [prompt, setPrompt] = useState("");
   const [apiKey, setApiKey] = useState("");
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [isEnhancing, setIsEnhancing] = useState(false);
-  const [statusMsg, setStatusMsg] = useState("");
-  const [message, setMessage] = useState("");
-  const [messageVisible, setMessageVisible] = useState(false);
-  const [previewUrl, setPreviewUrl] = useState("");
-  const [enableCache, setEnableCache] = useState(true);
-  const [cacheLimit, setCacheLimit] = useState(50);
-  const [autoRefreshHours, setAutoRefreshHours] = useState(0);
-  const [autoPrompt, setAutoPrompt] = useState("");
-  const [galleryPath, setGalleryPath] = useState("");
-  const [imageSize, setImageSize] = useState("auto");
   const [peUrl, setPeUrl] = useState("");
   const [peKey, setPeKey] = useState("");
   const [peModel, setPeModel] = useState("");
+  const [enableCache, setEnableCache] = useState(true);
+  const [cacheLimit, setCacheLimit] = useState(100);
+  const [galleryPath, setGalleryPath] = useState("");
+  const [imageSize, setImageSize] = useState("auto");
+  const [autoRefreshHours, setAutoRefreshHours] = useState(24);
+  const [autoPrompt, setAutoPrompt] = useState("");
+  const [previewUrl, setPreviewUrl] = useState("");
   const [galleryImages, setGalleryImages] = useState<any[]>([]);
   const [showViewer, setShowViewer] = useState(false);
   const [viewerUrl, setViewerUrl] = useState("");
+  const [message, setMessage] = useState("");
+  const [messageVisible, setMessageVisible] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [isEnhancing, setIsEnhancing] = useState(false);
+  const [statusMsg, setStatusMsg] = useState("");
+
+  useEffect(() => {
+    localStorage.setItem('ui-mode', uiMode);
+  }, [uiMode]);
+
+  useEffect(() => {
+    (window as any).__syncUiMode = (mode: 'lite' | 'pro') => {
+      setUiMode(mode);
+    };
+  }, [setUiMode]);
 
   const sendIpc = useCallback((cmd: string, arg?: any) => {
     const value = arg === undefined ? "" : (typeof arg === "string" ? arg : JSON.stringify(arg));
@@ -54,6 +67,9 @@ function App() {
     window.onConfigLoaded = (config: any) => {
       console.log("收到后端配置:", config);
       if (config.api_key) setApiKey(config.api_key);
+      if (config.ui_mode === "lite" || config.ui_mode === "pro") {
+        setUiMode(config.ui_mode);
+      }
       setEnableCache(config.enable_cache);
       setCacheLimit(config.cache_limit);
       setAutoRefreshHours(config.auto_refresh_hours);
@@ -196,6 +212,7 @@ function App() {
   const handleSaveKey = () => {
     sendIpc("save_config", {
       api_key: apiKey,
+      ui_mode: uiMode,
       enable_cache: enableCache,
       cache_limit: cacheLimit,
       auto_refresh_hours: autoRefreshHours,
@@ -212,11 +229,12 @@ function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-[Inter,system-ui,sans-serif] text-slate-900 selection:bg-blue-100 selection:text-blue-700">
-      <Header activeTab={activeTab} setActiveTab={setActiveTab} sendIpc={sendIpc} />
+      <Header activeTab={activeTab} setActiveTab={setActiveTab} sendIpc={sendIpc} uiMode={uiMode} setUiMode={setUiMode} />
 
-      <main className="flex-1 p-10 max-w-6xl mx-auto w-full overflow-y-auto custom-scrollbar">
+      <main className={`flex-1 mx-auto w-full overflow-y-auto custom-scrollbar transition-all duration-300 ${uiMode === 'lite' ? 'p-4 max-w-3xl' : 'p-10 max-w-6xl'}`}>
         {activeTab === "create" && (
           <CreatePage
+            uiMode={uiMode}
             prompt={prompt}
             peUrl={peUrl}
             peKey={peKey}
@@ -300,6 +318,8 @@ function App() {
 
         {activeTab === "settings" && (
           <SettingsPage
+            uiMode={uiMode}
+            setUiMode={setUiMode}
             apiKey={apiKey}
             setApiKey={setApiKey}
             peUrl={peUrl}

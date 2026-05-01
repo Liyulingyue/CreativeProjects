@@ -33,6 +33,13 @@ pub async fn handle_message(msg_raw: &str, ctx: &IpcContext) {
                 let _ = ctx.proxy.send_event(AppEvent::ToggleDrawing(true)); // 暂时复用，或者加新事件
             }
             "switch_mode" => {
+                // 持久化 ui_mode 到 config.json
+                {
+                    let mut cfg = ctx.config.lock().unwrap();
+                    cfg.ui_mode = msg.value.clone();
+                    let cfg_path = ctx.app_data_dir.join("config.json");
+                    let _ = fs::write(cfg_path, serde_json::to_string(&*cfg).unwrap());
+                }
                 let _ = ctx.proxy.send_event(AppEvent::SwitchMode(msg.value));
             }
             "save_config" => {

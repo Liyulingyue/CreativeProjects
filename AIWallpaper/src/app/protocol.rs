@@ -8,7 +8,6 @@ pub fn asset_protocol_handler(
     request: &wry::http::Request<Vec<u8>>,
     _app_data_dir: &PathBuf,
     preview_path: &PathBuf,
-    is_pro: bool,
     pro_dist: &Dir<'static>,
 ) -> Result<Response<Cow<'static, [u8]>>, Box<dyn std::error::Error>> {
     let uri = request.uri().to_string();
@@ -40,20 +39,16 @@ pub fn asset_protocol_handler(
         };
     }
 
-    // 3. 处理 Pro 版的前端资源加载 (仅限 Pro 窗口)
-    if is_pro {
-        let relative_path = if path == "/" || path == "" { "index.html" } else { path.trim_start_matches('/') };
-        return match pro_dist.get_file(relative_path) {
-            Some(file) => {
-                let mime = if relative_path.ends_with(".js") { "application/javascript" }
-                          else if relative_path.ends_with(".css") { "text/css" }
-                          else if relative_path.ends_with(".html") { "text/html" }
-                          else { "application/octet-stream" };
-                Ok(Response::builder().header(CONTENT_TYPE, mime).body(file.contents().to_vec().into())?)
-            }
-            None => Ok(Response::builder().status(StatusCode::NOT_FOUND).body(Vec::new().into())?),
-        };
+    // 3. 前端资源加载（ui-pro dist）
+    let relative_path = if path == "/" || path == "" { "index.html" } else { path.trim_start_matches('/') };
+    match pro_dist.get_file(relative_path) {
+        Some(file) => {
+            let mime = if relative_path.ends_with(".js") { "application/javascript" }
+                      else if relative_path.ends_with(".css") { "text/css" }
+                      else if relative_path.ends_with(".html") { "text/html" }
+                      else { "application/octet-stream" };
+            Ok(Response::builder().header(CONTENT_TYPE, mime).body(file.contents().to_vec().into())?)
+        }
+        None => Ok(Response::builder().status(StatusCode::NOT_FOUND).body(Vec::new().into())?),
     }
-
-    Ok(Response::builder().status(StatusCode::NOT_FOUND).body(Vec::new().into())?)
 }

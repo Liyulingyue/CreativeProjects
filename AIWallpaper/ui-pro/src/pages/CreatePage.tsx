@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import ImageEditorModal from '../components/ImageEditorModal';
 
 interface CreatePageProps {
+  uiMode?: 'lite' | 'pro';
   prompt: string;
   setPrompt: (v: string) => void;
   handleRandomPrompt: () => void;
@@ -22,7 +23,7 @@ interface CreatePageProps {
 }
 
 const CreatePage: React.FC<CreatePageProps> = ({
-  prompt, setPrompt, handleRandomPrompt, handleGenerate,
+  uiMode = 'pro', prompt, setPrompt, handleRandomPrompt, handleGenerate,
   isGenerating, isEnhancing, setIsEnhancing, statusMsg, previewUrl, sendIpc, setActiveTab,
   setShowViewer, autoRefreshHours, peUrl, peKey, peModel, showMessage
 }) => {
@@ -34,6 +35,77 @@ const CreatePage: React.FC<CreatePageProps> = ({
     // 通过 IPC 发送数据给 Rust 进行保存，默认仅保存到画廊
     sendIpc("save_edited_image", { data: base64Data, set_as_wallpaper: asWallpaper });
   };
+
+  if (uiMode === 'lite') {
+    return (
+      <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+        <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-lg">
+          <textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder="输入描述..."
+            className="w-full bg-slate-50 border border-slate-100 rounded-2xl p-4 text-lg min-h-[120px] focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500/30 outline-none transition-all resize-none placeholder:text-slate-300"
+          />
+          
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex gap-2">
+              <button 
+                onClick={handleRandomPrompt} 
+                className="p-2 rounded-xl bg-slate-50 border border-slate-200 hover:bg-slate-100 text-amber-500 transition-colors" 
+                title="灵感骰子"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" ry="2" /><path d="M7 7h.01" /><path d="M17 7h.01" /><path d="M7 17h.01" /><path d="M17 17h.01" /><path d="M12 12h.01" /></svg>
+              </button>
+              <button 
+                onClick={() => {
+                  if (!prompt.trim()) {
+                    showMessage('请先输入描述', 3000);
+                    return;
+                  }
+                  if (!peKey || !peUrl) {
+                    showMessage('请先在配置中设置 PE 参数', 3000);
+                    return;
+                  }
+                  setIsEnhancing(true);
+                  sendIpc("prompt_enhance", prompt);
+                }}
+                disabled={isEnhancing}
+                className="p-2 rounded-xl bg-slate-50 border border-slate-200 hover:bg-slate-100 text-emerald-500 disabled:opacity-50 transition-colors" 
+                title="优化表述"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72Z"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/></svg>
+              </button>
+            </div>
+
+            <button 
+              onClick={handleGenerate} 
+              disabled={isGenerating || !prompt.trim()} 
+              className="px-8 py-2 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 disabled:bg-slate-300 transition-all active:scale-95 shadow-md shadow-blue-500/20"
+            >
+              {isGenerating ? "生成中..." : "开始生成"}
+            </button>
+          </div>
+        </div>
+
+        {previewUrl && (
+          <div className="relative group rounded-3xl overflow-hidden border border-slate-200 shadow-xl bg-white aspect-video">
+            <img src={previewUrl} className="w-full h-full object-cover" alt="Preview" />
+            <div className="absolute inset-x-0 bottom-0 p-4 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex justify-between items-center">
+              <span className="text-white text-xs font-medium">预览图</span>
+              <button 
+                onClick={() => setShowViewer(true)}
+                className="p-2 bg-white/20 backdrop-blur-md rounded-lg text-white hover:bg-white/40 transition-colors"
+              >
+                查看大图
+              </button>
+            </div>
+          </div>
+        )}
+        
+        {statusMsg && <p className="text-center text-sm font-medium text-blue-600 animate-pulse">{statusMsg}</p>}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-10 animate-in fade-in slide-in-from-bottom-6 duration-700">
@@ -79,7 +151,7 @@ const CreatePage: React.FC<CreatePageProps> = ({
               className="flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-white border border-slate-200 hover:bg-slate-50 text-sm font-semibold transition-all active:scale-95 text-slate-600 disabled:opacity-50"
               title="优化当前提示词的表述"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-500"><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7"/><path d="M7 10l5 5 5-5"/></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-500"><path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72Z"/><path d="m14 7 3 3"/><path d="M5 6v4"/><path d="M19 14v4"/><path d="M10 2v2"/><path d="M7 8H3"/><path d="M21 16h-4"/><path d="M11 3H9"/></svg>
               {isEnhancing ? '优化中...' : '优化表述'}
             </button>
             <button 
