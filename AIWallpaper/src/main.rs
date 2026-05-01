@@ -154,6 +154,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 pe_key: "".to_string(),
                 pe_model: "".to_string(),
                 ui_mode: "lite".to_string(),
+                auto_start: false,
             });
 
         if !has_minutes_field {
@@ -174,6 +175,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             pe_key: "".to_string(),
             pe_model: "".to_string(),
             ui_mode: "lite".to_string(),
+            auto_start: false,
         }
     };
 
@@ -186,6 +188,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     initial_config.auto_refresh_hours = initial_config.auto_refresh_minutes / 60;
+    // 用注册表中的实际状态覆盖 config 里的 auto_start（避免手动删注册表项后状态不同步）
+    initial_config.auto_start = crate::app::ipc::read_auto_start();
 
     // 从 config 读取上次使用的模式，非法值回退为 lite
     let default_window = if initial_config.ui_mode == "pro" {

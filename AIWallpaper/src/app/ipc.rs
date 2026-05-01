@@ -5,6 +5,42 @@ use crate::app::{AppConfig, IpcMessage, AppEvent};
 use crate::api;
 use crate::{export_image_dir, save_generated_image};
 
+#[cfg(target_os = "windows")]
+fn apply_auto_start(enabled: bool) {
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_SET_VALUE};
+    const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+    const APP_NAME: &str = "AIWallpaper";
+    if let Ok(key) = RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(RUN_KEY, KEY_SET_VALUE) {
+        if enabled {
+            if let Ok(exe) = std::env::current_exe() {
+                let _ = key.set_value(APP_NAME, &exe.to_string_lossy().as_ref());
+            }
+        } else {
+            let _ = key.delete_value(APP_NAME);
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn apply_auto_start(_enabled: bool) {}
+
+/// 读取当前注册表中是否有开机启动项
+#[cfg(target_os = "windows")]
+pub fn read_auto_start() -> bool {
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
+    const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+    const APP_NAME: &str = "AIWallpaper";
+    RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags(RUN_KEY, KEY_READ)
+        .and_then(|key| key.get_value::<String, _>(APP_NAME))
+        .is_ok()
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn read_auto_start() -> bool { false }
+
 /// 读取画廊目录第 page 页（从0开始），每页 page_size 张，返回分页 JSON
 fn load_gallery_page(gallery_dir: &std::path::Path, page: usize, page_size: usize) -> serde_json::Value {
     let mut all_names: Vec<(String, std::path::PathBuf)> = Vec::new();
@@ -87,6 +123,7 @@ pub async fn handle_message(msg_raw: &str, ctx: &IpcContext) {
             "save_config" => {
                 if let Ok(new_cfg) = serde_json::from_str::<AppConfig>(&msg.value) {
                     println!("收到新配置: {:?}", new_cfg);
+                    apply_auto_start(new_cfg.auto_start);
                     let mut cfg = ctx.config.lock().unwrap();
                     *cfg = new_cfg;
                     let cfg_path = ctx.app_data_dir.join("config.json");

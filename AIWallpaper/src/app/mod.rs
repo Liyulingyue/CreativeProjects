@@ -25,6 +25,8 @@ pub struct AppConfig {
     pub image_size: String,
     #[serde(default = "default_ui_mode")]
     pub ui_mode: String,
+    #[serde(default)]
+    pub auto_start: bool,
 }
 
 fn default_image_size() -> String {

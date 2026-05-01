@@ -47,6 +47,7 @@ function App() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isEnhancing, setIsEnhancing] = useState(false);
   const [statusMsg, setStatusMsg] = useState("");
+  const [autoStart, setAutoStart] = useState(false);
   const isGeneratingRef = useRef(false);
 
   useEffect(() => {
@@ -94,6 +95,7 @@ function App() {
       setPeUrl(config.pe_url || "");
       setPeKey(config.pe_key || "");
       setPeModel(config.pe_model || "");
+      setAutoStart(!!config.auto_start);
     };
 
     // 与 Rust 回调签名对齐: onGenerationComplete(success, errorMsg, imagePayload)
@@ -274,6 +276,7 @@ function App() {
       pe_url: peUrl,
       pe_key: peKey,
       pe_model: peModel,
+      auto_start: autoStart,
     });
     setStatusMsg("配置已同步");
     setTimeout(() => setStatusMsg(""), 2000);
@@ -408,9 +411,12 @@ function App() {
                 pe_url: peUrl,
                 pe_key: peKey,
                 pe_model: peModel,
+                auto_start: autoStart,
               });
             }}
             handleSaveKey={handleSaveKey}
+            autoStart={autoStart}
+            setAutoStart={setAutoStart}
           />
         )}
       </main>

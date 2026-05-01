@@ -20,6 +20,8 @@ interface SettingsPageProps {
   setPeKey: (v: string) => void;
   peModel: string;
   setPeModel: (v: string) => void;
+  autoStart: boolean;
+  setAutoStart: (v: boolean) => void;
 }
 
 const SettingsPage: React.FC<SettingsPageProps> = ({
@@ -33,6 +35,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
   peUrl, setPeUrl,
   peKey, setPeKey,
   peModel, setPeModel,
+  autoStart, setAutoStart,
 }) => {
   const [showApiKey, setShowApiKey] = React.useState(false);
   const [saveMsg, setSaveMsg] = React.useState<string | null>(null);
@@ -232,6 +235,34 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                 />
               </div>
             )}
+          </div>
+        </div>
+      </div>
+
+      {/* 开机自启 */}
+      <div className={uiMode === 'lite' ? 'hidden' : ''}>
+        <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-6">系统行为</h3>
+        <div className="bg-white border border-slate-200 rounded-[2rem] p-8 shadow-lg">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-slate-100 rounded-xl text-slate-600">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/></svg>
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-slate-700">开机自启动</p>
+                <p className="text-[10px] text-slate-400">登录 Windows 后自动启动 AIWallpaper</p>
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                const next = !autoStart;
+                setAutoStart(next);
+                setTimeout(() => handleSaveKey(), 0);
+              }}
+              className={`w-12 h-6 rounded-full transition-colors relative ${autoStart ? 'bg-blue-600' : 'bg-slate-200'}`}
+            >
+              <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${autoStart ? 'left-7' : 'left-1'}`}></div>
+            </button>
           </div>
         </div>
       </div>
