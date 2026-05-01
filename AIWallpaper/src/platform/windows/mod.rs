@@ -10,13 +10,20 @@ pub struct PlatformPaths {
 
 pub fn get_platform_paths() -> PlatformPaths {
     let work_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let bg_dir = work_dir.join("bg");
-    let cache_dir = work_dir.join("target").join("cache");
+    
+    // 统一使用 LocalAppData 目录
+    let app_data_base = std::env::var("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| work_dir.clone())
+        .join("AIWallpaper");
+
+    let bg_dir = app_data_base.join("bg");
+    let cache_dir = app_data_base.join("cache");
     
     if !bg_dir.exists() { let _ = std::fs::create_dir_all(&bg_dir); }
     if !cache_dir.exists() { let _ = std::fs::create_dir_all(&cache_dir); }
     
-    PlatformPaths { work_dir, bg_dir, cache_dir }
+    PlatformPaths { work_dir: app_data_base, bg_dir, cache_dir }
 }
 
 pub fn app_data_dir() -> PathBuf {

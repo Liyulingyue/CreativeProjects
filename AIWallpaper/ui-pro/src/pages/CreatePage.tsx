@@ -25,7 +25,7 @@ interface CreatePageProps {
 const CreatePage: React.FC<CreatePageProps> = ({
   uiMode = 'pro', prompt, setPrompt, handleRandomPrompt, handleGenerate,
   isGenerating, isEnhancing, setIsEnhancing, statusMsg, previewUrl, sendIpc, setActiveTab,
-  setShowViewer, autoRefreshHours, peUrl, peKey, peModel, showMessage
+  setShowViewer, autoRefreshHours, peUrl, peKey, showMessage
 }) => {
   const [isImporting, setIsImporting] = React.useState(false);
   const [showEditor, setShowEditor] = useState(false);

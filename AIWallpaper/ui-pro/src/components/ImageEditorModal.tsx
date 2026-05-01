@@ -1,5 +1,4 @@
-﻿import React, { useRef, useEffect, useState, useCallback } from "react";
-import Cropper from "react-easy-crop";
+﻿import React, { useRef, useEffect, useState } from "react";
 import { 
   ChevronDown, 
   Save, 
@@ -34,9 +33,7 @@ const ImageEditorModal: React.FC<ImageEditorModalProps> = ({ imageUrl, onSave, o
   const [brushColor, setBrushColor] = useState("#ffffff");
   const [lastPos, setLastPos] = useState({ x: 0, y: 0 });
   
-  const [crop, setCrop] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
-  const [croppedAreaPixels, setCroppedAreaPixels] = useState<any>(null);
   const imageRef = useRef<HTMLImageElement>(null);
   
   const [cropBoxRect, setCropBoxRect] = useState<null | { left: number; top: number; width: number; height: number }>(null);
@@ -196,10 +193,6 @@ const ImageEditorModal: React.FC<ImageEditorModalProps> = ({ imageUrl, onSave, o
     setIsPanning(false);
   };
 
-  const onCropComplete = useCallback((_setCroppedArea: any, croppedAreaPixels: any) => {
-    setCroppedAreaPixels(croppedAreaPixels);
-  }, []);
-
   const handleFinalSave = async (asWallpaper: boolean) => {
     let data;
     if (mode === "draw") {
@@ -280,7 +273,7 @@ const ImageEditorModal: React.FC<ImageEditorModalProps> = ({ imageUrl, onSave, o
                 <Plus size={14} className="text-slate-400" />
                 <span className="text-[10px] font-bold text-slate-400 w-8">{(zoom * 100).toFixed(0)}%</span>
               </div>
-              <button onClick={() => {setZoom(1); setCrop({x:0, y:0})}} className="p-2 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-blue-600 transition-colors" title="重置缩放"><RotateCcw size={18} /></button>
+              <button onClick={() => {setZoom(1)}} className="p-2 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-blue-600 transition-colors" title="重置缩放"><RotateCcw size={18} /></button>
               <div className="h-6 w-px bg-slate-200 mx-2" />
               {mode === "draw" && (
                 <div className="flex items-center gap-4">

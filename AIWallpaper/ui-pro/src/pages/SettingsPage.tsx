@@ -23,7 +23,7 @@ interface SettingsPageProps {
 }
 
 const SettingsPage: React.FC<SettingsPageProps> = ({
-  uiMode = 'pro', setUiMode,
+  uiMode = 'pro',
   apiKey, setApiKey,
   enableCache, setEnableCache,
   cacheLimit, setCacheLimit,
