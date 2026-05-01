@@ -1,2 +1,4 @@
-references/
-reference/
+/references/
+/reference/
+
+.venv/
