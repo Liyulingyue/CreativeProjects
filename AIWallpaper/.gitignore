@@ -16,3 +16,6 @@ Thumbs.db
 
 # references
 references/
+
+# dist_package
+dist_package/
