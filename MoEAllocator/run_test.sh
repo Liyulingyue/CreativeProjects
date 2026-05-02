@@ -61,7 +61,7 @@ echo "[v=2026-04-29T19:40:00] Step 4: Start Worker (experts 3,4,5)"
     --dtype "$DTYPE" \
     --experts-dir "$WORKERS_DIR" \
     --expert-ids 3,4,5 \
-    --master http://127.0.0.1:5000/workers \
+    --master http://127.0.0.1:5000 \
     --log-file "$WORKER_LOG" &
 WORKER_PID=$!
 echo "  Worker PID=$WORKER_PID"

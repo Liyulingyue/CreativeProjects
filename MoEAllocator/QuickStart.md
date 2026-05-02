@@ -103,11 +103,12 @@ output/splits/<model_name>/
     --dtype float32 \
     --experts-dir output/splits/ERNIE-4.5-21B-A3B-PT-full/experts \
     --expert-ids 4,5,6 \
-    --master http://localhost:5000/workers \
+    --master http://localhost:5000 \
     --log-file logs/worker-1.log
 ```
 
 Worker 启动后自动加载 experts (6~11)，并自动注册到 Master。Master 和 Worker 的 `--experts`/`--expert-ids` 不要重叠。
+`--master` 传 Master 的 base URL 即可，Worker 会自动注册到 Master 的 `POST /workers` 接口。
 
 > **跨机器部署**：Worker 需要加 `--advertise-host <本机实际IP>` 参数，让 Master TCP 分发时能正确连接到 Worker。
 
@@ -156,7 +157,7 @@ curl -X POST http://localhost:5000/inference \
 | POST | `/load` | 加载 expert 权重文件 |
 | POST | `/unload` | 卸载 expert 释放内存 |
 | POST | `/batch_load` | 批量加载多个 expert |
-| POST | `/register` | 向 Master 注册（或更新信息） |
+| POST | `/register` | 接收 Master 下发的 Worker 配置同步 |
 
 ## 项目模块
 
