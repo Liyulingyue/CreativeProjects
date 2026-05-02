@@ -33,6 +33,11 @@ class Surgeon:
             )
             backbone_files.append(bf)
 
+        standard_config_keys = {
+            "num_experts", "num_layers", "moe_k", "num_shared_experts",
+            "hidden_size", "moe_intermediate_size",
+        }
+
         self._manifest = ModelManifest(
             model_name=data["model_name"],
             model_path=data["model_path"],
@@ -44,6 +49,7 @@ class Surgeon:
             num_shared_experts=data["config"]["num_shared_experts"],
             hidden_size=data["config"]["hidden_size"],
             moe_intermediate_size=data["config"]["moe_intermediate_size"],
+            extra_config={k: v for k, v in data["config"].items() if k not in standard_config_keys},
             expert_files=expert_files,
             backbone_files=backbone_files,
         )
