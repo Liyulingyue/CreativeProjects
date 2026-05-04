@@ -37,13 +37,16 @@ body {
 
 .main-row {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   gap: 6px;
+  flex: 1;
+  min-height: 40px;
 }
 
 .drag-handle {
   width: 14px;
-  height: 40px;
+  height: 100%;
+  min-height: 40px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -62,7 +65,7 @@ body {
 
 .main-input {
   flex: 1;
-  height: 40px;
+  height: 100%;
   min-height: 40px;
   background: #f3f4f6;
   border: 1px solid #e5e7eb;
@@ -71,6 +74,7 @@ body {
   font-size: 14px;
   padding: 8px 10px;
   resize: none;
+  overflow-y: auto;
   font-family: inherit;
   outline: none;
   transition: border-color 0.15s, box-shadow 0.15s;
@@ -141,7 +145,8 @@ body {
 
 .mic-btn {
   width: 40px;
-  height: 40px;
+  height: 100%;
+  min-height: 40px;
   border-radius: 6px;
   border: none;
   cursor: pointer;
@@ -206,7 +211,8 @@ body {
 
 .btn.small {
   width: 40px;
-  height: 40px;
+  height: 100%;
+  min-height: 40px;
   padding: 0;
   display: flex;
   align-items: center;

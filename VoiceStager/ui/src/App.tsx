@@ -88,7 +88,7 @@ function MainWindow() {
         <textarea
           ref={inputRef}
           placeholder={error ? `Error: ${error}` : "Result..."}
-          rows={1}
+          rows={2}
           className={`main-input ${error ? 'error' : ''}`}
           value={text}
           onChange={(e) => setText(e.target.value)}
