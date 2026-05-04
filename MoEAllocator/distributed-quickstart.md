@@ -51,11 +51,11 @@ python -m src.nexus.worker \
     --dtype fp16 \
     --experts-dir output/splits/ERNIE-4.5-21B-A3B-PT-full/experts \
     --expert-ids 50,51,52,53,54,55,56,57,58,59,60,61,62,63 \
-    --master http://<MACHINE1_IP>:5000/workers \
+    --master http://<MACHINE1_IP>:5000 \
     --log-file logs/worker-1.log
 ```
 
-解释：Worker 绑定 `0.0.0.0`，但通过 `--advertise-host` 告诉 Master 自己的实际 IP；Master TCP 分发时使用该地址连接 Worker。Worker 在本地加载 expert 50~63（后 14 列 × 27 层 = 378 个文件），启动后自动注册到 Machine 1 的 Master。
+解释：Worker 绑定 `0.0.0.0`，但通过 `--advertise-host` 告诉 Master 自己的实际 IP；Master TCP 分发时使用该地址连接 Worker。`--master` 传 Machine 1 的 Master base URL，Worker 会自动注册到 `POST /workers`。Worker 在本地加载 expert 50~63（后 14 列 × 27 层 = 378 个文件），启动后自动注册到 Machine 1 的 Master。
 
 ---
 

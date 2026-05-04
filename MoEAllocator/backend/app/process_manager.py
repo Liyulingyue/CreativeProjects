@@ -161,7 +161,7 @@ class ProcessManager:
         if expert_ids:
             cmd += ['--expert-ids', ','.join(str(x) for x in expert_ids)]
         if master_url:
-            cmd += ['--master', f'{master_url}/workers']
+            cmd += ['--master', master_url]
 
         process = subprocess.Popen(
             cmd,
