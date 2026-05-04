@@ -49,6 +49,7 @@ class ModelManifest:
     num_shared_experts: int
     hidden_size: int
     moe_intermediate_size: int
+    extra_config: dict[str, Any] = field(default_factory=dict)
     expert_files: list[ExpertFile] = field(default_factory=list)
     backbone_files: list[BackboneFile] = field(default_factory=list)
 
@@ -75,6 +76,7 @@ class ModelManifest:
                 "num_shared_experts": self.num_shared_experts,
                 "hidden_size": self.hidden_size,
                 "moe_intermediate_size": self.moe_intermediate_size,
+                **self.extra_config,
             },
             "statistics": {
                 "total_expert_files": len(self.expert_files),
