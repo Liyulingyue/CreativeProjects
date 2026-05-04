@@ -1,0 +1,377 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
+  background: transparent;
+}
+
+body {
+  -webkit-app-region: no-drag;
+  user-select: none;
+}
+
+.app {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.app.main {
+  padding: 6px;
+  gap: 4px;
+}
+
+.app.settings {
+  background: #f9fafb;
+}
+
+.main-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.drag-handle {
+  width: 14px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #d1d5db;
+  font-size: 10px;
+  letter-spacing: -2px;
+  cursor: grab;
+  -webkit-app-region: drag;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.drag-handle:hover {
+  color: #9ca3af;
+}
+
+.main-input {
+  flex: 1;
+  height: 40px;
+  min-height: 40px;
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  color: #1f2937;
+  font-size: 14px;
+  padding: 8px 10px;
+  resize: none;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.main-input::placeholder {
+  color: #9ca3af;
+}
+
+.main-input:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.1);
+  background: #fff;
+}
+
+.main-input.error {
+  border-color: #f87171;
+  color: #ef4444;
+  background: #fef2f2;
+}
+
+.main-input.error::placeholder {
+  color: #fca5a5;
+}
+
+.result-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.result-bar.compact {
+  font-size: 13px;
+}
+
+.result-text {
+  flex: 1;
+  font-size: 14px;
+  color: #3730a3;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.error-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.error-bar.compact {
+  font-size: 12px;
+}
+
+.error-text {
+  flex: 1;
+  font-size: 13px;
+  color: #dc2626;
+  line-height: 1.3;
+}
+
+.mic-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  flex-shrink: 0;
+  color: #fff;
+}
+
+.mic-btn svg {
+  width: 20px;
+  height: 20px;
+}
+
+.mic-btn.idle {
+  background: #6366f1;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+}
+.mic-btn.idle:hover {
+  background: #4f46e5;
+  transform: scale(1.05);
+}
+.mic-btn.idle:active {
+  transform: scale(0.97);
+}
+
+.mic-btn.recording {
+  background: #ef4444;
+  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
+  animation: pulse 1s infinite;
+}
+
+.mic-btn.processing {
+  background: #9ca3af;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+@keyframes pulse {
+  0%, 100% { transform: scale(1); box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3); }
+  50% { transform: scale(1.08); box-shadow: 0 4px 12px rgba(239, 68, 68, 0.4); }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+.spin { animation: spin 1s linear infinite; }
+
+.btn {
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.btn.small {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+}
+
+.btn.small:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn.primary {
+  background: #6366f1;
+  color: #fff;
+  width: 100%;
+  padding: 10px;
+}
+.btn.primary:hover { background: #4f46e5; }
+
+.btn.success {
+  background: #10b981;
+  color: #fff;
+}
+.btn.success:hover { background: #059669; }
+
+.btn.ghost {
+  background: transparent;
+  color: #6b7280;
+  padding: 5px 8px;
+}
+.btn.ghost:hover { background: #f3f4f6; color: #374151; }
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: #fff;
+  border-bottom: 1px solid #e5e7eb;
+  -webkit-app-region: drag;
+}
+
+.settings-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.settings-body {
+  flex: 1;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.form-group label {
+  font-size: 11px;
+  font-weight: 500;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.form-group select,
+.form-group input {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  color: #111827;
+  font-size: 13px;
+  padding: 7px 9px;
+  outline: none;
+  font-family: inherit;
+  width: 100%;
+  transition: border-color 0.15s;
+}
+
+.form-group select:focus,
+.form-group input:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.1);
+}
+
+.hint {
+  font-size: 11px;
+  color: #9ca3af;
+  line-height: 1.5;
+  margin-top: 2px;
+}
+
+.hint code {
+  background: #f3f4f6;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 11px;
+  color: #4b5563;
+}
+
+.app.settings-window {
+  border-radius: 8px;
+}
+
+.checkbox-group label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #111827;
+  text-transform: none;
+  letter-spacing: normal;
+  cursor: pointer;
+}
+
+.checkbox-group input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: #6366f1;
+}
+
+.audio-device-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.audio-device-row select {
+  flex: 1;
+}
+
+.audio-level-bar {
+  height: 4px;
+  background: #e5e7eb;
+  border-radius: 2px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+
+.audio-level-fill {
+  height: 100%;
+  background: #10b981;
+  border-radius: 2px;
+  transition: width 0.05s;
+}
+
+.btn.secondary {
+  background: #6b7280;
+  color: #fff;
+}
+.btn.secondary:hover {
+  background: #4b5563;
+}
+
+.btn.danger {
+  background: #ef4444;
+  color: #fff;
+}
+.btn.danger:hover {
+  background: #dc2626;
+}

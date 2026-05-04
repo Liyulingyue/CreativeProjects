@@ -1,0 +1,8 @@
+/target/
+/ui/node_modules/
+/ui/dist/
+*.pdb
+.env
+.env.local
+
+/server/models/
