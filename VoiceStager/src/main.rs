@@ -182,7 +182,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_title("V-Stage")
         .with_inner_size(LogicalSize::new(400.0, 56.0))
         .with_min_inner_size(LogicalSize::new(360.0, 56.0))
-        .with_max_inner_size(LogicalSize::new(600.0, 56.0))
+        .with_max_inner_size(LogicalSize::new(900.0, 360.0))
+        .with_resizable(true)
         .with_decorations(false)
         .with_always_on_top(initial_config.always_on_top)
         .with_window_icon(window_icon.clone())
@@ -358,10 +359,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         );
                         let _ = main_webview.evaluate_script(&js);
                         let _ = settings_webview.evaluate_script(&js);
-                        
-                        // 发送系统通知
-                        let _ = tray_item::TrayItem::new("V-Stage Error", tray_item::IconSource::Resource("#1"))
-                            .and_then(|mut t| t.display_notification("ASR Error", &err));
+
+                        eprintln!("[ASR Error] {}", err);
                     }
                     AppEvent::OpenSettings => {
                         let sw = settings_webview.window();

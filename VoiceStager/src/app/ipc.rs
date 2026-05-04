@@ -84,12 +84,6 @@ pub async fn handle_message(msg_raw: &str, ctx: &IpcContext) {
             "get_audio_devices" => {
                 let devices = AudioRecorder::list_devices();
                 eprintln!("[IPC Handler] Found {} audio devices", devices.len());
-                let message = serde_json::json!({
-                    "type": "audio_devices",
-                    "value": devices.iter().map(|(id, name)| {
-                        serde_json::json!({"id": id, "name": name})
-                    }).collect::<Vec<_>>()
-                }).to_string();
                 let _ = ctx.proxy.send_event(AppEvent::AudioDevices(devices));
             }
             "select_audio_device" => {
