@@ -5,6 +5,15 @@ use crate::app::{AppConfig, AppEvent, IpcMessage};
 use crate::asr::AsrClient;
 use crate::audio::AudioRecorder;
 
+fn normalize_server_url(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        trimmed.to_string()
+    } else {
+        format!("http://{}", trimmed)
+    }
+}
+
 pub struct IpcContext {
     pub config: Arc<Mutex<AppConfig>>,
     pub proxy: EventLoopProxy<AppEvent>,
@@ -30,7 +39,7 @@ pub async fn handle_message(msg_raw: &str, ctx: &IpcContext) {
                 }
                 eprintln!("[IPC Handler] Audio file found: {:?}", audio_path);
                 let language = ctx.config.lock().unwrap().language.clone();
-                let url = format!("http://{}", ctx.config.lock().unwrap().server_url);
+                let url = normalize_server_url(&ctx.config.lock().unwrap().server_url);
                 eprintln!("[IPC Handler] Calling ASR at {}", url);
 
                 match AsrClient::new(&url).transcribe(&audio_path, &language).await {
@@ -131,13 +140,13 @@ pub async fn handle_message(msg_raw: &str, ctx: &IpcContext) {
                     let cfg_path = ctx.app_data_dir.join("config.json");
                     let _ = std::fs::write(cfg_path, serde_json::to_string_pretty(&*cfg).unwrap());
 
-                    let port = new_cfg.server_url;
+                    let server_url = new_cfg.server_url;
                     let always_on_top = new_cfg.always_on_top;
                     if let Some(ref device) = new_cfg.audio_device {
                         *ctx.selected_audio_device.lock().unwrap() = Some(device.clone());
                     }
                     drop(cfg);
-                    *ctx.asr_client.lock().unwrap() = AsrClient::new(&format!("http://{}", port));
+                    *ctx.asr_client.lock().unwrap() = AsrClient::new(&normalize_server_url(&server_url));
 
                     let _ = ctx.proxy.send_event(AppEvent::SetAlwaysOnTop(always_on_top));
                 }

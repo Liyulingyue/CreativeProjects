@@ -168,42 +168,77 @@ impl AudioRecorder {
         self.sample_buffer = Arc::new(Mutex::new(Vec::new()));
         let buffer = self.sample_buffer.clone();
         let recording = Arc::new(Mutex::new(true));
+        let level_callback = self.level_callback.clone();
+        let level_counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
         let err_fn = |err| eprintln!("Stream error: {}", err);
 
         let stream = match config.sample_format() {
-            cpal::SampleFormat::F32 => device.build_input_stream(
-                &config.into(),
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    if *recording.lock().unwrap() {
-                        buffer.lock().unwrap().extend_from_slice(data);
-                    }
-                },
-                err_fn,
-                None,
-            ),
-            cpal::SampleFormat::I16 => device.build_input_stream(
-                &config.into(),
-                move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                    if *recording.lock().unwrap() {
-                        let float_data: Vec<f32> = data.iter().map(|&s| s as f32 / 32768.0).collect();
-                        buffer.lock().unwrap().extend_from_slice(&float_data);
-                    }
-                },
-                err_fn,
-                None,
-            ),
-            cpal::SampleFormat::U16 => device.build_input_stream(
-                &config.into(),
-                move |data: &[u16], _: &cpal::InputCallbackInfo| {
-                    if *recording.lock().unwrap() {
-                        let float_data: Vec<f32> = data.iter().map(|&s| (s as f32 / 65535.0) * 2.0 - 1.0).collect();
-                        buffer.lock().unwrap().extend_from_slice(&float_data);
-                    }
-                },
-                err_fn,
-                None,
-            ),
+            cpal::SampleFormat::F32 => {
+                let lc = level_callback.clone();
+                let lcnt = level_counter.clone();
+                device.build_input_stream(
+                    &config.into(),
+                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                        if *recording.lock().unwrap() {
+                            buffer.lock().unwrap().extend_from_slice(data);
+                            let n = lcnt.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if n % 4 == 0 {
+                                if let Some(ref cb) = lc {
+                                    let level = Self::calculate_level_f32(data);
+                                    if let Ok(guard) = cb.lock() { guard(level); }
+                                }
+                            }
+                        }
+                    },
+                    err_fn,
+                    None,
+                )
+            }
+            cpal::SampleFormat::I16 => {
+                let lc = level_callback.clone();
+                let lcnt = level_counter.clone();
+                device.build_input_stream(
+                    &config.into(),
+                    move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                        if *recording.lock().unwrap() {
+                            let float_data: Vec<f32> = data.iter().map(|&s| s as f32 / 32768.0).collect();
+                            buffer.lock().unwrap().extend_from_slice(&float_data);
+                            let n = lcnt.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if n % 4 == 0 {
+                                if let Some(ref cb) = lc {
+                                    let level = Self::calculate_level_i16(data);
+                                    if let Ok(guard) = cb.lock() { guard(level); }
+                                }
+                            }
+                        }
+                    },
+                    err_fn,
+                    None,
+                )
+            }
+            cpal::SampleFormat::U16 => {
+                let lc = level_callback.clone();
+                let lcnt = level_counter.clone();
+                device.build_input_stream(
+                    &config.into(),
+                    move |data: &[u16], _: &cpal::InputCallbackInfo| {
+                        if *recording.lock().unwrap() {
+                            let float_data: Vec<f32> = data.iter().map(|&s| (s as f32 / 65535.0) * 2.0 - 1.0).collect();
+                            buffer.lock().unwrap().extend_from_slice(&float_data);
+                            let n = lcnt.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if n % 4 == 0 {
+                                if let Some(ref cb) = lc {
+                                    let level = Self::calculate_level_f32(&float_data);
+                                    if let Ok(guard) = cb.lock() { guard(level); }
+                                }
+                            }
+                        }
+                    },
+                    err_fn,
+                    None,
+                )
+            }
             _ => return Err("Unsupported sample format".to_string()),
         }
         .map_err(|e| format!("Failed to build stream: {}", e))?;

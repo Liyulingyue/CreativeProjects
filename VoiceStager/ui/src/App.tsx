@@ -31,11 +31,12 @@ function getWindowType(): Page {
 function MainWindow() {
   const [state, setState] = useState<RecordingState>('idle')
   const [text, setText] = useState('')
+  const [audioLevel, setAudioLevel] = useState(0)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
     window.onRecordingStarted = () => setState('recording')
-    window.onRecordingStopped = () => setState('processing')
+    window.onRecordingStopped = () => { setState('processing'); setAudioLevel(0) }
     window.onAsrResult = (t) => {
       setText(t)
       setState('idle')
@@ -48,6 +49,9 @@ function MainWindow() {
     }
     window.onClearText = () => {
       setText('')
+    }
+    window.onAudioLevel = (level) => {
+      setAudioLevel(level)
     }
   }, [])
 
@@ -98,9 +102,9 @@ function MainWindow() {
       <div className="main-row">
         <textarea
           ref={inputRef}
-          placeholder="Result..."
+          placeholder={state === 'recording' ? '' : state === 'processing' ? 'Recognizing...' : 'Result...'}
           rows={2}
-          className="main-input"
+          className={`main-input${state === 'recording' ? ' recording' : ''}`}
           value={text}
           onChange={(e) => setText(e.target.value)}
         />
@@ -119,19 +123,18 @@ function MainWindow() {
             className={`mic-btn ${state}`}
             onClick={toggleRecording}
             disabled={state === 'processing'}
+            style={state === 'recording' ? {
+              boxShadow: `0 0 ${6 + audioLevel * 24}px ${2 + audioLevel * 14}px rgba(239,68,68,${0.35 + audioLevel * 0.5})`,
+              transform: `scale(${1 + audioLevel * 0.12})`,
+            } : undefined}
             title={state === 'idle' ? 'Start recording' : state === 'recording' ? 'Stop recording' : 'Processing...'}
           >
-            {state === 'idle' && (
+            {(state === 'idle' || state === 'recording') && (
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
                 <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
                 <line x1="12" y1="19" x2="12" y2="23"/>
                 <line x1="8" y1="23" x2="16" y2="23"/>
-              </svg>
-            )}
-            {state === 'recording' && (
-              <svg viewBox="0 0 24 24" fill="currentColor">
-                <rect x="6" y="6" width="12" height="12" rx="2"/>
               </svg>
             )}
             {state === 'processing' && (
