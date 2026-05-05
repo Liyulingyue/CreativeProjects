@@ -366,6 +366,22 @@ body {
   color: #111827;
 }
 
+.lang-toggle {
+  -webkit-app-region: no-drag;
+  background: #f3f4f6;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.lang-toggle:hover {
+  background: #e5e7eb;
+}
+
 .settings-body {
   flex: 1;
   padding: 14px;

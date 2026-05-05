@@ -4,21 +4,23 @@ pub mod ipc;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AppConfig {
-    pub hotkey: String,
+    pub record_hotkey: String,
+    pub send_hotkey: String,
     pub language: String,
     pub always_on_top: bool,
     pub server_url: String,
     pub audio_device: Option<String>,
     #[serde(default)]
-    pub asr_mode: String, // "local" | "remote"
+    pub asr_mode: String,
     #[serde(default)]
-    pub local_model: String, // "sensevoice-small" | "sensevoice-small-int8"
+    pub local_model: String,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            hotkey: "F13".to_string(),
+            record_hotkey: "F13".to_string(),
+            send_hotkey: "F14".to_string(),
             language: "auto".to_string(),
             always_on_top: true,
             server_url: "http://127.0.0.1:18789".to_string(),
@@ -60,4 +62,5 @@ pub enum AppEvent {
     ShowMainWindow,
     AudioDevices(Vec<(String, String)>),
     AudioLevel(f32),
+    SyncConfig(String),
 }
