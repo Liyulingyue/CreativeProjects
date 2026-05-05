@@ -17,7 +17,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_NCLBUTTONDOWN
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyMenu, TrackPopupMenu, HMENU, MF_GRAYED, MF_STRING,
-    TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, ShowWindow, SW_SHOWNOACTIVATE,
 };
 
 use tao::{
@@ -519,12 +519,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     AppEvent::AsrResult(text) => {
                         *current_text_clone.write() = text.clone();
-                        let js = format!(
-                            "window.onAsrResult && window.onAsrResult({})",
-                            serde_json::to_string(&text).unwrap()
-                        );
-                        let _ = main_webview.evaluate_script(&js);
-                        let _ = settings_webview.evaluate_script(&js);
+                        let use_buffer = {
+                            let cfg = config.lock().unwrap();
+                            cfg.use_buffer
+                        };
+
+                        if use_buffer {
+                            let js = format!(
+                                "window.onAsrResult && window.onAsrResult({})",
+                                serde_json::to_string(&text).unwrap()
+                            );
+                            let _ = main_webview.evaluate_script(&js);
+                            let _ = settings_webview.evaluate_script(&js);
+                        } else {
+                            // 直接触发粘贴
+                            let js = format!(
+                                "window.onAsrResult && window.onAsrResult({}); window.onPasteDone && window.onPasteDone()",
+                                serde_json::to_string(&text).unwrap()
+                            );
+                            let _ = main_webview.evaluate_script(&js);
+                            
+                            *current_text_clone.write() = String::new();
+                            let _ = clipboard_win::set_clipboard(clipboard_win::formats::Unicode, &text);
+                            
+                            // 先隐藏窗口，让操作系统焦点自动返回到上一个活跃窗口
+                            main_webview.window().set_visible(false);
+                            let p = proxy_for_paste.clone();
+                            thread::spawn(move || {
+                                // 稍微多等一会儿（250ms），确保操作系统已经完成了窗口隐藏和焦点切换回原 APP
+                                std::thread::sleep(std::time::Duration::from_millis(250));
+                                if let Ok(mut enigo) = Enigo::new(&Settings::default()) {
+                                    let _ = enigo.key(Key::Control, enigo::Direction::Press);
+                                    let _ = enigo.key(Key::Unicode('v'), enigo::Direction::Click);
+                                    let _ = enigo.key(Key::Control, enigo::Direction::Release);
+                                }
+                                std::thread::sleep(std::time::Duration::from_millis(80));
+                                let _ = p.send_event(AppEvent::ShowMainWindowNoFocus);
+                            });
+                        }
                     }
                     AppEvent::AsrError(err) => {
                         let js = format!(
@@ -579,6 +611,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let mw = main_webview.window();
                         mw.set_visible(true);
                         mw.set_focus();
+                    }
+                    AppEvent::ShowMainWindowNoFocus => {
+                        let mw = main_webview.window();
+                        unsafe {
+                            ShowWindow(mw.hwnd() as _, SW_SHOWNOACTIVATE);
+                        }
                     }
                     AppEvent::ToggleMainWindow => {
                         let mw = main_webview.window();

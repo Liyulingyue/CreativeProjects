@@ -179,6 +179,7 @@ function SettingsWindow() {
     audio_device: '',
     asr_mode: 'local',
     local_model: 'sensevoice-small',
+    use_buffer: true,
   })
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([])
   const [audioLevel, setAudioLevel] = useState(0)
@@ -455,10 +456,20 @@ function SettingsWindow() {
           />
         </div>
         <div className="form-group checkbox-group">
+          <label title={t.useBufferHint}>
+            <input
+              type="checkbox"
+              checked={(config as any).use_buffer}
+              onChange={e => update('use_buffer', e.target.checked)}
+            />
+            {t.useBuffer}
+          </label>
+        </div>
+        <div className="form-group checkbox-group">
           <label>
             <input
               type="checkbox"
-              checked={config.always_on_top}
+              checked={(config as any).always_on_top}
               onChange={e => update('always_on_top', e.target.checked)}
             />
             {t.alwaysOnTop}
