@@ -14,7 +14,11 @@ pub struct AppConfig {
     pub asr_mode: String,
     #[serde(default)]
     pub local_model: String,
+    #[serde(default = "default_true")]
+    pub use_buffer: bool,
 }
+
+fn default_true() -> bool { true }
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -27,6 +31,7 @@ impl Default for AppConfig {
             audio_device: None,
             asr_mode: "local".to_string(),
             local_model: "sensevoice-small".to_string(),
+            use_buffer: true,
         }
     }
 }
@@ -60,6 +65,7 @@ pub enum AppEvent {
         is_processing: bool,
     },
     ShowMainWindow,
+    ShowMainWindowNoFocus,
     AudioDevices(Vec<(String, String)>),
     AudioLevel(f32),
     SyncConfig(String),

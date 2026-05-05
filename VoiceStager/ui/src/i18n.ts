@@ -34,6 +34,8 @@ export const I18N = {
     helpStep2: '2. 放置到 VoiceStager/models/sensevoice-small/',
     helpBtn: '知道了',
     helpSource: '来源: ModelScope',
+    useBuffer: '使用输入框暂存',
+    useBufferHint: '开启后识别结果进入输入框，关闭后直接键入当前光标处',
   },
   en: {
     title: 'V-Stage Settings',
@@ -68,6 +70,8 @@ export const I18N = {
     helpStep2: '2. Place in VoiceStager/models/sensevoice-small/',
     helpBtn: 'Got it',
     helpSource: 'Source: ModelScope',
+    useBuffer: 'Use Input Buffer',
+    useBufferHint: 'ON: results to input box; OFF: type directly at cursor',
   },
 } as const
 
