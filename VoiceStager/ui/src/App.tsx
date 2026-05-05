@@ -1,5 +1,6 @@
 ﻿import { useState, useEffect, useCallback, useRef } from 'react'
-import { sendIpc } from './ipc'
+import { sendIpc, setIpcBlock } from './ipc'
+import { I18N, type Language } from './i18n'
 import './App.css'
 
 type RecordingState = 'idle' | 'recording' | 'processing'
@@ -20,12 +21,30 @@ declare global {
     onClearText: () => void
     onAudioDevices: (devices: AudioDevice[]) => void
     onAudioLevel: (level: number) => void
+    onConfigSync: (config: AppConfig) => void
   }
 }
 
 function getWindowType(): Page {
   const params = new URLSearchParams(window.location.search)
   return (params.get('window') as Page) || 'main'
+}
+
+function detectBrowserLanguage(): Language {
+  return navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en'
+}
+
+function useI18n() {
+  const [lang, setLang] = useState<Language>(() => {
+    const saved = localStorage.getItem('vstage_lang')
+    return (saved as Language) || detectBrowserLanguage()
+  })
+
+  useEffect(() => {
+    localStorage.setItem('vstage_lang', lang)
+  }, [lang])
+
+  return { lang, setLang, t: I18N[lang] }
 }
 
 function MainWindow() {
@@ -39,45 +58,34 @@ function MainWindow() {
     window.onRecordingStopped = () => { setState('processing'); setAudioLevel(0) }
     window.onAsrResult = (t) => {
       setText(t)
+      sendIpc({ type: 'update_current_text', value: t })
       setState('idle')
     }
-    window.onAsrError = () => {
-      setState('idle')
-    }
+    window.onAsrError = () => setState('idle')
     window.onPasteDone = () => {
       setText('')
+      sendIpc({ type: 'clear_current_text' })
     }
-    window.onClearText = () => {
-      setText('')
-    }
-    window.onAudioLevel = (level) => {
-      setAudioLevel(level)
-    }
+    window.onClearText = () => setText('')
+    window.onAudioLevel = (level) => setAudioLevel(level)
   }, [])
 
   const toggleRecording = useCallback(() => {
-    console.log('[Frontend] toggleRecording called, state:', state);
     if (state === 'idle') {
       setState('recording')
-      console.log('[Frontend] Sending start_recording');
       sendIpc({ type: 'start_recording' })
     } else if (state === 'recording') {
       setState('processing')
-      console.log('[Frontend] Sending stop_recording');
       sendIpc({ type: 'stop_recording' })
     }
   }, [state])
 
   const confirmText = useCallback(() => {
-    if (text.trim()) {
-      sendIpc({ type: 'paste_text', value: text })
-    }
+    if (text.trim()) sendIpc({ type: 'paste_text', value: text })
   }, [text])
 
   const handleDragMouseDown = useCallback((e: React.MouseEvent) => {
-    if (e.button === 0) {
-      sendIpc({ type: 'start_drag' })
-    }
+    if (e.button === 0) sendIpc({ type: 'start_drag' })
   }, [])
 
   const handleDragContextMenu = useCallback((e: React.MouseEvent) => {
@@ -109,11 +117,7 @@ function MainWindow() {
           onChange={(e) => setText(e.target.value)}
         />
         {hasText ? (
-          <button
-            className="confirm-btn"
-            onClick={confirmText}
-            title="Confirm"
-          >
+          <button className="confirm-btn" onClick={confirmText} title="Confirm">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <polyline points="20 6 9 17 4 12"/>
             </svg>
@@ -165,8 +169,10 @@ function MainWindow() {
 }
 
 function SettingsWindow() {
+  const { lang, setLang, t } = useI18n()
   const [config, setConfig] = useState({
-    hotkey: 'F13',
+    record_hotkey: 'F13',
+    send_hotkey: 'F14',
     language: 'auto',
     always_on_top: true,
     server_url: 'http://127.0.0.1:18789',
@@ -177,59 +183,68 @@ function SettingsWindow() {
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([])
   const [audioLevel, setAudioLevel] = useState(0)
   const [isMonitoring, setIsMonitoring] = useState(false)
-  const [hotkeyInput, setHotkeyInput] = useState('')
-  const [isRecordingHotkey, setIsRecordingHotkey] = useState(false)
+  const [recordHotkeyInput, setRecordHotkeyInput] = useState('')
+  const [sendHotkeyInput, setSendHotkeyInput] = useState('')
+  const [isRecordingRecordHotkey, setIsRecordingRecordHotkey] = useState(false)
+  const [isRecordingSendHotkey, setIsRecordingSendHotkey] = useState(false)
   const [showSavedMsg, setShowSavedMsg] = useState(false)
   const [showModelHelp, setShowModelHelp] = useState(false)
 
   useEffect(() => {
-    window.onAudioDevices = (devices) => {
-      console.log('[Settings] Received audio devices:', devices)
-      setAudioDevices(devices)
+    window.onAudioDevices = (devices) => setAudioDevices(devices)
+    window.onAudioLevel = (level) => setAudioLevel(level)
+    window.onConfigSync = (newConfig) => {
+      setConfig(newConfig)
+      setRecordHotkeyInput(newConfig.record_hotkey)
+      setSendHotkeyInput(newConfig.send_hotkey)
     }
-    window.onAudioLevel = (level) => {
-      setAudioLevel(level)
-    }
-    
     sendIpc({ type: 'get_audio_devices' })
-    setHotkeyInput(config.hotkey)
-    
+    sendIpc({ type: 'get_config' })
     return () => {
-      if (isMonitoring) {
-        sendIpc({ type: 'stop_audio_monitoring' })
-      }
+      if (isMonitoring) sendIpc({ type: 'stop_audio_monitoring' })
     }
   }, [])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (!isRecordingHotkey) return
+      if (!isRecordingRecordHotkey && !isRecordingSendHotkey) return
+      if (e.key === 'Control' || e.key === 'Alt' || e.key === 'Shift' || e.key === 'Meta') return
       e.preventDefault()
       e.stopPropagation()
-      
       const parts: string[] = []
       if (e.ctrlKey) parts.push('Ctrl')
       if (e.altKey) parts.push('Alt')
       if (e.shiftKey) parts.push('Shift')
-      if (e.key === ' ') parts.push('Space')
-      else if (e.key.startsWith('F') && e.key.length <= 3) parts.push(e.key.toUpperCase())
-      else if (e.key.length === 1) parts.push(e.key.toUpperCase())
       
-      if (parts.length > 0 && (parts.length > 1 || parts[0].startsWith('F'))) {
+      let keyDisplay = e.key.toUpperCase()
+      if (e.code === 'Space') keyDisplay = 'SPACE'
+      else if (e.code.startsWith('Key')) keyDisplay = e.code.slice(3)
+      else if (e.code.startsWith('Digit')) keyDisplay = e.code.slice(5)
+      
+      if (!['CONTROL', 'ALT', 'SHIFT', 'META'].includes(keyDisplay)) {
+        parts.push(keyDisplay)
+      }
+
+      if (parts.length > 0) {
         const hotkey = parts.join('+')
-        setHotkeyInput(hotkey)
-        setConfig(prev => ({ ...prev, hotkey }))
-        setIsRecordingHotkey(false)
+        if (isRecordingRecordHotkey) {
+          setRecordHotkeyInput(hotkey)
+          setConfig(prev => ({ ...prev, record_hotkey: hotkey }))
+          setIsRecordingRecordHotkey(false)
+          setIpcBlock(false)
+        } else {
+          setSendHotkeyInput(hotkey)
+          setConfig(prev => ({ ...prev, send_hotkey: hotkey }))
+          setIsRecordingSendHotkey(false)
+          setIpcBlock(false)
+        }
       }
     }
-
-    if (isRecordingHotkey) {
+    if (isRecordingRecordHotkey || isRecordingSendHotkey) {
       window.addEventListener('keydown', handleKeyDown, true)
     }
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown, true)
-    }
-  }, [isRecordingHotkey])
+    return () => window.removeEventListener('keydown', handleKeyDown, true)
+  }, [isRecordingRecordHotkey, isRecordingSendHotkey])
 
   const update = (key: string, value: string | number | boolean) => {
     setConfig(prev => ({ ...prev, [key]: value }))
@@ -239,6 +254,15 @@ function SettingsWindow() {
     update('audio_device', deviceId)
     sendIpc({ type: 'select_audio_device', value: deviceId })
   }
+
+  /*
+  useEffect(() => {
+    // 监听 config 变化，自动保存
+    if (Object.keys(config).length > 0) {
+      sendIpc({ type: 'save_config', value: JSON.stringify(config) })
+    }
+  }, [config])
+  */
 
   const toggleMonitoring = () => {
     if (isMonitoring) {
@@ -250,70 +274,96 @@ function SettingsWindow() {
     }
   }
 
-  const toggleHotkeyRecording = () => {
-    if (isRecordingHotkey) {
-      setIsRecordingHotkey(false)
+  const toggleRecordHotkeyRecording = () => {
+    if (isRecordingRecordHotkey) {
+      setIsRecordingRecordHotkey(false)
+      setIpcBlock(false)
     } else {
-      setHotkeyInput('')
-      setIsRecordingHotkey(true)
+      setRecordHotkeyInput('')
+      setIsRecordingRecordHotkey(true)
+      setIsRecordingSendHotkey(false)
+      setIpcBlock(true)
+    }
+  }
+
+  const toggleSendHotkeyRecording = () => {
+    if (isRecordingSendHotkey) {
+      setIsRecordingSendHotkey(false)
+      setIpcBlock(false)
+    } else {
+      setSendHotkeyInput('')
+      setIsRecordingSendHotkey(true)
+      setIsRecordingRecordHotkey(false)
+      setIpcBlock(true)
     }
   }
 
   const saveConfig = () => {
+    // 显式点击保存依然保留，用于显示吐司提示，但实际上 useEffect 已经实时保存了
     sendIpc({ type: 'save_config', value: JSON.stringify(config) })
-    setIsRecordingHotkey(false)
+    setIsRecordingRecordHotkey(false)
+    setIsRecordingSendHotkey(false)
     setShowSavedMsg(true)
     setTimeout(() => setShowSavedMsg(false), 2000)
+  }
+
+  const handleToggle = (key: keyof AppConfig) => {
+    setConfig(prev => ({ ...prev, [key]: !prev[key] }))
+  }
+
+  const handleInput = (key: keyof AppConfig, val: string) => {
+    setConfig(prev => ({ ...prev, [key]: val }))
   }
 
   return (
     <div className="app settings-window">
       {showSavedMsg && (
-        <div className="toast-msg">Settings Saved!</div>
+        <div className="toast-msg">{t.saved}</div>
       )}
       {showModelHelp && (
         <div className="modal-overlay" onClick={() => setShowModelHelp(false)}>
           <div className="modal-content" onClick={e => e.stopPropagation()}>
-            <h3>Local Model Download Guide</h3>
-            <p>If auto-download fails, please manually download files from ModelScope or HuggingFace:</p>
-            <p>
-              1. Download <code>model.int8.onnx</code> (or <code>model.onnx</code>) and <code>tokens.txt</code>.
-            </p>
-            <p>
-              2. Place them in: <br/>
+            <h3>{t.helpTitle}</h3>
+            <p>{t.helpDesc}</p>
+            <p>{t.helpStep1}</p>
+            <p>{t.helpStep2}<br />
               <code>VoiceStager/models/sensevoice-small/</code>
             </p>
-            <p>
-              Source: <a href="https://www.modelscope.cn/models/pengzhendong/sherpa-onnx-sense-voice-zh-en-ja-ko-yue/files" target="_blank" style={{color: '#3b82f6'}}>ModelScope Files</a>
-            </p>
-            <button className="btn primary modal-close-btn" onClick={() => setShowModelHelp(false)}>Got it</button>
+            <p>{t.helpSource}: <a href="https://www.modelscope.cn/models/pengzhendong/sherpa-onnx-sense-voice-zh-en-ja-ko-yue/files" target="_blank" style={{color: '#3b82f6'}}>ModelScope</a></p>
+            <button className="btn primary modal-close-btn" onClick={() => setShowModelHelp(false)}>{t.helpBtn}</button>
           </div>
         </div>
       )}
       <div className="settings-header">
-        <span className="settings-title">V-Stage Settings</span>
+        <span className="settings-title">{t.title}</span>
+        <button
+          className="lang-toggle"
+          onClick={() => setLang(lang === 'zh' ? 'en' : 'zh')}
+          title="Switch Language"
+        >
+          {lang === 'zh' ? 'EN' : '中'}
+        </button>
       </div>
       <div className="settings-body">
         <div className="form-group">
-          <label>Microphone</label>
+          <label>{t.microphone}</label>
           <div className="audio-device-row">
-            <select 
-              value={config.audio_device} 
+            <select
+              value={config.audio_device}
               onChange={e => handleAudioDeviceChange(e.target.value)}
             >
-              <option value="">Default Microphone</option>
+              <option value="">{t.defaultMic}</option>
               {audioDevices
                 .filter(d => d.name && d.name.trim() !== '')
                 .map(d => (
                   <option key={d.id} value={d.id}>{d.name}</option>
                 ))}
             </select>
-            <button 
+            <button
               className={`btn ${isMonitoring ? 'danger' : 'secondary'} small`}
               onClick={toggleMonitoring}
-              title={isMonitoring ? 'Stop monitoring' : 'Test microphone'}
             >
-              {isMonitoring ? 'Stop' : 'Test'}
+              {isMonitoring ? t.stop : t.test}
             </button>
           </div>
           {isMonitoring && (
@@ -323,52 +373,66 @@ function SettingsWindow() {
           )}
         </div>
         <div className="form-group">
-          <label>Hotkey</label>
+          <label>{t.recordHotkey}</label>
           <div className="audio-device-row">
             <input
               type="text"
-              value={hotkeyInput || config.hotkey}
+              value={recordHotkeyInput || config.record_hotkey}
               readOnly
               className="hotkey-input"
-              placeholder={isRecordingHotkey ? 'Press keys...' : 'Click Record to set hotkey'}
+              placeholder={isRecordingRecordHotkey ? t.pressHotkey : ''}
             />
-            <button 
-              className={`btn ${isRecordingHotkey ? 'danger' : 'secondary'} small`}
-              onClick={toggleHotkeyRecording}
-              title={isRecordingHotkey ? 'Cancel' : 'Record hotkey'}
+            <button
+              className={`btn ${isRecordingRecordHotkey ? 'primary' : 'secondary'} small`}
+              onClick={toggleRecordHotkeyRecording}
             >
-              {isRecordingHotkey ? 'Cancel' : 'Record'}
+              {isRecordingRecordHotkey ? t.recording : t.record}
             </button>
           </div>
-          {isRecordingHotkey && (
-            <p className="hint">Press any key combination (e.g., Ctrl+Space, F13)</p>
-          )}
         </div>
         <div className="form-group">
-          <label>Language</label>
+          <label>{t.sendHotkey}</label>
+          <div className="audio-device-row">
+            <input
+              type="text"
+              value={sendHotkeyInput || config.send_hotkey}
+              readOnly
+              className="hotkey-input"
+              placeholder={isRecordingSendHotkey ? t.pressHotkey : ''}
+            />
+            <button
+              className={`btn ${isRecordingSendHotkey ? 'primary' : 'secondary'} small`}
+              onClick={toggleSendHotkeyRecording}
+            >
+              {isRecordingSendHotkey ? t.recording : t.record}
+            </button>
+          </div>
+        </div>
+        <div className="form-group">
+          <label>{t.language}</label>
           <select value={config.language} onChange={e => update('language', e.target.value)}>
-            <option value="auto">Auto detect</option>
-            <option value="zh">Chinese</option>
+            <option value="auto">{t.auto}</option>
+            <option value="zh">中文</option>
             <option value="en">English</option>
-            <option value="ja">Japanese</option>
-            <option value="ko">Korean</option>
+            <option value="ja">日本語</option>
+            <option value="ko">한국어</option>
           </select>
         </div>
         <div className="form-group">
-          <label>ASR Mode</label>
+          <label>{t.asrMode}</label>
           <select value={config.asr_mode} onChange={e => update('asr_mode', e.target.value)}>
-            <option value="local">Local (Sherpa-Onnx)</option>
-            <option value="remote">Remote (Server URL)</option>
+            <option value="local">{t.localMode}</option>
+            <option value="remote">{t.remoteMode}</option>
           </select>
         </div>
         <div className="form-group" style={{ opacity: config.asr_mode === 'local' ? 1 : 0.5 }}>
           <div className="label-with-help">
-            <label>Local Model</label>
-            <span className="help-icon" onClick={() => setShowModelHelp(true)} title="Help: Manual download guide">
+            <label>{t.localModel}</label>
+            <span className="help-icon" onClick={() => setShowModelHelp(true)} title="Help">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="10"></circle>
-                <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
-                <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+                <line x1="12" y1="17" x2="12.01" y2="17"/>
               </svg>
             </span>
           </div>
@@ -377,12 +441,12 @@ function SettingsWindow() {
             disabled={config.asr_mode !== 'local'}
             onChange={e => update('local_model', e.target.value)}
           >
-            <option value="sensevoice-small">sensevoice-small (float32)</option>
-            <option value="sensevoice-small-int8">sensevoice-small-int8 (int8, faster)</option>
+            <option value="sensevoice-small">{t.float32}</option>
+            <option value="sensevoice-small-int8">{t.int8}</option>
           </select>
         </div>
         <div className="form-group" style={{ opacity: config.asr_mode === 'remote' ? 1 : 0.5 }}>
-          <label>Server URL</label>
+          <label>{t.serverUrl}</label>
           <input
             type="text"
             value={config.server_url}
@@ -397,16 +461,16 @@ function SettingsWindow() {
               checked={config.always_on_top}
               onChange={e => update('always_on_top', e.target.checked)}
             />
-            Always on top
+            {t.alwaysOnTop}
           </label>
         </div>
-        <button className="btn primary" onClick={saveConfig}>Save</button>
+        <button className="btn primary" onClick={saveConfig}>{t.save}</button>
         <div className="hint-container">
           <p className="hint">
-            <strong>Local:</strong> Place models in <code>models/</code> (e.g. <code>models/sensevoice-small/model.onnx</code>).
+            <strong>Local:</strong> {t.localHint}
           </p>
           <p className="hint">
-            <strong>Remote:</strong> <code>python server/funasr_server.py --model sensevoice</code>
+            <strong>Remote:</strong> <code>{t.remoteHint}</code>
           </p>
         </div>
       </div>

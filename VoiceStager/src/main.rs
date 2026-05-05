@@ -3,6 +3,7 @@
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use parking_lot::RwLock;
 use std::sync::mpsc as sync_mpsc;
 use tokio::sync::mpsc as tokio_mpsc;
 use include_dir::Dir;
@@ -149,39 +150,56 @@ fn serve_asset(path: &str) -> wry::http::Response<Cow<'static, [u8]>> {
         .unwrap()
 }
 
-fn setup_hotkey(hotkey_str: &str, recording: Arc<Mutex<bool>>, tx: tokio_mpsc::Sender<String>) {
+fn setup_hotkey(hotkey_str: &str, tx: tokio_mpsc::Sender<String>, msg: &str) {
     use hotkey::Listener;
 
     let mut listener = Listener::new();
 
-    let (mods, key_code) = match hotkey_str.to_uppercase().as_str() {
-        "CTRL+SPACE" => (hotkey::modifiers::CONTROL, 0x20),
-        "F13" => (0, 0x7C),
-        "F14" => (0, 0x7D),
-        "F15" => (0, 0x7E),
-        "F16" => (0, 0x7F),
-        "F17" => (0, 0x80),
-        "F18" => (0, 0x81),
-        "F19" => (0, 0x82),
-        "F20" => (0, 0x83),
-        "F21" => (0, 0x84),
-        "F22" => (0, 0x85),
-        "F23" => (0, 0x86),
-        "F24" => (0, 0x87),
-        _ => {
-            eprintln!("Unsupported hotkey: {}. Using F13.", hotkey_str);
-            (0, 0x7C)
+    let (mods, key_code) = {
+        let mut mods = 0;
+        let mut key = 0u32;
+        let hotkey_upper = hotkey_str.to_uppercase();
+        let parts: Vec<&str> = hotkey_upper.split('+').collect();
+        
+        for p in parts {
+            match p {
+                "CTRL" | "CONTROL" => mods |= hotkey::modifiers::CONTROL,
+                "ALT" => mods |= hotkey::modifiers::ALT,
+                "SHIFT" => mods |= hotkey::modifiers::SHIFT,
+                "SPACE" => key = 0x20,
+                s if s.starts_with('F') && s.len() > 1 => {
+                    if let Ok(num) = s[1..].parse::<u32>() {
+                        if num >= 1 && num <= 12 {
+                            key = 0x6F + num; // F1=0x70
+                        } else if num >= 13 && num <= 24 {
+                            key = 0x7C + (num - 13); // F13=0x7C
+                        }
+                    }
+                }
+                s if s.len() == 1 => {
+                    key = s.as_bytes()[0] as u32;
+                }
+                _ => {}
+            }
         }
+        (mods, key)
     };
 
-    let rec = recording.clone();
+    if key_code == 0 {
+        eprintln!("Invalid key code for hotkey: {}. Waiting...", hotkey_str);
+        // 如果是无效快捷键，不调用 listen()，直接退出线程
+        return;
+    }
+
+    let message = serde_json::json!({"type": msg}).to_string();
     match listener.register_hotkey(mods, key_code, move || {
-        let state = *rec.lock().unwrap();
-        let msg = serde_json::json!({"type": if state { "stop_recording" } else { "start_recording" }}).to_string();
-        let _ = tx.blocking_send(msg);
+        let _ = tx.blocking_send(message.clone());
     }) {
-        Ok(id) => println!("Hotkey registered (id={}, key={:#x})", id, key_code),
-        Err(e) => eprintln!("Failed to register hotkey: {}", e),
+        Ok(id) => println!("Hotkey registered (id={}, key={:#x}, mods={:#x}): {}", id, key_code, mods, msg),
+        Err(e) => {
+            eprintln!("Failed to register hotkey '{}' ({}): {}", msg, hotkey_str, e);
+            return;
+        }
     }
 
     listener.listen();
@@ -250,6 +268,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &normalize_server_url(&initial_config.server_url),
     )));
     let selected_audio_device = Arc::new(Mutex::new(initial_config.audio_device.clone()));
+    let current_text = Arc::new(RwLock::new(String::new()));
 
     let (audio_cmd_tx, audio_cmd_rx) = sync_mpsc::channel::<AudioCommand>();
 
@@ -310,11 +329,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, mut rx) = tokio_mpsc::channel::<String>(32);
 
     let hotkey_config = config.clone();
-    let hotkey_recording = is_recording.clone();
-    let tx_for_hotkey = tx.clone();
+    let tx_for_record_hotkey = tx.clone();
     std::thread::spawn(move || {
-        let hotkey_str = hotkey_config.lock().unwrap().hotkey.clone();
-        setup_hotkey(&hotkey_str, hotkey_recording, tx_for_hotkey);
+        let hotkey_str = hotkey_config.lock().unwrap().record_hotkey.clone();
+        setup_hotkey(&hotkey_str, tx_for_record_hotkey, "toggle_recording");
+    });
+
+    let hotkey_config2 = config.clone();
+    let tx_for_send_hotkey = tx.clone();
+    std::thread::spawn(move || {
+        let hotkey_str = hotkey_config2.lock().unwrap().send_hotkey.clone();
+        setup_hotkey(&hotkey_str, tx_for_send_hotkey, "hotkey_send");
     });
 
     let audio_dir = app_data_dir.clone();
@@ -371,6 +396,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let asr_task = asr_client.clone();
     let audio_cmd_tx2 = audio_cmd_tx.clone();
     let selected_device_task = selected_audio_device.clone();
+    let current_text_task = current_text.clone();
 
     tokio::spawn(async move {
         let ctx = IpcContext {
@@ -381,6 +407,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             asr_client: asr_task,
             selected_audio_device: selected_device_task,
             monitor_recorder: Arc::new(Mutex::new(None)),
+            current_text: current_text_task,
         };
         while let Some(msg_raw) = rx.recv().await {
             eprintln!("[IPC] Received: {}", msg_raw);
@@ -390,16 +417,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 msg_raw.clone()
             };
             match msg_type.as_str() {
-                "start_recording" => {
-                    eprintln!("[IPC] Starting recording");
-                    // 先停止监测（避免同设备双流冲突）
-                    {
-                        let mut guard = ctx.monitor_recorder.lock().unwrap();
-                        if let Some(mut r) = guard.take() { r.stop_monitoring(); }
+                "start_recording" | "toggle_recording" => {
+                    let is_recording = *ctx.is_recording.lock().unwrap();
+                    if (msg_type == "toggle_recording" && !is_recording) || (msg_type == "start_recording" && !is_recording) {
+                        eprintln!("[IPC] Starting recording");
+                        {
+                            let mut guard = ctx.monitor_recorder.lock().unwrap();
+                            if let Some(mut r) = guard.take() { r.stop_monitoring(); }
+                        }
+                        let _ = audio_cmd_tx2.send(AudioCommand::Start);
+                        *ctx.is_recording.lock().unwrap() = true;
+                        let _ = ctx.proxy.send_event(AppEvent::RecordingStarted);
+                    } else {
+                        eprintln!("[IPC] Stopping recording (toggle or already recording)");
+                        let _ = audio_cmd_tx2.send(AudioCommand::Stop);
+                        *ctx.is_recording.lock().unwrap() = false;
+                        let _ = ctx.proxy.send_event(AppEvent::RecordingStopped);
                     }
-                    let _ = audio_cmd_tx2.send(AudioCommand::Start);
-                    *ctx.is_recording.lock().unwrap() = true;
-                    let _ = ctx.proxy.send_event(AppEvent::RecordingStarted);
                 }
                 "stop_recording" => {
                     eprintln!("[IPC] Stopping recording");
@@ -429,7 +463,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let audio_cmd_tx3 = audio_cmd_tx;
     let proxy_for_paste = event_loop.create_proxy();
     let tx_for_menu = tx.clone();
+    let current_text_clone = current_text.clone();
 
+    #[allow(unused_variables)]
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
 
@@ -482,6 +518,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let _ = main_webview.evaluate_script("window.onRecordingStopped && window.onRecordingStopped()");
                     }
                     AppEvent::AsrResult(text) => {
+                        *current_text_clone.write() = text.clone();
                         let js = format!(
                             "window.onAsrResult && window.onAsrResult({})",
                             serde_json::to_string(&text).unwrap()
@@ -513,12 +550,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let _ = main_webview.evaluate_script(&js);
                         let _ = settings_webview.evaluate_script(&js);
                     }
+                    AppEvent::SyncConfig(json) => {
+                        let js = format!("window.onConfigSync && window.onConfigSync({})", json);
+                        let _ = settings_webview.evaluate_script(&js);
+                    }
                     AppEvent::QuitApp => {
                         let _ = audio_cmd_tx3.send(AudioCommand::Quit);
                         *control_flow = ControlFlow::Exit;
                     }
                     AppEvent::PasteText(text) => {
                         let _ = main_webview.evaluate_script("window.onPasteDone && window.onPasteDone()");
+                        *current_text_clone.write() = String::new();
                         let _ = clipboard_win::set_clipboard(clipboard_win::formats::Unicode, &text);
                         main_webview.window().set_visible(false);
                         let p = proxy_for_paste.clone();
@@ -587,7 +629,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 MENU_ID_CONFIRM => {
                                     if has_text {
-                                        let _ = proxy_for_paste.send_event(AppEvent::PasteText(text));
+                                        let _ = proxy_for_paste.send_event(AppEvent::PasteText(text.clone()));
+                                        *current_text_clone.write() = String::new();
                                     }
                                 }
                                 MENU_ID_CLEAR => {

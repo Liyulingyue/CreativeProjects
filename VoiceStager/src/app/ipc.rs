@@ -1,5 +1,6 @@
 ﻿use std::sync::{Arc, Mutex};
 use std::path::PathBuf;
+use parking_lot::RwLock;
 use tao::event_loop::EventLoopProxy;
 use crate::app::{AppConfig, AppEvent, IpcMessage};
 use crate::asr::AsrClient;
@@ -23,6 +24,7 @@ pub struct IpcContext {
     pub asr_client: Arc<TokioMutex<AsrClient>>,
     pub selected_audio_device: Arc<Mutex<Option<String>>>,
     pub monitor_recorder: Arc<Mutex<Option<AudioRecorder>>>,
+    pub current_text: Arc<RwLock<String>>,
 }
 
 pub async fn handle_message(msg_raw: &str, ctx: &IpcContext) {
@@ -71,6 +73,19 @@ pub async fn handle_message(msg_raw: &str, ctx: &IpcContext) {
             }
             "paste_text" => {
                 let _ = ctx.proxy.send_event(AppEvent::PasteText(msg.value));
+            }
+            "hotkey_send" => {
+                let text = ctx.current_text.read().clone();
+                if !text.trim().is_empty() {
+                    let _ = ctx.proxy.send_event(AppEvent::PasteText(text));
+                    *ctx.current_text.write() = String::new();
+                }
+            }
+            "update_current_text" => {
+                *ctx.current_text.write() = msg.value.clone();
+            }
+            "clear_current_text" => {
+                *ctx.current_text.write() = String::new();
             }
             "start_drag" => {
                 let _ = ctx.proxy.send_event(AppEvent::StartDrag);
@@ -132,6 +147,11 @@ pub async fn handle_message(msg_raw: &str, ctx: &IpcContext) {
                 let devices = AudioRecorder::list_devices();
                 eprintln!("[IPC Handler] Found {} audio devices", devices.len());
                 let _ = ctx.proxy.send_event(AppEvent::AudioDevices(devices));
+            }
+            "get_config" => {
+                let cfg = ctx.config.lock().unwrap();
+                let json = serde_json::to_string(&*cfg).unwrap();
+                let _ = ctx.proxy.send_event(AppEvent::SyncConfig(json));
             }
             "select_audio_device" => {
                 let device_id = if msg.value.is_empty() { None } else { Some(msg.value.clone()) };
