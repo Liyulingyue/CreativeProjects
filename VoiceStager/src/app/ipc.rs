@@ -4,6 +4,7 @@ use tao::event_loop::EventLoopProxy;
 use crate::app::{AppConfig, AppEvent, IpcMessage};
 use crate::asr::AsrClient;
 use crate::audio::AudioRecorder;
+use tokio::sync::Mutex as TokioMutex;
 
 fn normalize_server_url(raw: &str) -> String {
     let trimmed = raw.trim();
@@ -19,7 +20,7 @@ pub struct IpcContext {
     pub proxy: EventLoopProxy<AppEvent>,
     pub app_data_dir: PathBuf,
     pub is_recording: Arc<Mutex<bool>>,
-    pub asr_client: Arc<Mutex<AsrClient>>,
+    pub asr_client: Arc<TokioMutex<AsrClient>>,
     pub selected_audio_device: Arc<Mutex<Option<String>>>,
     pub monitor_recorder: Arc<Mutex<Option<AudioRecorder>>>,
 }
@@ -38,11 +39,16 @@ pub async fn handle_message(msg_raw: &str, ctx: &IpcContext) {
                     return;
                 }
                 eprintln!("[IPC Handler] Audio file found: {:?}", audio_path);
-                let language = ctx.config.lock().unwrap().language.clone();
-                let url = normalize_server_url(&ctx.config.lock().unwrap().server_url);
-                eprintln!("[IPC Handler] Calling ASR at {}", url);
+                let (language, use_local) = {
+                    let config = ctx.config.lock().unwrap();
+                    (config.language.clone(), config.asr_mode == "local")
+                };
 
-                match AsrClient::new(&url).transcribe(&audio_path, &language).await {
+                // 提前拿出所需参数，不在 await 跨越点持有 MutexGuard
+                let result = ctx.asr_client.lock().await
+                    .transcribe(&audio_path, &language, use_local).await;
+
+                match result {
                     Ok(text) => {
                         eprintln!("[IPC Handler] ASR result: {}", text);
                         if text.is_empty() {
@@ -146,7 +152,9 @@ pub async fn handle_message(msg_raw: &str, ctx: &IpcContext) {
                         *ctx.selected_audio_device.lock().unwrap() = Some(device.clone());
                     }
                     drop(cfg);
-                    *ctx.asr_client.lock().unwrap() = AsrClient::new(&normalize_server_url(&server_url));
+                    // 仅更新 URL，不需要重新创建整个 client
+                    let mut client = ctx.asr_client.blocking_lock();
+                    client.http_provider = crate::asr::HttpAsrProvider::new(&normalize_server_url(&server_url));
 
                     let _ = ctx.proxy.send_event(AppEvent::SetAlwaysOnTop(always_on_top));
                 }

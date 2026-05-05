@@ -9,6 +9,8 @@ pub struct AppConfig {
     pub always_on_top: bool,
     pub server_url: String,
     pub audio_device: Option<String>,
+    #[serde(default)]
+    pub asr_mode: String, // "local" | "remote"
 }
 
 impl Default for AppConfig {
@@ -19,6 +21,7 @@ impl Default for AppConfig {
             always_on_top: true,
             server_url: "http://127.0.0.1:18789".to_string(),
             audio_device: None,
+            asr_mode: "local".to_string(),
         }
     }
 }

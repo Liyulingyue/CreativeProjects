@@ -5,7 +5,9 @@ use std::sync::Arc;
 use sherpa_onnx::{
     OfflineRecognizer as NonStreamingAsrRecognizer, 
     OfflineRecognizerConfig as NonStreamingAsrRecognizerConfig,
+    OfflineModelConfig as NonStreamingAsrModelConfig,
     OfflineSenseVoiceModelConfig,
+    FeatureConfig,
 };
 
 #[async_trait]
@@ -79,57 +81,32 @@ impl LocalSherpaAsrProvider {
             return Ok(());
         }
 
-        let model_dir = std::path::Path::new("models/sensevoice-small");
-        let model_file = model_dir.join("model.onnx");
-        let tokens_file = model_dir.join("tokens.txt");
-
-        // 如果模型文件不存在则自动下载
-        if !model_file.exists() || !tokens_file.exists() {
-            println!("模型文件不存在，开始自动下载 SenseVoice-Small...");
-            std::fs::create_dir_all(model_dir).map_err(|e| format!("创建模型目录失败: {}", e))?;
-
-            const BASE_URL: &str = "https://hf-mirror.com/k2-fsa/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main";
-            let files = [
-                ("model.onnx", model_dir.join("model.onnx")),
-                ("tokens.txt", model_dir.join("tokens.txt")),
-            ];
-
-            let client = reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(600))
-                .build()
-                .map_err(|e| format!("创建下载客户端失败: {}", e))?;
-
-            for (name, dest) in &files {
-                if dest.exists() {
-                    println!("  {} 已存在，跳过", name);
-                    continue;
-                }
-                println!("  正在下载 {} ...", name);
-                let url = format!("{}/{}", BASE_URL, name);
-                let bytes = client.get(&url)
-                    .send()
-                    .and_then(|r| r.bytes())
-                    .map_err(|e| format!("下载 {} 失败: {}", name, e))?;
-                std::fs::write(dest, &bytes)
-                    .map_err(|e| format!("写入 {} 失败: {}", name, e))?;
-                println!("  {} 下载完成 ({:.1} MB)", name, bytes.len() as f64 / 1_048_576.0);
-            }
-            println!("模型下载完成。");
-        }
-
         println!("正在初始化本地 ASR 模型 (SenseVoice)...");
-
-        let mut config = NonStreamingAsrRecognizerConfig::default();
-        config.model_config.sense_voice = OfflineSenseVoiceModelConfig {
-            model: Some(model_file.to_string_lossy().into_owned()),
-            language: None,
-            use_itn: true,
+        
+        // 注意：模型文件需要用户放置在 models/sensevoice-small 目录下
+        let model_dir = "models/sensevoice-small";
+        
+        let config = NonStreamingAsrRecognizerConfig {
+            feat_config: sherpa_onnx::OfflineFeatureConfig {
+                sample_rate: 16000,
+                feature_dim: 80,
+            },
+            model_config: NonStreamingAsrModelConfig {
+                sense_voice: OfflineSenseVoiceModelConfig {
+                    model: Some(format!("{}/model.onnx", model_dir)),
+                    language: Some("".to_string()),
+                    use_itn: true,
+                },
+                tokens: Some(format!("{}/tokens.txt", model_dir)),
+                num_threads: 4,
+                debug: false,
+                ..Default::default()
+            },
+            ..Default::default()
         };
-        config.model_config.tokens = Some(tokens_file.to_string_lossy().into_owned());
-        config.model_config.num_threads = 4;
 
         let recognizer = NonStreamingAsrRecognizer::create(&config)
-            .ok_or_else(|| format!("加载模型失败 (模型目录: {:?})", model_dir))?;
+            .ok_or_else(|| format!("加载模型失败 (请确保模型文件在 {} 目录下且格式正确)", model_dir))?;
 
         *lock = Some(recognizer);
         Ok(())
@@ -156,7 +133,7 @@ impl AsrProvider for LocalSherpaAsrProvider {
 
         // 创建流并处理
         let stream = recognizer.create_stream();
-        stream.accept_waveform(spec.sample_rate as i32, &samples);
+        stream.accept_waveform(spec.sample_rate as f32, &samples);
         
         recognizer.decode(&stream);
         let result = stream.get_result();
