@@ -167,7 +167,6 @@ function MainWindow() {
 function SettingsWindow() {
   const [config, setConfig] = useState({
     hotkey: 'F13',
-    asr_model: 'base',
     language: 'auto',
     always_on_top: true,
     server_url: 'http://127.0.0.1:18789',
@@ -318,15 +317,6 @@ function SettingsWindow() {
           )}
         </div>
         <div className="form-group">
-          <label>ASR Model</label>
-          <select value={config.asr_model} onChange={e => update('asr_model', e.target.value)}>
-            <option value="tiny">tiny - fastest, lowest accuracy</option>
-            <option value="base">base - recommended</option>
-            <option value="small">small - higher accuracy</option>
-            <option value="medium">medium - high accuracy (slow)</option>
-          </select>
-        </div>
-        <div className="form-group">
           <label>Language</label>
           <select value={config.language} onChange={e => update('language', e.target.value)}>
             <option value="auto">Auto detect</option>
@@ -356,8 +346,8 @@ function SettingsWindow() {
         </div>
         <button className="btn primary" onClick={saveConfig}>Save</button>
         <p className="hint">
-          WhisperServer must be started separately:<br/>
-          <code>python server/whisper_server.py --model {config.asr_model}</code>
+          FunASR Server must be started separately:<br/>
+          <code>python server/funasr_server.py --model sensevoice --device cpu</code>
         </p>
       </div>
     </div>

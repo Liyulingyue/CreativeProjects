@@ -5,7 +5,6 @@ pub mod ipc;
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AppConfig {
     pub hotkey: String,
-    pub asr_model: String,
     pub language: String,
     pub always_on_top: bool,
     pub server_url: String,
@@ -16,7 +15,6 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             hotkey: "F13".to_string(),
-            asr_model: "base".to_string(),
             language: "auto".to_string(),
             always_on_top: true,
             server_url: "http://127.0.0.1:18789".to_string(),
