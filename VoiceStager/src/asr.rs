@@ -8,6 +8,7 @@ use sherpa_onnx::{
     OfflineSenseVoiceModelConfig,
 };
 
+/// ASR Provider trait，支持远程 HTTP 和本地 Sherpa-Onnx 两种实现
 #[async_trait]
 pub trait AsrProvider: Send + Sync {
     async fn transcribe(&self, audio_path: &Path, language: &str) -> Result<String, String>;
@@ -61,41 +62,78 @@ impl AsrProvider for HttpAsrProvider {
     }
 }
 
-/// 本地 Sherpa-Onnx ASR 实现 (延迟加载)
+/// 本地 Sherpa-Onnx ASR 实现 (延迟加载，支持 sensevoice-small / sensevoice-small-int8)
 pub struct LocalSherpaAsrProvider {
     recognizer: Arc<RwLock<Option<NonStreamingAsrRecognizer>>>,
+    model_name: Arc<RwLock<String>>,
 }
 
 impl LocalSherpaAsrProvider {
     pub fn new() -> Self {
         Self {
             recognizer: Arc::new(RwLock::new(None)),
+            model_name: Arc::new(RwLock::new("sensevoice-small".to_string())),
+        }
+    }
+
+    /// 切换本地模型（切换时会清空已加载的 recognizer，下次识别时重新加载）
+    pub fn set_model(&self, name: &str) {
+        let current = self.model_name.read().clone();
+        if current != name {
+            *self.model_name.write() = name.to_string();
+            *self.recognizer.write() = None;
         }
     }
 
     fn ensure_loaded(&self) -> Result<(), String> {
+        let model_name = self.model_name.read().clone();
+        
+        // 提取基础模型名（用于存放目录名）
+        // 如果是 int8 结尾，目录保持为 sensevoice-small，但文件名不同
+        let base_dir_name = if model_name.ends_with("-int8") {
+            model_name.trim_end_matches("-int8")
+        } else {
+            &model_name
+        };
+        
+        let model_dir = std::path::Path::new("models").join(base_dir_name);
+
+        let model_file = if model_name.ends_with("-int8") {
+            model_dir.join("model.int8.onnx")
+        } else {
+            model_dir.join("model.onnx")
+        };
+        let tokens_file = model_dir.join("tokens.txt");
+
         let mut lock = self.recognizer.write();
         if lock.is_some() {
             return Ok(());
         }
 
-        let model_dir = std::path::Path::new("models/sensevoice-small");
-        let model_file = model_dir.join("model.onnx");
-        let tokens_file = model_dir.join("tokens.txt");
-
-        // 如果模型文件不存在则自动下载
+        // 如果模型文件不存在则尝试自动下载（仅支持 float32 模型的自动下载）
         if !model_file.exists() || !tokens_file.exists() {
+            if model_name.ends_with("-int8") {
+                return Err(format!("本地 int8 模型不存在: {:?}\n请手动下载 model.int8.onnx 并放入目录。", model_file));
+            }
+            
             println!("模型文件不存在，开始自动下载 SenseVoice-Small...");
-            std::fs::create_dir_all(model_dir).map_err(|e| format!("创建模型目录失败: {}", e))?;
+            std::fs::create_dir_all(&model_dir).map_err(|e| format!("创建模型目录失败: {}", e))?;
 
-            const BASE_URL: &str = "https://hf-mirror.com/k2-fsa/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main";
-            let files = [
-                ("model.onnx", model_dir.join("model.onnx")),
-                ("tokens.txt", model_dir.join("tokens.txt")),
-            ];
+            let base_url = "https://www.modelscope.cn/api/v1/models/pengzhendong/sherpa-onnx-sense-voice-zh-en-ja-ko-yue/repo?Revision=master&FilePath=";
+            let files = if model_name.ends_with("-int8") {
+                vec![
+                    ("model.int8.onnx", model_dir.join("model.int8.onnx")),
+                    ("tokens.txt", model_dir.join("tokens.txt")),
+                ]
+            } else {
+                vec![
+                    ("model.onnx", model_dir.join("model.onnx")),
+                    ("tokens.txt", model_dir.join("tokens.txt")),
+                ]
+            };
 
             let client = reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(600))
+                .timeout(std::time::Duration::from_secs(1200))
                 .build()
                 .map_err(|e| format!("创建下载客户端失败: {}", e))?;
 
@@ -104,8 +142,8 @@ impl LocalSherpaAsrProvider {
                     println!("  {} 已存在，跳过", name);
                     continue;
                 }
-                println!("  正在下载 {} ...", name);
-                let url = format!("{}/{}", BASE_URL, name);
+                println!("  正在从 ModelScope 下载 {} ...", name);
+                let url = format!("{}{}", base_url, name);
                 let bytes = client.get(&url)
                     .send()
                     .and_then(|r| r.bytes())
@@ -117,7 +155,7 @@ impl LocalSherpaAsrProvider {
             println!("模型下载完成。");
         }
 
-        println!("正在初始化本地 ASR 模型 (SenseVoice)...");
+        println!("正在初始化本地 ASR 模型 ({})...", model_name);
 
         let mut config = NonStreamingAsrRecognizerConfig::default();
         config.model_config.sense_voice = OfflineSenseVoiceModelConfig {
@@ -136,8 +174,15 @@ impl LocalSherpaAsrProvider {
     }
 }
 
+impl Default for LocalSherpaAsrProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl AsrProvider for LocalSherpaAsrProvider {
+    /// 使用本地 sherpa-onnx 模型进行语音识别
     async fn transcribe(&self, audio_path: &Path, _language: &str) -> Result<String, String> {
         // 延迟加载
         self.ensure_loaded()?;
@@ -165,6 +210,7 @@ impl AsrProvider for LocalSherpaAsrProvider {
     }
 }
 
+/// ASR 客户端，封装 HTTP 和本地两种 Provider
 pub struct AsrClient {
     pub http_provider: HttpAsrProvider,
     pub local_provider: LocalSherpaAsrProvider,
@@ -178,6 +224,12 @@ impl AsrClient {
         }
     }
 
+    /// 切换本地模型
+    pub fn set_local_model(&self, name: &str) {
+        self.local_provider.set_model(name);
+    }
+
+    /// 根据 use_local 选择本地或远程识别
     pub async fn transcribe(&self, audio_path: &Path, language: &str, use_local: bool) -> Result<String, String> {
         if use_local {
             self.local_provider.transcribe(audio_path, language).await
