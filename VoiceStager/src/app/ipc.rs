@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+﻿use std::sync::{Arc, Mutex};
 use std::path::PathBuf;
 use tao::event_loop::EventLoopProxy;
 use crate::app::{AppConfig, AppEvent, IpcMessage};
@@ -30,7 +30,7 @@ pub async fn handle_message(msg_raw: &str, ctx: &IpcContext) {
                 }
                 eprintln!("[IPC Handler] Audio file found: {:?}", audio_path);
                 let language = ctx.config.lock().unwrap().language.clone();
-                let url = format!("http://127.0.0.1:{}", ctx.config.lock().unwrap().server_port);
+                let url = format!("http://{}", ctx.config.lock().unwrap().server_url);
                 eprintln!("[IPC Handler] Calling ASR at {}", url);
 
                 match AsrClient::new(&url).transcribe(&audio_path, &language).await {
@@ -59,6 +59,38 @@ pub async fn handle_message(msg_raw: &str, ctx: &IpcContext) {
             }
             "start_drag" => {
                 let _ = ctx.proxy.send_event(AppEvent::StartDrag);
+            }
+            "toggle_main_window" => {
+                let _ = ctx.proxy.send_event(AppEvent::ToggleMainWindow);
+            }
+            "show_native_menu" => {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&msg.value) {
+                    let client_x = value.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let client_y = value.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let text = value
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let has_text = value.get("hasText").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let is_recording = value
+                        .get("isRecording")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let is_processing = value
+                        .get("isProcessing")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+
+                    let _ = ctx.proxy.send_event(AppEvent::ShowNativeMenu {
+                        client_x,
+                        client_y,
+                        text,
+                        has_text,
+                        is_recording,
+                        is_processing,
+                    });
+                }
             }
             "start_audio_monitoring" => {
                 let mut guard = ctx.monitor_recorder.lock().unwrap();
@@ -99,13 +131,13 @@ pub async fn handle_message(msg_raw: &str, ctx: &IpcContext) {
                     let cfg_path = ctx.app_data_dir.join("config.json");
                     let _ = std::fs::write(cfg_path, serde_json::to_string_pretty(&*cfg).unwrap());
 
-                    let port = new_cfg.server_port;
+                    let port = new_cfg.server_url;
                     let always_on_top = new_cfg.always_on_top;
                     if let Some(ref device) = new_cfg.audio_device {
                         *ctx.selected_audio_device.lock().unwrap() = Some(device.clone());
                     }
                     drop(cfg);
-                    *ctx.asr_client.lock().unwrap() = AsrClient::new(&format!("http://127.0.0.1:{}", port));
+                    *ctx.asr_client.lock().unwrap() = AsrClient::new(&format!("http://{}", port));
 
                     let _ = ctx.proxy.send_event(AppEvent::SetAlwaysOnTop(always_on_top));
                 }
@@ -116,3 +148,4 @@ pub async fn handle_message(msg_raw: &str, ctx: &IpcContext) {
         }
     }
 }
+

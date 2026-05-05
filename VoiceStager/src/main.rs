@@ -10,6 +10,10 @@ use include_dir::include_dir as embed_dir;
 use enigo::{Enigo, Key, Keyboard, Settings};
 use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_NCLBUTTONDOWN};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    AppendMenuW, CreatePopupMenu, DestroyMenu, TrackPopupMenu, HMENU, MF_GRAYED, MF_STRING,
+    TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+};
 
 use tao::{
     event::{Event, WindowEvent},
@@ -30,6 +34,66 @@ mod audio;
 mod asr;
 
 static PRO_DIST: Dir<'static> = embed_dir!("$CARGO_MANIFEST_DIR/ui/dist");
+
+const MENU_ID_RECORD: u32 = 1;
+const MENU_ID_CONFIRM: u32 = 2;
+const MENU_ID_CLEAR: u32 = 3;
+const MENU_ID_SETTINGS: u32 = 4;
+const MENU_ID_HIDE: u32 = 5;
+
+fn to_wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+fn append_native_menu_item(menu: HMENU, id: u32, title: &str, enabled: bool) {
+    let mut flags = MF_STRING;
+    if !enabled {
+        flags |= MF_GRAYED;
+    }
+    let title_w = to_wide(title);
+    unsafe {
+        AppendMenuW(menu, flags, id as usize, title_w.as_ptr());
+    }
+}
+
+fn show_native_context_menu(
+    hwnd: isize,
+    x: i32,
+    y: i32,
+    has_text: bool,
+    is_recording: bool,
+    is_processing: bool,
+) -> u32 {
+    unsafe {
+        let menu = CreatePopupMenu();
+        if menu == 0 {
+            return 0;
+        }
+
+        append_native_menu_item(
+            menu,
+            MENU_ID_RECORD,
+            if is_recording { "停止录制" } else { "录制" },
+            !is_processing,
+        );
+        append_native_menu_item(menu, MENU_ID_CONFIRM, "确认", has_text && !is_processing);
+        append_native_menu_item(menu, MENU_ID_CLEAR, "清空", has_text);
+        append_native_menu_item(menu, MENU_ID_SETTINGS, "菜单", true);
+        append_native_menu_item(menu, MENU_ID_HIDE, "隐藏", true);
+
+        let cmd = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+            x,
+            y,
+            0,
+            hwnd as _,
+            std::ptr::null(),
+        );
+        DestroyMenu(menu);
+        cmd as u32
+    }
+}
 
 fn load_window_icon() -> Result<tao::window::Icon, Box<dyn std::error::Error>> {
     let icon_bytes = include_bytes!("../assets/app_icon.png");
@@ -165,8 +229,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Arc::new(Mutex::new(initial_config.clone()));
     let is_recording = Arc::new(Mutex::new(false));
     let asr_client = Arc::new(Mutex::new(AsrClient::new(&format!(
-        "http://127.0.0.1:{}",
-        initial_config.server_port
+        "http://{}",
+        initial_config.server_url
     ))));
     let selected_audio_device = Arc::new(Mutex::new(initial_config.audio_device.clone()));
 
@@ -324,6 +388,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let settings_window_id = settings_webview.window().id();
     let audio_cmd_tx3 = audio_cmd_tx;
     let proxy_for_paste = event_loop.create_proxy();
+    let tx_for_menu = tx.clone();
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
@@ -412,6 +477,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             SendMessageW(hwnd, WM_NCLBUTTONDOWN, 2usize, 0);
                         }
                     }
+                    AppEvent::ShowNativeMenu {
+                        client_x,
+                        client_y,
+                        text,
+                        has_text,
+                        is_recording,
+                        is_processing,
+                    } => {
+                        let mw = main_webview.window();
+                        if let Ok(pos) = mw.inner_position() {
+                            let scale = mw.scale_factor();
+                            let x = pos.x + (client_x * scale) as i32;
+                            let y = pos.y + (client_y * scale) as i32;
+                            let selected = show_native_context_menu(
+                                mw.hwnd() as isize,
+                                x,
+                                y,
+                                has_text,
+                                is_recording,
+                                is_processing,
+                            );
+
+                            match selected {
+                                MENU_ID_RECORD => {
+                                    let msg = if is_recording {
+                                        serde_json::json!({"type": "stop_recording"}).to_string()
+                                    } else {
+                                        serde_json::json!({"type": "start_recording"}).to_string()
+                                    };
+                                    let _ = tx_for_menu.try_send(msg);
+                                }
+                                MENU_ID_CONFIRM => {
+                                    if has_text {
+                                        let _ = proxy_for_paste.send_event(AppEvent::PasteText(text));
+                                    }
+                                }
+                                MENU_ID_CLEAR => {
+                                    let _ = main_webview.evaluate_script(
+                                        "window.onClearText && window.onClearText()",
+                                    );
+                                }
+                                MENU_ID_SETTINGS => {
+                                    let _ = proxy_for_paste.send_event(AppEvent::OpenSettings);
+                                }
+                                MENU_ID_HIDE => {
+                                    mw.set_visible(false);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                     AppEvent::AudioDevices(devices) => {
                         let devices_json = serde_json::to_string(&devices).unwrap();
                         let js = format!("window.onAudioDevices && window.onAudioDevices({})", devices_json);
@@ -435,3 +551,4 @@ enum AudioCommand {
     Stop,
     Quit,
 }
+
