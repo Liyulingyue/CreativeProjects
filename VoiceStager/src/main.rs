@@ -246,7 +246,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = Arc::new(Mutex::new(initial_config.clone()));
     let is_recording = Arc::new(Mutex::new(false));
-    let asr_client = Arc::new(Mutex::new(AsrClient::new(
+    let asr_client = Arc::new(tokio::sync::Mutex::new(AsrClient::new(
         &normalize_server_url(&initial_config.server_url),
     )));
     let selected_audio_device = Arc::new(Mutex::new(initial_config.audio_device.clone()));
@@ -507,6 +507,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     AppEvent::SetAlwaysOnTop(on_top) => {
                         let mw = main_webview.window();
                         mw.set_always_on_top(on_top);
+                    }
+                    AppEvent::AudioLevel(level) => {
+                        let _ = main_webview.evaluate_script(&format!(
+                            "window.onAudioLevel && window.onAudioLevel({})",
+                            level
+                        ));
                     }
                     AppEvent::QuitApp => {
                         let _ = audio_cmd_tx3.send(AudioCommand::Quit);

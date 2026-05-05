@@ -171,6 +171,7 @@ function SettingsWindow() {
     always_on_top: true,
     server_url: 'http://127.0.0.1:18789',
     audio_device: '',
+    asr_mode: 'local', // 'local' | 'remote'
   })
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([])
   const [audioLevel, setAudioLevel] = useState(0)
@@ -327,10 +328,36 @@ function SettingsWindow() {
           </select>
         </div>
         <div className="form-group">
+          <label>ASR Mode</label>
+          <div className="asr-mode-toggle">
+            <label className="radio-label">
+              <input
+                type="radio"
+                name="asr_mode"
+                value="local"
+                checked={config.asr_mode === 'local'}
+                onChange={e => update('asr_mode', e.target.value)}
+              />
+              Local (Sherpa-Onnx)
+            </label>
+            <label className="radio-label">
+              <input
+                type="radio"
+                name="asr_mode"
+                value="remote"
+                checked={config.asr_mode === 'remote'}
+                onChange={e => update('asr_mode', e.target.value)}
+              />
+              Remote (Server URL)
+            </label>
+          </div>
+        </div>
+        <div className="form-group" style={{ opacity: config.asr_mode === 'remote' ? 1 : 0.5 }}>
           <label>Server URL</label>
           <input
             type="text"
             value={config.server_url}
+            disabled={config.asr_mode !== 'remote'}
             onChange={e => update('server_url', e.target.value)}
           />
         </div>
@@ -345,10 +372,15 @@ function SettingsWindow() {
           </label>
         </div>
         <button className="btn primary" onClick={saveConfig}>Save</button>
-        <p className="hint">
-          FunASR Server must be started separately:<br/>
-          <code>python server/funasr_server.py --model sensevoice --device cpu</code>
-        </p>
+        <div className="hint-container">
+          <p className="hint">
+            <strong>Local Mode:</strong> Place SenseVoice models in <code>models/sensevoice-small/</code>.
+          </p>
+          <p className="hint">
+            <strong>Remote Mode:</strong> Starts separately:<br/>
+            <code>python server/funasr_server.py --model sensevoice</code>
+          </p>
+        </div>
       </div>
     </div>
   )

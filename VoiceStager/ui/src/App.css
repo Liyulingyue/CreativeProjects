@@ -298,6 +298,32 @@ body {
   border-radius: 6px;
 }
 
+.asr-mode-toggle {
+  display: flex;
+  gap: 16px;
+  margin-top: 4px;
+}
+
+.radio-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.radio-label input {
+  margin: 0;
+}
+
+.hint-container {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+
 .btn.small:disabled {
   opacity: 0.4;
   cursor: not-allowed;
