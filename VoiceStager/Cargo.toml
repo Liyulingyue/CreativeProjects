@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 tao = "0.16"
 wry = "0.24"
-tray-item = "0.9"
+tray-icon = "0.2"
 enigo = "0.2"
 clipboard-win = "4.5"
 windows-sys = { version = "0.52", features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"] }

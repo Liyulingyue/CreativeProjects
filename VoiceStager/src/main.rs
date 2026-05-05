@@ -8,6 +8,10 @@ use tokio::sync::mpsc as tokio_mpsc;
 use include_dir::Dir;
 use include_dir::include_dir as embed_dir;
 use enigo::{Enigo, Key, Keyboard, Settings};
+use tray_icon::{
+    menu::{Menu, MenuItem, PredefinedMenuItem, menu_event_receiver},
+    TrayIconBuilder, tray_event_receiver, ClickEvent,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_NCLBUTTONDOWN};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -40,6 +44,7 @@ const MENU_ID_CONFIRM: u32 = 2;
 const MENU_ID_CLEAR: u32 = 3;
 const MENU_ID_SETTINGS: u32 = 4;
 const MENU_ID_HIDE: u32 = 5;
+const MENU_ID_QUIT: u32 = 6;
 
 fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -80,6 +85,7 @@ fn show_native_context_menu(
         append_native_menu_item(menu, MENU_ID_CLEAR, "清空", has_text);
         append_native_menu_item(menu, MENU_ID_SETTINGS, "菜单", true);
         append_native_menu_item(menu, MENU_ID_HIDE, "隐藏", true);
+        append_native_menu_item(menu, MENU_ID_QUIT, "退出", true);
 
         let cmd = TrackPopupMenu(
             menu,
@@ -262,22 +268,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_window_icon(window_icon)
         .build(&event_loop)?;
 
-    let tray_icon = tray_item::IconSource::Resource("#1");
-    let proxy = event_loop.create_proxy();
-    let proxy2 = proxy.clone();
+    let tray_menu = Menu::new();
+    let toggle_item = MenuItem::new("显示/隐藏", true, None);
+    let settings_item = MenuItem::new("设置", true, None);
+    let quit_item = MenuItem::new("退出", true, None);
+    let toggle_id = toggle_item.id();
+    let settings_id = settings_item.id();
+    let quit_id = quit_item.id();
+    tray_menu.append_items(&[
+        &toggle_item,
+        &settings_item,
+        &PredefinedMenuItem::separator(),
+        &quit_item,
+    ]);
 
-    let mut tray = tray_item::TrayItem::new("V-Stage", tray_icon)?;
-    let proxy_settings = proxy.clone();
-    let proxy_toggle = proxy.clone();
-    tray.add_menu_item("Show/Hide", move || {
-        let _ = proxy_toggle.send_event(AppEvent::ToggleMainWindow);
-    })?;
-    tray.add_menu_item("Settings", move || {
-        let _ = proxy_settings.send_event(AppEvent::OpenSettings);
-    })?;
-    tray.add_menu_item("Exit", move || {
-        let _ = proxy2.send_event(AppEvent::QuitApp);
-    })?;
+    let mut tray_builder = TrayIconBuilder::new()
+        .with_menu(Box::new(tray_menu))
+        .with_tooltip("V-Stage");
+    let icon_bytes = include_bytes!("../assets/app_icon.png");
+    if let Ok(img) = image::load_from_memory(icon_bytes) {
+        let img = img.into_rgba8();
+        let (w, h) = img.dimensions();
+        if let Ok(icon) = tray_icon::icon::Icon::from_rgba(img.into_raw(), w, h) {
+            tray_builder = tray_builder.with_icon(icon);
+        }
+    }
+    let _tray_icon = tray_builder.build()?;
 
     let (tx, mut rx) = tokio_mpsc::channel::<String>(32);
 
@@ -392,6 +408,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
+
+        // 托盘左键：切换主窗口显示/隐藏
+        while let Ok(tray_event) = tray_event_receiver().try_recv() {
+            if tray_event.event == ClickEvent::Left {
+                let mw = main_webview.window();
+                if mw.is_visible() {
+                    mw.set_visible(false);
+                } else {
+                    mw.set_visible(true);
+                    mw.set_focus();
+                }
+            }
+        }
+        // 托盘右键菜单点击
+        while let Ok(menu_event) = menu_event_receiver().try_recv() {
+            if menu_event.id == toggle_id {
+                let mw = main_webview.window();
+                if mw.is_visible() {
+                    mw.set_visible(false);
+                } else {
+                    mw.set_visible(true);
+                    mw.set_focus();
+                }
+            } else if menu_event.id == settings_id {
+                let sw = settings_webview.window();
+                sw.set_visible(true);
+                sw.set_focus();
+            } else if menu_event.id == quit_id {
+                let _ = audio_cmd_tx3.send(AudioCommand::Quit);
+                *control_flow = ControlFlow::Exit;
+            }
+        }
 
         match event {
             Event::WindowEvent { window_id: wid, event: WindowEvent::CloseRequested, .. } => {
@@ -523,6 +571,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 MENU_ID_HIDE => {
                                     mw.set_visible(false);
+                                }
+                                MENU_ID_QUIT => {
+                                    let _ = proxy_for_paste.send_event(AppEvent::QuitApp);
                                 }
                                 _ => {}
                             }
