@@ -7,3 +7,5 @@
 
 /server/models/
 models/
+
+dist_package/

@@ -532,16 +532,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let _ = main_webview.evaluate_script(&js);
                             let _ = settings_webview.evaluate_script(&js);
                         } else {
-                            // 直接触发粘贴
+                            // 直接触发粘贴 - 无论主窗口是否聚焦，都走外部粘贴路径
                             let js = format!(
                                 "window.onAsrResult && window.onAsrResult({}); window.onPasteDone && window.onPasteDone()",
                                 serde_json::to_string(&text).unwrap()
                             );
                             let _ = main_webview.evaluate_script(&js);
-                            
+
                             *current_text_clone.write() = String::new();
                             let _ = clipboard_win::set_clipboard(clipboard_win::formats::Unicode, &text);
-                            
+
                             // 先隐藏窗口，让操作系统焦点自动返回到上一个活跃窗口
                             main_webview.window().set_visible(false);
                             let p = proxy_for_paste.clone();

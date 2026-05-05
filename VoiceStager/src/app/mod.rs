@@ -16,6 +16,8 @@ pub struct AppConfig {
     pub local_model: String,
     #[serde(default = "default_true")]
     pub use_buffer: bool,
+    #[serde(default)]
+    pub auto_start: bool,
 }
 
 fn default_true() -> bool { true }
@@ -32,6 +34,7 @@ impl Default for AppConfig {
             asr_mode: "local".to_string(),
             local_model: "sensevoice-small".to_string(),
             use_buffer: true,
+            auto_start: false,
         }
     }
 }

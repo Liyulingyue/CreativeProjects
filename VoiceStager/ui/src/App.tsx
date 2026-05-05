@@ -11,6 +11,19 @@ interface AudioDevice {
   name: string
 }
 
+interface AppConfig {
+  record_hotkey: string
+  send_hotkey: string
+  language: string
+  always_on_top: boolean
+  server_url: string
+  audio_device: string
+  asr_mode: string
+  local_model: string
+  use_buffer: boolean
+  auto_start: boolean
+}
+
 declare global {
   interface Window {
     onRecordingStarted: () => void
@@ -50,6 +63,7 @@ function useI18n() {
 function MainWindow() {
   const [state, setState] = useState<RecordingState>('idle')
   const [text, setText] = useState('')
+  const [lastAsrText, setLastAsrText] = useState('')
   const [audioLevel, setAudioLevel] = useState(0)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
@@ -58,6 +72,7 @@ function MainWindow() {
     window.onRecordingStopped = () => { setState('processing'); setAudioLevel(0) }
     window.onAsrResult = (t) => {
       setText(t)
+      setLastAsrText(t)
       sendIpc({ type: 'update_current_text', value: t })
       setState('idle')
     }
@@ -104,13 +119,18 @@ function MainWindow() {
   }, [state, text])
 
   const hasText = text.trim().length > 0
+  const inputPlaceholder = state === 'recording'
+    ? ''
+    : state === 'processing'
+      ? 'Recognizing...'
+      : (lastAsrText || 'Result...')
 
   return (
     <div className="app main">
       <div className="main-row">
         <textarea
           ref={inputRef}
-          placeholder={state === 'recording' ? '' : state === 'processing' ? 'Recognizing...' : 'Result...'}
+          placeholder={inputPlaceholder}
           rows={2}
           className={`main-input${state === 'recording' ? ' recording' : ''}`}
           value={text}
@@ -170,7 +190,7 @@ function MainWindow() {
 
 function SettingsWindow() {
   const { lang, setLang, t } = useI18n()
-  const [config, setConfig] = useState({
+  const [config, setConfig] = useState<AppConfig>({
     record_hotkey: 'F13',
     send_hotkey: 'F14',
     language: 'auto',
@@ -180,6 +200,7 @@ function SettingsWindow() {
     asr_mode: 'local',
     local_model: 'sensevoice-small',
     use_buffer: true,
+    auto_start: false,
   })
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([])
   const [audioLevel, setAudioLevel] = useState(0)
@@ -247,7 +268,7 @@ function SettingsWindow() {
     return () => window.removeEventListener('keydown', handleKeyDown, true)
   }, [isRecordingRecordHotkey, isRecordingSendHotkey])
 
-  const update = (key: string, value: string | number | boolean) => {
+  const update = <K extends keyof AppConfig>(key: K, value: AppConfig[K]) => {
     setConfig(prev => ({ ...prev, [key]: value }))
   }
 
@@ -306,14 +327,6 @@ function SettingsWindow() {
     setIsRecordingSendHotkey(false)
     setShowSavedMsg(true)
     setTimeout(() => setShowSavedMsg(false), 2000)
-  }
-
-  const handleToggle = (key: keyof AppConfig) => {
-    setConfig(prev => ({ ...prev, [key]: !prev[key] }))
-  }
-
-  const handleInput = (key: keyof AppConfig, val: string) => {
-    setConfig(prev => ({ ...prev, [key]: val }))
   }
 
   return (
@@ -459,7 +472,7 @@ function SettingsWindow() {
           <label title={t.useBufferHint}>
             <input
               type="checkbox"
-              checked={(config as any).use_buffer}
+              checked={config.use_buffer}
               onChange={e => update('use_buffer', e.target.checked)}
             />
             {t.useBuffer}
@@ -469,10 +482,20 @@ function SettingsWindow() {
           <label>
             <input
               type="checkbox"
-              checked={(config as any).always_on_top}
+              checked={config.always_on_top}
               onChange={e => update('always_on_top', e.target.checked)}
             />
             {t.alwaysOnTop}
+          </label>
+        </div>
+        <div className="form-group checkbox-group">
+          <label>
+            <input
+              type="checkbox"
+              checked={config.auto_start}
+              onChange={e => update('auto_start', e.target.checked)}
+            />
+            {t.autoStart}
           </label>
         </div>
         <button className="btn primary" onClick={saveConfig}>{t.save}</button>
