@@ -68,7 +68,7 @@ pub enum AppEvent {
         is_processing: bool,
     },
     ShowMainWindow,
-    ShowMainWindowNoFocus,
+    ShowMainWindowNoFocus(isize),
     AudioDevices(Vec<(String, String)>),
     AudioLevel(f32),
     SyncConfig(String),
