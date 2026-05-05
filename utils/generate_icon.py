@@ -1,6 +1,7 @@
 import requests
 import json
 import sys
+from PIL import Image
 
 def generate_icon(api_key: str, output_path: str = "app_icon.png"):
     url = "https://aistudio.baidu.com/llm/lmapi/v3/images/generations"
@@ -43,11 +44,11 @@ def generate_icon(api_key: str, output_path: str = "app_icon.png"):
     return False
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python generate_icon.py <API_KEY> [OUTPUT_PATH]")
-        sys.exit(1)
+    api_key = "***********************"  # Replace with your actual API key
+    output_path = sys.argv[1] if len(sys.argv) > 1 else "app_icon.png"
     
-    api_key = sys.argv[1]
-    output_path = sys.argv[2] if len(sys.argv) > 2 else "app_icon.png"
-    
-    generate_icon(api_key, output_path)
+    if generate_icon(api_key, output_path):
+        ico_path = output_path.replace(".png", ".ico")
+        img = Image.open(output_path)
+        img.save(ico_path, format="ICO", sizes=[(16,16),(32,32),(48,48),(256,256)])
+        print(f"Icon converted to: {ico_path}")
