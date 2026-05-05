@@ -8,7 +8,7 @@ pub struct AppConfig {
     pub asr_model: String,
     pub language: String,
     pub always_on_top: bool,
-    pub server_port: u16,
+    pub server_url: String,
     pub audio_device: Option<String>,
 }
 
@@ -19,7 +19,7 @@ impl Default for AppConfig {
             asr_model: "base".to_string(),
             language: "auto".to_string(),
             always_on_top: true,
-            server_port: 18789,
+            server_url: "http://127.0.0.1:18789".to_string(),
             audio_device: None,
         }
     }
@@ -45,6 +45,14 @@ pub enum AppEvent {
     PasteText(String),
     ToggleMainWindow,
     StartDrag,
+    ShowNativeMenu {
+        client_x: f64,
+        client_y: f64,
+        text: String,
+        has_text: bool,
+        is_recording: bool,
+        is_processing: bool,
+    },
     ShowMainWindow,
     AudioDevices(Vec<(String, String)>),
     AudioLevel(f32),

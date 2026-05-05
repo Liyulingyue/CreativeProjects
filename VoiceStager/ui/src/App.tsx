@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+﻿import { useState, useEffect, useCallback, useRef } from 'react'
 import { sendIpc } from './ipc'
 import './App.css'
 
@@ -17,6 +17,7 @@ declare global {
     onAsrResult: (text: string) => void
     onAsrError: (error: string) => void
     onPasteDone: () => void
+    onClearText: () => void
     onAudioDevices: (devices: AudioDevice[]) => void
     onAudioLevel: (level: number) => void
   }
@@ -30,7 +31,6 @@ function getWindowType(): Page {
 function MainWindow() {
   const [state, setState] = useState<RecordingState>('idle')
   const [text, setText] = useState('')
-  const [error, setError] = useState('')
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
@@ -39,15 +39,15 @@ function MainWindow() {
     window.onAsrResult = (t) => {
       setText(t)
       setState('idle')
-      setError('')
     }
-    window.onAsrError = (e) => {
-      setError(e)
+    window.onAsrError = () => {
       setState('idle')
     }
     window.onPasteDone = () => {
       setText('')
-      setError('')
+    }
+    window.onClearText = () => {
+      setText('')
     }
   }, [])
 
@@ -64,76 +64,98 @@ function MainWindow() {
     }
   }, [state])
 
-  const pasteToActive = useCallback(() => {
-    if (text) {
+  const confirmText = useCallback(() => {
+    if (text.trim()) {
       sendIpc({ type: 'paste_text', value: text })
     }
   }, [text])
 
-  const cancel = useCallback(() => {
-    setText('')
-    setError('')
-  }, [])
-
-  const handleDrag = useCallback((e: React.MouseEvent) => {
+  const handleDragMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button === 0) {
       sendIpc({ type: 'start_drag' })
     }
   }, [])
 
+  const handleDragContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    sendIpc({
+      type: 'show_native_menu',
+      value: JSON.stringify({
+        x: e.clientX,
+        y: e.clientY,
+        text,
+        hasText: text.trim().length > 0,
+        isRecording: state === 'recording',
+        isProcessing: state === 'processing',
+      })
+    })
+  }, [state, text])
+
+  const hasText = text.trim().length > 0
+
   return (
     <div className="app main">
       <div className="main-row">
-        <div className="drag-handle" onMouseDown={handleDrag} title="Drag to move">⋮⋮</div>
         <textarea
           ref={inputRef}
-          placeholder={error ? `Error: ${error}` : "Result..."}
+          placeholder="Result..."
           rows={2}
-          className={`main-input ${error ? 'error' : ''}`}
+          className="main-input"
           value={text}
           onChange={(e) => setText(e.target.value)}
         />
-        <button
-          className={`mic-btn ${state}`}
-          onClick={toggleRecording}
-          disabled={state === 'processing'}
-          title={state === 'idle' ? 'Start recording' : state === 'recording' ? 'Stop recording' : 'Processing...'}
-        >
-          {state === 'idle' && (
+        {hasText ? (
+          <button
+            className="confirm-btn"
+            onClick={confirmText}
+            title="Confirm"
+          >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
-              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-              <line x1="12" y1="19" x2="12" y2="23"/>
-              <line x1="8" y1="23" x2="16" y2="23"/>
+              <polyline points="20 6 9 17 4 12"/>
             </svg>
-          )}
-          {state === 'recording' && (
-            <svg viewBox="0 0 24 24" fill="currentColor">
-              <rect x="6" y="6" width="12" height="12" rx="2"/>
-            </svg>
-          )}
-          {state === 'processing' && (
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="spin">
-              <circle cx="12" cy="12" r="10"/>
-            </svg>
-          )}
-        </button>
-        <button 
-          className="btn success small" 
-          onClick={pasteToActive} 
-          disabled={!text}
-          title="Paste to active window"
+          </button>
+        ) : (
+          <button
+            className={`mic-btn ${state}`}
+            onClick={toggleRecording}
+            disabled={state === 'processing'}
+            title={state === 'idle' ? 'Start recording' : state === 'recording' ? 'Stop recording' : 'Processing...'}
+          >
+            {state === 'idle' && (
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                <line x1="12" y1="19" x2="12" y2="23"/>
+                <line x1="8" y1="23" x2="16" y2="23"/>
+              </svg>
+            )}
+            {state === 'recording' && (
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="6" width="12" height="12" rx="2"/>
+              </svg>
+            )}
+            {state === 'processing' && (
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="spin">
+                <circle cx="12" cy="12" r="10"/>
+              </svg>
+            )}
+          </button>
+        )}
+        <div
+          className="drag-handle"
+          onMouseDown={handleDragMouseDown}
+          onContextMenu={handleDragContextMenu}
+          title="Left: Drag, Right: Menu"
         >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{width:18,height:18}}>
-            <polyline points="20 6 9 17 4 12"/>
+          <svg viewBox="0 0 24 24" fill="currentColor" style={{width:12,height:12}}>
+            <circle cx="8" cy="6" r="1.5"/>
+            <circle cx="16" cy="6" r="1.5"/>
+            <circle cx="8" cy="12" r="1.5"/>
+            <circle cx="16" cy="12" r="1.5"/>
+            <circle cx="8" cy="18" r="1.5"/>
+            <circle cx="16" cy="18" r="1.5"/>
           </svg>
-        </button>
-        <button className="btn ghost small" onClick={cancel} disabled={!text} title="Clear">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{width:18,height:18}}>
-            <line x1="18" y1="6" x2="6" y2="18"/>
-            <line x1="6" y1="6" x2="18" y2="18"/>
-          </svg>
-        </button>
+        </div>
       </div>
     </div>
   )
@@ -145,12 +167,14 @@ function SettingsWindow() {
     asr_model: 'base',
     language: 'auto',
     always_on_top: true,
-    server_port: 18789,
+    server_url: 'http://127.0.0.1:18789',
     audio_device: '',
   })
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([])
   const [audioLevel, setAudioLevel] = useState(0)
   const [isMonitoring, setIsMonitoring] = useState(false)
+  const [hotkeyInput, setHotkeyInput] = useState('')
+  const [isRecordingHotkey, setIsRecordingHotkey] = useState(false)
 
   useEffect(() => {
     window.onAudioDevices = (devices) => {
@@ -162,6 +186,7 @@ function SettingsWindow() {
     }
     
     sendIpc({ type: 'get_audio_devices' })
+    setHotkeyInput(config.hotkey)
     
     return () => {
       if (isMonitoring) {
@@ -169,6 +194,36 @@ function SettingsWindow() {
       }
     }
   }, [])
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!isRecordingHotkey) return
+      e.preventDefault()
+      e.stopPropagation()
+      
+      const parts: string[] = []
+      if (e.ctrlKey) parts.push('Ctrl')
+      if (e.altKey) parts.push('Alt')
+      if (e.shiftKey) parts.push('Shift')
+      if (e.key === ' ') parts.push('Space')
+      else if (e.key.startsWith('F') && e.key.length <= 3) parts.push(e.key.toUpperCase())
+      else if (e.key.length === 1) parts.push(e.key.toUpperCase())
+      
+      if (parts.length > 0 && (parts.length > 1 || parts[0].startsWith('F'))) {
+        const hotkey = parts.join('+')
+        setHotkeyInput(hotkey)
+        setConfig(prev => ({ ...prev, hotkey }))
+        setIsRecordingHotkey(false)
+      }
+    }
+
+    if (isRecordingHotkey) {
+      window.addEventListener('keydown', handleKeyDown, true)
+    }
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown, true)
+    }
+  }, [isRecordingHotkey])
 
   const update = (key: string, value: string | number | boolean) => {
     setConfig(prev => ({ ...prev, [key]: value }))
@@ -189,8 +244,18 @@ function SettingsWindow() {
     }
   }
 
+  const toggleHotkeyRecording = () => {
+    if (isRecordingHotkey) {
+      setIsRecordingHotkey(false)
+    } else {
+      setHotkeyInput('')
+      setIsRecordingHotkey(true)
+    }
+  }
+
   const saveConfig = () => {
     sendIpc({ type: 'save_config', value: JSON.stringify(config) })
+    setIsRecordingHotkey(false)
   }
 
   return (
@@ -229,17 +294,25 @@ function SettingsWindow() {
         </div>
         <div className="form-group">
           <label>Hotkey</label>
-          <select value={config.hotkey} onChange={e => update('hotkey', e.target.value)}>
-            <option value="F13">F13</option>
-            <option value="F14">F14</option>
-            <option value="F15">F15</option>
-            <option value="F16">F16</option>
-            <option value="F17">F17</option>
-            <option value="F18">F18</option>
-            <option value="F19">F19</option>
-            <option value="F20">F20</option>
-            <option value="CTRL+SPACE">Ctrl+Space</option>
-          </select>
+          <div className="audio-device-row">
+            <input
+              type="text"
+              value={hotkeyInput || config.hotkey}
+              readOnly
+              className="hotkey-input"
+              placeholder={isRecordingHotkey ? 'Press keys...' : 'Click Record to set hotkey'}
+            />
+            <button 
+              className={`btn ${isRecordingHotkey ? 'danger' : 'secondary'} small`}
+              onClick={toggleHotkeyRecording}
+              title={isRecordingHotkey ? 'Cancel' : 'Record hotkey'}
+            >
+              {isRecordingHotkey ? 'Cancel' : 'Record'}
+            </button>
+          </div>
+          {isRecordingHotkey && (
+            <p className="hint">Press any key combination (e.g., Ctrl+Space, F13)</p>
+          )}
         </div>
         <div className="form-group">
           <label>ASR Model</label>
@@ -261,11 +334,11 @@ function SettingsWindow() {
           </select>
         </div>
         <div className="form-group">
-          <label>Server Port</label>
+          <label>Server URL</label>
           <input
-            type="number"
-            value={config.server_port}
-            onChange={e => update('server_port', parseInt(e.target.value) || 18789)}
+            type="text"
+            value={config.server_url}
+            onChange={e => update('server_url', e.target.value)}
           />
         </div>
         <div className="form-group checkbox-group">

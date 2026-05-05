@@ -44,19 +44,35 @@ body {
 }
 
 .drag-handle {
-  width: 14px;
+  position: relative;
+  width: 24px;
   height: 100%;
   min-height: 40px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #d1d5db;
-  font-size: 10px;
-  letter-spacing: -2px;
+  color: #9ca3af;
   cursor: grab;
   -webkit-app-region: drag;
   user-select: none;
   flex-shrink: 0;
+  background: #f3f4f6;
+  border-radius: 6px;
+  transition: all 0.15s;
+}
+
+.drag-handle:hover {
+  color: #4b5563;
+  background: #e5e7eb;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+.drag-handle svg {
+  width: 12px;
+  height: 12px;
 }
 
 .drag-handle:hover {
@@ -185,6 +201,67 @@ body {
   background: #9ca3af;
   cursor: not-allowed;
   box-shadow: none;
+}
+
+.confirm-btn {
+  width: 40px;
+  height: 100%;
+  min-height: 40px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: #fff;
+  background: #10b981;
+  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+  transition: all 0.2s;
+}
+
+.confirm-btn:hover {
+  background: #059669;
+  transform: scale(1.04);
+}
+
+.confirm-btn svg {
+  width: 20px;
+  height: 20px;
+}
+
+.quick-menu {
+  position: fixed;
+  min-width: 120px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  z-index: 20;
+}
+
+.quick-menu button {
+  border: none;
+  background: #f9fafb;
+  color: #111827;
+  font-size: 12px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.quick-menu button:hover {
+  background: #eef2ff;
+}
+
+.quick-menu button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 @keyframes pulse {
@@ -380,4 +457,13 @@ body {
 }
 .btn.danger:hover {
   background: #dc2626;
+}
+
+.hotkey-input {
+  cursor: pointer;
+  background: #f9fafb;
+}
+.hotkey-input:focus {
+  background: #fff;
+  border-color: #6366f1;
 }
