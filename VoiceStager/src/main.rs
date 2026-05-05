@@ -39,6 +39,15 @@ mod asr;
 
 static PRO_DIST: Dir<'static> = embed_dir!("$CARGO_MANIFEST_DIR/ui/dist");
 
+fn normalize_server_url(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        trimmed.to_string()
+    } else {
+        format!("http://{}", trimmed)
+    }
+}
+
 const MENU_ID_RECORD: u32 = 1;
 const MENU_ID_CONFIRM: u32 = 2;
 const MENU_ID_CLEAR: u32 = 3;
@@ -184,11 +193,13 @@ fn build_webview(
     dev_url: &str,
     prod_url: &str,
     tx: tokio_mpsc::Sender<String>,
+    transparent: bool,
 ) -> Result<wry::webview::WebView, Box<dyn std::error::Error>> {
     let webview = if dev_mode {
         println!("DEV mode: connecting to {}", dev_url);
         WebViewBuilder::new(window)?
             .with_url(dev_url)?
+            .with_transparent(transparent)
             .with_ipc_handler(move |_window, request| {
                 let _ = tx.try_send(request);
             })
@@ -202,6 +213,7 @@ fn build_webview(
                 Ok(serve_asset(request.uri().path()))
             })
             .with_url(prod_url)?
+            .with_transparent(transparent)
             .with_ipc_handler(move |_window, request| {
                 let _ = tx.try_send(request);
             })
@@ -234,10 +246,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = Arc::new(Mutex::new(initial_config.clone()));
     let is_recording = Arc::new(Mutex::new(false));
-    let asr_client = Arc::new(Mutex::new(AsrClient::new(&format!(
-        "http://{}",
-        initial_config.server_url
-    ))));
+    let asr_client = Arc::new(Mutex::new(AsrClient::new(
+        &normalize_server_url(&initial_config.server_url),
+    )));
     let selected_audio_device = Arc::new(Mutex::new(initial_config.audio_device.clone()));
 
     let (audio_cmd_tx, audio_cmd_rx) = sync_mpsc::channel::<AudioCommand>();
@@ -255,6 +266,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_max_inner_size(LogicalSize::new(900.0, 360.0))
         .with_resizable(true)
         .with_decorations(false)
+        .with_transparent(true)
         .with_always_on_top(initial_config.always_on_top)
         .with_window_icon(window_icon.clone())
         .with_skip_taskbar(true)
@@ -307,6 +319,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let audio_dir = app_data_dir.clone();
     let tx_for_audio = tx.clone();
+    let proxy_for_audio_level = event_loop.create_proxy();
     let selected_device_for_thread = selected_audio_device.clone();
     thread::spawn(move || {
         let mut recorder = AudioRecorder::new();
@@ -316,6 +329,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("[Audio] Starting recording");
                     let device = selected_device_for_thread.lock().unwrap().clone();
                     recorder.select_device(device);
+                    // 在主录音流中计算音量，直接发到事件循环，避免堵塞 IPC 队列
+                    let level_proxy = proxy_for_audio_level.clone();
+                    recorder.set_level_callback(Box::new(move |level| {
+                        let _ = level_proxy.send_event(AppEvent::AudioLevel(level));
+                    }));
                     if let Err(e) = recorder.start_recording() {
                         eprintln!("[Audio] Start error: {}", e);
                         let _ = tx_for_audio.blocking_send(
@@ -374,6 +392,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match msg_type.as_str() {
                 "start_recording" => {
                     eprintln!("[IPC] Starting recording");
+                    // 先停止监测（避免同设备双流冲突）
+                    {
+                        let mut guard = ctx.monitor_recorder.lock().unwrap();
+                        if let Some(mut r) = guard.take() { r.stop_monitoring(); }
+                    }
                     let _ = audio_cmd_tx2.send(AudioCommand::Start);
                     *ctx.is_recording.lock().unwrap() = true;
                     let _ = ctx.proxy.send_event(AppEvent::RecordingStarted);
@@ -391,13 +414,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let main_webview = build_webview(main_window, dev_mode, &dev_url, "vstage://localhost/?window=main", tx.clone())?;
+    let main_webview = build_webview(main_window, dev_mode, &dev_url, "vstage://localhost/?window=main", tx.clone(), true)?;
     let settings_webview = build_webview(
         settings_window,
         dev_mode,
         &format!("{}?window=settings", dev_url),
         "vstage://localhost/?window=settings",
         tx.clone(),
+        false,
     )?;
 
     let main_window_id = main_webview.window().id();
@@ -586,6 +610,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     AppEvent::AudioLevel(level) => {
                         let js = format!("window.onAudioLevel && window.onAudioLevel({})", level);
+                        let _ = main_webview.evaluate_script(&js);
                         let _ = settings_webview.evaluate_script(&js);
                     }
                 }
