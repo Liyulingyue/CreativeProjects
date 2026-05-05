@@ -11,6 +11,8 @@ pub struct AppConfig {
     pub audio_device: Option<String>,
     #[serde(default)]
     pub asr_mode: String, // "local" | "remote"
+    #[serde(default)]
+    pub local_model: String, // "sensevoice-small" | "sensevoice-small-int8"
 }
 
 impl Default for AppConfig {
@@ -22,6 +24,7 @@ impl Default for AppConfig {
             server_url: "http://127.0.0.1:18789".to_string(),
             audio_device: None,
             asr_mode: "local".to_string(),
+            local_model: "sensevoice-small".to_string(),
         }
     }
 }

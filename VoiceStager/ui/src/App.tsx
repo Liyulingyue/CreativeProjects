@@ -171,13 +171,16 @@ function SettingsWindow() {
     always_on_top: true,
     server_url: 'http://127.0.0.1:18789',
     audio_device: '',
-    asr_mode: 'local', // 'local' | 'remote'
+    asr_mode: 'local',
+    local_model: 'sensevoice-small',
   })
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([])
   const [audioLevel, setAudioLevel] = useState(0)
   const [isMonitoring, setIsMonitoring] = useState(false)
   const [hotkeyInput, setHotkeyInput] = useState('')
   const [isRecordingHotkey, setIsRecordingHotkey] = useState(false)
+  const [showSavedMsg, setShowSavedMsg] = useState(false)
+  const [showModelHelp, setShowModelHelp] = useState(false)
 
   useEffect(() => {
     window.onAudioDevices = (devices) => {
@@ -259,10 +262,34 @@ function SettingsWindow() {
   const saveConfig = () => {
     sendIpc({ type: 'save_config', value: JSON.stringify(config) })
     setIsRecordingHotkey(false)
+    setShowSavedMsg(true)
+    setTimeout(() => setShowSavedMsg(false), 2000)
   }
 
   return (
     <div className="app settings-window">
+      {showSavedMsg && (
+        <div className="toast-msg">Settings Saved!</div>
+      )}
+      {showModelHelp && (
+        <div className="modal-overlay" onClick={() => setShowModelHelp(false)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <h3>Local Model Download Guide</h3>
+            <p>If auto-download fails, please manually download files from ModelScope or HuggingFace:</p>
+            <p>
+              1. Download <code>model.int8.onnx</code> (or <code>model.onnx</code>) and <code>tokens.txt</code>.
+            </p>
+            <p>
+              2. Place them in: <br/>
+              <code>VoiceStager/models/sensevoice-small/</code>
+            </p>
+            <p>
+              Source: <a href="https://www.modelscope.cn/models/pengzhendong/sherpa-onnx-sense-voice-zh-en-ja-ko-yue/files" target="_blank" style={{color: '#3b82f6'}}>ModelScope Files</a>
+            </p>
+            <button className="btn primary modal-close-btn" onClick={() => setShowModelHelp(false)}>Got it</button>
+          </div>
+        </div>
+      )}
       <div className="settings-header">
         <span className="settings-title">V-Stage Settings</span>
       </div>
@@ -329,28 +356,30 @@ function SettingsWindow() {
         </div>
         <div className="form-group">
           <label>ASR Mode</label>
-          <div className="asr-mode-toggle">
-            <label className="radio-label">
-              <input
-                type="radio"
-                name="asr_mode"
-                value="local"
-                checked={config.asr_mode === 'local'}
-                onChange={e => update('asr_mode', e.target.value)}
-              />
-              Local (Sherpa-Onnx)
-            </label>
-            <label className="radio-label">
-              <input
-                type="radio"
-                name="asr_mode"
-                value="remote"
-                checked={config.asr_mode === 'remote'}
-                onChange={e => update('asr_mode', e.target.value)}
-              />
-              Remote (Server URL)
-            </label>
+          <select value={config.asr_mode} onChange={e => update('asr_mode', e.target.value)}>
+            <option value="local">Local (Sherpa-Onnx)</option>
+            <option value="remote">Remote (Server URL)</option>
+          </select>
+        </div>
+        <div className="form-group" style={{ opacity: config.asr_mode === 'local' ? 1 : 0.5 }}>
+          <div className="label-with-help">
+            <label>Local Model</label>
+            <span className="help-icon" onClick={() => setShowModelHelp(true)} title="Help: Manual download guide">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10"></circle>
+                <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+                <line x1="12" y1="17" x2="12.01" y2="17"></line>
+              </svg>
+            </span>
           </div>
+          <select
+            value={config.local_model}
+            disabled={config.asr_mode !== 'local'}
+            onChange={e => update('local_model', e.target.value)}
+          >
+            <option value="sensevoice-small">sensevoice-small (float32)</option>
+            <option value="sensevoice-small-int8">sensevoice-small-int8 (int8, faster)</option>
+          </select>
         </div>
         <div className="form-group" style={{ opacity: config.asr_mode === 'remote' ? 1 : 0.5 }}>
           <label>Server URL</label>
@@ -374,11 +403,10 @@ function SettingsWindow() {
         <button className="btn primary" onClick={saveConfig}>Save</button>
         <div className="hint-container">
           <p className="hint">
-            <strong>Local Mode:</strong> Place SenseVoice models in <code>models/sensevoice-small/</code>.
+            <strong>Local:</strong> Place models in <code>models/</code> (e.g. <code>models/sensevoice-small/model.onnx</code>).
           </p>
           <p className="hint">
-            <strong>Remote Mode:</strong> Starts separately:<br/>
-            <code>python server/funasr_server.py --model sensevoice</code>
+            <strong>Remote:</strong> <code>python server/funasr_server.py --model sensevoice</code>
           </p>
         </div>
       </div>

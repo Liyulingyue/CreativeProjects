@@ -141,20 +141,24 @@ pub async fn handle_message(msg_raw: &str, ctx: &IpcContext) {
             }
             "save_config" => {
                 if let Ok(new_cfg) = serde_json::from_str::<AppConfig>(&msg.value) {
-                    let mut cfg = ctx.config.lock().unwrap();
-                    *cfg = new_cfg.clone();
-                    let cfg_path = ctx.app_data_dir.join("config.json");
-                    let _ = std::fs::write(cfg_path, serde_json::to_string_pretty(&*cfg).unwrap());
-
-                    let server_url = new_cfg.server_url;
+                    let server_url = new_cfg.server_url.clone();
                     let always_on_top = new_cfg.always_on_top;
-                    if let Some(ref device) = new_cfg.audio_device {
-                        *ctx.selected_audio_device.lock().unwrap() = Some(device.clone());
+                    let local_model = new_cfg.local_model.clone();
+                    let audio_device = new_cfg.audio_device.clone();
+
+                    {
+                        let mut cfg = ctx.config.lock().unwrap();
+                        *cfg = new_cfg;
+                        let cfg_path = ctx.app_data_dir.join("config.json");
+                        let _ = std::fs::write(cfg_path, serde_json::to_string_pretty(&*cfg).unwrap());
+                        if let Some(ref device) = audio_device {
+                            *ctx.selected_audio_device.lock().unwrap() = Some(device.clone());
+                        }
                     }
-                    drop(cfg);
-                    // 仅更新 URL，不需要重新创建整个 client
-                    let mut client = ctx.asr_client.blocking_lock();
+
+                    let mut client = ctx.asr_client.lock().await;
                     client.http_provider = crate::asr::HttpAsrProvider::new(&normalize_server_url(&server_url));
+                    client.set_local_model(&local_model);
 
                     let _ = ctx.proxy.send_event(AppEvent::SetAlwaysOnTop(always_on_top));
                 }

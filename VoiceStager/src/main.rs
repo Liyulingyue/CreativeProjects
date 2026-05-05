@@ -509,10 +509,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         mw.set_always_on_top(on_top);
                     }
                     AppEvent::AudioLevel(level) => {
-                        let _ = main_webview.evaluate_script(&format!(
-                            "window.onAudioLevel && window.onAudioLevel({})",
-                            level
-                        ));
+                        let js = format!("window.onAudioLevel && window.onAudioLevel({})", level);
+                        let _ = main_webview.evaluate_script(&js);
+                        let _ = settings_webview.evaluate_script(&js);
                     }
                     AppEvent::QuitApp => {
                         let _ = audio_cmd_tx3.send(AudioCommand::Quit);
@@ -612,11 +611,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     AppEvent::AudioDevices(devices) => {
                         let devices_json = serde_json::to_string(&devices).unwrap();
                         let js = format!("window.onAudioDevices && window.onAudioDevices({})", devices_json);
-                        let _ = settings_webview.evaluate_script(&js);
-                    }
-                    AppEvent::AudioLevel(level) => {
-                        let js = format!("window.onAudioLevel && window.onAudioLevel({})", level);
-                        let _ = main_webview.evaluate_script(&js);
                         let _ = settings_webview.evaluate_script(&js);
                     }
                 }
