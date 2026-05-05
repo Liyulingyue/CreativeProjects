@@ -36,6 +36,7 @@ export const I18N = {
     helpSource: '来源: ModelScope',
     useBuffer: '使用输入框暂存',
     useBufferHint: '开启后识别结果进入输入框，关闭后直接键入当前光标处',
+    autoStart: '开机启动',
   },
   en: {
     title: 'V-Stage Settings',
@@ -72,6 +73,7 @@ export const I18N = {
     helpSource: 'Source: ModelScope',
     useBuffer: 'Use Input Buffer',
     useBufferHint: 'ON: results to input box; OFF: type directly at cursor',
+    autoStart: 'Auto Start',
   },
 } as const
 

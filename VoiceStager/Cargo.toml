@@ -23,6 +23,7 @@ reqwest = { version = "0.11", features = ["json", "blocking"] }
 dotenvy = "0.15"
 sherpa-onnx = "1.10.43"
 async-trait = "0.1"
+winreg = "0.52"
 
 [build-dependencies]
 image = "0.24"

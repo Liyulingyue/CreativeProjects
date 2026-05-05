@@ -7,6 +7,41 @@ use crate::asr::AsrClient;
 use crate::audio::AudioRecorder;
 use tokio::sync::Mutex as TokioMutex;
 
+#[cfg(target_os = "windows")]
+fn apply_auto_start(enabled: bool) {
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_SET_VALUE};
+    const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+    const APP_NAME: &str = "VoiceStager";
+    if let Ok(key) = RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(RUN_KEY, KEY_SET_VALUE) {
+        if enabled {
+            if let Ok(exe) = std::env::current_exe() {
+                let _ = key.set_value(APP_NAME, &exe.to_string_lossy().as_ref());
+            }
+        } else {
+            let _ = key.delete_value(APP_NAME);
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn apply_auto_start(_enabled: bool) {}
+
+#[cfg(target_os = "windows")]
+pub fn read_auto_start() -> bool {
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
+    const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+    const APP_NAME: &str = "VoiceStager";
+    RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags(RUN_KEY, KEY_READ)
+        .and_then(|key| key.get_value::<String, _>(APP_NAME))
+        .is_ok()
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn read_auto_start() -> bool { false }
+
 fn normalize_server_url(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
@@ -149,7 +184,8 @@ pub async fn handle_message(msg_raw: &str, ctx: &IpcContext) {
                 let _ = ctx.proxy.send_event(AppEvent::AudioDevices(devices));
             }
             "get_config" => {
-                let cfg = ctx.config.lock().unwrap();
+                let mut cfg = ctx.config.lock().unwrap();
+                cfg.auto_start = read_auto_start();
                 let json = serde_json::to_string(&*cfg).unwrap();
                 let _ = ctx.proxy.send_event(AppEvent::SyncConfig(json));
             }
@@ -163,8 +199,11 @@ pub async fn handle_message(msg_raw: &str, ctx: &IpcContext) {
                 if let Ok(new_cfg) = serde_json::from_str::<AppConfig>(&msg.value) {
                     let server_url = new_cfg.server_url.clone();
                     let always_on_top = new_cfg.always_on_top;
+                    let auto_start = new_cfg.auto_start;
                     let local_model = new_cfg.local_model.clone();
                     let audio_device = new_cfg.audio_device.clone();
+
+                    apply_auto_start(auto_start);
 
                     {
                         let mut cfg = ctx.config.lock().unwrap();
