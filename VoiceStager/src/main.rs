@@ -17,7 +17,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_NCLBUTTONDOWN
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyMenu, TrackPopupMenu, HMENU, MF_GRAYED, MF_STRING,
-    TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, ShowWindow, SW_SHOWNOACTIVATE,
+    TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    GetForegroundWindow, SetForegroundWindow, ShowWindow, SW_SHOWNOACTIVATE,
 };
 
 use tao::{
@@ -27,8 +28,7 @@ use tao::{
     dpi::LogicalSize,
     platform::windows::{WindowBuilderExtWindows, WindowExtWindows},
 };
-use wry::webview::WebViewBuilder;
-
+use wry::webview::{WebViewBuilder, WebContext};
 use crate::app::{AppConfig, AppEvent};
 use crate::audio::AudioRecorder;
 use crate::asr::AsrClient;
@@ -212,32 +212,27 @@ fn build_webview(
     prod_url: &str,
     tx: tokio_mpsc::Sender<String>,
     transparent: bool,
+    web_context: &mut WebContext,
 ) -> Result<wry::webview::WebView, Box<dyn std::error::Error>> {
+    let mut builder = WebViewBuilder::new(window)?
+        .with_transparent(transparent)
+        .with_ipc_handler(move |_window, request| {
+            let _ = tx.try_send(request);
+        })
+        .with_initialization_script(
+            r#"window.ipc = { postMessage: function(m) { window._ipc_post && window._ipc_post(m); } };"#
+        )
+        .with_web_context(web_context);
+
     let webview = if dev_mode {
         println!("DEV mode: connecting to {}", dev_url);
-        WebViewBuilder::new(window)?
-            .with_url(dev_url)?
-            .with_transparent(transparent)
-            .with_ipc_handler(move |_window, request| {
-                let _ = tx.try_send(request);
-            })
-            .with_initialization_script(
-                r#"window.ipc = { postMessage: function(m) { window._ipc_post && window._ipc_post(m); } };"#
-            )
-            .build()?
+        builder.with_url(dev_url)?.build()?
     } else {
-        WebViewBuilder::new(window)?
+        builder
             .with_custom_protocol("vstage".into(), move |request| {
                 Ok(serve_asset(request.uri().path()))
             })
             .with_url(prod_url)?
-            .with_transparent(transparent)
-            .with_ipc_handler(move |_window, request| {
-                let _ = tx.try_send(request);
-            })
-            .with_initialization_script(
-                r#"window.ipc = { postMessage: function(m) { window._ipc_post && window._ipc_post(m); } };"#
-            )
             .build()?
     };
     Ok(webview)
@@ -448,7 +443,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let main_webview = build_webview(main_window, dev_mode, &dev_url, "vstage://localhost/?window=main", tx.clone(), true)?;
+    // 配置 WebView 运行数据目录到 %LOCALAPPDATA%/VStage/webview
+    let mut web_context = WebContext::new(Some(app_data_dir.join("webview")));
+
+    let main_webview = build_webview(
+        main_window,
+        dev_mode,
+        &dev_url,
+        "vstage://localhost/?window=main",
+        tx.clone(),
+        true,
+        &mut web_context,
+    )?;
     let settings_webview = build_webview(
         settings_window,
         dev_mode,
@@ -456,6 +462,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "vstage://localhost/?window=settings",
         tx.clone(),
         false,
+        &mut web_context,
     )?;
 
     let main_window_id = main_webview.window().id();
@@ -532,7 +539,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let _ = main_webview.evaluate_script(&js);
                             let _ = settings_webview.evaluate_script(&js);
                         } else {
-                            // 直接触发粘贴 - 无论主窗口是否聚焦，都走外部粘贴路径
+                            // 直接触发粘贴 - 先记录当前前台窗口，便于粘贴后归还焦点
+                            let prev_hwnd = unsafe { GetForegroundWindow() };
+
                             let js = format!(
                                 "window.onAsrResult && window.onAsrResult({}); window.onPasteDone && window.onPasteDone()",
                                 serde_json::to_string(&text).unwrap()
@@ -549,12 +558,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 // 稍微多等一会儿（250ms），确保操作系统已经完成了窗口隐藏和焦点切换回原 APP
                                 std::thread::sleep(std::time::Duration::from_millis(250));
                                 if let Ok(mut enigo) = Enigo::new(&Settings::default()) {
+                                    // 先释放可能因热键残留的修饰键，防止 Ctrl+Alt+V 等误触发
+                                    let _ = enigo.key(Key::Alt, enigo::Direction::Release);
+                                    let _ = enigo.key(Key::Shift, enigo::Direction::Release);
                                     let _ = enigo.key(Key::Control, enigo::Direction::Press);
                                     let _ = enigo.key(Key::Unicode('v'), enigo::Direction::Click);
                                     let _ = enigo.key(Key::Control, enigo::Direction::Release);
                                 }
                                 std::thread::sleep(std::time::Duration::from_millis(80));
-                                let _ = p.send_event(AppEvent::ShowMainWindowNoFocus);
+                                let _ = p.send_event(AppEvent::ShowMainWindowNoFocus(prev_hwnd));
                             });
                         }
                     }
@@ -612,10 +624,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         mw.set_visible(true);
                         mw.set_focus();
                     }
-                    AppEvent::ShowMainWindowNoFocus => {
-                        let mw = main_webview.window();
-                        unsafe {
-                            ShowWindow(mw.hwnd() as _, SW_SHOWNOACTIVATE);
+                    AppEvent::ShowMainWindowNoFocus(prev_hwnd) => {
+                        let hwnd = main_webview.window().hwnd();
+                        // 第一步：SW_SHOWNOACTIVATE 仅更新 Win32 可见状态，不抢焦点
+                        unsafe { ShowWindow(hwnd as _, SW_SHOWNOACTIVATE); }
+                        // 第二步：通过 tao 的 set_visible(true) 同步其内部 VISIBLE 缓存
+                        // （tao 的 apply_diff 在 old==new 时跳过 SW_HIDE，必须保证 tao 状态正确）
+                        // 此调用会触发 SW_SHOW 短暂抢焦，立即在第三步归还
+                        main_webview.window().set_visible(true);
+                        // 第三步：立即归还焦点给之前的前台窗口
+                        // 跨进程 WM_ACTIVATE/WM_KILLFOCUS 是 Post 到队列的，
+                        // 这里同步调用 SetForegroundWindow 让目标 App 感知不到焦点变化
+                        if prev_hwnd != 0 {
+                            unsafe { SetForegroundWindow(prev_hwnd); }
                         }
                     }
                     AppEvent::ToggleMainWindow => {

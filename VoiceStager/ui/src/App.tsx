@@ -63,22 +63,24 @@ function useI18n() {
 function MainWindow() {
   const [state, setState] = useState<RecordingState>('idle')
   const [text, setText] = useState('')
-  const [lastAsrText, setLastAsrText] = useState('')
   const [audioLevel, setAudioLevel] = useState(0)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
+  const isPastedRef = useRef(false)
+
   useEffect(() => {
-    window.onRecordingStarted = () => setState('recording')
+    window.onRecordingStarted = () => { setState('recording'); setText(''); isPastedRef.current = false }
     window.onRecordingStopped = () => { setState('processing'); setAudioLevel(0) }
     window.onAsrResult = (t) => {
       setText(t)
-      setLastAsrText(t)
+      isPastedRef.current = false
       sendIpc({ type: 'update_current_text', value: t })
       setState('idle')
     }
     window.onAsrError = () => setState('idle')
     window.onPasteDone = () => {
-      setText('')
+      // 保留文本内容可见（不清空），防止再次点击填充
+      isPastedRef.current = true
       sendIpc({ type: 'clear_current_text' })
     }
     window.onClearText = () => setText('')
@@ -119,11 +121,7 @@ function MainWindow() {
   }, [state, text])
 
   const hasText = text.trim().length > 0
-  const inputPlaceholder = state === 'recording'
-    ? ''
-    : state === 'processing'
-      ? 'Recognizing...'
-      : (lastAsrText || 'Result...')
+  const inputPlaceholder = state === 'processing' ? 'Recognizing...' : 'Result...'
 
   return (
     <div className="app main">
@@ -134,9 +132,9 @@ function MainWindow() {
           rows={2}
           className={`main-input${state === 'recording' ? ' recording' : ''}`}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => { setText(e.target.value); isPastedRef.current = false }}
         />
-        {hasText ? (
+        {hasText && state !== 'recording' ? (
           <button className="confirm-btn" onClick={confirmText} title="Confirm">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <polyline points="20 6 9 17 4 12"/>
