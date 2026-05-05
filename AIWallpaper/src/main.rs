@@ -11,7 +11,7 @@ use wry::{
     webview::WebViewBuilder,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    SetParent, SetWindowPos, GetWindowLongPtrA, SetWindowLongPtrA,
+    SetParent, SetWindowPos, GetWindowLongPtrA, SetWindowLongPtrA, GetParent,
     GWL_EXSTYLE, WS_EX_TOOLWINDOW, WS_EX_NOACTIVATE,
     HWND_BOTTOM, SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE, SWP_SHOWWINDOW,
     SWP_FRAMECHANGED, SWP_NOZORDER,
@@ -428,8 +428,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    let mut last_check_time = std::time::Instant::now();
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
+
+        // 定期检查父窗口状态
+        #[cfg(target_os = "windows")]
+        {
+            if last_check_time.elapsed().as_secs() >= 5 {
+                last_check_time = std::time::Instant::now();
+                let bg_hwnd = bg_webview.window().hwnd() as isize;
+                let current_parent = unsafe { GetParent(bg_hwnd) };
+                let target_workerw = unsafe { wallpaper_engine::get_wallpaper_workerw() };
+                
+                if target_workerw != 0 && current_parent != target_workerw {
+                    println!("检测到桌面劫持丢失或 WorkerW 变更，正在重新附着...");
+                    unsafe {
+                        SetParent(bg_hwnd, target_workerw);
+                        SetWindowPos(bg_hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                    }
+                    let _ = bg_webview.window().set_maximized(true);
+                }
+            }
+        }
 
         while let Ok(menu_event) = menu_event_receiver().try_recv() {
             if menu_event.id == show_id {
