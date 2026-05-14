@@ -1,4 +1,4 @@
-import { OpenCodeCore, OpenCodeBackend } from '../core/OpenCodeCore';
+import { OpenCodeCore, OpenCodeBackend, OpenCodeProviderModel } from '../core/OpenCodeCore';
 import { OpenCodeApiClient, OpenCodeSession } from '../core/OpenCodeApiClient';
 import http from '@ohos.net.http';
 
@@ -21,6 +21,9 @@ export interface SessionDetailState {
   selectedRemoteSessionId: string;
   remoteSessions: OpenCodeSession[];
   isLoadingRemoteSessions: boolean;
+  availableModels: OpenCodeProviderModel[];
+  isLoadingModels: boolean;
+  selectedModel: string;
   recentPaths: string[];
   pathSearchResults: FileNode[];
   isSearchingPath: boolean;
@@ -44,6 +47,24 @@ export class SessionDetailViewModel {
         resolve(sessions);
       } catch (e) {
         console.error('[SessionDetailViewModel] Fetch remote sessions error:', e);
+        resolve([]);
+      }
+    });
+  }
+
+  fetchModels(backendUrl: string, authToken: string): Promise<OpenCodeProviderModel[]> {
+    return new Promise(async (resolve) => {
+      if (!backendUrl) {
+        resolve([]);
+        return;
+      }
+      try {
+        const client = new OpenCodeApiClient(backendUrl, authToken, '');
+        const models = await client.listModels();
+        console.info('[SessionDetailViewModel] Fetched models:', models.length);
+        resolve(models);
+      } catch (e) {
+        console.error('[SessionDetailViewModel] Fetch models error:', e);
         resolve([]);
       }
     });
@@ -248,20 +269,24 @@ export class SessionDetailViewModel {
     backendUrl: string,
     authToken: string,
     backendId: string,
-    selectedRemoteSessionId: string
+    selectedRemoteSessionId: string,
+    preferredModel?: string
   ): Promise<boolean> {
     const sessionTitle = title || `${directory.split('/').pop() || directory}`;
 
     if (isEditing && editingId) {
-      this.core.updateProject(editingId, sessionTitle, backendUrl, authToken, directory, '', backendId);
+      this.core.updateProject(editingId, sessionTitle, backendUrl, authToken, directory, '', backendId, preferredModel);
       if (selectedRemoteSessionId) {
         this.core.updateRemoteSessionId(editingId, selectedRemoteSessionId);
       }
-      console.info('[SessionDetailViewModel] Local session updated:', editingId);
+      console.info('[SessionDetailViewModel] Local session updated:', editingId, 'with model:', preferredModel);
       AppStorage.SetOrCreate<string>('refreshSessionsNow', Date.now().toString());
       return true;
     } else {
       const newProjectId = await this.core.addProject(sessionTitle, backendUrl, authToken, directory, '', backendId);
+      if (preferredModel && newProjectId) {
+        this.core.updateProject(newProjectId, sessionTitle, backendUrl, authToken, directory, '', backendId, preferredModel);
+      }
       if (selectedRemoteSessionId && newProjectId) {
         this.core.updateRemoteSessionId(newProjectId, selectedRemoteSessionId);
       }

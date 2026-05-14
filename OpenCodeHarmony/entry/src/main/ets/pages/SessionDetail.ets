@@ -1,4 +1,4 @@
-import { OpenCodeCore, OpenCodeBackend, OpenCodeSession } from '../core/OpenCodeCore';
+import { OpenCodeCore, OpenCodeBackend, OpenCodeSession, OpenCodeProviderModel } from '../core/OpenCodeCore';
 import { SessionDetailViewModel, FileNode } from '../viewmodel/SessionDetailViewModel';
 import { RemoteSessionPicker } from '../components/RemoteSessionPicker';
 import { PathAutocomplete } from '../components/PathAutocomplete';
@@ -28,6 +28,10 @@ struct SessionDetail {
   @State isLoadingRemoteSessions: boolean = false;
   @State showRemoteSessionPicker: boolean = false;
   @State selectedRemoteSessionId: string = '';
+  @State availableModels: OpenCodeProviderModel[] = [];
+  @State isLoadingModels: boolean = false;
+  @State selectedModel: string = '';
+  @State showModelPicker: boolean = false;
 
   private viewModel: SessionDetailViewModel = new SessionDetailViewModel();
   private core: OpenCodeCore = OpenCodeCore.getInstance();
@@ -47,8 +51,13 @@ struct SessionDetail {
         this.title = (params['title'] as string) || '';
         this.directory = (params['directory'] as string) || '/';
         const project = this.core.getProjects().find(p => p.id === this.editingId);
-        if (project && project.remoteSessionId) {
-          this.selectedRemoteSessionId = project.remoteSessionId;
+        if (project) {
+          if (project.remoteSessionId) {
+            this.selectedRemoteSessionId = project.remoteSessionId;
+          }
+          if (project.preferredModel) {
+            this.selectedModel = project.preferredModel;
+          }
         }
       }
     }
@@ -56,6 +65,7 @@ struct SessionDetail {
       this.selectBackend(this.backends[0]);
     } else if (this.backendId) {
       this.fetchRemoteSessions();
+      this.fetchModels();
     }
     this.recentPaths = AppStorage.get<string[]>('recentWorktreePaths') ?? [];
   }
@@ -72,12 +82,25 @@ struct SessionDetail {
     }
   }
 
+  private async fetchModels() {
+    if (!this.backendUrl) return;
+    this.isLoadingModels = true;
+    try {
+      this.availableModels = await this.viewModel.fetchModels(this.backendUrl, this.authToken);
+    } catch (e) {
+      console.error('[SessionDetail] Fetch models error:', e);
+    } finally {
+      this.isLoadingModels = false;
+    }
+  }
+
   private selectBackend(backend: OpenCodeBackend) {
     this.backendId = backend.id;
     this.backendUrl = backend.url;
     this.authToken = backend.authToken;
     this.showBackendPicker = false;
     this.fetchRemoteSessions();
+    this.fetchModels();
   }
 
   private getSelectedBackend(): OpenCodeBackend | undefined {
@@ -167,7 +190,8 @@ struct SessionDetail {
         this.backendUrl,
         this.authToken,
         this.backendId,
-        this.selectedRemoteSessionId
+        this.selectedRemoteSessionId,
+        this.selectedModel
       );
 
       if (success && this.directory) {
@@ -187,12 +211,12 @@ struct SessionDetail {
   @Builder
   buildBackendSection() {
     Column() {
-      Text('后端服务器')
+      Text('模型 / 后端服务器')
         .fontSize(13)
         .fontColor('#999999')
         .margin({ bottom: 8 })
       Row() {
-        Text(this.getSelectedBackend()?.notes || this.backendUrl || '选择后端')
+        Text(this.getSelectedBackend()?.notes || this.backendUrl || '选择模型')
           .fontSize(15)
           .fontColor(this.backendId ? '#333333' : '#AAAAAA')
           .layoutWeight(1)
@@ -272,6 +296,109 @@ struct SessionDetail {
           .height(44)
           .backgroundColor('#F5F5F5')
           .borderRadius(8)
+      }
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+    .margin({ bottom: 20 })
+  }
+
+  @Builder
+  buildModelSection() {
+    Column() {
+      Text('接下来对话使用的模型 (可选)')
+        .fontSize(13)
+        .fontColor('#999999')
+        .margin({ bottom: 8 })
+
+      Row() {
+        if (this.isLoadingModels) {
+          LoadingProgress().width(20).height(20).margin({ right: 8 })
+        }
+        Text(this.selectedModel || '使用服务器默认模型')
+          .fontSize(15)
+          .fontColor(this.selectedModel ? '#333333' : '#AAAAAA')
+          .layoutWeight(1)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+        Text(this.showModelPicker ? '▲' : '▼')
+          .fontSize(12)
+          .fontColor('#999999')
+      }
+      .width('100%')
+      .height(44)
+      .padding({ left: 12, right: 12 })
+      .backgroundColor('#F5F5F5')
+      .borderRadius(8)
+      .onClick(() => {
+        this.showModelPicker = !this.showModelPicker;
+        if (this.showModelPicker && this.availableModels.length === 0) {
+          this.fetchModels();
+        }
+      })
+
+      if (this.showModelPicker) {
+        Scroll() {
+          Column() {
+            // Option to clear selection
+            Row() {
+              Text('使用服务器默认模型')
+                .fontSize(14)
+                .fontColor(this.selectedModel === '' ? '#07C160' : '#666666')
+                .fontWeight(this.selectedModel === '' ? FontWeight.Bold : FontWeight.Normal)
+              if (this.selectedModel === '') {
+                Image($r('app.media.startIcon')).width(16).height(16).fillColor('#07C160')
+              }
+            }
+            .width('100%')
+            .padding(12)
+            .justifyContent(FlexAlign.SpaceBetween)
+            .onClick(() => {
+              this.selectedModel = '';
+              this.showModelPicker = false;
+            })
+
+            Divider().color('#F0F0F0').margin({ left: 12, right: 12 })
+
+            ForEach(this.availableModels, (model: OpenCodeProviderModel) => {
+              Row() {
+                Column() {
+                  Text(`${model.providerName || 'Unknown'} · ${model.name || model.id}`)
+                    .fontSize(14)
+                    .fontColor(this.selectedModel === model.id ? '#07C160' : '#333333')
+                    .fontWeight(this.selectedModel === model.id ? FontWeight.Bold : FontWeight.Normal)
+                }
+                .alignItems(HorizontalAlign.Start)
+
+                if (this.selectedModel === model.id) {
+                  Image($r('app.media.startIcon')).width(16).height(16).fillColor('#07C160')
+                }
+              }
+              .width('100%')
+              .padding(12)
+              .justifyContent(FlexAlign.SpaceBetween)
+              .onClick(() => {
+                this.selectedModel = model.id;
+                this.showModelPicker = false;
+              })
+
+              Divider().color('#F0F0F0').margin({ left: 12, right: 12 })
+            }, (model: OpenCodeProviderModel) => model.id)
+
+            if (!this.isLoadingModels && this.availableModels.length === 0) {
+              Text('未获取到可用模型')
+                .fontSize(13)
+                .fontColor('#999999')
+                .margin(20)
+            }
+          }
+          .backgroundColor('#F9F9F9')
+          .borderRadius(8)
+          .margin({ top: 4 })
+        }
+        .width('100%')
+        .constraintSize({ maxHeight: 250 })
       }
     }
     .width('100%')
@@ -381,6 +508,7 @@ struct SessionDetail {
             this.buildDirectorySection()
             this.buildRemoteSessionSection()
             this.buildTitleSection()
+            this.buildModelSection()
 
             if (this.errorMessage) {
               Text(this.errorMessage)

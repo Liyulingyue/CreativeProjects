@@ -2,7 +2,7 @@ import dataPreferences from '@ohos.data.preferences';
 import common from '@ohos.app.ability.common';
 import { OpenCodeApiClient, OpenCodeSession, OpenCodeMessage } from './OpenCodeApiClient';
 
-export { OpenCodeSession, OpenCodeMessage } from './OpenCodeApiClient';
+export { OpenCodeSession, OpenCodeMessage, OpenCodeProviderModel } from './OpenCodeApiClient';
 export type { OpenCodeApiClient, TextPartInput, OpenCodeMessagePart } from './OpenCodeApiClient';
 
 export interface OpenCodeProject {
@@ -14,6 +14,7 @@ export interface OpenCodeProject {
   notes: string;
   backendId: string;
   remoteSessionId?: string;
+  preferredModel?: string;
   lastAccess: number;
 }
 
@@ -135,7 +136,7 @@ export class OpenCodeCore {
     return this.projects.find(p => p.id === id);
   }
 
-  public updateProject(id: string, name: string, url: string, authToken: string, path: string, notes: string = '', backendId: string = ''): void {
+  public updateProject(id: string, name: string, url: string, authToken: string, path: string, notes: string = '', backendId: string = '', preferredModel?: string): void {
     const index = this.projects.findIndex(p => p.id === id);
     if (index !== -1) {
       const backend = this.backends.find(b => b.url === url);
@@ -147,6 +148,7 @@ export class OpenCodeCore {
         path,
         notes,
         backendId: backendId || (backend?.id ?? this.projects[index].backendId),
+        preferredModel: preferredModel || this.projects[index].preferredModel,
         lastAccess: Date.now()
       };
       this.saveProjects();
@@ -281,9 +283,9 @@ export class OpenCodeCore {
     return sessions;
   }
 
-  public async createBackendSession(backendUrl: string, authToken: string, directory: string, title?: string): Promise<OpenCodeSession | null> {
+  public async createBackendSession(backendUrl: string, authToken: string, directory: string, title?: string, preferredModel?: string): Promise<OpenCodeSession | null> {
     this.apiClient.updateConfig(backendUrl, authToken, directory);
-    return await this.apiClient.createSession(title);
+    return await this.apiClient.createSession(title, undefined, preferredModel);
   }
 
   public async deleteBackendSession(sessionId: string): Promise<boolean> {
