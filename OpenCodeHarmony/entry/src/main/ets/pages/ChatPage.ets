@@ -1,33 +1,15 @@
-import { OpenCodeCore, OpenCodeMessage, OpenCodeMessagePart } from '../core/OpenCodeCore';
+import { OpenCodeCore, OpenCodeMessage } from '../core/OpenCodeCore';
+import { ChatViewModel, DisplayMessage } from '../viewmodel/ChatViewModel';
 import router from '@ohos.router';
 import http from '@ohos.net.http';
 
-interface DisplayMessage {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  timestamp: number;
-  isLoading?: boolean;
-}
-
-interface ToolState {
-  status?: string;
-  title?: string;
-  output?: string;
-  error?: string;
-}
-
-interface FilePart {
-  filename?: string;
-}
-
-interface TextPart {
-  type: 'text';
+interface MessagePart {
+  type: string;
   text: string;
 }
 
 interface MessageBody {
-  parts: TextPart[];
+  parts: MessagePart[];
 }
 
 @Entry
@@ -43,8 +25,8 @@ struct ChatPage {
   @State isLoading: boolean = false;
   private scroller: Scroller = new Scroller();
   private core: OpenCodeCore = OpenCodeCore.getInstance();
+  private viewModel: ChatViewModel = new ChatViewModel();
   private currentRequest: http.HttpRequest | null = null;
-
   @State realSessionId: string = '';
 
   aboutToAppear() {
@@ -55,7 +37,6 @@ struct ChatPage {
       this.backendUrl = (params['backendUrl'] as string) || '';
       this.authToken = (params['authToken'] as string) || '';
       this.directory = (params['directory'] as string) || '/';
-      // 这里的 sessionId 是本地 project.id
       const project = this.core.getProjectById(this.sessionId);
       if (project && project.remoteSessionId) {
         this.realSessionId = project.remoteSessionId;
@@ -69,26 +50,6 @@ struct ChatPage {
     this.loadHistory();
   }
 
-  private base64Encode(str: string): string {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-    let result = '';
-    let i = 0;
-    const len = str.length;
-    while (i < len) {
-      const b1 = str.charCodeAt(i);
-      i++;
-      const b2 = i < len ? str.charCodeAt(i) : NaN;
-      if (i < len) i++;
-      const b3 = i < len ? str.charCodeAt(i) : NaN;
-      if (i < len) i++;
-      result += chars.charAt(b1 >> 2);
-      result += chars.charAt(((b1 & 0x03) << 4) | (isNaN(b2) ? 0 : b2 >> 4));
-      result += isNaN(b2) ? '=' : chars.charAt(((b2 & 0x0f) << 2) | (isNaN(b3) ? 0 : b3 >> 6));
-      result += isNaN(b3) ? '=' : chars.charAt(b3 & 0x3f);
-    }
-    return result;
-  }
-
   private cancelRequest() {
     if (this.currentRequest) {
       this.currentRequest.destroy();
@@ -96,119 +57,23 @@ struct ChatPage {
     }
   }
 
-  private getHeaders(): Record<string, string> {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'x-opencode-directory': encodeURIComponent(this.directory)
-    };
-    if (this.authToken) {
-      headers['Authorization'] = 'Basic ' + this.base64Encode('opencode:' + this.authToken);
-    }
-    return headers;
-  }
-
-  private formatPartContent(part: OpenCodeMessagePart): string {
-    switch (part.type) {
-      case 'text':
-        return part.text || '';
-      case 'tool':
-        const state = part.state as ToolState | undefined;
-        if (state?.status === 'completed') {
-          return `[Tool: ${state.title || part.tool}]\n${state.output || ''}`;
-        } else if (state?.status === 'error') {
-          return `[Tool Error: ${state.error || 'Unknown error'}]`;
-        } else if (state?.status === 'running') {
-          return `[Running: ${state.title || part.tool}...]`;
-        } else {
-          return `[Tool: ${part.tool || 'unknown'}]`;
-        }
-      case 'reasoning':
-        return `<思考>\n${part.text || ''}\n</思考>`;
-      case 'step-start':
-        return `--- Step started ---`;
-      case 'step-finish':
-        return `--- Step completed ---`;
-      case 'file':
-        return `[File: ${(part as FilePart).filename || 'unknown'}]`;
-      default:
-        return '';
-    }
-  }
-
-  private formatMessage(msg: OpenCodeMessage): string {
-    const textParts = msg.parts
-      .filter(p => p.type === 'text')
-      .map(p => p.text || '')
-      .join('\n');
-
-    const otherParts = msg.parts
-      .filter(p => p.type !== 'text')
-      .map(p => this.formatPartContent(p))
-      .filter(s => s.length > 0)
-      .join('\n\n');
-
-    const parts: string[] = [];
-    if (textParts) parts.push(textParts);
-    if (otherParts) parts.push(otherParts);
-
-    if (msg.info.error) {
-      parts.push(`[Error: ${msg.info.error.name}]`);
-    }
-
-    return parts.join('\n\n');
-  }
-
   private async loadHistory() {
-    if (!this.backendUrl) return;
-
-    // 如果还没有 realSessionId，说明后端还没创建会话，暂无历史
-    if (!this.realSessionId) {
-      console.info('[ChatPage] No realSessionId yet, skipping history load');
-      return;
-    }
-
-    this.cancelRequest();
-    this.currentRequest = http.createHttp();
-    const url = `${this.backendUrl.replace(/\/+$/, '')}/session/${encodeURIComponent(this.realSessionId)}/message`;
-
-    try {
-      const result = await new Promise<http.HttpResponse>((resolve, reject) => {
-        this.currentRequest!.request(
-          url,
-          {
-            method: http.RequestMethod.GET,
-            header: this.getHeaders(),
-            connectTimeout: 10000,
-            readTimeout: 10000,
-          },
-          (err, data) => {
-            if (err) reject(err);
-            else resolve(data);
-          }
-        );
-      });
-
-      if (result.responseCode === 200) {
-        const messages = JSON.parse(result.result as string) as OpenCodeMessage[];
-        this.messages = messages.map((msg, index): DisplayMessage => ({
-          id: msg.info.id || `msg-${index}`,
-          role: msg.info.role as 'user' | 'assistant',
-          content: this.formatMessage(msg),
-          timestamp: msg.info.time.created
-        }));
+    this.viewModel.loadHistory(
+      this.backendUrl,
+      this.authToken,
+      this.directory,
+      this.realSessionId,
+      (msgs) => {
+        this.messages = msgs;
+        this.scrollToBottom();
       }
-    } catch (e) {
-      console.error('[ChatPage] Load history error:', e);
-    } finally {
-      this.cancelRequest();
-    }
+    );
   }
 
   private async sendMessage() {
     const text = this.inputText.trim();
     if (!text || !this.backendUrl || this.isLoading) return;
 
-    // 如果还没有后端会话，先创建一个
     if (!this.realSessionId) {
       this.isLoading = true;
       try {
@@ -216,7 +81,6 @@ struct ChatPage {
         if (resp && resp.id) {
           this.realSessionId = resp.id;
           this.core.setCurrentSession(resp.id);
-          // 持久化同步远程 ID 到本地项目
           await this.core.updateRemoteSessionId(this.sessionId, resp.id);
           console.info('[ChatPage] Backend session created and linked:', this.realSessionId);
         } else {
@@ -257,9 +121,7 @@ struct ChatPage {
     this.currentRequest = http.createHttp();
     const url = `${this.backendUrl.replace(/\/+$/, '')}/session/${encodeURIComponent(this.realSessionId)}/message`;
 
-    const body: MessageBody = {
-      parts: [{ type: 'text', text: text }]
-    };
+    const body: MessageBody = { parts: [{ type: 'text', text: text }] };
 
     try {
       const result = await new Promise<http.HttpResponse>((resolve, reject) => {
@@ -267,7 +129,7 @@ struct ChatPage {
           url,
           {
             method: http.RequestMethod.POST,
-            header: this.getHeaders(),
+            header: this.viewModel.getHeaders(this.backendUrl, this.authToken, this.directory),
             extraData: JSON.stringify(body),
             connectTimeout: 120000,
             readTimeout: 120000,
@@ -282,10 +144,10 @@ struct ChatPage {
       this.messages = this.messages.filter(m => m.id !== loadingId);
 
       if (result.responseCode === 200) {
-        const response = JSON.parse(result.result as string) as OpenCodeMessage;
-        const content = this.formatMessage(response);
+        const response: OpenCodeMessage = JSON.parse(result.result as string) as OpenCodeMessage;
+        const content = this.viewModel.formatMessage(response);
         this.messages = [...this.messages, {
-          id: response.info.id || `resp-${Date.now()}`,
+          id: response.info?.id || `resp-${Date.now()}`,
           role: 'assistant',
           content: content || '完成',
           timestamp: Date.now()
@@ -319,6 +181,53 @@ struct ChatPage {
     }, 100);
   }
 
+  @Builder
+  buildMessageItem(msg: DisplayMessage) {
+    Row() {
+      if (msg.role === 'user') {
+        Blank()
+        Text(msg.content)
+          .padding(12)
+          .backgroundColor('#95EC69')
+          .borderRadius({ topLeft: 8, topRight: 2, bottomLeft: 8, bottomRight: 8 })
+          .constraintSize({ maxWidth: '75%' })
+          .fontSize(15)
+          .margin({ right: 12 })
+      } else {
+        Stack() {
+          Rect().fill('#07C160').width(36).height(36).borderRadius(4)
+          Text('AI')
+            .fontSize(12).fontColor('#FFFFFF').fontWeight(FontWeight.Bold)
+        }
+        .margin({ left: 12, right: 8 })
+        .alignContent(Alignment.Center)
+
+        if (msg.isLoading) {
+          Row() {
+            LoadingProgress().width(16).height(16)
+            Text('思考中...')
+              .fontSize(13)
+              .fontColor('#888888')
+              .margin({ left: 6 })
+          }
+          .padding(12)
+          .backgroundColor('#FFFFFF')
+          .borderRadius({ topLeft: 2, topRight: 8, bottomLeft: 8, bottomRight: 8 })
+        } else {
+          Text(msg.content)
+            .padding(12)
+            .backgroundColor('#FFFFFF')
+            .borderRadius({ topLeft: 2, topRight: 8, bottomLeft: 8, bottomRight: 8 })
+            .constraintSize({ maxWidth: '75%' })
+            .fontSize(15)
+        }
+        Blank()
+      }
+    }
+    .width('100%')
+    .alignItems(VerticalAlign.Top)
+  }
+
   build() {
     Column() {
       Row() {
@@ -345,6 +254,21 @@ struct ChatPage {
         Text('···')
           .fontSize(22)
           .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+          .onClick(() => {
+            const project = this.core.getProjectById(this.sessionId);
+            router.pushUrl({
+              url: 'pages/SessionDetail',
+              params: {
+                id: this.sessionId,
+                title: this.sessionName,
+                backendId: project?.backendId || '',
+                backendUrl: this.backendUrl,
+                authToken: this.authToken,
+                directory: this.directory,
+                isEditing: true
+              }
+            });
+          })
       }
       .width('100%')
       .height(56)
@@ -356,49 +280,7 @@ struct ChatPage {
       Scroll(this.scroller) {
         Column({ space: 8 }) {
           ForEach(this.messages, (msg: DisplayMessage) => {
-            Row() {
-              if (msg.role === 'user') {
-                Blank()
-                Text(msg.content)
-                  .padding(12)
-                  .backgroundColor('#95EC69')
-                  .borderRadius({ topLeft: 8, topRight: 2, bottomLeft: 8, bottomRight: 8 })
-                  .constraintSize({ maxWidth: '75%' })
-                  .fontSize(15)
-                  .margin({ right: 12 })
-              } else {
-                Stack() {
-                  Rect().fill('#07C160').width(36).height(36).borderRadius(4)
-                  Text('AI')
-                    .fontSize(12).fontColor('#FFFFFF').fontWeight(FontWeight.Bold)
-                }
-                .margin({ left: 12, right: 8 })
-                .alignContent(Alignment.Center)
-
-                if (msg.isLoading) {
-                  Row() {
-                    LoadingProgress().width(16).height(16)
-                    Text('思考中...')
-                      .fontSize(13)
-                      .fontColor('#888888')
-                      .margin({ left: 6 })
-                  }
-                  .padding(12)
-                  .backgroundColor('#FFFFFF')
-                  .borderRadius({ topLeft: 2, topRight: 8, bottomLeft: 8, bottomRight: 8 })
-                } else {
-                  Text(msg.content)
-                    .padding(12)
-                    .backgroundColor('#FFFFFF')
-                    .borderRadius({ topLeft: 2, topRight: 8, bottomLeft: 8, bottomRight: 8 })
-                    .constraintSize({ maxWidth: '75%' })
-                    .fontSize(15)
-                }
-                Blank()
-              }
-            }
-            .width('100%')
-            .alignItems(VerticalAlign.Top)
+            this.buildMessageItem(msg)
           }, (msg: DisplayMessage) => msg.id)
         }
         .padding({ top: 12, bottom: 12 })

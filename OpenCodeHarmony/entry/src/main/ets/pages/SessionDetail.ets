@@ -1,19 +1,10 @@
 import { OpenCodeCore, OpenCodeBackend, OpenCodeSession } from '../core/OpenCodeCore';
+import { SessionDetailViewModel, FileNode } from '../viewmodel/SessionDetailViewModel';
+import { RemoteSessionPicker } from '../components/RemoteSessionPicker';
+import { PathAutocomplete } from '../components/PathAutocomplete';
+import { BackendPicker } from '../components/BackendPicker';
 import router from '@ohos.router';
 import http from '@ohos.net.http';
-import { OpenCodeApiClient } from '../core/OpenCodeCore';
-
-interface FileNode {
-  name: string;
-  path: string;
-  absolute: string;
-  type: 'file' | 'directory';
-  ignored: boolean;
-}
-
-interface SessionResponse {
-  id: string;
-}
 
 @Entry
 @Component
@@ -37,6 +28,8 @@ struct SessionDetail {
   @State isLoadingRemoteSessions: boolean = false;
   @State showRemoteSessionPicker: boolean = false;
   @State selectedRemoteSessionId: string = '';
+
+  private viewModel: SessionDetailViewModel = new SessionDetailViewModel();
   private core: OpenCodeCore = OpenCodeCore.getInstance();
   private currentRequest: http.HttpRequest | null = null;
   private pathSearchTimer: number = -1;
@@ -71,9 +64,7 @@ struct SessionDetail {
     if (!this.backendUrl) return;
     this.isLoadingRemoteSessions = true;
     try {
-      const client = new OpenCodeApiClient(this.backendUrl, this.authToken, this.directory);
-      this.remoteSessions = await client.listSessions();
-      console.info('[SessionDetail] Fetched remote sessions:', this.remoteSessions.length);
+      this.remoteSessions = await this.viewModel.fetchRemoteSessions(this.backendUrl, this.authToken, this.directory);
     } catch (e) {
       console.error('[SessionDetail] Fetch remote sessions error:', e);
     } finally {
@@ -93,225 +84,72 @@ struct SessionDetail {
     return this.backends.find(b => b.id === this.backendId);
   }
 
-  private getHeaders(): Record<string, string> {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'x-opencode-directory': encodeURIComponent(this.directory || '/')
-    };
-    if (this.authToken) {
-      headers['Authorization'] = 'Basic ' + this.base64Encode('opencode:' + this.authToken);
-    }
-    return headers;
+  private onRecentPathSelect(path: string) {
+    this.directory = path;
+    this.showPathPicker = false;
+    setTimeout(() => {
+      this.showPathPicker = true;
+      this.schedulePathSearch(path);
+    }, 100);
   }
 
-  private base64Encode(str: string): string {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-    let result = '';
-    let i = 0;
-    const len = str.length;
-    while (i < len) {
-      const b1 = str.charCodeAt(i);
-      i++;
-      const b2 = i < len ? str.charCodeAt(i) : NaN;
-      if (i < len) i++;
-      const b3 = i < len ? str.charCodeAt(i) : NaN;
-      if (i < len) i++;
-      result += chars.charAt(b1 >> 2);
-      result += chars.charAt(((b1 & 0x03) << 4) | (isNaN(b2) ? 0 : b2 >> 4));
-      result += isNaN(b2) ? '=' : chars.charAt(((b2 & 0x0f) << 2) | (isNaN(b3) ? 0 : b3 >> 6));
-      result += isNaN(b3) ? '=' : chars.charAt(b3 & 0x3f);
-    }
-    return result;
-  }
-
-  private cancelRequest() {
-    if (this.currentRequest) {
-      this.currentRequest.destroy();
-      this.currentRequest = null;
-    }
-  }
-
-  private addRecentPath(path: string) {
-    const normalized = path.replace(/\/+$/, '') || '/';
-    const existing = this.recentPaths.filter(p => p !== normalized);
-    const updated = [normalized, ...existing].slice(0, 10);
-    this.recentPaths = updated;
-    AppStorage.SetOrCreate<string[]>('recentWorktreePaths', updated);
+  private onPathSelect(path: string) {
+    this.directory = path;
+    this.showPathPicker = false;
+    setTimeout(() => {
+      this.showPathPicker = true;
+      const nextQuery = this.directory.endsWith('/') ? this.directory : this.directory + '/';
+      this.listDirectory(nextQuery);
+    }, 100);
   }
 
   private schedulePathSearch(query: string) {
-    if (this.pathSearchTimer !== -1) {
-      clearTimeout(this.pathSearchTimer);
-    }
-    
-    // 如果是空或只有一个斜杠，显示根目录内容
-    if (!query || query === '/') {
-      this.listDirectory('/');
-      return;
-    }
-
-    // 防抖处理
-    this.pathSearchTimer = setTimeout(() => {
-      const lastSlashIndex = query.lastIndexOf('/');
-      
-      // 检查路径结尾是否是斜杠
-      if (query.endsWith('/')) {
-        // 用户输入了斜杠，列出该目录下的直接子目录
-        this.listDirectory(query);
-      } else {
-        // 用户正在输入目录名片段
-        if (lastSlashIndex !== -1) {
-          // 提取当前正在输入的片段进行模糊搜索，并传入全路径用于匹配过滤
-          const searchPart = query.substring(lastSlashIndex + 1);
-          // 哪怕 searchPart 为空（例如刚打完斜杠但 timer 触发），也按目录列出逻辑走
-          if (!searchPart) {
-            this.listDirectory(query);
-          } else {
-            this.searchPaths(searchPart, query);
-          }
-        } else {
-          // 纯文字输入（非路径格式），直接搜索
-          this.searchPaths(query, query);
-        }
-      }
-    }, 400) as number;
+    this.viewModel.schedulePathSearch(
+      query,
+      (path) => this.listDirectory(path),
+      (searchQuery, fullPath) => this.searchPaths(searchQuery, fullPath),
+      this.pathSearchTimer,
+      (timer) => this.pathSearchTimer = timer
+    );
   }
 
-  private searchPaths(query: string, fullPath?: string) {
-    if (!this.backendUrl || this.backendUrl === 'http://') {
-      this.isSearchingPath = false;
-      return;
-    }
-    this.isSearchingPath = true;
-    this.cancelRequest();
-    this.currentRequest = http.createHttp();
-    const url = this.backendUrl.replace(/\/+$/, '') + '/find/file';
-    
-    // 增加探索深度和结果数量
-    const params = `query=${encodeURIComponent(query)}&type=directory&limit=50`;
-    try {
-      this.currentRequest.request(
-        url + '?' + params,
-        {
-          method: http.RequestMethod.GET,
-          header: this.getHeaders(),
-          connectTimeout: 5000,
-          readTimeout: 5000,
-        },
-        (err, data) => {
-          this.isSearchingPath = false;
-          this.currentRequest = null;
-          if (!err && data.responseCode === 200) {
-            try {
-              const parsed = JSON.parse(data.result as string) as string[];
-              if (Array.isArray(parsed)) {
-                const uniquePaths = Array.from(new Set(parsed));
-                let results = uniquePaths.map((p: string): FileNode => {
-                  const absolute = p.startsWith('/') ? p : '/' + p;
-                  return {
-                    name: absolute.split('/').pop() || absolute,
-                    path: p,
-                    absolute: absolute,
-                    type: 'directory',
-                    ignored: false
-                  };
-                });
-
-                // 严格遵循 OpenCode Web 逻辑：
-                if (fullPath) {
-                  const filterPath = fullPath.toLowerCase();
-                  
-                  results = results.filter(r => {
-                    const rAbs = r.absolute.toLowerCase();
-                    
-                    // 必须以当前输入作为前缀
-                    if (!rAbs.startsWith(filterPath)) return false;
-                    
-                    // 排除掉输入路径本身（例如输入 /home/，不显示 /home/）
-                    if (rAbs === filterPath || rAbs === filterPath + '/') return false;
-
-                    // 计算剩余路径部分
-                    let remaining = rAbs.substring(filterPath.length);
-                    // 移除开头可能存在的斜杠
-                    if (remaining.startsWith('/')) {
-                      remaining = remaining.substring(1);
-                    }
-                    
-                    // 核心逻辑：如果剩余部分还包含斜杠（且不是末尾斜杠），说明太深了
-                    const lastSlash = remaining.lastIndexOf('/');
-                    if (lastSlash !== -1 && lastSlash !== remaining.length - 1) {
-                      return false;
-                    }
-                    return true;
-                  });
-                }
-
-                // 排序：按字母顺序
-                results.sort((a, b) => a.absolute.localeCompare(b.absolute));
-
-                this.pathSearchResults = results;
-              }
-            } catch (e) {
-              console.error('[SessionDetail] Parse search error:', e);
-            }
-          }
-        }
-      );
-    } catch (e) {
-      this.isSearchingPath = false;
-    }
+  private searchPaths(query: string, fullPath: string) {
+    this.viewModel.searchPaths(
+      this.backendUrl,
+      this.authToken,
+      this.directory,
+      query,
+      fullPath,
+      (results) => this.pathSearchResults = results,
+      (isSearching) => this.isSearchingPath = isSearching,
+      this.currentRequest,
+      (req) => this.currentRequest = req
+    );
   }
 
   private listDirectory(path: string) {
-    if (!this.backendUrl || this.backendUrl === 'http://') {
-      this.isSearchingPath = false;
-      return;
+    this.viewModel.listDirectory(
+      this.backendUrl,
+      this.authToken,
+      this.directory,
+      path,
+      (results) => this.pathSearchResults = results,
+      (isSearching) => this.isSearchingPath = isSearching,
+      this.currentRequest,
+      (req) => this.currentRequest = req
+    );
+  }
+
+  private onRemoteSessionSelect(session: OpenCodeSession | null) {
+    this.showRemoteSessionPicker = false;
+    if (session) {
+      this.selectedRemoteSessionId = session.id;
+      if (session.directory) {
+        this.directory = session.directory;
+      }
+    } else {
+      this.selectedRemoteSessionId = '';
     }
-    this.isSearchingPath = true;
-    this.cancelRequest();
-    this.currentRequest = http.createHttp();
-    const url = this.backendUrl.replace(/\/+$/, '') + '/file';
-    const params = `path=${encodeURIComponent(path || '/')}`;
-    try {
-      this.currentRequest.request(
-        url + '?' + params,
-        {
-          method: http.RequestMethod.GET,
-          header: this.getHeaders(),
-          connectTimeout: 5000,
-          readTimeout: 5000,
-        },
-        (err, data) => {
-          this.isSearchingPath = false;
-          this.currentRequest = null;
-          if (!err && data.responseCode === 200) {
-            try {
-              const parsed = JSON.parse(data.result as string) as FileNode[];
-              if (Array.isArray(parsed)) {
-                this.pathSearchResults = parsed
-                  .filter((item: FileNode) => item.type === 'directory' && !item.ignored)
-                  .map((item: FileNode): FileNode => {
-                    // 核心修复：后端 /file 如果返回相对路径，则拼接到当前路径
-                    // 如果后端已经返回了以 / 开头的绝对路径，则直接使用
-                    let absolute = item.absolute;
-                    if (!absolute.startsWith('/')) {
-                      const parentPath = path.endsWith('/') ? path : path + '/';
-                      absolute = parentPath + (item.name || item.path || '');
-                    }
-                    return {
-                      name: item.name,
-                      path: item.path,
-                      type: item.type,
-                      ignored: item.ignored,
-                      absolute: absolute
-                    };
-                  });
-              }
-            } catch {}
-          }
-        }
-      );
-    } catch {}
   }
 
   private async createSession(): Promise<boolean> {
@@ -319,47 +157,24 @@ struct SessionDetail {
 
     this.isCreating = true;
     this.errorMessage = '';
-    
+
     try {
-      const sessionTitle = this.title || `${this.directory.split('/').pop() || this.directory}`;
-      
-      if (this.isEditing && this.editingId) {
-        // 更新现有本地会话
-        this.core.updateProject(
-          this.editingId,
-          sessionTitle,
-          this.backendUrl,
-          this.authToken,
-          this.directory,
-          '', // notes
-          this.backendId
-        );
-        if (this.selectedRemoteSessionId) {
-          this.core.updateRemoteSessionId(this.editingId, this.selectedRemoteSessionId);
-        }
-        console.info('[SessionDetail] Local session updated:', this.editingId);
-        AppStorage.SetOrCreate<string>('refreshSessionsNow', Date.now().toString());
-      } else {
-        // 创建新本地会话
-        const newProjectId = await this.core.addProject(
-          sessionTitle,
-          this.backendUrl,
-          this.authToken,
-          this.directory,
-          '', // notes
-          this.backendId
-        );
-        if (this.selectedRemoteSessionId && newProjectId) {
-          this.core.updateRemoteSessionId(newProjectId, this.selectedRemoteSessionId);
-        }
-        console.info('[SessionDetail] Local session created for directory:', this.directory);
+      const success = await this.viewModel.createOrUpdateSession(
+        this.isEditing,
+        this.editingId,
+        this.title,
+        this.directory,
+        this.backendUrl,
+        this.authToken,
+        this.backendId,
+        this.selectedRemoteSessionId
+      );
+
+      if (success && this.directory) {
+        this.recentPaths = this.viewModel.addRecentPath(this.directory, this.recentPaths);
       }
 
-      if (this.directory) {
-        this.addRecentPath(this.directory);
-      }
-      
-      return true;
+      return success;
     } catch (e) {
       this.errorMessage = `${this.isEditing ? '更新' : '创建'}失败: ${e}`;
       console.error('[SessionDetail] Create/Update local session error:', e);
@@ -367,6 +182,175 @@ struct SessionDetail {
     } finally {
       this.isCreating = false;
     }
+  }
+
+  @Builder
+  buildBackendSection() {
+    Column() {
+      Text('后端服务器')
+        .fontSize(13)
+        .fontColor('#999999')
+        .margin({ bottom: 8 })
+      Row() {
+        Text(this.getSelectedBackend()?.notes || this.backendUrl || '选择后端')
+          .fontSize(15)
+          .fontColor(this.backendId ? '#333333' : '#AAAAAA')
+          .layoutWeight(1)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        if (!this.isEditing) {
+          Text(this.showBackendPicker ? '▲' : '▼')
+            .fontSize(12)
+            .fontColor('#999999')
+        }
+      }
+      .width('100%')
+      .height(44)
+      .padding({ left: 12, right: 12 })
+      .backgroundColor(this.isEditing ? '#EBEBEB' : '#F5F5F5')
+      .borderRadius(8)
+      .onClick(() => {
+        if (!this.isEditing) {
+          this.showBackendPicker = !this.showBackendPicker;
+        }
+      })
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+    .margin({ bottom: 20 })
+  }
+
+  @Builder
+  buildDirectorySection() {
+    Column() {
+      Text('工作目录')
+        .fontSize(13)
+        .fontColor('#999999')
+        .margin({ bottom: 8 })
+      if (this.isEditing) {
+        Text(this.directory || '/')
+          .fontSize(15)
+          .fontColor('#666666')
+          .width('100%')
+          .height(44)
+          .padding({ left: 12, right: 12 })
+          .backgroundColor('#EBEBEB')
+          .borderRadius(8)
+      } else if (this.selectedRemoteSessionId) {
+        Row() {
+          Image($r('app.media.startIcon')).width(16).height(16).margin({ right: 8 }).opacity(0.6)
+          Text(this.directory || '/')
+            .fontSize(15)
+            .fontColor('#666666')
+            .layoutWeight(1)
+          Text('继承自 Session')
+            .fontSize(12)
+            .fontColor('#07C160')
+        }
+        .width('100%')
+        .height(44)
+        .padding({ left: 12, right: 12 })
+        .backgroundColor('#F0F9EB')
+        .borderRadius(8)
+      } else {
+        TextInput({ placeholder: '输入目录路径，如 /home', text: this.directory })
+          .onChange(v => {
+            this.directory = v;
+            if (this.showPathPicker) {
+              this.schedulePathSearch(v);
+            }
+          })
+          .onFocus(() => {
+            this.showPathPicker = true;
+            this.schedulePathSearch(this.directory);
+          })
+          .onBlur(() => {
+            setTimeout(() => {
+              this.showPathPicker = false;
+            }, 200);
+          })
+          .height(44)
+          .backgroundColor('#F5F5F5')
+          .borderRadius(8)
+      }
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+    .margin({ bottom: 20 })
+  }
+
+  @Builder
+  buildRemoteSessionSection() {
+    Column() {
+      Text('绑定远程会话 (可选)')
+        .fontSize(13)
+        .fontColor('#999999')
+        .margin({ bottom: 8 })
+
+      Row() {
+        if (this.isLoadingRemoteSessions) {
+          LoadingProgress().width(20).height(20).margin({ right: 8 })
+        }
+        Text(this.selectedRemoteSessionId ?
+          (this.remoteSessions.find(s => s.id === this.selectedRemoteSessionId)?.title || this.selectedRemoteSessionId) :
+          '不绑定 (创建新会话)')
+          .fontSize(15)
+          .fontColor(this.selectedRemoteSessionId ? '#333333' : '#AAAAAA')
+          .layoutWeight(1)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+        if (!this.isEditing) {
+          Text(this.showRemoteSessionPicker ? '▲' : '▼')
+            .fontSize(12)
+            .fontColor('#999999')
+        }
+      }
+      .width('100%')
+      .height(44)
+      .padding({ left: 12, right: 12 })
+      .backgroundColor(this.isEditing ? '#EBEBEB' : '#F5F5F5')
+      .borderRadius(8)
+      .onClick(() => {
+        if (!this.isEditing) {
+          this.showRemoteSessionPicker = !this.showRemoteSessionPicker;
+          if (this.showRemoteSessionPicker && this.remoteSessions.length === 0) {
+            this.fetchRemoteSessions();
+          }
+        }
+      })
+
+      if (this.showRemoteSessionPicker && !this.isEditing) {
+        RemoteSessionPicker({
+          sessions: this.remoteSessions,
+          selectedId: this.selectedRemoteSessionId,
+          isLoading: this.isLoadingRemoteSessions,
+          showPicker: $showRemoteSessionPicker,
+          onSelect: (session: OpenCodeSession | null): void => this.onRemoteSessionSelect(session)
+        })
+      }
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+    .margin({ bottom: 20 })
+  }
+
+  @Builder
+  buildTitleSection() {
+    Column() {
+      Text('会话标题（可选）')
+        .fontSize(13)
+        .fontColor('#999999')
+        .margin({ bottom: 8 })
+      TextInput({ placeholder: '方便识别此会话', text: this.title })
+        .onChange(v => this.title = v)
+        .height(44)
+        .backgroundColor('#F5F5F5')
+        .borderRadius(8)
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+    .margin({ bottom: 32 })
   }
 
   build() {
@@ -393,207 +377,10 @@ struct SessionDetail {
 
         Scroll() {
           Column() {
-            Column() {
-              Text('后端服务器')
-                .fontSize(13)
-                .fontColor('#999999')
-                .margin({ bottom: 8 })
-              Row() {
-                Text(this.getSelectedBackend()?.notes || this.backendUrl || '选择后端')
-                  .fontSize(15)
-                  .fontColor(this.backendId ? '#333333' : '#AAAAAA')
-                  .layoutWeight(1)
-                  .maxLines(1)
-                  .textOverflow({ overflow: TextOverflow.Ellipsis })
-                if (!this.isEditing) {
-                  Text(this.showBackendPicker ? '▲' : '▼')
-                    .fontSize(12)
-                    .fontColor('#999999')
-                }
-              }
-              .width('100%')
-              .height(44)
-              .padding({ left: 12, right: 12 })
-              .backgroundColor(this.isEditing ? '#EBEBEB' : '#F5F5F5')
-              .borderRadius(8)
-              .onClick(() => {
-                if (!this.isEditing) {
-                  this.showBackendPicker = !this.showBackendPicker;
-                }
-              })
-            }
-            .width('100%')
-            .alignItems(HorizontalAlign.Start)
-            .margin({ bottom: 20 })
-
-            Column() {
-              Text('工作目录')
-                .fontSize(13)
-                .fontColor('#999999')
-                .margin({ bottom: 8 })
-              if (this.isEditing) {
-                // 编辑模式：只读显示
-                Text(this.directory || '/')
-                  .fontSize(15)
-                  .fontColor('#666666')
-                  .width('100%')
-                  .height(44)
-                  .padding({ left: 12, right: 12 })
-                  .backgroundColor('#EBEBEB')
-                  .borderRadius(8)
-              } else if (this.selectedRemoteSessionId) {
-                // 绑定模式：显示继承自 Session 的目录，且不可编辑以防冲突
-                Row() {
-                  Image($r('app.media.startIcon')).width(16).height(16).margin({ right: 8 }).opacity(0.6)
-                  Text(this.directory || '/')
-                    .fontSize(15)
-                    .fontColor('#666666')
-                    .layoutWeight(1)
-                  Text('继承自 Session')
-                    .fontSize(12)
-                    .fontColor('#07C160')
-                }
-                .width('100%')
-                .height(44)
-                .padding({ left: 12, right: 12 })
-                .backgroundColor('#F0F9EB')
-                .borderRadius(8)
-              } else {
-                // 创建模式：可编辑
-                TextInput({ placeholder: '输入目录路径，如 /home', text: this.directory })
-                  .onChange(v => {
-                    this.directory = v;
-                    if (this.showPathPicker) {
-                      this.schedulePathSearch(v);
-                    }
-                  })
-                  .onFocus(() => {
-                    this.showPathPicker = true;
-                    this.schedulePathSearch(this.directory);
-                  })
-                  .onBlur(() => {
-                    setTimeout(() => {
-                      this.showPathPicker = false;
-                    }, 200);
-                  })
-                  .height(44)
-                  .backgroundColor('#F5F5F5')
-                  .borderRadius(8)
-              }
-            }
-            .width('100%')
-            .alignItems(HorizontalAlign.Start)
-            .margin({ bottom: 20 })
-
-            Column() {
-              Text('绑定远程会话 (可选)')
-                .fontSize(13)
-                .fontColor('#999999')
-                .margin({ bottom: 8 })
-              
-              Row() {
-                if (this.isLoadingRemoteSessions) {
-                  LoadingProgress().width(20).height(20).margin({ right: 8 })
-                }
-                Text(this.selectedRemoteSessionId ? 
-                  (this.remoteSessions.find(s => s.id === this.selectedRemoteSessionId)?.title || this.selectedRemoteSessionId) : 
-                  '不绑定 (创建新会话)')
-                  .fontSize(15)
-                  .fontColor(this.selectedRemoteSessionId ? '#333333' : '#AAAAAA')
-                  .layoutWeight(1)
-                  .maxLines(1)
-                  .textOverflow({ overflow: TextOverflow.Ellipsis })
-                
-                if (!this.isEditing) {
-                  Text(this.showRemoteSessionPicker ? '▲' : '▼')
-                    .fontSize(12)
-                    .fontColor('#999999')
-                }
-              }
-              .width('100%')
-              .height(44)
-              .padding({ left: 12, right: 12 })
-              .backgroundColor(this.isEditing ? '#EBEBEB' : '#F5F5F5')
-              .borderRadius(8)
-              .onClick(() => {
-                if (!this.isEditing) {
-                  this.showRemoteSessionPicker = !this.showRemoteSessionPicker;
-                  if (this.showRemoteSessionPicker && this.remoteSessions.length === 0) {
-                    this.fetchRemoteSessions();
-                  }
-                }
-              })
-
-              if (this.showRemoteSessionPicker && !this.isEditing) {
-                Column() {
-                  List() {
-                    ListItem() {
-                      Text('不绑定 (开启全新对话)')
-                        .fontSize(14)
-                        .padding(12)
-                        .width('100%')
-                        .fontColor('#666666')
-                    }
-                    .onClick(() => {
-                      this.selectedRemoteSessionId = '';
-                      this.showRemoteSessionPicker = false;
-                    })
-                    
-                    ForEach(this.remoteSessions, (session: OpenCodeSession) => {
-                      ListItem() {
-                        Column() {
-                          Text(session.title || session.id)
-                            .fontSize(14)
-                            .fontColor('#333333')
-                            .maxLines(1)
-                          Text(`${session.directory} (${new Date(session.time.updated).toLocaleDateString()})`)
-                            .fontSize(11)
-                            .fontColor('#999999')
-                            .margin({ top: 2 })
-                        }
-                        .alignItems(HorizontalAlign.Start)
-                        .padding(12)
-                        .width('100%')
-                      }
-                      .onClick(() => {
-                        this.selectedRemoteSessionId = session.id;
-                        this.showRemoteSessionPicker = false;
-                        // 继承远程会话的工作目录（远程 session 自带目录，优先使用）
-                        if (session.directory) {
-                          this.directory = session.directory;
-                        }
-                        // 不自动同步远程标题——会话标题是 APP 内部备注，用户自己填写
-                      })
-                    })
-                  }
-                  .divider({ strokeWidth: 0.5, color: '#EEEEEE' })
-                  .constraintSize({ maxHeight: 200 })
-                }
-                .width('100%')
-                .backgroundColor('#FFFFFF')
-                .borderRadius(8)
-                .shadow({ radius: 10, color: '#10000000' })
-                .margin({ top: 4 })
-              }
-            }
-            .width('100%')
-            .alignItems(HorizontalAlign.Start)
-            .margin({ bottom: 20 })
-
-            Column() {
-              Text('会话标题（可选）')
-                .fontSize(13)
-                .fontColor('#999999')
-                .margin({ bottom: 8 })
-              TextInput({ placeholder: '方便识别此会话', text: this.title })
-                .onChange(v => this.title = v)
-                .height(44)
-                .backgroundColor('#F5F5F5')
-                .borderRadius(8)
-            }
-            .width('100%')
-            .alignItems(HorizontalAlign.Start)
-            .margin({ bottom: 32 })
+            this.buildBackendSection()
+            this.buildDirectorySection()
+            this.buildRemoteSessionSection()
+            this.buildTitleSection()
 
             if (this.errorMessage) {
               Text(this.errorMessage)
@@ -627,7 +414,6 @@ struct SessionDetail {
             .onClick(async () => {
               const success = await this.createSession();
               if (success) {
-                AppStorage.SetOrCreate<string>('refreshSessionsNow', Date.now().toString());
                 router.back();
               }
             })
@@ -640,123 +426,22 @@ struct SessionDetail {
       .backgroundColor('#FFFFFF')
 
       if (this.showPathPicker) {
-        Column() {
-          if (this.recentPaths.length > 0) {
-            Text('最近使用')
-              .fontSize(12)
-              .fontColor('#999999')
-              .fontWeight(FontWeight.Medium)
-              .width('100%')
-              .padding({ left: 12, right: 12, top: 10, bottom: 4 })
-            ForEach(this.recentPaths.slice(0, 5), (path: string) => {
-              Row() {
-                Text(path)
-                  .fontSize(13)
-                  .fontColor('#333333')
-                  .maxLines(1)
-                  .textOverflow({ overflow: TextOverflow.Ellipsis })
-                  .layoutWeight(1)
-                Text('最近')
-                  .fontSize(10)
-                  .fontColor('#07C160')
-                  .padding({ left: 6 })
-              }
-              .width('100%')
-              .height(36)
-              .padding({ left: 12, right: 12 })
-              .onClick(() => {
-                this.directory = path;
-                this.showPathPicker = false;
-                setTimeout(() => {
-                  this.showPathPicker = true;
-                  this.schedulePathSearch(path);
-                }, 100);
-              })
-            })
-            Divider().height(0.5).color('#EEEEEE').margin({ top: 4, bottom: 4 })
-          }
-
-          if (this.isSearchingPath) {
-            Row() {
-              LoadingProgress().width(14).height(14)
-              Text('搜索中...').fontSize(12).fontColor('#999999').margin({ left: 6 })
-            }
-            .width('100%')
-            .height(32)
-            .padding({ left: 12 })
-          } else if (this.pathSearchResults.length > 0) {
-            ForEach(this.pathSearchResults.slice(0, 8), (item: FileNode) => {
-              Row() {
-                Text('📁')
-                  .fontSize(12)
-                  .margin({ right: 6 })
-                Text(item.absolute)
-                  .fontSize(13)
-                  .fontColor('#333333')
-                  .maxLines(1)
-                  .textOverflow({ overflow: TextOverflow.Ellipsis })
-                  .layoutWeight(1)
-              }
-              .width('100%')
-              .height(36)
-              .padding({ left: 12, right: 12 })
-              .onClick(() => {
-                this.directory = item.absolute;
-                this.showPathPicker = false;
-                // 核心修复：选中后立即触发下一级目录列表，而不是再次模糊搜索
-                setTimeout(() => {
-                  this.showPathPicker = true;
-                  const nextQuery = this.directory.endsWith('/') ? this.directory : this.directory + '/';
-                  this.listDirectory(nextQuery);
-                }, 100);
-              })
-            })
-          } else if (this.directory.length >= 1) {
-            Text('未找到匹配目录')
-              .fontSize(12)
-              .fontColor('#999999')
-              .width('100%')
-              .padding({ left: 12, top: 8, bottom: 8 })
-          }
-        }
-        .width('calc(100% - 40vp)')
-        .constraintSize({ maxHeight: 300 })
-        .backgroundColor('#FFFFFF')
-        .borderRadius(8)
-        .border({ width: 1, color: '#E0E0E0' })
-        .shadow({ radius: 8, color: '#1A000000', offsetX: 0, offsetY: 2 })
-        .margin({ top: 230, left: 20 })
-        .zIndex(999)
+        PathAutocomplete({
+          recentPaths: this.recentPaths,
+          searchResults: this.pathSearchResults,
+          isSearching: this.isSearchingPath,
+          showPicker: $showPathPicker,
+          onPathSelect: (path: string): void => this.onPathSelect(path),
+          onRecentSelect: (path: string): void => this.onRecentPathSelect(path)
+        })
       }
 
       if (this.showBackendPicker && !this.isEditing) {
-        Column() {
-          ForEach(this.backends, (backend: OpenCodeBackend) => {
-            Row() {
-              Text(backend.notes || backend.url)
-                .fontSize(14)
-                .fontColor('#333333')
-                .layoutWeight(1)
-                .maxLines(1)
-                .textOverflow({ overflow: TextOverflow.Ellipsis })
-              if (backend.id === this.backendId) {
-                Text('✓').fontColor('#07C160').fontSize(14)
-              }
-            }
-            .width('100%')
-            .height(40)
-            .padding({ left: 12, right: 12 })
-            .onClick(() => this.selectBackend(backend))
-          })
-        }
-        .width('calc(100% - 40vp)')
-        .constraintSize({ maxHeight: 200 })
-        .backgroundColor('#FFFFFF')
-        .borderRadius(8)
-        .border({ width: 1, color: '#E0E0E0' })
-        .shadow({ radius: 8, color: '#1A000000', offsetX: 0, offsetY: 2 })
-        .margin({ top: 145, left: 20 })
-        .zIndex(999)
+        BackendPicker({
+          backends: this.backends,
+          selectedId: this.backendId,
+          onSelect: (backend: OpenCodeBackend): void => this.selectBackend(backend)
+        })
       }
     }
     .width('100%')
