@@ -33,3 +33,4 @@ signing.properties
 
 # Log files
 *.log
+logs/

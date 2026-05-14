@@ -87,11 +87,28 @@ struct SessionDetail {
     this.isLoadingModels = true;
     try {
       this.availableModels = await this.viewModel.fetchModels(this.backendUrl, this.authToken);
+      // 兼容旧数据：历史上可能只保存了 model.id，这里自动迁移为 provider/model。
+      if (this.selectedModel && !this.selectedModel.includes('/')) {
+        const matches = this.availableModels.filter(
+          m => (m.id === this.selectedModel || m.modelID === this.selectedModel) && !!m.providerID
+        );
+        if (matches.length === 1) {
+          this.selectedModel = this.getModelValue(matches[0]);
+        }
+      }
     } catch (e) {
       console.error('[SessionDetail] Fetch models error:', e);
     } finally {
       this.isLoadingModels = false;
     }
+  }
+
+  private getModelValue(model: OpenCodeProviderModel): string {
+    const stableModelId = model.modelID || model.id;
+    if (model.providerID) {
+      return `${model.providerID}/${stableModelId}`;
+    }
+    return stableModelId;
   }
 
   private selectBackend(backend: OpenCodeBackend) {
@@ -169,6 +186,10 @@ struct SessionDetail {
       this.selectedRemoteSessionId = session.id;
       if (session.directory) {
         this.directory = session.directory;
+      }
+      // 绑定远程会话时，标题默认为远程会话名称
+      if (session.title) {
+        this.title = session.title;
       }
     } else {
       this.selectedRemoteSessionId = '';
@@ -366,12 +387,12 @@ struct SessionDetail {
                 Column() {
                   Text(`${model.providerName || 'Unknown'} · ${model.name || model.id}`)
                     .fontSize(14)
-                    .fontColor(this.selectedModel === model.id ? '#07C160' : '#333333')
-                    .fontWeight(this.selectedModel === model.id ? FontWeight.Bold : FontWeight.Normal)
+                    .fontColor(this.selectedModel === this.getModelValue(model) ? '#07C160' : '#333333')
+                    .fontWeight(this.selectedModel === this.getModelValue(model) ? FontWeight.Bold : FontWeight.Normal)
                 }
                 .alignItems(HorizontalAlign.Start)
 
-                if (this.selectedModel === model.id) {
+                if (this.selectedModel === this.getModelValue(model)) {
                   Image($r('app.media.startIcon')).width(16).height(16).fillColor('#07C160')
                 }
               }
@@ -379,12 +400,12 @@ struct SessionDetail {
               .padding(12)
               .justifyContent(FlexAlign.SpaceBetween)
               .onClick(() => {
-                this.selectedModel = model.id;
+                this.selectedModel = this.getModelValue(model);
                 this.showModelPicker = false;
               })
 
               Divider().color('#F0F0F0').margin({ left: 12, right: 12 })
-            }, (model: OpenCodeProviderModel) => model.id)
+            }, (model: OpenCodeProviderModel) => this.getModelValue(model))
 
             if (!this.isLoadingModels && this.availableModels.length === 0) {
               Text('未获取到可用模型')

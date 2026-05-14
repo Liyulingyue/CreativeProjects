@@ -21,9 +21,11 @@ export interface OpenCodeSession {
 
 export interface OpenCodeProviderModel {
   id: string;
+  modelID?: string;
   name: string;
   family: string;
   status: string;
+  providerID?: string;
   providerName?: string; // 扩充字段，用于在选择列表中显示所属提供者
 }
 
@@ -201,7 +203,11 @@ export class OpenCodeApiClient {
             // 只添加已连接的 provider 的模型，或者如果没有 connected 列表则添加全部
             if (connectedProviders.length === 0 || connectedProviders.includes(p.id)) {
               if (p.models) {
-                Object.values(p.models).forEach(m => {
+                Object.entries(p.models).forEach(([modelKey, m]) => {
+                  // 注入 provider id/name，便于前端保存稳定的 provider/model 组合
+                  m.providerID = p.id;
+                  // 使用 provider.models 的 key 作为后端稳定 modelID（避免仅靠 m.id 产生歧义）
+                  m.modelID = modelKey;
                   // 注入 provider 的显示名称，方便 UI 展示
                   m.providerName = p.name;
                   allModels.push(m);
@@ -227,7 +233,8 @@ export class OpenCodeApiClient {
     const body: Record<string, string> = {};
     if (title) body['title'] = title;
     if (parentID) body['parentID'] = parentID;
-    if (preferredModel) body['preferredModel'] = preferredModel;
+    // 暂停在 createSession 透传字符串模型，避免与后端结构化 model 协议不一致。
+    // 当前模型选择在 prompt/message 阶段通过结构化 model 对象下发。
     try {
       const result = await new Promise<http.HttpResponse>((resolve, reject) => {
         this.currentRequest!.request(
@@ -356,12 +363,19 @@ export class OpenCodeApiClient {
     }
   }
 
-  async sendPrompt(sessionID: string, parts: TextPartInput[]): Promise<OpenCodeMessage | null> {
+  async sendPrompt(sessionID: string, parts: TextPartInput[], model?: string): Promise<OpenCodeMessage | null> {
     if (!this.baseUrl) return null;
     this.cancelRequest();
     this.currentRequest = http.createHttp();
     const url = `${this.baseUrl}/session/${encodeURIComponent(sessionID)}/message`;
-    const body = { parts: parts };
+    const body: Record<string, any> = { parts: parts };
+    if (model && model.includes('/')) {
+      const parts = model.split('/');
+      body['model'] = {
+        providerID: parts[0],
+        modelID: parts[1]
+      };
+    }
     try {
       const result = await new Promise<http.HttpResponse>((resolve, reject) => {
         this.currentRequest!.request(
@@ -391,12 +405,19 @@ export class OpenCodeApiClient {
     }
   }
 
-  async promptAsync(sessionID: string, parts: TextPartInput[]): Promise<boolean> {
+  async promptAsync(sessionID: string, parts: TextPartInput[], model?: string): Promise<boolean> {
     if (!this.baseUrl) return false;
     this.cancelRequest();
     this.currentRequest = http.createHttp();
     const url = `${this.baseUrl}/session/${encodeURIComponent(sessionID)}/prompt_async`;
-    const body = { parts: parts };
+    const body: Record<string, any> = { parts: parts };
+    if (model && model.includes('/')) {
+      const parts = model.split('/');
+      body['model'] = {
+        providerID: parts[0],
+        modelID: parts[1]
+      };
+    }
     try {
       const result = await new Promise<http.HttpResponse>((resolve, reject) => {
         this.currentRequest!.request(
