@@ -16,6 +16,10 @@ export default class EntryAbility extends UIAbility {
 
     // 初始化持久化存储
     await OpenCodeCore.getInstance().init(this.context);
+    
+    // 初始化完成后，触发 UI 刷新
+    AppStorage.SetOrCreate<number>('sessionRefreshTag', Date.now());
+    AppStorage.SetOrCreate<number>('backendRefreshTag', Date.now());
   }
 
   onDestroy(): void {
