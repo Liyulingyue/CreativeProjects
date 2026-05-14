@@ -1,6 +1,7 @@
-import { OpenCodeCore, OpenCodeBackend } from '../core/OpenCodeCore';
+import { OpenCodeCore, OpenCodeBackend, OpenCodeSession } from '../core/OpenCodeCore';
 import router from '@ohos.router';
 import http from '@ohos.net.http';
+import { OpenCodeApiClient } from '../core/OpenCodeCore';
 
 interface FileNode {
   name: string;
@@ -32,6 +33,10 @@ struct SessionDetail {
   @State isSearchingPath: boolean = false;
   @State isEditing: boolean = false;
   @State editingId: string = '';
+  @State remoteSessions: OpenCodeSession[] = [];
+  @State isLoadingRemoteSessions: boolean = false;
+  @State showRemoteSessionPicker: boolean = false;
+  @State selectedRemoteSessionId: string = '';
   private core: OpenCodeCore = OpenCodeCore.getInstance();
   private currentRequest: http.HttpRequest | null = null;
   private pathSearchTimer: number = -1;
@@ -48,12 +53,32 @@ struct SessionDetail {
       if (this.isEditing) {
         this.title = (params['title'] as string) || '';
         this.directory = (params['directory'] as string) || '/';
+        const project = this.core.getProjects().find(p => p.id === this.editingId);
+        if (project && project.remoteSessionId) {
+          this.selectedRemoteSessionId = project.remoteSessionId;
+        }
       }
     }
     if (!this.backendId && this.backends.length > 0) {
       this.selectBackend(this.backends[0]);
+    } else if (this.backendId) {
+      this.fetchRemoteSessions();
     }
     this.recentPaths = AppStorage.get<string[]>('recentWorktreePaths') ?? [];
+  }
+
+  private async fetchRemoteSessions() {
+    if (!this.backendUrl) return;
+    this.isLoadingRemoteSessions = true;
+    try {
+      const client = new OpenCodeApiClient(this.backendUrl, this.authToken, this.directory);
+      this.remoteSessions = await client.listSessions();
+      console.info('[SessionDetail] Fetched remote sessions:', this.remoteSessions.length);
+    } catch (e) {
+      console.error('[SessionDetail] Fetch remote sessions error:', e);
+    } finally {
+      this.isLoadingRemoteSessions = false;
+    }
   }
 
   private selectBackend(backend: OpenCodeBackend) {
@@ -61,6 +86,7 @@ struct SessionDetail {
     this.backendUrl = backend.url;
     this.authToken = backend.authToken;
     this.showBackendPicker = false;
+    this.fetchRemoteSessions();
   }
 
   private getSelectedBackend(): OpenCodeBackend | undefined {
@@ -308,10 +334,14 @@ struct SessionDetail {
           '', // notes
           this.backendId
         );
+        if (this.selectedRemoteSessionId) {
+          this.core.updateRemoteSessionId(this.editingId, this.selectedRemoteSessionId);
+        }
         console.info('[SessionDetail] Local session updated:', this.editingId);
+        AppStorage.SetOrCreate<string>('refreshSessionsNow', Date.now().toString());
       } else {
         // 创建新本地会话
-        await this.core.addProject(
+        const newProjectId = await this.core.addProject(
           sessionTitle,
           this.backendUrl,
           this.authToken,
@@ -319,6 +349,9 @@ struct SessionDetail {
           '', // notes
           this.backendId
         );
+        if (this.selectedRemoteSessionId && newProjectId) {
+          this.core.updateRemoteSessionId(newProjectId, this.selectedRemoteSessionId);
+        }
         console.info('[SessionDetail] Local session created for directory:', this.directory);
       }
 
@@ -408,6 +441,23 @@ struct SessionDetail {
                   .padding({ left: 12, right: 12 })
                   .backgroundColor('#EBEBEB')
                   .borderRadius(8)
+              } else if (this.selectedRemoteSessionId) {
+                // 绑定模式：显示继承自 Session 的目录，且不可编辑以防冲突
+                Row() {
+                  Image($r('app.media.startIcon')).width(16).height(16).margin({ right: 8 }).opacity(0.6)
+                  Text(this.directory || '/')
+                    .fontSize(15)
+                    .fontColor('#666666')
+                    .layoutWeight(1)
+                  Text('继承自 Session')
+                    .fontSize(12)
+                    .fontColor('#07C160')
+                }
+                .width('100%')
+                .height(44)
+                .padding({ left: 12, right: 12 })
+                .backgroundColor('#F0F9EB')
+                .borderRadius(8)
               } else {
                 // 创建模式：可编辑
                 TextInput({ placeholder: '输入目录路径，如 /home', text: this.directory })
@@ -429,6 +479,101 @@ struct SessionDetail {
                   .height(44)
                   .backgroundColor('#F5F5F5')
                   .borderRadius(8)
+              }
+            }
+            .width('100%')
+            .alignItems(HorizontalAlign.Start)
+            .margin({ bottom: 20 })
+
+            Column() {
+              Text('绑定远程会话 (可选)')
+                .fontSize(13)
+                .fontColor('#999999')
+                .margin({ bottom: 8 })
+              
+              Row() {
+                if (this.isLoadingRemoteSessions) {
+                  LoadingProgress().width(20).height(20).margin({ right: 8 })
+                }
+                Text(this.selectedRemoteSessionId ? 
+                  (this.remoteSessions.find(s => s.id === this.selectedRemoteSessionId)?.title || this.selectedRemoteSessionId) : 
+                  '不绑定 (创建新会话)')
+                  .fontSize(15)
+                  .fontColor(this.selectedRemoteSessionId ? '#333333' : '#AAAAAA')
+                  .layoutWeight(1)
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                
+                if (!this.isEditing) {
+                  Text(this.showRemoteSessionPicker ? '▲' : '▼')
+                    .fontSize(12)
+                    .fontColor('#999999')
+                }
+              }
+              .width('100%')
+              .height(44)
+              .padding({ left: 12, right: 12 })
+              .backgroundColor(this.isEditing ? '#EBEBEB' : '#F5F5F5')
+              .borderRadius(8)
+              .onClick(() => {
+                if (!this.isEditing) {
+                  this.showRemoteSessionPicker = !this.showRemoteSessionPicker;
+                  if (this.showRemoteSessionPicker && this.remoteSessions.length === 0) {
+                    this.fetchRemoteSessions();
+                  }
+                }
+              })
+
+              if (this.showRemoteSessionPicker && !this.isEditing) {
+                Column() {
+                  List() {
+                    ListItem() {
+                      Text('不绑定 (开启全新对话)')
+                        .fontSize(14)
+                        .padding(12)
+                        .width('100%')
+                        .fontColor('#666666')
+                    }
+                    .onClick(() => {
+                      this.selectedRemoteSessionId = '';
+                      this.showRemoteSessionPicker = false;
+                    })
+                    
+                    ForEach(this.remoteSessions, (session: OpenCodeSession) => {
+                      ListItem() {
+                        Column() {
+                          Text(session.title || session.id)
+                            .fontSize(14)
+                            .fontColor('#333333')
+                            .maxLines(1)
+                          Text(`${session.directory} (${new Date(session.time.updated).toLocaleDateString()})`)
+                            .fontSize(11)
+                            .fontColor('#999999')
+                            .margin({ top: 2 })
+                        }
+                        .alignItems(HorizontalAlign.Start)
+                        .padding(12)
+                        .width('100%')
+                      }
+                      .onClick(() => {
+                        this.selectedRemoteSessionId = session.id;
+                        this.showRemoteSessionPicker = false;
+                        // 继承远程会话的工作目录（远程 session 自带目录，优先使用）
+                        if (session.directory) {
+                          this.directory = session.directory;
+                        }
+                        // 不自动同步远程标题——会话标题是 APP 内部备注，用户自己填写
+                      })
+                    })
+                  }
+                  .divider({ strokeWidth: 0.5, color: '#EEEEEE' })
+                  .constraintSize({ maxHeight: 200 })
+                }
+                .width('100%')
+                .backgroundColor('#FFFFFF')
+                .borderRadius(8)
+                .shadow({ radius: 10, color: '#10000000' })
+                .margin({ top: 4 })
               }
             }
             .width('100%')
@@ -482,7 +627,7 @@ struct SessionDetail {
             .onClick(async () => {
               const success = await this.createSession();
               if (success) {
-                AppStorage.SetOrCreate<string>('needRefreshSessions', 'true');
+                AppStorage.SetOrCreate<string>('refreshSessionsNow', Date.now().toString());
                 router.back();
               }
             })

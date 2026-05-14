@@ -4,6 +4,7 @@ import http from '@ohos.net.http';
 
 export interface OpenCodeSession {
   id: string;
+  slug?: string;
   projectID: string;
   directory: string;
   parentID?: string;
@@ -117,14 +118,19 @@ export class OpenCodeApiClient {
     if (!this.baseUrl) return [];
     this.cancelRequest();
     this.currentRequest = http.createHttp();
-    const url = this.baseUrl + '/session';
+    // 使用 /experimental/session 接口：跨所有项目列出全部会话（listGlobal）
+    const url = this.baseUrl + '/experimental/session';
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.authToken) {
+      headers['Authorization'] = 'Basic ' + this.base64Encode('opencode:' + this.authToken);
+    }
     try {
       const result = await new Promise<http.HttpResponse>((resolve, reject) => {
         this.currentRequest!.request(
           url,
           {
             method: http.RequestMethod.GET,
-            header: this.getHeaders(),
+            header: headers,
             connectTimeout: 10000,
             readTimeout: 10000,
           },
@@ -138,7 +144,12 @@ export class OpenCodeApiClient {
         );
       });
       if (result.responseCode === 200) {
-        return JSON.parse(result.result as string) as OpenCodeSession[];
+        const res = JSON.parse(result.result as string) as OpenCodeSession[];
+        return res.map(s => ({
+          ...s,
+          // 用 slug 作为前缀以便识别（即使中文 title 乱码也能通过 slug 找到对应会话）
+          title: `[${s.slug || s.id}] ${s.title || s.slug || '未命名会话'}`
+        }));
       }
       return [];
     } catch (e) {
@@ -498,7 +509,7 @@ export class OpenCodeCore {
     return this.projects;
   }
 
-  public async addProject(name: string, url: string, authToken: string, path: string, notes: string = '', backendId: string = ''): Promise<void> {
+  public async addProject(name: string, url: string, authToken: string, path: string, notes: string = '', backendId: string = ''): Promise<string> {
     const newProject: OpenCodeProject = {
       id: Date.now().toString(),
       name: name,
@@ -511,6 +522,7 @@ export class OpenCodeCore {
     };
     this.projects.push(newProject);
     await this.saveProjects();
+    return newProject.id;
   }
 
   public addProjectWithBackend(name: string, backendUrl: string, backendAuthToken: string, path: string, notes: string = ''): void {
@@ -543,6 +555,7 @@ export class OpenCodeCore {
   public removeProject(id: string): void {
     this.projects = this.projects.filter(p => p.id !== id);
     this.saveProjects();
+    AppStorage.SetOrCreate<string>('needRefreshSessions', 'true');
   }
 
   public setCurrentProject(id: string): void {
