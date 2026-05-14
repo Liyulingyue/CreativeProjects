@@ -17,48 +17,51 @@ export struct SessionList {
   @State backends: OpenCodeBackend[] = [];
   @State selectedBackendId: string = '';
   @State isLoading: boolean = false;
-  @State showBackendPicker: boolean = false;
-  @StorageLink('sessionRefreshTag') @Watch('onRefreshTagChange') private refreshTag: number = 0;
+  @StorageLink('needRefreshSessions') @Watch('onNeedRefreshChanged') needRefreshSessions: string = 'false';
   private core: OpenCodeCore = OpenCodeCore.getInstance();
 
   aboutToAppear() {
     this.backends = this.core.getBackends();
     if (this.backends.length > 0) {
       this.selectedBackendId = this.backends[0].id;
-      this.refreshSessions();
-    }
-  }
-
-  onRefreshTagChange() {
-    // 重新获取 backends（可能在 aboutToAppear 时 init 还没完成）
-    const backends = this.core.getBackends();
-    if (backends.length > 0 && this.backends.length === 0) {
-      this.backends = backends;
-      this.selectedBackendId = backends[0].id;
     }
     this.refreshSessions();
   }
 
-  async refreshSessions() {
-    const backend = this.backends.find(b => b.id === this.selectedBackendId);
-    if (!backend) {
-      this.sessions = [];
-      return;
+  aboutToDisappear() {
+  }
+
+  onNeedRefreshChanged() {
+    if (this.needRefreshSessions === 'true') {
+      this.needRefreshSessions = 'false';
+      this.refreshSessions();
     }
+  }
+
+  async refreshSessions() {
     this.isLoading = true;
     try {
-      const backendSessions = await this.core.refreshSessionsFromBackend(backend.url, backend.authToken, '/');
-      this.sessions = backendSessions.map((s): SessionDisplayItem => ({
+      const localSessions = this.core.getSessions();
+      console.info('[SessionList] Loading local sessions:', localSessions.length);
+      
+      this.sessions = localSessions.map((s): SessionDisplayItem => ({
         id: s.id,
-        name: s.title || 'Untitled Session',
-        backendUrl: backend.url,
-        backendId: backend.id,
+        name: s.name,
+        backendUrl: s.backendUrl,
+        backendId: s.backendId,
         directory: s.directory,
-        updatedAt: new Date(s.time.updated).toLocaleString(),
-        session: s
+        updatedAt: s.updatedAt,
+        session: {
+          id: s.id,
+          projectID: '',
+          directory: s.directory,
+          title: s.name,
+          version: '1',
+          time: { created: 0, updated: 0 }
+        }
       }));
     } catch (e) {
-      console.error('[SessionList] Failed to refresh sessions:', e);
+      console.error('[SessionList] Failed to load sessions:', e);
       this.sessions = [];
     } finally {
       this.isLoading = false;
@@ -194,24 +197,50 @@ export struct SessionList {
                       .fontSize(16)
                       .fontWeight(FontWeight.Medium)
                       .maxLines(1)
-                    Text('后端: ' + (this.backends.find(b => b.id === item.backendId)?.notes || item.backendUrl))
-                      .fontSize(11)
-                      .fontColor('#07C160')
-                      .margin({ top: 2 })
-                      .maxLines(1)
-                      .textOverflow({ overflow: TextOverflow.Ellipsis })
-                    Text(item.directory || '/')
-                      .fontSize(12)
-                      .fontColor('#888888')
-                      .margin({ top: 2 })
-                      .maxLines(1)
+                    Row() {
+                      Text('后端: ' + (this.backends.find(b => b.id === item.backendId)?.notes || item.backendUrl))
+                        .fontSize(11)
+                        .fontColor('#07C160')
+                        .maxLines(1)
+                        .textOverflow({ overflow: TextOverflow.Ellipsis })
+                      Text(' | ')
+                        .fontSize(11)
+                        .fontColor('#CCCCCC')
+                      Text(item.directory || '/')
+                        .fontSize(11)
+                        .fontColor('#888888')
+                        .maxLines(1)
+                        .textOverflow({ overflow: TextOverflow.Ellipsis })
+                        .layoutWeight(1)
+                    }
+                    .margin({ top: 2 })
                     Text(item.updatedAt)
                       .fontSize(11)
                       .fontColor('#AAAAAA')
                       .margin({ top: 2 })
                   }
-                  .flexGrow(1)
+                  .layoutWeight(1)
                   .alignItems(HorizontalAlign.Start)
+
+                  Text('配置')
+                    .fontSize(13)
+                    .fontColor('#1677FF')
+                    .padding(8)
+                    .onClick(() => {
+                      const backend = this.backends.find(b => b.id === item.backendId);
+                      router.pushUrl({
+                        url: 'pages/SessionDetail',
+                        params: {
+                          backendId: item.backendId,
+                          backendUrl: item.backendUrl,
+                          authToken: backend?.authToken || '',
+                          title: item.name,
+                          directory: item.directory,
+                          isEditing: true,
+                          id: item.id
+                        }
+                      });
+                    })
                 }
                 .width('100%')
                 .padding({

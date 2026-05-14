@@ -30,6 +30,8 @@ struct SessionDetail {
   @State showPathPicker: boolean = false;
   @State pathSearchResults: FileNode[] = [];
   @State isSearchingPath: boolean = false;
+  @State isEditing: boolean = false;
+  @State editingId: string = '';
   private core: OpenCodeCore = OpenCodeCore.getInstance();
   private currentRequest: http.HttpRequest | null = null;
   private pathSearchTimer: number = -1;
@@ -41,6 +43,12 @@ struct SessionDetail {
       this.backendId = (params['backendId'] as string) || '';
       this.backendUrl = (params['backendUrl'] as string) || '';
       this.authToken = (params['authToken'] as string) || '';
+      this.isEditing = (params['isEditing'] as boolean) || false;
+      this.editingId = (params['id'] as string) || '';
+      if (this.isEditing) {
+        this.title = (params['title'] as string) || '';
+        this.directory = (params['directory'] as string) || '/';
+      }
     }
     if (!this.backendId && this.backends.length > 0) {
       this.selectBackend(this.backends[0]);
@@ -203,59 +211,46 @@ struct SessionDetail {
 
     this.isCreating = true;
     this.errorMessage = '';
-    this.cancelRequest();
-    this.currentRequest = http.createHttp();
-
-    const url = this.backendUrl.replace(/\/+$/, '') + '/session';
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'x-opencode-directory': encodeURIComponent(this.directory || '/')
-    };
-    if (this.authToken) {
-      headers['Authorization'] = 'Basic ' + this.base64Encode('opencode:' + this.authToken);
-    }
-
-    const body: Record<string, string> = {};
-    if (this.title) {
-      body['title'] = this.title;
-    }
-
+    
     try {
-      const result = await new Promise<http.HttpResponse>((resolve, reject) => {
-        this.currentRequest!.request(
-          url,
-          {
-            method: http.RequestMethod.POST,
-            header: headers,
-            extraData: JSON.stringify(body),
-            connectTimeout: 10000,
-            readTimeout: 10000,
-          },
-          (err, data) => {
-            if (err) reject(err);
-            else resolve(data);
-          }
+      const sessionTitle = this.title || `${this.directory.split('/').pop() || this.directory}`;
+      
+      if (this.isEditing && this.editingId) {
+        // 更新现有本地会话
+        this.core.updateProject(
+          this.editingId,
+          sessionTitle,
+          this.backendUrl,
+          this.authToken,
+          this.directory,
+          '', // notes
+          this.backendId
         );
-      });
-
-      if (result.responseCode === 200) {
-        const session = JSON.parse(result.result as string) as SessionResponse;
-        console.info('[SessionDetail] Session created:', session.id);
-        if (this.directory) {
-          this.addRecentPath(this.directory);
-        }
-        return true;
+        console.info('[SessionDetail] Local session updated:', this.editingId);
       } else {
-        this.errorMessage = `创建失败: HTTP ${result.responseCode}`;
-        return false;
+        // 创建新本地会话
+        await this.core.addProject(
+          sessionTitle,
+          this.backendUrl,
+          this.authToken,
+          this.directory,
+          '', // notes
+          this.backendId
+        );
+        console.info('[SessionDetail] Local session created for directory:', this.directory);
       }
+
+      if (this.directory) {
+        this.addRecentPath(this.directory);
+      }
+      
+      return true;
     } catch (e) {
-      this.errorMessage = `创建失败: ${e}`;
-      console.error('[SessionDetail] Create session error:', e);
+      this.errorMessage = `${this.isEditing ? '更新' : '创建'}失败: ${e}`;
+      console.error('[SessionDetail] Create/Update local session error:', e);
       return false;
     } finally {
       this.isCreating = false;
-      this.cancelRequest();
     }
   }
 
@@ -269,7 +264,7 @@ struct SessionDetail {
             .padding({ right: 16 })
             .onClick(() => router.back())
 
-          Text('新建会话')
+          Text(this.isEditing ? '修改会话' : '新建会话')
             .fontSize(18)
             .fontWeight(FontWeight.Bold)
             .layoutWeight(1)
@@ -376,7 +371,7 @@ struct SessionDetail {
             .fontColor('#333333')
             .onClick(() => router.back())
 
-          Button(this.isCreating ? '创建中...' : '创建', { type: ButtonType.Normal })
+          Button(this.isCreating ? (this.isEditing ? '保存中...' : '创建中...') : (this.isEditing ? '保存' : '创建'), { type: ButtonType.Normal })
             .layoutWeight(1)
             .height(44)
             .borderRadius(8)
@@ -386,7 +381,7 @@ struct SessionDetail {
             .onClick(async () => {
               const success = await this.createSession();
               if (success) {
-                AppStorage.SetOrCreate<number>('sessionRefreshTag', Date.now());
+                AppStorage.SetOrCreate<string>('needRefreshSessions', 'true');
                 router.back();
               }
             })
@@ -426,6 +421,10 @@ struct SessionDetail {
               .onClick(() => {
                 this.directory = path;
                 this.showPathPicker = false;
+                setTimeout(() => {
+                  this.showPathPicker = true;
+                  this.schedulePathSearch(path);
+                }, 100);
               })
             })
             Divider().height(0.5).color('#EEEEEE').margin({ top: 4, bottom: 4 })
@@ -445,7 +444,7 @@ struct SessionDetail {
                 Text('📁')
                   .fontSize(12)
                   .margin({ right: 6 })
-                Text(item.path)
+                Text(item.absolute)
                   .fontSize(13)
                   .fontColor('#333333')
                   .maxLines(1)
@@ -456,8 +455,12 @@ struct SessionDetail {
               .height(36)
               .padding({ left: 12, right: 12 })
               .onClick(() => {
-                this.directory = item.path;
+                this.directory = item.absolute;
                 this.showPathPicker = false;
+                setTimeout(() => {
+                  this.showPathPicker = true;
+                  this.schedulePathSearch(item.absolute);
+                }, 100);
               })
             })
           } else if (this.directory.length >= 1) {
@@ -474,7 +477,7 @@ struct SessionDetail {
         .borderRadius(8)
         .border({ width: 1, color: '#E0E0E0' })
         .shadow({ radius: 8, color: '#1A000000', offsetX: 0, offsetY: 2 })
-        .margin({ top: 200, left: 20 })
+        .margin({ top: 230, left: 20 })
         .zIndex(999)
       }
 
@@ -504,7 +507,7 @@ struct SessionDetail {
         .borderRadius(8)
         .border({ width: 1, color: '#E0E0E0' })
         .shadow({ radius: 8, color: '#1A000000', offsetX: 0, offsetY: 2 })
-        .margin({ top: 140, left: 20 })
+        .margin({ top: 145, left: 20 })
         .zIndex(999)
       }
     }

@@ -13,22 +13,18 @@ export default class EntryAbility extends UIAbility {
       hilog.error(DOMAIN, 'testTag', 'Failed to set colorMode. Cause: %{public}s', JSON.stringify(err));
     }
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onCreate');
-
-    // 初始化持久化存储
-    await OpenCodeCore.getInstance().init(this.context);
-    
-    // 初始化完成后，触发 UI 刷新
-    AppStorage.SetOrCreate<number>('sessionRefreshTag', Date.now());
-    AppStorage.SetOrCreate<number>('backendRefreshTag', Date.now());
   }
 
   onDestroy(): void {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onDestroy');
   }
 
-  onWindowStageCreate(windowStage: window.WindowStage): void {
+  async onWindowStageCreate(windowStage: window.WindowStage): Promise<void> {
     // Main window is created, set main page for this ability
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageCreate');
+
+    // 先初始化持久化存储，再加载页面
+    await OpenCodeCore.getInstance().init(this.context);
 
     windowStage.loadContent('pages/MainPage', (err) => {
       if (err.code) {

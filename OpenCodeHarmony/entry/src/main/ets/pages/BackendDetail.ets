@@ -108,8 +108,7 @@ struct BackendDetail {
     } else {
       await this.core.addBackend(normalizedUrl, this.authToken, this.notes);
     }
-    // 触发后端列表刷新
-    AppStorage.SetOrCreate<number>('backendRefreshTag', Date.now());
+    AppStorage.SetOrCreate<string>('needRefreshBackends', 'true');
     router.back();
   }
 
@@ -235,7 +234,7 @@ struct BackendDetail {
             .fontColor('#FF4D4F')
             .onClick(async () => {
               await this.core.removeBackend(this.editId);
-              AppStorage.SetOrCreate<number>('backendRefreshTag', Date.now());
+              AppStorage.SetOrCreate<string>('needRefreshBackends', 'true');
               router.back();
             })
         }
