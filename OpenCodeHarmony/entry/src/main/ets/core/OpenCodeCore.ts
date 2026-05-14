@@ -148,7 +148,7 @@ export class OpenCodeCore {
         path,
         notes,
         backendId: backendId || (backend?.id ?? this.projects[index].backendId),
-        preferredModel: preferredModel || this.projects[index].preferredModel,
+        preferredModel: preferredModel !== undefined ? preferredModel : this.projects[index].preferredModel,
         lastAccess: Date.now()
       };
       this.saveProjects();
@@ -296,8 +296,8 @@ export class OpenCodeCore {
     return await this.apiClient.getMessages(sessionId);
   }
 
-  public async sendBackendPrompt(sessionId: string, text: string): Promise<OpenCodeMessage | null> {
-    return await this.apiClient.sendPrompt(sessionId, [{ type: 'text', text }]);
+  public async sendBackendPrompt(sessionId: string, text: string, model?: string): Promise<OpenCodeMessage | null> {
+    return await this.apiClient.sendPrompt(sessionId, [{ type: 'text', text }], model);
   }
 
   public async abortBackendSession(sessionId: string): Promise<boolean> {
