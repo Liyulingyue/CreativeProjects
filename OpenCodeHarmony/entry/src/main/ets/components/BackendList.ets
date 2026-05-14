@@ -4,15 +4,20 @@ import router from '@ohos.router';
 @Component
 export struct BackendList {
   @State backends: OpenCodeBackend[] = [];
-  @StorageLink('backendRefreshTag') @Watch('onRefreshTagChange') private refreshTag: number = 0;
   private core: OpenCodeCore = OpenCodeCore.getInstance();
 
   aboutToAppear() {
+    const needRefresh = AppStorage.get<string>('needRefreshBackends');
+    if (needRefresh === 'true') {
+      AppStorage.set('needRefreshBackends', 'false');
+    }
     this.refreshBackends();
   }
 
-  // 监听刷新标签变化
-  onRefreshTagChange() {
+  aboutToDisappear() {
+  }
+
+  onPageShow() {
     this.refreshBackends();
   }
 

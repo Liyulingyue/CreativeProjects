@@ -45,6 +45,8 @@ struct ChatPage {
   private core: OpenCodeCore = OpenCodeCore.getInstance();
   private currentRequest: http.HttpRequest | null = null;
 
+  @State realSessionId: string = '';
+
   aboutToAppear() {
     const params = router.getParams() as Record<string, Object>;
     if (params) {
@@ -53,6 +55,16 @@ struct ChatPage {
       this.backendUrl = (params['backendUrl'] as string) || '';
       this.authToken = (params['authToken'] as string) || '';
       this.directory = (params['directory'] as string) || '/';
+      // 这里的 sessionId 是本地 project.id
+      const project = this.core.getProjectById(this.sessionId);
+      if (project && project.remoteSessionId) {
+        this.realSessionId = project.remoteSessionId;
+        console.info('[ChatPage] Loaded existing remote session ID:', this.realSessionId);
+      }
+    }
+    this.core.setCurrentProject(this.sessionId);
+    if (this.realSessionId) {
+      this.core.setCurrentSession(this.realSessionId);
     }
     this.loadHistory();
   }
@@ -147,11 +159,17 @@ struct ChatPage {
   }
 
   private async loadHistory() {
-    if (!this.sessionId || !this.backendUrl) return;
+    if (!this.backendUrl) return;
+
+    // 如果还没有 realSessionId，说明后端还没创建会话，暂无历史
+    if (!this.realSessionId) {
+      console.info('[ChatPage] No realSessionId yet, skipping history load');
+      return;
+    }
 
     this.cancelRequest();
     this.currentRequest = http.createHttp();
-    const url = `${this.backendUrl.replace(/\/+$/, '')}/session/${encodeURIComponent(this.sessionId)}/message`;
+    const url = `${this.backendUrl.replace(/\/+$/, '')}/session/${encodeURIComponent(this.realSessionId)}/message`;
 
     try {
       const result = await new Promise<http.HttpResponse>((resolve, reject) => {
@@ -188,7 +206,33 @@ struct ChatPage {
 
   private async sendMessage() {
     const text = this.inputText.trim();
-    if (!text || !this.sessionId || !this.backendUrl || this.isLoading) return;
+    if (!text || !this.backendUrl || this.isLoading) return;
+
+    // 如果还没有后端会话，先创建一个
+    if (!this.realSessionId) {
+      this.isLoading = true;
+      try {
+        const resp = await this.core.createBackendSession(this.backendUrl, this.authToken, this.directory, this.sessionName);
+        if (resp && resp.id) {
+          this.realSessionId = resp.id;
+          this.core.setCurrentSession(resp.id);
+          // 持久化同步远程 ID 到本地项目
+          await this.core.updateRemoteSessionId(this.sessionId, resp.id);
+          console.info('[ChatPage] Backend session created and linked:', this.realSessionId);
+        } else {
+          throw new Error('Failed to create backend session');
+        }
+      } catch (e) {
+        this.messages = [...this.messages, {
+          id: `err-${Date.now()}`,
+          role: 'assistant',
+          content: `创建后端会话失败: ${e.message || e}`,
+          timestamp: Date.now()
+        }];
+        this.isLoading = false;
+        return;
+      }
+    }
 
     this.messages = [...this.messages, {
       id: `user-${Date.now()}`,
@@ -211,7 +255,7 @@ struct ChatPage {
 
     this.cancelRequest();
     this.currentRequest = http.createHttp();
-    const url = `${this.backendUrl.replace(/\/+$/, '')}/session/${encodeURIComponent(this.sessionId)}/message`;
+    const url = `${this.backendUrl.replace(/\/+$/, '')}/session/${encodeURIComponent(this.realSessionId)}/message`;
 
     const body: MessageBody = {
       parts: [{ type: 'text', text: text }]

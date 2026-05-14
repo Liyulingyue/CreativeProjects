@@ -402,14 +402,17 @@ export interface OpenCodeProject {
   path: string;
   notes: string;
   backendId: string;
+  remoteSessionId?: string; // 远程后端的 Session ID
   lastAccess: number;
 }
 
 export interface ChatSession {
-  id: string;
+  id: string; // 本地项目 ID
   name: string;
   backendUrl: string;
+  backendId: string;
   directory: string;
+  remoteSessionId?: string; // 映射后端的真正 ID
   updatedAt: string;
 }
 
@@ -633,9 +636,22 @@ export class OpenCodeCore {
       id: p.id,
       name: p.name,
       backendUrl: p.url,
+      backendId: p.backendId,
       directory: p.path,
+      remoteSessionId: p.remoteSessionId,
       updatedAt: new Date(p.lastAccess).toLocaleString()
     }));
+  }
+
+  /**
+   * 更新本地项目的远程 Session ID 映射
+   */
+  public async updateRemoteSessionId(projectId: string, remoteId: string): Promise<void> {
+    const project = this.projects.find(p => p.id === projectId);
+    if (project) {
+      project.remoteSessionId = remoteId;
+      await this.saveProjects();
+    }
   }
 
   public async updateSession(id: string, name: string, backendUrl: string, directory: string): Promise<void> {
@@ -647,8 +663,10 @@ export class OpenCodeCore {
   }
 
   public async refreshSessionsFromBackend(backendUrl: string, authToken: string, directory: string): Promise<OpenCodeSession[]> {
+    console.info('[OpenCodeCore] refreshSessionsFromBackend:', backendUrl, authToken ? 'with token' : 'no token', directory);
     this.apiClient.updateConfig(backendUrl, authToken, directory);
     const sessions = await this.apiClient.listSessions();
+    console.info('[OpenCodeCore] listSessions result:', sessions.length);
     return sessions;
   }
 

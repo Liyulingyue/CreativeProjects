@@ -22,10 +22,6 @@ struct MainPage {
     .onClick(() => this.currentTab = index)
   }
 
-  onPageShow() {
-    AppStorage.SetOrCreate<number>('sessionRefreshTag', Date.now());
-    AppStorage.SetOrCreate<number>('backendRefreshTag', Date.now());
-  }
 
   build() {
     Column() {
