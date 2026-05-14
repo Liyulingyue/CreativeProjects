@@ -6,6 +6,15 @@ import { AboutPage } from '../components/AboutPage';
 @Component
 struct MainPage {
   @State currentTab: number = 0;
+  @StorageLink('needRefreshSessions') needRefreshSessions: string = 'false';
+
+  onPageShow() {
+    // 页面显示时检查是否需要刷新会话列表
+    if (this.needRefreshSessions === 'true') {
+      this.needRefreshSessions = 'false';
+      AppStorage.SetOrCreate<string>('refreshSessionsNow', Date.now().toString());
+    }
+  }
 
   @Builder TabBar(index: number, icon: string, label: string) {
     Column({ space: 4 }) {

@@ -17,7 +17,7 @@ export struct SessionList {
   @State backends: OpenCodeBackend[] = [];
   @State selectedBackendId: string = '';
   @State isLoading: boolean = false;
-  @StorageLink('needRefreshSessions') @Watch('onNeedRefreshChanged') needRefreshSessions: string = 'false';
+  @StorageLink('refreshSessionsNow') @Watch('onRefreshNow') refreshSessionsNow: string = '';
   private core: OpenCodeCore = OpenCodeCore.getInstance();
 
   aboutToAppear() {
@@ -31,9 +31,8 @@ export struct SessionList {
   aboutToDisappear() {
   }
 
-  onNeedRefreshChanged() {
-    if (this.needRefreshSessions === 'true') {
-      this.needRefreshSessions = 'false';
+  onRefreshNow() {
+    if (this.refreshSessionsNow) {
       this.refreshSessions();
     }
   }
@@ -222,25 +221,49 @@ export struct SessionList {
                   .layoutWeight(1)
                   .alignItems(HorizontalAlign.Start)
 
-                  Text('配置')
-                    .fontSize(13)
-                    .fontColor('#1677FF')
-                    .padding(8)
-                    .onClick(() => {
-                      const backend = this.backends.find(b => b.id === item.backendId);
-                      router.pushUrl({
-                        url: 'pages/SessionDetail',
-                        params: {
-                          backendId: item.backendId,
-                          backendUrl: item.backendUrl,
-                          authToken: backend?.authToken || '',
-                          title: item.name,
-                          directory: item.directory,
-                          isEditing: true,
-                          id: item.id
-                        }
-                      });
-                    })
+                  Row({ space: 8 }) {
+                    Text('配置')
+                      .fontSize(13)
+                      .fontColor('#1677FF')
+                      .padding(8)
+                      .onClick(() => {
+                        const backend = this.backends.find(b => b.id === item.backendId);
+                        router.pushUrl({
+                          url: 'pages/SessionDetail',
+                          params: {
+                            backendId: item.backendId,
+                            backendUrl: item.backendUrl,
+                            authToken: backend?.authToken || '',
+                            title: item.name,
+                            directory: item.directory,
+                            isEditing: true,
+                            id: item.id
+                          }
+                        });
+                      })
+
+                    Text('删除')
+                      .fontSize(13)
+                      .fontColor('#FF4D4F')
+                      .padding(8)
+                      .onClick(() => {
+                        AlertDialog.show({
+                          title: '删除会话',
+                          message: `确定要删除会话 "${item.name}" 吗？`,
+                          primaryButton: {
+                            value: '取消',
+                            action: () => {}
+                          },
+                          secondaryButton: {
+                            value: '删除',
+                            fontColor: '#FF4D4F',
+                            action: () => {
+                              this.core.removeProject(item.id);
+                            }
+                          }
+                        });
+                      })
+                  }
                 }
                 .width('100%')
                 .padding({
