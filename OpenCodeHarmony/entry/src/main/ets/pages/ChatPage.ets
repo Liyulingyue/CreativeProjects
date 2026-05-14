@@ -77,7 +77,9 @@ struct ChatPage {
     if (!this.realSessionId) {
       this.isLoading = true;
       try {
-        const resp = await this.core.createBackendSession(this.backendUrl, this.authToken, this.directory, this.sessionName);
+        const project = this.core.getProjectById(this.sessionId);
+        const preferredModel = project?.preferredModel;
+        const resp = await this.core.createBackendSession(this.backendUrl, this.authToken, this.directory, this.sessionName, preferredModel);
         if (resp && resp.id) {
           this.realSessionId = resp.id;
           this.core.setCurrentSession(resp.id);

@@ -19,6 +19,26 @@ export interface OpenCodeSession {
   };
 }
 
+export interface OpenCodeProviderModel {
+  id: string;
+  name: string;
+  family: string;
+  status: string;
+  providerName?: string; // 扩充字段，用于在选择列表中显示所属提供者
+}
+
+export interface OpenCodeProvider {
+  id: string;
+  name: string;
+  models: Record<string, OpenCodeProviderModel>;
+}
+
+export interface OpenCodeProvidersResponse {
+  all: OpenCodeProvider[];
+  default: Record<string, string>;
+  connected: string[];
+}
+
 export interface OpenCodeMessagePart {
   id: string;
   sessionID: string;
@@ -153,7 +173,53 @@ export class OpenCodeApiClient {
     }
   }
 
-  async createSession(title?: string, parentID?: string): Promise<OpenCodeSession | null> {
+  async listModels(): Promise<OpenCodeProviderModel[]> {
+    if (!this.baseUrl) return [];
+    try {
+      const url = this.baseUrl + '/provider';
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (this.authToken) {
+        headers['Authorization'] = 'Basic ' + this.base64Encode('opencode:' + this.authToken);
+      }
+
+      const result = await new Promise<http.HttpResponse>((resolve, reject) => {
+        const req = http.createHttp();
+        req.request(url, { method: http.RequestMethod.GET, header: headers }, (err, data) => {
+          if (err) reject(err); else resolve(data);
+        });
+      });
+
+      if (result.responseCode === 200) {
+        const res = JSON.parse(result.result as string) as OpenCodeProvidersResponse;
+        const allModels: OpenCodeProviderModel[] = [];
+        
+        // 如果有 connected 字段，我们可以优先展示这些 provider 的模型
+        const connectedProviders = res.connected || [];
+        
+        if (res.all) {
+          res.all.forEach(p => {
+            // 只添加已连接的 provider 的模型，或者如果没有 connected 列表则添加全部
+            if (connectedProviders.length === 0 || connectedProviders.includes(p.id)) {
+              if (p.models) {
+                Object.values(p.models).forEach(m => {
+                  // 注入 provider 的显示名称，方便 UI 展示
+                  m.providerName = p.name;
+                  allModels.push(m);
+                });
+              }
+            }
+          });
+        }
+        return allModels;
+      }
+      return [];
+    } catch (e) {
+      console.error('[OpenCodeApiClient] listModels error:', e);
+      return [];
+    }
+  }
+
+  async createSession(title?: string, parentID?: string, preferredModel?: string): Promise<OpenCodeSession | null> {
     if (!this.baseUrl) return null;
     this.cancelRequest();
     this.currentRequest = http.createHttp();
@@ -161,6 +227,7 @@ export class OpenCodeApiClient {
     const body: Record<string, string> = {};
     if (title) body['title'] = title;
     if (parentID) body['parentID'] = parentID;
+    if (preferredModel) body['preferredModel'] = preferredModel;
     try {
       const result = await new Promise<http.HttpResponse>((resolve, reject) => {
         this.currentRequest!.request(
