@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenCode Harmony Bridge</title>
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #f0f2f5; }
+        .card { background: white; padding: 2rem; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); text-align: center; }
+        input { width: 80%; padding: 10px; margin: 10px 0; border: 1px solid #ddd; border-radius: 4px; }
+        button { background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h3>OpenCode Harmony</h3>
+        <p>未检测到后端连接，请输入后端地址：</p>
+        <input type="text" id="urlInput" placeholder="http://192.168.x.x:3000">
+        <br>
+        <button onclick="saveAndGo()">连接后端</button>
+    </div>
+
+    <script>
+        function saveAndGo() {
+            const url = document.getElementById('urlInput').value;
+            if (url) {
+                // 通过 JsBridge 通知原生端保存 URL
+                if (window.OpenCodeApp) {
+                    window.OpenCodeApp.storeBackendUrl(url);
+                    console.log("Backend URL saved via bridge: " + url);
+                }
+                window.location.href = url;
+            }
+        }
+        
+        // 页面加完成检查是否已有配置
+        window.onload = () => {
+            if (window.OpenCodeApp) {
+                const savedUrl = window.OpenCodeApp.getBackendUrl();
+                if (savedUrl) {
+                    document.getElementById('urlInput').value = savedUrl;
+                }
+            }
+        }
+    </script>
+</body>
+</html>
