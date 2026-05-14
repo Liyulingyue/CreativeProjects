@@ -407,6 +407,7 @@ struct ChatPage {
       .layoutWeight(1)
       .backgroundColor('#EDEDED')
       .scrollBar(BarState.Off)
+      .align(Alignment.Top)
 
       Row() {
         TextInput({ placeholder: '发送指令...', text: this.inputText })

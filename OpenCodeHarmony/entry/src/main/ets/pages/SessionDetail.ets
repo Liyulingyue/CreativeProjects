@@ -117,20 +117,41 @@ struct SessionDetail {
     if (this.pathSearchTimer !== -1) {
       clearTimeout(this.pathSearchTimer);
     }
-    if (!query) {
+    
+    // 如果是空或只有一个斜杠，显示根目录内容
+    if (!query || query === '/') {
       this.listDirectory('/');
       return;
     }
-    if (query.startsWith('/') || /^[a-zA-Z]:/.test(query)) {
-      this.listDirectory(query);
-      return;
-    }
+
+    // 防抖处理
     this.pathSearchTimer = setTimeout(() => {
-      this.searchPaths(query);
-    }, 300) as number;
+      const lastSlashIndex = query.lastIndexOf('/');
+      
+      // 检查路径结尾是否是斜杠
+      if (query.endsWith('/')) {
+        // 用户输入了斜杠，列出该目录下的直接子目录
+        this.listDirectory(query);
+      } else {
+        // 用户正在输入目录名片段
+        if (lastSlashIndex !== -1) {
+          // 提取当前正在输入的片段进行模糊搜索，并传入全路径用于匹配过滤
+          const searchPart = query.substring(lastSlashIndex + 1);
+          // 哪怕 searchPart 为空（例如刚打完斜杠但 timer 触发），也按目录列出逻辑走
+          if (!searchPart) {
+            this.listDirectory(query);
+          } else {
+            this.searchPaths(searchPart, query);
+          }
+        } else {
+          // 纯文字输入（非路径格式），直接搜索
+          this.searchPaths(query, query);
+        }
+      }
+    }, 400) as number;
   }
 
-  private searchPaths(query: string) {
+  private searchPaths(query: string, fullPath?: string) {
     if (!this.backendUrl || this.backendUrl === 'http://') {
       this.isSearchingPath = false;
       return;
@@ -139,7 +160,9 @@ struct SessionDetail {
     this.cancelRequest();
     this.currentRequest = http.createHttp();
     const url = this.backendUrl.replace(/\/+$/, '') + '/find/file';
-    const params = `query=${encodeURIComponent(query)}&type=directory&limit=20`;
+    
+    // 增加探索深度和结果数量
+    const params = `query=${encodeURIComponent(query)}&type=directory&limit=50`;
     try {
       this.currentRequest.request(
         url + '?' + params,
@@ -156,19 +179,61 @@ struct SessionDetail {
             try {
               const parsed = JSON.parse(data.result as string) as string[];
               if (Array.isArray(parsed)) {
-                this.pathSearchResults = parsed.map((p: string): FileNode => ({
-                  name: p.split('/').pop() || p,
-                  path: p,
-                  absolute: p.startsWith('/') ? p : '/' + p,
-                  type: 'directory',
-                  ignored: false
-                }));
+                const uniquePaths = Array.from(new Set(parsed));
+                let results = uniquePaths.map((p: string): FileNode => {
+                  const absolute = p.startsWith('/') ? p : '/' + p;
+                  return {
+                    name: absolute.split('/').pop() || absolute,
+                    path: p,
+                    absolute: absolute,
+                    type: 'directory',
+                    ignored: false
+                  };
+                });
+
+                // 严格遵循 OpenCode Web 逻辑：
+                if (fullPath) {
+                  const filterPath = fullPath.toLowerCase();
+                  
+                  results = results.filter(r => {
+                    const rAbs = r.absolute.toLowerCase();
+                    
+                    // 必须以当前输入作为前缀
+                    if (!rAbs.startsWith(filterPath)) return false;
+                    
+                    // 排除掉输入路径本身（例如输入 /home/，不显示 /home/）
+                    if (rAbs === filterPath || rAbs === filterPath + '/') return false;
+
+                    // 计算剩余路径部分
+                    let remaining = rAbs.substring(filterPath.length);
+                    // 移除开头可能存在的斜杠
+                    if (remaining.startsWith('/')) {
+                      remaining = remaining.substring(1);
+                    }
+                    
+                    // 核心逻辑：如果剩余部分还包含斜杠（且不是末尾斜杠），说明太深了
+                    const lastSlash = remaining.lastIndexOf('/');
+                    if (lastSlash !== -1 && lastSlash !== remaining.length - 1) {
+                      return false;
+                    }
+                    return true;
+                  });
+                }
+
+                // 排序：按字母顺序
+                results.sort((a, b) => a.absolute.localeCompare(b.absolute));
+
+                this.pathSearchResults = results;
               }
-            } catch {}
+            } catch (e) {
+              console.error('[SessionDetail] Parse search error:', e);
+            }
           }
         }
       );
-    } catch {}
+    } catch (e) {
+      this.isSearchingPath = false;
+    }
   }
 
   private listDirectory(path: string) {
@@ -180,7 +245,7 @@ struct SessionDetail {
     this.cancelRequest();
     this.currentRequest = http.createHttp();
     const url = this.backendUrl.replace(/\/+$/, '') + '/file';
-    const params = `path=${encodeURIComponent(path)}`;
+    const params = `path=${encodeURIComponent(path || '/')}`;
     try {
       this.currentRequest.request(
         url + '?' + params,
@@ -197,7 +262,24 @@ struct SessionDetail {
             try {
               const parsed = JSON.parse(data.result as string) as FileNode[];
               if (Array.isArray(parsed)) {
-                this.pathSearchResults = parsed.filter((item: FileNode) => item.type === 'directory' && !item.ignored);
+                this.pathSearchResults = parsed
+                  .filter((item: FileNode) => item.type === 'directory' && !item.ignored)
+                  .map((item: FileNode): FileNode => {
+                    // 核心修复：后端 /file 如果返回相对路径，则拼接到当前路径
+                    // 如果后端已经返回了以 / 开头的绝对路径，则直接使用
+                    let absolute = item.absolute;
+                    if (!absolute.startsWith('/')) {
+                      const parentPath = path.endsWith('/') ? path : path + '/';
+                      absolute = parentPath + (item.name || item.path || '');
+                    }
+                    return {
+                      name: item.name,
+                      path: item.path,
+                      type: item.type,
+                      ignored: item.ignored,
+                      absolute: absolute
+                    };
+                  });
               }
             } catch {}
           }
@@ -290,16 +372,22 @@ struct SessionDetail {
                   .layoutWeight(1)
                   .maxLines(1)
                   .textOverflow({ overflow: TextOverflow.Ellipsis })
-                Text(this.showBackendPicker ? '▲' : '▼')
-                  .fontSize(12)
-                  .fontColor('#999999')
+                if (!this.isEditing) {
+                  Text(this.showBackendPicker ? '▲' : '▼')
+                    .fontSize(12)
+                    .fontColor('#999999')
+                }
               }
               .width('100%')
               .height(44)
               .padding({ left: 12, right: 12 })
-              .backgroundColor('#F5F5F5')
+              .backgroundColor(this.isEditing ? '#EBEBEB' : '#F5F5F5')
               .borderRadius(8)
-              .onClick(() => this.showBackendPicker = !this.showBackendPicker)
+              .onClick(() => {
+                if (!this.isEditing) {
+                  this.showBackendPicker = !this.showBackendPicker;
+                }
+              })
             }
             .width('100%')
             .alignItems(HorizontalAlign.Start)
@@ -310,25 +398,38 @@ struct SessionDetail {
                 .fontSize(13)
                 .fontColor('#999999')
                 .margin({ bottom: 8 })
-              TextInput({ placeholder: '输入目录路径，如 /home', text: this.directory })
-                .onChange(v => {
-                  this.directory = v;
-                  if (this.showPathPicker) {
-                    this.schedulePathSearch(v);
-                  }
-                })
-                .onFocus(() => {
-                  this.showPathPicker = true;
-                  this.schedulePathSearch(this.directory);
-                })
-                .onBlur(() => {
-                  setTimeout(() => {
-                    this.showPathPicker = false;
-                  }, 200);
-                })
-                .height(44)
-                .backgroundColor('#F5F5F5')
-                .borderRadius(8)
+              if (this.isEditing) {
+                // 编辑模式：只读显示
+                Text(this.directory || '/')
+                  .fontSize(15)
+                  .fontColor('#666666')
+                  .width('100%')
+                  .height(44)
+                  .padding({ left: 12, right: 12 })
+                  .backgroundColor('#EBEBEB')
+                  .borderRadius(8)
+              } else {
+                // 创建模式：可编辑
+                TextInput({ placeholder: '输入目录路径，如 /home', text: this.directory })
+                  .onChange(v => {
+                    this.directory = v;
+                    if (this.showPathPicker) {
+                      this.schedulePathSearch(v);
+                    }
+                  })
+                  .onFocus(() => {
+                    this.showPathPicker = true;
+                    this.schedulePathSearch(this.directory);
+                  })
+                  .onBlur(() => {
+                    setTimeout(() => {
+                      this.showPathPicker = false;
+                    }, 200);
+                  })
+                  .height(44)
+                  .backgroundColor('#F5F5F5')
+                  .borderRadius(8)
+              }
             }
             .width('100%')
             .alignItems(HorizontalAlign.Start)
@@ -457,9 +558,11 @@ struct SessionDetail {
               .onClick(() => {
                 this.directory = item.absolute;
                 this.showPathPicker = false;
+                // 核心修复：选中后立即触发下一级目录列表，而不是再次模糊搜索
                 setTimeout(() => {
                   this.showPathPicker = true;
-                  this.schedulePathSearch(item.absolute);
+                  const nextQuery = this.directory.endsWith('/') ? this.directory : this.directory + '/';
+                  this.listDirectory(nextQuery);
                 }, 100);
               })
             })
@@ -481,7 +584,7 @@ struct SessionDetail {
         .zIndex(999)
       }
 
-      if (this.showBackendPicker) {
+      if (this.showBackendPicker && !this.isEditing) {
         Column() {
           ForEach(this.backends, (backend: OpenCodeBackend) => {
             Row() {
