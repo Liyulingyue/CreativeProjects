@@ -1,0 +1,35 @@
+/node_modules
+/oh_modules
+/local.properties
+/.idea
+**/build
+/.hvigor
+.cxx
+/.clangd
+/.clang-format
+/.clang-tidy
+**/.test
+/.appanalyzer
+
+# OpenCode 参考目录（仅本地使用，不提交）
+/opencode/
+
+# IDE patterns
+.DS_Store
+*.iml
+*.iws
+
+# HarmonyOS specific
+.preview/
+build/
+.output/
+.diagnose/
+oh_modules/
+node_modules/
+
+# Local configuration
+local.properties
+signing.properties
+
+# Log files
+*.log
