@@ -29,11 +29,13 @@ struct SessionDetail {
       this.editId = params['id'] as string;
       const project = this.core.getProjectById(this.editId);
       if (project) {
-        this.notes = project.notes ?? '';
+        this.notes = project.notes ?? project.name;
         this.worktree = project.path;
-        const matched = this.backends.find(b => b.id === project.backendId);
+        const matched = this.backends.find(b => b.id === project.backendId || b.url === project.url);
         if (matched) {
           this.selectedBackendId = matched.id;
+        } else if (this.backends.length > 0) {
+          this.selectedBackendId = this.backends[0].id;
         }
       }
     }
@@ -402,7 +404,7 @@ struct SessionDetail {
             }
 
             Column() {
-              Text('备注')
+              Text('会话名称')
                 .fontSize(13)
                 .fontColor('#999999')
                 .margin({ bottom: 8 })

@@ -225,23 +225,40 @@ struct BackendDetail {
       .layoutWeight(1)
 
       // 底部按钮
-      Row({ space: 16 }) {
-        Button('取消', { type: ButtonType.Normal })
-          .layoutWeight(1)
-          .height(44)
-          .borderRadius(8)
-          .backgroundColor('#F0F0F0')
-          .fontColor('#333333')
-          .onClick(() => router.back())
+      Column({ space: 12 }) {
+        if (this.isEdit) {
+          Button('删除此后端', { type: ButtonType.Normal })
+            .width('100%')
+            .height(44)
+            .borderRadius(8)
+            .backgroundColor('#FFF2F0')
+            .fontColor('#FF4D4F')
+            .onClick(async () => {
+              await this.core.removeBackend(this.editId);
+              AppStorage.SetOrCreate<number>('backendRefreshTag', Date.now());
+              router.back();
+            })
+        }
 
-        Button('确认', { type: ButtonType.Normal })
-          .layoutWeight(1)
-          .height(44)
-          .borderRadius(8)
-          .backgroundColor('#07C160')
-          .fontColor('#FFFFFF')
-          .enabled(this.url.length > 10)
-          .onClick(() => this.saveBackend())
+        Row({ space: 12 }) {
+          Button('取消', { type: ButtonType.Normal })
+            .layoutWeight(1)
+            .height(44)
+            .borderRadius(8)
+            .backgroundColor('#F0F0F0')
+            .fontColor('#333333')
+            .onClick(() => router.back())
+
+          Button('确认', { type: ButtonType.Normal })
+            .layoutWeight(1)
+            .height(44)
+            .borderRadius(8)
+            .backgroundColor('#07C160')
+            .fontColor('#FFFFFF')
+            .enabled(this.url.length > 10)
+            .onClick(() => this.saveBackend())
+        }
+        .width('100%')
       }
       .width('100%')
       .padding({ left: 20, right: 20, bottom: 32 })

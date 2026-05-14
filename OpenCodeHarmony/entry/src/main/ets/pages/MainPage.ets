@@ -23,8 +23,8 @@ struct MainPage {
   }
 
   onPageShow() {
-    AppStorage.SetOrCreate<number>('backendRefreshTag', Date.now());
     AppStorage.SetOrCreate<number>('sessionRefreshTag', Date.now());
+    AppStorage.SetOrCreate<number>('backendRefreshTag', Date.now());
   }
 
   build() {
