@@ -83,8 +83,8 @@ export struct BackendList {
             ListItem() {
               Row() {
                 Stack() {
-                  Rect().fill('#1677FF').width(48).height(48).borderRadius(8)
-                  Text(backend.notes ? backend.notes.charAt(0).toUpperCase() : 'B')
+                  Rect().fill('#07C160').width(48).height(48).borderRadius(8)
+                  Text(backend.notes ? backend.notes.charAt(0).toUpperCase() : 'O')
                     .fontSize(20).fontColor('#FFFFFF').fontWeight(FontWeight.Bold)
                 }
                 .margin({ right: 12 })
@@ -111,13 +111,20 @@ export struct BackendList {
                 .layoutWeight(1)
                 .alignItems(HorizontalAlign.Start)
 
-                Text('删除')
+                Text('配置')
                   .fontSize(13)
-                  .fontColor('#FF4D4F')
+                  .fontColor('#1677FF')
                   .padding(8)
-                  .onClick(async () => {
-                    await this.core.removeBackend(backend.id);
-                    this.backends = [...this.core.getBackends()];
+                  .onClick(() => {
+                    router.pushUrl({
+                      url: 'pages/BackendDetail',
+                      params: {
+                        id: backend.id,
+                        url: backend.url,
+                        authToken: backend.authToken,
+                        notes: backend.notes
+                      }
+                    });
                   })
               }
               .width('100%')
@@ -126,9 +133,8 @@ export struct BackendList {
             }
             .onClick(() => {
               router.pushUrl({
-                url: 'pages/BackendDetail',
+                url: 'pages/BackendWebView',
                 params: {
-                  id: backend.id,
                   url: backend.url,
                   authToken: backend.authToken,
                   notes: backend.notes

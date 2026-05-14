@@ -25,7 +25,7 @@ export struct AboutPage {
         this.InfoCard('关于', '一个基于 HarmonyOS 原生开发的 AI 编程助手客户端。\n\n通过连接你电脑上运行的 OpenCode 后端服务，你可以在手机上随时随地向 AI 发送编程指令，实时控制代码仓库。')
 
         // 功能列表
-        this.InfoCard('功能', '• 多项目管理（绑定后端 + 代码目录）\n• 微信式对话界面\n• 原生 JsBridge 桥接\n• 支持未来迁移至 ArkUI-X (Android/iOS)')
+        this.InfoCard('功能', '• 后端收藏夹管理\n• 一键连接 OpenCode 服务\n• 内嵌浏览器体验完整功能\n• 自动注入鉴权 Token')
 
         // 技术信息
         this.InfoCard('技术栈', '• HarmonyOS SDK 5.0+\n• ArkTS / ArkUI\n• OpenCode 后端 API\n• Monorepo 解耦架构')

@@ -24,7 +24,7 @@ struct ChatPage {
     this.messages = [{
       id: '0',
       role: 'assistant',
-      content: `已连接到 ${this.project?.name ?? '未知项目'}\n后端: ${this.project?.url ?? '-'}\n目录: ${this.project?.path ?? '-'}\n\n请输入指令开始工作。`,
+      content: `已连接到 ${(this.project?.notes || this.project?.name) ?? '未知会话'}\n后端: ${this.project?.url ?? '-'}\n目录: ${this.project?.path ?? '-'}\n\n请输入指令开始工作。`,
       timestamp: Date.now()
     }];
   }
@@ -40,13 +40,16 @@ struct ChatPage {
           .onClick(() => router.back())
 
         Column() {
-          Text(this.project?.name ?? '项目')
+          Text(this.project?.notes || this.project?.name || '会话')
             .fontSize(17)
             .fontWeight(FontWeight.Medium)
-          Text(this.project?.url ?? '')
+            .maxLines(1)
+          Text(this.project?.url || '')
             .fontSize(11)
             .fontColor('#888888')
+            .maxLines(1)
         }
+        .layoutWeight(1)
 
         Blank()
 
@@ -55,7 +58,11 @@ struct ChatPage {
           .padding({ left: 16, right: 16, top: 12, bottom: 12 })
       }
       .width('100%')
-      .backgroundColor('#EDEDED')
+      .height(56)
+      .padding({ left: 8, right: 8 })
+      .backgroundColor('#FFFFFF')
+
+      Divider().height(0.5).color('#E0E0E0')
 
       // 消息列表
       Scroll(this.scroller) {
@@ -108,14 +115,14 @@ struct ChatPage {
         .padding({ top: 12, bottom: 12 })
         .width('100%')
       }
-      .flexGrow(1)
+      .layoutWeight(1)
       .backgroundColor('#EDEDED')
       .scrollBar(BarState.Off)
 
       // 底部输入栏
       Row() {
         TextInput({ placeholder: '发送指令...', text: this.inputText })
-          .flexGrow(1)
+          .layoutWeight(1)
           .backgroundColor('#FFFFFF')
           .borderRadius(20)
           .padding({ left: 16, right: 16 })
@@ -131,8 +138,8 @@ struct ChatPage {
       .padding({ left: 12, right: 12, top: 8, bottom: 20 })
       .backgroundColor('#F5F5F5')
     }
-    .height('100%')
     .width('100%')
+    .height('100%')
   }
 
   private async sendMessage() {
@@ -148,7 +155,6 @@ struct ChatPage {
     }];
     this.inputText = '';
     this.isLoading = true;
-
     // 滚动到底部
     this.scroller.scrollEdge(Edge.Bottom);
 

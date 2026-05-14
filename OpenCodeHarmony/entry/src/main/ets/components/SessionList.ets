@@ -4,14 +4,14 @@ import router from '@ohos.router';
 @Component
 export struct SessionList {
   @State projects: OpenCodeProject[] = [];
-  @StorageLink('sessionRefreshTag') private refreshTag: number = 0;
+  @StorageLink('sessionRefreshTag') @Watch('onRefreshTagChange') private refreshTag: number = 0;
   private core: OpenCodeCore = OpenCodeCore.getInstance();
 
   aboutToAppear() {
     this.refreshProjects();
   }
 
-  onPageShow() {
+  onRefreshTagChange() {
     this.refreshProjects();
   }
 
@@ -22,14 +22,13 @@ export struct SessionList {
   build() {
     Column() {
       Row() {
-        Text('OpenCode')
+        Text('会话')
           .fontSize(20)
           .fontWeight(FontWeight.Bold)
         Blank()
-        Image($r('app.media.startIcon'))
-          .width(24).height(24).margin({ right: 20 })
         Text('+')
           .fontSize(28)
+          .fontColor('#07C160')
           .onClick(() => {
             router.pushUrl({ url: 'pages/SessionDetail' });
           })
@@ -85,7 +84,7 @@ export struct SessionList {
               Row() {
                 Stack() {
                   Rect().fill('#07C160').width(48).height(48).borderRadius(8)
-                  Text(project.name.charAt(0))
+                  Text(project.notes?.charAt(0).toUpperCase() || project.name.charAt(0).toUpperCase())
                     .fontSize(20).fontColor('#FFFFFF').fontWeight(FontWeight.Bold)
                 }
                 .margin({ right: 12 })
@@ -95,15 +94,13 @@ export struct SessionList {
                     .fontSize(16)
                     .fontWeight(FontWeight.Medium)
                     .maxLines(1)
-                  if (project.notes) {
-                    Text(project.name)
-                      .fontSize(13)
-                      .fontColor('#888888')
-                      .margin({ top: 2 })
-                      .maxLines(1)
-                  }
                   Text(project.url)
                     .fontSize(12)
+                    .fontColor('#888888')
+                    .margin({ top: 2 })
+                    .maxLines(1)
+                  Text(project.path)
+                    .fontSize(11)
                     .fontColor('#AAAAAA')
                     .margin({ top: 2 })
                     .maxLines(1)

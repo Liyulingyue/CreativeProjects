@@ -1,8 +1,9 @@
 {
   "src": [
     "pages/MainPage",
-    "pages/ChatPage",
     "pages/BackendDetail",
-    "pages/SessionDetail"
+    "pages/BackendWebView",
+    "pages/SessionDetail",
+    "pages/ChatPage"
   ]
 }

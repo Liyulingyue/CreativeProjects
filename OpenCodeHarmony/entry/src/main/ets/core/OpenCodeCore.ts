@@ -16,6 +16,17 @@ export interface OpenCodeProject {
 }
 
 /**
+ * 会话定义（复用 OpenCodeProject）
+ */
+export interface ChatSession {
+  id: string;
+  name: string;
+  backendUrl: string;
+  directory: string;
+  updatedAt: string;
+}
+
+/**
  * 后端连接定义
  */
 export interface OpenCodeBackend {
@@ -251,5 +262,25 @@ export class OpenCodeCore {
 
   public getBackendById(id: string): OpenCodeBackend | undefined {
     return this.backends.find(b => b.id === id);
+  }
+
+  // ── 会话管理（基于 Project）─────────────────────────────────
+
+  public getSessions(): ChatSession[] {
+    return this.projects.map(p => ({
+      id: p.id,
+      name: p.name,
+      backendUrl: p.url,
+      directory: p.path,
+      updatedAt: new Date(p.lastAccess).toLocaleString()
+    }));
+  }
+
+  public async updateSession(id: string, name: string, backendUrl: string, directory: string): Promise<void> {
+    this.updateProject(id, name, backendUrl, '', directory, '');
+  }
+
+  public async removeSession(id: string): Promise<void> {
+    this.removeProject(id);
   }
 }
