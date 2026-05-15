@@ -74,7 +74,7 @@ export interface OpenCodeMessage {
     };
     error?: {
       name: string;
-      data: Record<string, unknown>;
+      data: Record<string, Object>;
     };
   };
   parts: OpenCodeMessagePart[];
