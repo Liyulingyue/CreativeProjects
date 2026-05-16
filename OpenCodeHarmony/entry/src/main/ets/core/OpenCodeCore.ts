@@ -1,5 +1,6 @@
 import dataPreferences from '@ohos.data.preferences';
 import common from '@ohos.app.ability.common';
+import http from '@ohos.net.http';
 import { OpenCodeApiClient, OpenCodeSession, OpenCodeMessage } from './OpenCodeApiClient';
 
 export { OpenCodeSession, OpenCodeMessage, OpenCodeProviderModel } from './OpenCodeApiClient';
@@ -37,6 +38,17 @@ export interface OpenCodeBackend {
   notes: string;
 }
 
+export interface PendingMessage {
+  projectId: string;
+  sessionId: string;
+  loadingId: string;
+  text: string;
+  model?: string;
+  isLoading: boolean;
+}
+
+export type MessageCallback = (result: { response: OpenCodeMessage | null; error: string | null; loadingId: string }) => void;
+
 export class OpenCodeCore {
   private static instance: OpenCodeCore;
   private projects: OpenCodeProject[] = [];
@@ -49,6 +61,9 @@ export class OpenCodeCore {
   private static readonly PREF_NAME = 'opencode_data';
   private static readonly KEY_BACKENDS = 'backends';
   private static readonly KEY_PROJECTS = 'projects';
+  private pendingRequest: http.HttpRequest | null = null;
+  private pendingMessage: PendingMessage | null = null;
+  private messageCallback: MessageCallback | null = null;
 
   private constructor() {}
 
@@ -318,5 +333,135 @@ export class OpenCodeCore {
 
   public async abortBackendSession(sessionId: string): Promise<boolean> {
     return await this.apiClient.abortSession(sessionId);
+  }
+
+  public sendMessagePersistent(
+    projectId: string,
+    sessionId: string,
+    loadingId: string,
+    text: string,
+    model: string | undefined,
+    callback: MessageCallback
+  ): void {
+    const project = this.projects.find(p => p.id === projectId);
+    if (!project) {
+      callback({ response: null, error: '项目不存在', loadingId });
+      return;
+    }
+
+    this.cancelPendingRequest();
+    this.pendingMessage = { projectId, sessionId, loadingId, text, model, isLoading: true };
+    this.messageCallback = callback;
+
+    const url = `${project.url.replace(/\/+$/, '')}/session/${encodeURIComponent(sessionId)}/message`;
+    const headers = this.getHeaders(project.url, project.authToken, project.path);
+
+    let modelRef: { providerID: string; modelID: string } | undefined;
+    if (model && model.includes('/')) {
+      const parts = model.split('/');
+      modelRef = { providerID: parts[0], modelID: parts[1] };
+    }
+
+    const body = { parts: [{ type: 'text', text }], model: modelRef };
+
+    this.pendingRequest = http.createHttp();
+    console.info('[OpenCodeCore] sendMessagePersistent, URL:', url, 'body:', JSON.stringify(body));
+
+    this.pendingRequest.request(
+      url,
+      {
+        method: http.RequestMethod.POST,
+        header: headers,
+        extraData: JSON.stringify(body),
+        connectTimeout: 60000,
+        readTimeout: 0,
+      },
+      (err, data) => {
+        console.info('[OpenCodeCore] HTTP callback, err:', JSON.stringify(err), 'responseCode:', data?.responseCode);
+        const pending = this.pendingMessage;
+        this.pendingRequest = null;
+        this.pendingMessage = null;
+
+        if (!pending || !this.messageCallback) return;
+
+        if (err) {
+          const errObj = err as { code?: number; message?: string };
+          if (errObj?.code === 2300023 || errObj?.code === 2300028) {
+            this.messageCallback = null;
+            return;
+          }
+          this.messageCallback({ response: null, error: errObj?.message || String(err), loadingId: pending.loadingId });
+          this.messageCallback = null;
+          return;
+        }
+
+        if (data?.responseCode === 200) {
+          try {
+            const response = JSON.parse(data.result as string) as OpenCodeMessage;
+            this.messageCallback?.({ response, error: null, loadingId: pending.loadingId });
+          } catch {
+            this.messageCallback?.({ response: null, error: '解析响应失败', loadingId: pending.loadingId });
+          }
+        } else if (data?.responseCode === 429) {
+          try {
+            const body = JSON.parse(data.result as string);
+            const msg = body?.error?.message || body?.message || '请求频率超限';
+            this.messageCallback?.({ response: null, error: msg, loadingId: pending.loadingId });
+          } catch {
+            this.messageCallback?.({ response: null, error: '请求频率超限', loadingId: pending.loadingId });
+          }
+        } else {
+          this.messageCallback?.({ response: null, error: `请求失败: HTTP ${data?.responseCode}`, loadingId: pending.loadingId });
+        }
+        this.messageCallback = null;
+      }
+    );
+  }
+
+  public cancelPendingRequest(): void {
+    if (this.pendingRequest) {
+      this.pendingRequest.destroy();
+      this.pendingRequest = null;
+    }
+    if (this.pendingMessage) {
+      console.info('[OpenCodeCore] cancelPendingRequest, sessionId:', this.pendingMessage.sessionId);
+      const sid = this.pendingMessage.sessionId;
+      const project = this.projects.find(p => p.id === this.pendingMessage!.projectId);
+      if (project) {
+        const abortUrl = `${project.url.replace(/\/+$/, '')}/session/${encodeURIComponent(sid)}/abort`;
+        http.createHttp().request(abortUrl, {
+          method: http.RequestMethod.POST,
+          header: this.getHeaders(project.url, project.authToken, project.path),
+          connectTimeout: 5000,
+          readTimeout: 5000,
+        }).catch(() => {});
+      }
+    }
+    this.pendingMessage = null;
+    this.messageCallback = null;
+  }
+
+  public clearPendingState(): void {
+    if (this.pendingRequest) {
+      this.pendingRequest.destroy();
+      this.pendingRequest = null;
+    }
+    this.pendingMessage = null;
+    this.messageCallback = null;
+  }
+
+  public getPendingMessage(): PendingMessage | null {
+    return this.pendingMessage;
+  }
+
+  public isPendingForSession(sessionId: string): boolean {
+    return this.pendingMessage?.sessionId === sessionId && this.pendingMessage.isLoading;
+  }
+
+  private getHeaders(backendUrl: string, authToken: string, directory: string): Record<string, string> {
+    return {
+      'Content-Type': 'application/json',
+      'x-opencode-directory': encodeURIComponent(directory || '/'),
+    };
   }
 }
