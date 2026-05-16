@@ -145,16 +145,23 @@ struct ChatPage {
         .alignContent(Alignment.Center)
 
         if (msg.isLoading) {
-          Row() {
-            LoadingProgress().width(16).height(16)
-            Text('思考中...')
-              .fontSize(13)
-              .fontColor('#888888')
-              .margin({ left: 6 })
+          Column() {
+            Row() {
+              LoadingProgress().width(16).height(16)
+              Text('思考中...')
+                .fontSize(13)
+                .fontColor('#888888')
+                .margin({ left: 6 })
+            }
+            Text('如果长时间没有回复，请检查目标模型是否欠费或速率限制...')
+              .fontSize(10)
+              .fontColor('#BBBBBB')
+              .margin({ top: 6, left: 22 })
           }
           .padding(12)
           .backgroundColor('#FFFFFF')
           .borderRadius({ topLeft: 2, topRight: 8, bottomLeft: 8, bottomRight: 8 })
+          .alignItems(HorizontalAlign.Start)
         } else {
           Text(msg.content)
             .padding(12)
@@ -234,33 +241,35 @@ struct ChatPage {
       .scrollBar(BarState.Off)
       .align(Alignment.Top)
 
-      Row() {
-        TextInput({ placeholder: '发送指令...', text: this.inputText })
-          .layoutWeight(1)
-          .backgroundColor('#FFFFFF')
-          .borderRadius(20)
-          .padding({ left: 16, right: 16 })
-          .onChange(v => this.inputText = v)
-          .onSubmit(() => this.sendMessage())
+      Column() {
+        Row() {
+          TextInput({ placeholder: '发送指令...', text: this.inputText })
+            .layoutWeight(1)
+            .backgroundColor('#FFFFFF')
+            .borderRadius(20)
+            .padding({ left: 16, right: 16 })
+            .onChange(v => this.inputText = v)
+            .onSubmit(() => this.sendMessage())
 
-        Button(this.isLoading ? '停止' : '发送')
-          .margin({ left: 8 })
-          .backgroundColor('#07C160')
-          .borderRadius(20)
-          .enabled(this.isLoading || this.inputText.length > 0)
-          .onClick(() => {
-            if (this.isLoading) {
-    console.info('[ChatPage] Before cancelRequest, currentRequest:', this.currentRequest ? 'exists' : 'null');
-    this.cancelRequest();
-    console.info('[ChatPage] After cancelRequest');
-              this.isLoading = false;
-              this.messages = this.messages.filter(m => !m.isLoading);
-              return;
-            }
-            this.sendMessage();
-          })
+          Button(this.isLoading ? '停止' : '发送')
+            .margin({ left: 8 })
+            .backgroundColor('#07C160')
+            .borderRadius(20)
+            .enabled(this.isLoading || this.inputText.length > 0)
+            .onClick(() => {
+              if (this.isLoading) {
+                console.info('[ChatPage] Before cancelRequest, currentRequest:', this.currentRequest ? 'exists' : 'null');
+                this.cancelRequest();
+                console.info('[ChatPage] After cancelRequest');
+                this.isLoading = false;
+                this.messages = this.messages.filter(m => !m.isLoading);
+                return;
+              }
+              this.sendMessage();
+            })
+        }
       }
-      .padding({ left: 12, right: 12, top: 8, bottom: 20 })
+      .padding({ left: 12, right: 12, top: 8, bottom: 12 })
       .backgroundColor('#F5F5F5')
     }
     .width('100%')
