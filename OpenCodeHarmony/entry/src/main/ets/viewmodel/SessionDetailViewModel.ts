@@ -34,14 +34,14 @@ export class SessionDetailViewModel {
   private currentRequest: http.HttpRequest | null = null;
   private pathSearchTimer: number = -1;
 
-  fetchRemoteSessions(backendUrl: string, authToken: string, directory: string): Promise<OpenCodeSession[]> {
+  fetchRemoteSessions(backendUrl: string, username: string, authToken: string, directory: string): Promise<OpenCodeSession[]> {
     return new Promise(async (resolve) => {
       if (!backendUrl) {
         resolve([]);
         return;
       }
       try {
-        const client = new OpenCodeApiClient(backendUrl, authToken, directory);
+        const client = new OpenCodeApiClient(backendUrl, username, authToken, directory);
         const sessions = await client.listSessions();
         console.info('[SessionDetailViewModel] Fetched remote sessions:', sessions.length);
         resolve(sessions);
@@ -52,14 +52,14 @@ export class SessionDetailViewModel {
     });
   }
 
-  fetchModels(backendUrl: string, authToken: string): Promise<OpenCodeProviderModel[]> {
+  fetchModels(backendUrl: string, username: string, authToken: string): Promise<OpenCodeProviderModel[]> {
     return new Promise(async (resolve) => {
       if (!backendUrl) {
         resolve([]);
         return;
       }
       try {
-        const client = new OpenCodeApiClient(backendUrl, authToken, '');
+        const client = new OpenCodeApiClient(backendUrl, username, authToken, '');
         const models = await client.listModels();
         console.info('[SessionDetailViewModel] Fetched models:', models.length);
         resolve(models);
@@ -72,6 +72,7 @@ export class SessionDetailViewModel {
 
   searchPaths(
     backendUrl: string,
+    username: string,
     authToken: string,
     directory: string,
     query: string,
@@ -97,7 +98,7 @@ export class SessionDetailViewModel {
       url + '?' + params,
       {
         method: http.RequestMethod.GET,
-        header: this.getHeaders(backendUrl, authToken, directory),
+        header: this.getHeaders(backendUrl, username, authToken, directory),
         connectTimeout: 5000,
         readTimeout: 5000,
       },
@@ -154,6 +155,7 @@ export class SessionDetailViewModel {
 
   listDirectory(
     backendUrl: string,
+    username: string,
     authToken: string,
     directory: string,
     path: string,
@@ -178,7 +180,7 @@ export class SessionDetailViewModel {
       url + '?' + params,
       {
         method: http.RequestMethod.GET,
-        header: this.getHeaders(backendUrl, authToken, directory),
+        header: this.getHeaders(backendUrl, username, authToken, directory),
         connectTimeout: 5000,
         readTimeout: 5000,
       },
@@ -267,6 +269,7 @@ export class SessionDetailViewModel {
     title: string,
     directory: string,
     backendUrl: string,
+    username: string,
     authToken: string,
     backendId: string,
     selectedRemoteSessionId: string,
@@ -275,7 +278,7 @@ export class SessionDetailViewModel {
     const sessionTitle = title || `${directory.split('/').pop() || directory}`;
 
     if (isEditing && editingId) {
-      this.core.updateProject(editingId, sessionTitle, backendUrl, authToken, directory, '', backendId, preferredModel);
+      this.core.updateProject(editingId, sessionTitle, backendUrl, username, authToken, directory, '', backendId, preferredModel);
       if (selectedRemoteSessionId) {
         this.core.updateRemoteSessionId(editingId, selectedRemoteSessionId);
       }
@@ -283,9 +286,9 @@ export class SessionDetailViewModel {
       AppStorage.SetOrCreate<string>('refreshSessionsNow', Date.now().toString());
       return true;
     } else {
-      const newProjectId = await this.core.addProject(sessionTitle, backendUrl, authToken, directory, '', backendId);
+      const newProjectId = await this.core.addProject(sessionTitle, backendUrl, username, authToken, directory, '', backendId);
       if (preferredModel && newProjectId) {
-        this.core.updateProject(newProjectId, sessionTitle, backendUrl, authToken, directory, '', backendId, preferredModel);
+        this.core.updateProject(newProjectId, sessionTitle, backendUrl, username, authToken, directory, '', backendId, preferredModel);
       }
       if (selectedRemoteSessionId && newProjectId) {
         this.core.updateRemoteSessionId(newProjectId, selectedRemoteSessionId);
@@ -296,13 +299,14 @@ export class SessionDetailViewModel {
     }
   }
 
-  private getHeaders(backendUrl: string, authToken: string, directory: string): Record<string, string> {
+  private getHeaders(backendUrl: string, username: string, authToken: string, directory: string): Record<string, string> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'x-opencode-directory': encodeURIComponent(directory || '/')
     };
     if (authToken) {
-      headers['Authorization'] = 'Basic ' + this.base64Encode('opencode:' + authToken);
+      const authUsername = username || 'opencode';
+      headers['Authorization'] = 'Basic ' + this.base64Encode(authUsername + ':' + authToken);
     }
     return headers;
   }

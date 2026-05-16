@@ -83,6 +83,7 @@ export struct SessionList {
               params: {
                 backendId: this.selectedBackendId,
                 backendUrl: this.backends.find(b => b.id === this.selectedBackendId)?.url || '',
+                username: this.backends.find(b => b.id === this.selectedBackendId)?.username || '',
                 authToken: this.backends.find(b => b.id === this.selectedBackendId)?.authToken || ''
               }
             });
@@ -169,6 +170,7 @@ export struct SessionList {
                   params: {
                     backendId: this.selectedBackendId,
                     backendUrl: this.backends.find(b => b.id === this.selectedBackendId)?.url || '',
+                    username: this.backends.find(b => b.id === this.selectedBackendId)?.username || '',
                     authToken: this.backends.find(b => b.id === this.selectedBackendId)?.authToken || ''
                   }
                 });
@@ -233,6 +235,7 @@ export struct SessionList {
                           params: {
                             backendId: item.backendId,
                             backendUrl: item.backendUrl,
+                            username: backend?.username || '',
                             authToken: backend?.authToken || '',
                             title: item.name,
                             directory: item.directory,
@@ -283,6 +286,7 @@ export struct SessionList {
                     sessionId: item.id,
                     sessionName: item.name,
                     backendUrl: item.backendUrl,
+                    username: this.backends.find(b => b.id === item.backendId)?.username || '',
                     authToken: this.backends.find(b => b.id === item.backendId)?.authToken || '',
                     directory: item.directory
                   }

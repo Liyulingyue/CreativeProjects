@@ -61,13 +61,14 @@ export class ChatViewModel {
     }
   }
 
-  getHeaders(backendUrl: string, authToken: string, directory: string): Record<string, string> {
+  getHeaders(backendUrl: string, authToken: string, directory: string, username?: string): Record<string, string> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'x-opencode-directory': encodeURIComponent(directory)
     };
     if (authToken) {
-      headers['Authorization'] = 'Basic ' + this.base64Encode('opencode:' + authToken);
+      const authUsername = username || 'opencode';
+      headers['Authorization'] = 'Basic ' + this.base64Encode(authUsername + ':' + authToken);
     }
     return headers;
   }
