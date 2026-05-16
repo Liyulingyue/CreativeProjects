@@ -19,6 +19,20 @@ interface MessageBody {
   agent?: string;
 }
 
+interface ErrorDetail {
+  message?: string;
+}
+
+interface ErrorResponse {
+  error?: ErrorDetail;
+  message?: string;
+}
+
+interface ErrorObject {
+  code?: number;
+  message?: string;
+}
+
 @Entry
 @Component
 struct ChatPage {
@@ -76,6 +90,15 @@ struct ChatPage {
     if (this.currentRequest) {
       this.currentRequest.destroy();
       this.currentRequest = null;
+    }
+    if (this.realSessionId && this.backendUrl) {
+      const abortUrl = `${this.backendUrl.replace(/\/+$/, '')}/session/${encodeURIComponent(this.realSessionId)}/abort`;
+      http.createHttp().request(abortUrl, {
+        method: http.RequestMethod.POST,
+        header: this.viewModel.getHeaders(this.backendUrl, this.authToken, this.directory),
+        connectTimeout: 5000,
+        readTimeout: 5000,
+      }).catch(() => {});
     }
   }
 
@@ -313,20 +336,21 @@ struct ChatPage {
     console.info('[ChatPage] body:', JSON.stringify(body));
 
     console.info('[ChatPage] About to enter try block');
+    let result: http.HttpResponse | null = null;
     try {
       console.info('[ChatPage] Inside try block, creating request');
       console.info('[ChatPage] Creating HTTP request, URL:', url);
       console.info('[ChatPage] Headers:', JSON.stringify(this.viewModel.getHeaders(this.backendUrl, this.authToken, this.directory)));
-      
-      const result = await new Promise<http.HttpResponse>((resolve, reject) => {
+
+      result = await new Promise<http.HttpResponse>((resolve, reject) => {
         this.currentRequest!.request(
           url,
           {
             method: http.RequestMethod.POST,
             header: this.viewModel.getHeaders(this.backendUrl, this.authToken, this.directory),
             extraData: JSON.stringify(body),
-            connectTimeout: 30000,
-            readTimeout: 30000,
+            connectTimeout: 60000,
+            readTimeout: 0,
           },
           (err, data) => {
             console.info('[ChatPage] HTTP callback, err:', JSON.stringify(err), 'responseCode:', data?.responseCode, 'result len:', (data?.result as string)?.length);
@@ -355,19 +379,42 @@ struct ChatPage {
           timestamp: Date.now()
         }];
       } else {
+        let errMsg = '';
+        if (result.responseCode === 429) {
+          try {
+            const body = JSON.parse(result.result as string) as ErrorResponse;
+            errMsg = body?.error?.message || body?.message || '请求频率超限';
+          } catch {
+            errMsg = '请求频率超限';
+          }
+        } else {
+          errMsg = `请求失败: HTTP ${result.responseCode}`;
+        }
         this.messages = [...this.messages, {
           id: `error-${Date.now()}`,
           role: 'assistant',
-          content: `请求失败: HTTP ${result.responseCode}`,
+          content: errMsg,
           timestamp: Date.now()
         }];
       }
     } catch (e) {
       this.messages = this.messages.filter(m => m.id !== loadingId);
+      let errMsg = '';
+      if (result && result.responseCode === 429) {
+        try {
+          const body = JSON.parse(result.result as string) as ErrorResponse;
+          errMsg = body?.error?.message || body?.message || '请求频率超限';
+        } catch {
+          errMsg = '请求频率超限';
+        }
+      } else {
+        const errObj = e as ErrorObject;
+        errMsg = errObj?.message || (typeof e === 'object' ? JSON.stringify(e) : String(e));
+      }
       this.messages = [...this.messages, {
         id: `error-${Date.now()}`,
         role: 'assistant',
-        content: `错误: ${e}`,
+        content: errMsg || `请求失败`,
         timestamp: Date.now()
       }];
     } finally {
