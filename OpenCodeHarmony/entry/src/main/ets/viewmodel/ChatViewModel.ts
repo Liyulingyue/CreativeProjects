@@ -73,6 +73,11 @@ export class ChatViewModel {
     return headers;
   }
 
+  buildUrlWithDir(baseUrl: string, path: string, directory: string): string {
+    const base = baseUrl.replace(/\/+$/, '');
+    return `${base}${path}`;
+  }
+
   private formatPartContent(part: OpenCodeMessagePart): string {
     switch (part.type) {
       case 'text':
@@ -141,7 +146,7 @@ export class ChatViewModel {
 
     this.cancelRequest();
     this.currentRequest = http.createHttp();
-    const url = `${backendUrl.replace(/\/+$/, '')}/session/${encodeURIComponent(realSessionId)}/message`;
+    const url = this.buildUrlWithDir(backendUrl, `/session/${encodeURIComponent(realSessionId)}/message`, directory);
 
     try {
       const result = await new Promise<http.HttpResponse>((resolve, reject) => {
@@ -232,7 +237,7 @@ export class ChatViewModel {
   ): Promise<void> {
     this.cancelRequest();
     this.currentRequest = http.createHttp();
-    const url = `${backendUrl.replace(/\/+$/, '')}/session/${encodeURIComponent(realSessionId)}/message`;
+    const url = this.buildUrlWithDir(backendUrl, `/session/${encodeURIComponent(realSessionId)}/message`, directory);
 
     const body: MessageBody = {
       parts: [{ type: 'text', text: text }]
