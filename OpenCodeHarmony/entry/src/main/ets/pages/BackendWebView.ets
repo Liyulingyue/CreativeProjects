@@ -42,9 +42,10 @@ struct BackendWebView {
         .width('100%')
         .layoutWeight(1)
         .onPageBegin(() => {
-          this.controller.setCustomUserAgent(
-            this.controller.getCustomUserAgent() + ' opencode-harmony/1.0'
-          );
+          const ua = this.controller.getCustomUserAgent();
+          if (!ua.includes('opencode-harmony/1.0')) {
+            this.controller.setCustomUserAgent(ua + ' opencode-harmony/1.0');
+          }
         })
     }
     .width('100%')
