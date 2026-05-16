@@ -1,5 +1,6 @@
 ﻿import { OpenCodeCore, OpenCodeMessage, SseEvent } from '../core/OpenCodeCore';
 import { ChatViewModel, DisplayMessage } from '../viewmodel/ChatViewModel';
+import { parseMessageSegments, MessageSegment, MessageSegmentType } from '../utils/MessageParser';
 import router from '@ohos.router';
 import promptAction from '@ohos.promptAction';
 
@@ -52,6 +53,7 @@ struct ChatPage {
   @State messages: DisplayMessage[] = [];
   @State inputText: string = '';
   @State isLoading: boolean = false;
+  @State collapsedIds: string[] = [];
   private scroller: Scroller = new Scroller();
   private core: OpenCodeCore = OpenCodeCore.getInstance();
   private viewModel: ChatViewModel = new ChatViewModel();
@@ -177,40 +179,90 @@ struct ChatPage {
           .fontSize(15)
           .margin({ right: 12 })
       } else {
-        Stack() {
-          Rect().fill('#07C160').width(36).height(36).borderRadius(4)
-          Text('AI')
-            .fontSize(12).fontColor('#FFFFFF').fontWeight(FontWeight.Bold)
-        }
-        .margin({ left: 12, right: 8 })
-        .alignContent(Alignment.Center)
-
-        Column() {
-          Row() {
-            LoadingProgress().width(16).height(16)
-            Text('思考中...')
-              .fontSize(13)
-              .fontColor('#888888')
-              .margin({ left: 6 })
+        Row() {
+          Stack() {
+            Rect().fill('#07C160').width(36).height(36).borderRadius(4)
+            Text('AI')
+              .fontSize(12).fontColor('#FFFFFF').fontWeight(FontWeight.Bold)
           }
-          Text('如果长时间没有回复，请检查目标模型是否欠费或速率限制...')
-            .fontSize(10)
-            .fontColor('#BBBBBB')
-            .margin({ top: 6, left: 22 })
-        }
-        .padding(12)
-        .backgroundColor('#FFFFFF')
-        .borderRadius({ topLeft: 2, topRight: 8, bottomLeft: 8, bottomRight: 8 })
-        .alignItems(HorizontalAlign.Start)
-        .visibility(msg.isLoading ? Visibility.Visible : Visibility.None)
+          .margin({ right: 8 })
+          .alignContent(Alignment.Center)
 
-        Text(msg.content)
-          .padding(12)
-          .backgroundColor('#FFFFFF')
-          .borderRadius({ topLeft: 2, topRight: 8, bottomLeft: 8, bottomRight: 8 })
-          .constraintSize({ maxWidth: '75%' })
-          .fontSize(15)
-          .visibility(msg.isLoading ? Visibility.None : Visibility.Visible)
+          Column() {
+            if (msg.isLoading) {
+              Column() {
+                Row() {
+                  LoadingProgress().width(16).height(16)
+                  Text('思考中...')
+                    .fontSize(13)
+                    .fontColor('#888888')
+                    .margin({ left: 6 })
+                }
+                Text('如果长时间没有回复，请检查目标模型是否欠费或速率限制...')
+                  .fontSize(10)
+                  .fontColor('#BBBBBB')
+                  .margin({ top: 6, left: 22 })
+              }
+              .padding(12)
+              .backgroundColor('#FFFFFF')
+              .borderRadius({ topLeft: 2, topRight: 8, bottomLeft: 8, bottomRight: 8 })
+              .alignItems(HorizontalAlign.Start)
+            } else {
+              Column() {
+                ForEach(parseMessageSegments(msg.content), (segment: MessageSegment, index: number) => {
+                  if (segment.type === MessageSegmentType.TEXT) {
+                    if (segment.content.trim().length > 0) {
+                      Text(segment.content)
+                        .fontSize(15)
+                        .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+                    }
+                  } else {
+                    Column() {
+                      Row() {
+                        Text('执行过程' + (this.collapsedIds.indexOf(`${msg.id}_${index}`) === -1 ? ' (展开)' : ' (收起)'))
+                          .fontSize(10)
+                          .fontColor('#999999')
+                      }
+                      .width('100%')
+                      .justifyContent(FlexAlign.Center)
+                      .padding({ top: 6, bottom: 6 })
+                      .backgroundColor('#F0F0F0')
+                      .borderRadius(4)
+                      .onClick(() => {
+                        const key = `${msg.id}_${index}`;
+                        const idx = this.collapsedIds.indexOf(key);
+                        if (idx === -1) {
+                          this.collapsedIds.push(key);
+                        } else {
+                          this.collapsedIds.splice(idx, 1);
+                        }
+                      })
+
+                      if (this.collapsedIds.indexOf(`${msg.id}_${index}`) !== -1) {
+                        Text(segment.content)
+                          .fontSize(12)
+                          .fontColor('#777777')
+                          .padding(10)
+                          .width('100%')
+                          .textAlign(TextAlign.Start)
+                      }
+                    }
+                    .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+                  }
+                }, (segment: MessageSegment, index: number) => `${msg.id}_${index}`)
+              }
+              .backgroundColor('#FFFFFF')
+              .borderRadius({ topLeft: 2, topRight: 8, bottomLeft: 8, bottomRight: 8 })
+              .alignItems(HorizontalAlign.Start)
+            }
+          }
+          .layoutWeight(1)
+          .constraintSize({ maxWidth: '80%' })
+        }
+        .width('100%')
+        .padding({ left: 12, right: 12 })
+        .alignItems(VerticalAlign.Top)
+        
         Blank()
       }
     }
