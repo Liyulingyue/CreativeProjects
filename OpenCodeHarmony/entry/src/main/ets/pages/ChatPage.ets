@@ -117,6 +117,7 @@ struct ChatPage {
   @State sessionId: string = '';
   @State sessionName: string = '会话';
   @State backendUrl: string = '';
+  @State username: string = '';
   @State authToken: string = '';
   @State directory: string = '/';
   @State messages: DisplayMessage[] = [];
@@ -170,6 +171,7 @@ struct ChatPage {
       this.sessionId = (params['sessionId'] as string) || '';
       this.sessionName = (params['sessionName'] as string) || '会话';
       this.backendUrl = (params['backendUrl'] as string) || '';
+      this.username = (params['username'] as string) || '';
       this.authToken = (params['authToken'] as string) || '';
       this.directory = (params['directory'] as string) || '/';
       const project = this.core.getProjectById(this.sessionId);
@@ -419,6 +421,7 @@ struct ChatPage {
                 title: this.sessionName,
                 backendId: project?.backendId || '',
                 backendUrl: this.backendUrl,
+                username: this.username,
                 authToken: this.authToken,
                 directory: this.directory,
                 isEditing: true
@@ -494,7 +497,7 @@ struct ChatPage {
       try {
         const project = this.core.getProjectById(this.sessionId);
         const preferredModel = project?.preferredModel;
-        const resp = await this.core.createBackendSession(this.backendUrl, this.authToken, this.directory, this.sessionName, preferredModel);
+        const resp = await this.core.createBackendSession(this.backendUrl, this.username, this.authToken, this.directory, this.sessionName, preferredModel);
         if (resp && resp.id) {
           this.realSessionId = resp.id;
           this.core.setCurrentSession(resp.id);
@@ -563,7 +566,7 @@ struct ChatPage {
           url,
           {
             method: http.RequestMethod.POST,
-            header: this.viewModel.getHeaders(this.backendUrl, this.authToken, this.directory),
+            header: this.viewModel.getHeaders(this.backendUrl, this.username, this.authToken, this.directory),
             extraData: JSON.stringify(body),
             connectTimeout: 120000,
             readTimeout: 120000,
@@ -644,7 +647,7 @@ struct ChatPage {
       url,
       {
         method: http.RequestMethod.GET,
-        header: this.viewModel.getHeaders(this.backendUrl, this.authToken, this.directory),
+        header: this.viewModel.getHeaders(this.backendUrl, this.username, this.authToken, this.directory),
         connectTimeout: 10000,
         readTimeout: 10000,
       },
@@ -744,7 +747,7 @@ struct ChatPage {
     this.stopSse();
     const req = http.createHttp();
     const url = `${this.backendUrl.replace(/\/+$/, '')}/event`;
-    const headers = this.viewModel.getHeaders(this.backendUrl, this.authToken, this.directory);
+    const headers = this.viewModel.getHeaders(this.backendUrl, this.username, this.authToken, this.directory);
     headers['Accept'] = 'text/event-stream';
 
     req.on('dataReceive', (data: ArrayBuffer) => {
@@ -1005,7 +1008,7 @@ struct ChatPage {
       url,
       {
         method: http.RequestMethod.POST,
-        header: this.viewModel.getHeaders(this.backendUrl, this.authToken, this.directory),
+        header: this.viewModel.getHeaders(this.backendUrl, this.username, this.authToken, this.directory),
         connectTimeout: 10000,
         readTimeout: 10000,
       },

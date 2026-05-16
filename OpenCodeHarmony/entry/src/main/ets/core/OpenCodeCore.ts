@@ -9,6 +9,7 @@ export interface OpenCodeProject {
   id: string;
   name: string;
   url: string;
+  username: string;
   authToken: string;
   path: string;
   notes: string;
@@ -31,6 +32,7 @@ export interface ChatSession {
 export interface OpenCodeBackend {
   id: string;
   url: string;
+  username: string;
   authToken: string;
   notes: string;
 }
@@ -110,11 +112,12 @@ export class OpenCodeCore {
     return this.projects;
   }
 
-  public async addProject(name: string, url: string, authToken: string, path: string, notes: string = '', backendId: string = ''): Promise<string> {
+  public async addProject(name: string, url: string, username: string, authToken: string, path: string, notes: string = '', backendId: string = ''): Promise<string> {
     const newProject: OpenCodeProject = {
       id: Date.now().toString(),
       name: name,
       url: url,
+      username: username,
       authToken: authToken,
       path: path,
       notes: notes,
@@ -127,16 +130,16 @@ export class OpenCodeCore {
     return newProject.id;
   }
 
-  public addProjectWithBackend(name: string, backendUrl: string, backendAuthToken: string, path: string, notes: string = ''): void {
+  public addProjectWithBackend(name: string, backendUrl: string, backendUsername: string, backendAuthToken: string, path: string, notes: string = ''): void {
     const backend = this.backends.find(b => b.url === backendUrl);
-    this.addProject(name, backendUrl, backendAuthToken, path, notes, backend?.id ?? '');
+    this.addProject(name, backendUrl, backendUsername, backendAuthToken, path, notes, backend?.id ?? '');
   }
 
   public getProjectById(id: string): OpenCodeProject | undefined {
     return this.projects.find(p => p.id === id);
   }
 
-  public updateProject(id: string, name: string, url: string, authToken: string, path: string, notes: string = '', backendId: string = '', preferredModel?: string): void {
+  public updateProject(id: string, name: string, url: string, username: string, authToken: string, path: string, notes: string = '', backendId: string = '', preferredModel?: string): void {
     const index = this.projects.findIndex(p => p.id === id);
     if (index !== -1) {
       const backend = this.backends.find(b => b.url === url);
@@ -144,6 +147,7 @@ export class OpenCodeCore {
         ...this.projects[index],
         name,
         url,
+        username,
         authToken,
         path,
         notes,
@@ -166,7 +170,7 @@ export class OpenCodeCore {
     const project = this.projects.find(p => p.id === id);
     if (project) {
       project.lastAccess = Date.now();
-      this.apiClient.updateConfig(project.url, project.authToken, project.path);
+      this.apiClient.updateConfig(project.url, project.username, project.authToken, project.path);
     }
   }
 
@@ -190,7 +194,7 @@ export class OpenCodeCore {
   public async storeBackendUrl(url: string): Promise<void> {
     console.info(`[OpenCodeCore] Backend URL updated from JS: ${url}`);
     if (this.projects.length === 0) {
-      await this.addProject('Default Project', url, '', '/', '', '');
+      await this.addProject('Default Project', url, '', '', '/', '', '');
     }
   }
 
@@ -220,10 +224,11 @@ export class OpenCodeCore {
     return this.backends;
   }
 
-  public async addBackend(url: string, authToken: string, notes: string): Promise<void> {
+  public async addBackend(url: string, username: string, authToken: string, notes: string): Promise<void> {
     this.backends.push({
       id: Date.now().toString(),
       url,
+      username,
       authToken,
       notes,
     });
@@ -235,10 +240,10 @@ export class OpenCodeCore {
     await this.saveBackends();
   }
 
-  public async updateBackend(id: string, url: string, authToken: string, notes: string): Promise<void> {
+  public async updateBackend(id: string, url: string, username: string, authToken: string, notes: string): Promise<void> {
     const index = this.backends.findIndex(b => b.id === id);
     if (index !== -1) {
-      this.backends[index] = { ...this.backends[index], url, authToken, notes };
+      this.backends[index] = { ...this.backends[index], url, username, authToken, notes };
       await this.saveBackends();
     }
   }
@@ -268,23 +273,25 @@ export class OpenCodeCore {
   }
 
   public async updateSession(id: string, name: string, backendUrl: string, directory: string): Promise<void> {
-    this.updateProject(id, name, backendUrl, '', directory, '');
+    const project = this.projects.find(p => p.id === id);
+    const username = project?.username ?? '';
+    this.updateProject(id, name, backendUrl, username, '', directory, '');
   }
 
   public async removeSession(id: string): Promise<void> {
     this.removeProject(id);
   }
 
-  public async refreshSessionsFromBackend(backendUrl: string, authToken: string, directory: string): Promise<OpenCodeSession[]> {
+  public async refreshSessionsFromBackend(backendUrl: string, username: string, authToken: string, directory: string): Promise<OpenCodeSession[]> {
     console.info('[OpenCodeCore] refreshSessionsFromBackend:', backendUrl, authToken ? 'with token' : 'no token', directory);
-    this.apiClient.updateConfig(backendUrl, authToken, directory);
+    this.apiClient.updateConfig(backendUrl, username, authToken, directory);
     const sessions = await this.apiClient.listSessions();
     console.info('[OpenCodeCore] listSessions result:', sessions.length);
     return sessions;
   }
 
-  public async createBackendSession(backendUrl: string, authToken: string, directory: string, title?: string, preferredModel?: string): Promise<OpenCodeSession | null> {
-    this.apiClient.updateConfig(backendUrl, authToken, directory);
+  public async createBackendSession(backendUrl: string, username: string, authToken: string, directory: string, title?: string, preferredModel?: string): Promise<OpenCodeSession | null> {
+    this.apiClient.updateConfig(backendUrl, username, authToken, directory);
     return await this.apiClient.createSession(title, undefined, preferredModel);
   }
 

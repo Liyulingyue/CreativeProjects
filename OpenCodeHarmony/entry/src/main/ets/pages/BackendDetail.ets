@@ -11,6 +11,7 @@ interface HealthResponse {
 @Component
 struct BackendDetail {
   @State url: string = 'http://';
+  @State username: string = '';
   @State authToken: string = '';
   @State notes: string = '';
   @State isEdit: boolean = false;
@@ -26,6 +27,7 @@ struct BackendDetail {
       this.isEdit = true;
       this.editId = params['id'] as string;
       this.url = (params['url'] as string) || 'http://';
+      this.username = (params['username'] as string) || '';
       this.authToken = (params['authToken'] as string) || '';
       this.notes = (params['notes'] as string) || '';
     }
@@ -43,7 +45,8 @@ struct BackendDetail {
     const request = http.createHttp();
     const headers: Record<string, string> = {};
     if (this.authToken) {
-      headers['Authorization'] = 'Basic ' + this.base64Encode('opencode:' + this.authToken);
+      const authUsername = this.username || 'opencode';
+      headers['Authorization'] = 'Basic ' + this.base64Encode(authUsername + ':' + this.authToken);
     }
     request.request(
       normalizedUrl + '/global/health',
@@ -104,9 +107,9 @@ struct BackendDetail {
     }
     const normalizedUrl = this.url.endsWith('/') ? this.url.slice(0, -1) : this.url;
     if (this.isEdit) {
-      await this.core.updateBackend(this.editId, normalizedUrl, this.authToken, this.notes);
+      await this.core.updateBackend(this.editId, normalizedUrl, this.username, this.authToken, this.notes);
     } else {
-      await this.core.addBackend(normalizedUrl, this.authToken, this.notes);
+      await this.core.addBackend(normalizedUrl, this.username, this.authToken, this.notes);
     }
     AppStorage.SetOrCreate<string>('needRefreshBackends', 'true');
     router.back();
@@ -144,6 +147,22 @@ struct BackendDetail {
             .margin({ bottom: 8 })
           TextInput({ placeholder: 'http://192.168.1.5:3000', text: this.url })
             .onChange(v => this.url = v)
+            .height(44)
+            .backgroundColor('#F5F5F5')
+            .borderRadius(8)
+        }
+        .width('100%')
+        .alignItems(HorizontalAlign.Start)
+        .margin({ bottom: 20 })
+
+        // 鉴权用户名
+        Column() {
+          Text('鉴权用户名')
+            .fontSize(13)
+            .fontColor('#999999')
+            .margin({ bottom: 8 })
+          TextInput({ placeholder: '可选，默认为 opencode', text: this.username })
+            .onChange(v => this.username = v)
             .height(44)
             .backgroundColor('#F5F5F5')
             .borderRadius(8)

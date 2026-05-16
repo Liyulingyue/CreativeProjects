@@ -87,18 +87,21 @@ export interface TextPartInput {
 
 export class OpenCodeApiClient {
   private baseUrl: string = '';
+  private username: string = '';
   private authToken: string = '';
   private directory: string = '';
   private currentRequest: http.HttpRequest | null = null;
 
-  constructor(baseUrl: string = '', authToken: string = '', directory: string = '') {
+  constructor(baseUrl: string = '', username: string = '', authToken: string = '', directory: string = '') {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
+    this.username = username;
     this.authToken = authToken;
     this.directory = directory;
   }
 
-  updateConfig(baseUrl: string, authToken: string, directory: string) {
+  updateConfig(baseUrl: string, username: string, authToken: string, directory: string) {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
+    this.username = username;
     this.authToken = authToken;
     this.directory = directory;
   }
@@ -109,7 +112,8 @@ export class OpenCodeApiClient {
       'x-opencode-directory': encodeURIComponent(this.directory)
     };
     if (this.authToken) {
-      headers['Authorization'] = 'Basic ' + this.base64Encode('opencode:' + this.authToken);
+      const authUsername = this.username || 'opencode';
+      headers['Authorization'] = 'Basic ' + this.base64Encode(authUsername + ':' + this.authToken);
     }
     return headers;
   }
@@ -139,41 +143,42 @@ export class OpenCodeApiClient {
     this.cancelRequest();
     this.currentRequest = http.createHttp();
     const url = this.baseUrl + '/experimental/session';
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (this.authToken) {
-      headers['Authorization'] = 'Basic ' + this.base64Encode('opencode:' + this.authToken);
-    }
-    try {
-      const result = await new Promise<http.HttpResponse>((resolve, reject) => {
-        this.currentRequest!.request(
-          url,
-          {
-            method: http.RequestMethod.GET,
-            header: headers,
-            connectTimeout: 10000,
-            readTimeout: 10000,
-          },
-          (err, data) => {
-            if (err) reject(err);
-            else resolve(data);
-          }
-        );
-      });
-      if (result.responseCode === 200) {
-        const res = JSON.parse(result.result as string) as OpenCodeSession[];
-        return res.map(s => ({
-          ...s,
-          title: `[${s.slug || s.id}] ${s.title || s.slug || '未命名会话'}`
-        }));
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (this.authToken) {
+        const authUsername = this.username || 'opencode';
+        headers['Authorization'] = 'Basic ' + this.base64Encode(authUsername + ':' + this.authToken);
       }
-      return [];
-    } catch (e) {
-      console.error('[OpenCodeApiClient] listSessions error:', e);
-      return [];
-    } finally {
-      this.cancelRequest();
+      try {
+        const result = await new Promise<http.HttpResponse>((resolve, reject) => {
+          this.currentRequest!.request(
+            url,
+            {
+              method: http.RequestMethod.GET,
+              header: headers,
+              connectTimeout: 10000,
+              readTimeout: 10000,
+            },
+            (err, data) => {
+              if (err) reject(err);
+              else resolve(data);
+            }
+          );
+        });
+        if (result.responseCode === 200) {
+          const res = JSON.parse(result.result as string) as OpenCodeSession[];
+          return res.map(s => ({
+            ...s,
+            title: `[${s.slug || s.id}] ${s.title || s.slug || '未命名会话'}`
+          }));
+        }
+        return [];
+      } catch (e) {
+        console.error('[OpenCodeApiClient] listSessions error:', e);
+        return [];
+      } finally {
+        this.cancelRequest();
+      }
     }
-  }
 
   async listModels(): Promise<OpenCodeProviderModel[]> {
     if (!this.baseUrl) return [];
@@ -181,7 +186,8 @@ export class OpenCodeApiClient {
       const url = this.baseUrl + '/provider';
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (this.authToken) {
-        headers['Authorization'] = 'Basic ' + this.base64Encode('opencode:' + this.authToken);
+        const authUsername = this.username || 'opencode';
+        headers['Authorization'] = 'Basic ' + this.base64Encode(authUsername + ':' + this.authToken);
       }
 
       const result = await new Promise<http.HttpResponse>((resolve, reject) => {
