@@ -60,6 +60,20 @@ interface SessionStatusEntry {
   type: string;
 }
 
+interface SessionInfoTime {
+  updated?: number;
+}
+
+interface SessionInfoTokens {
+  input?: number;
+  output?: number;
+}
+
+interface SessionInfo {
+  time?: SessionInfoTime;
+  tokens?: SessionInfoTokens;
+}
+
 interface SseEventProperties {
   sessionID?: string;
   status?: SseEventStatus;
@@ -123,6 +137,8 @@ struct ChatPage {
   @State messages: DisplayMessage[] = [];
   @State inputText: string = '';
   @State isLoading: boolean = false;
+  @State pollTimeout: boolean = false;
+  @State timeoutErrorMsg: string = '';
   private scroller: Scroller = new Scroller();
   private core: OpenCodeCore = OpenCodeCore.getInstance();
   private viewModel: ChatViewModel = new ChatViewModel();
@@ -145,6 +161,7 @@ struct ChatPage {
   private messageInfos: Map<string, OpenCodeMessageInfo> = new Map();
   private messageParts: Map<string, OpenCodeMessagePart[]> = new Map();
   private pollTimer: number = -1; // 轮询定时器
+  private pollRetryCount: number = 0;
 
   private logAlign(stage: string, extras?: LogExtras) {
     const base = [
@@ -234,6 +251,8 @@ struct ChatPage {
   }
 
   private stopCurrentRunByUser() {
+    this.pollTimeout = false;
+    this.timeoutErrorMsg = '';
     this.clearPendingState();
     this.abortSessionBestEffort('user');
     this.scrollToBottom();
@@ -330,7 +349,7 @@ struct ChatPage {
   }
 
   private replaceMessagesFromServer(msgs: OpenCodeMessage[]) {
-    this.messages = msgs
+    const displayMessages = msgs
       .sort((a, b) => a.info.time.created - b.info.time.created)
       .map((msg, i): DisplayMessage => ({
         id: msg.info.id || `msg-${i}`,
@@ -338,6 +357,10 @@ struct ChatPage {
         content: this.viewModel.formatMessage(msg),
         timestamp: msg.info.time.created
       }));
+    this.messages = displayMessages;
+    for (let i = 0; i < displayMessages.length; i++) {
+      console.info(`[ChatPage] displayMsg[${i}] id=${displayMessages[i].id} role=${displayMessages[i].role} contentLen=${displayMessages[i].content.length} content='${displayMessages[i].content.substring(0, 80)}'`);
+    }
   }
 
   private scrollToBottom() {
@@ -457,6 +480,35 @@ struct ChatPage {
       .scrollBar(BarState.Off)
       .align(Alignment.Top)
 
+      if (this.pollTimeout) {
+        Row() {
+          Text('⚠️ ' + this.timeoutErrorMsg)
+            .fontSize(13)
+            .fontColor('#D32F2F')
+            .layoutWeight(1)
+          Button('新建会话')
+            .fontSize(12)
+            .height(28)
+            .padding({ left: 8, right: 8 })
+            .backgroundColor('#FF5722')
+            .borderRadius(14)
+            .fontColor('#FFFFFF')
+            .onClick(() => {
+              this.pollTimeout = false;
+              this.timeoutErrorMsg = '';
+              this.messages = [];
+              this.realSessionId = '';
+              this.inputText = '';
+              this.isLoading = false;
+              router.back();
+            })
+        }
+        .width('100%')
+        .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+        .backgroundColor('#FFF3E0')
+        .alignItems(VerticalAlign.Center)
+      }
+
       Row() {
         TextInput({ placeholder: '发送指令...', text: this.inputText })
           .layoutWeight(1)
@@ -470,8 +522,12 @@ struct ChatPage {
           .margin({ left: 8 })
           .backgroundColor('#07C160')
           .borderRadius(20)
-          .enabled(this.isLoading || this.inputText.length > 0)
+          .enabled(this.isLoading || this.inputText.length > 0 || this.pollTimeout)
           .onClick(() => {
+            if (this.pollTimeout) {
+              this.pollTimeout = false;
+              this.timeoutErrorMsg = '';
+            }
             if (this.isLoading) {
               this.stopCurrentRunByUser();
               return;
@@ -488,6 +544,8 @@ struct ChatPage {
 
   // ==================== 发送消息 ====================
   private async sendMessage() {
+    this.pollTimeout = false;
+    this.timeoutErrorMsg = '';
     const text = this.inputText.trim();
     if (!text) {
       if (this.isLoading) {
@@ -546,10 +604,14 @@ struct ChatPage {
 
     this.cancelRequest();
     this.currentRequest = http.createHttp();
-    const url = `${this.backendUrl.replace(/\/+$/, '')}/session/${encodeURIComponent(this.realSessionId)}/prompt_async`;
+    const url = this.viewModel.buildUrlWithDir(this.backendUrl, `/session/${encodeURIComponent(this.realSessionId)}/prompt_async`, this.directory);
+    console.info('[ChatPage] prompt_async url=' + url);
 
     const body = this.buildPromptBody(text, promptMessageId);
-    console.info('[ChatPage] prompt_async request prepared');
+    const bodyStr = JSON.stringify(body);
+    console.info('[ChatPage] prompt_async request prepared, bodyStrLen=' + bodyStr.length + ' body=' + bodyStr);
+    const headers = this.viewModel.getHeaders(this.backendUrl, this.authToken, this.directory, this.username);
+    console.info('[ChatPage] prompt_async headers=' + JSON.stringify(headers));
 
     try {
       const result = await new Promise<http.HttpResponse>((resolve, reject) => {
@@ -558,7 +620,7 @@ struct ChatPage {
           {
             method: http.RequestMethod.POST,
             header: this.viewModel.getHeaders(this.backendUrl, this.authToken, this.directory, this.username),
-            extraData: JSON.stringify(body),
+            extraData: bodyStr,
             connectTimeout: 120000,
             readTimeout: 120000,
           },
@@ -569,20 +631,24 @@ struct ChatPage {
         );
       });
 
+      const rawBody = typeof result.result === 'string' ? result.result : JSON.stringify(result.result);
+      console.info('[ChatPage] prompt_async response code=', result.responseCode, 'rawBodyLen=', rawBody.length, 'rawBody=', rawBody);
       if (result.responseCode === 200 || result.responseCode === 204) {
-        console.info('[ChatPage] prompt_async accepted, code=', result.responseCode);
         this.lastStatusType = 'unknown';
         this.promptAccepted = true;
         console.info('[ChatPage] prompt_async accepted');
+        this.fetchSessionStatus();
+        this.fetchAgents();
+        this.fetchProviders();
         this.startPolling();
       } else {
-        console.warn('[ChatPage] prompt_async rejected, code=', result.responseCode);
+        console.warn('[ChatPage] prompt_async rejected, code=', result.responseCode, 'body=', result.result);
         this.clearPendingState(true);
         this.abortSessionBestEffort('prompt_async.rejected');
         this.messages = [...this.messages, {
           id: `error-${Date.now()}`,
           role: 'assistant',
-          content: `请求失败: HTTP ${result.responseCode}`,
+          content: `请求失败: HTTP ${result.responseCode}: ${result.result}`,
           timestamp: Date.now()
         }];
       }
@@ -605,14 +671,127 @@ struct ChatPage {
   // ==================== 轮询获取助理回复 ====================
   private startPolling() {
     if (this.pollTimer !== -1) return;
+    this.pollRetryCount = 0;
     console.info('[ChatPage] startPolling');
     this.pollTimer = setInterval(() => {
+      if (this.pollTimer === -1) {
+        console.info('[ChatPage] poll timer was cleared, skip');
+        return;
+      }
       if (!this.realSessionId || !this.promptAccepted) {
         console.info('[ChatPage] poll: session not ready, skip');
         return;
       }
-      this.fetchAndRefreshMessages(this.currentPromptMessageId, this.loadingMsgId, 0);
-    }, 2000); // 每2秒轮询一次
+      const retry = this.pollRetryCount++;
+      this.fetchSessionStatus();
+      this.fetchSessionInfo();
+      this.fetchAndRefreshMessages(this.currentPromptMessageId, this.loadingMsgId, retry);
+    }, 5000); // 每5秒轮询一次
+  }
+
+  private fetchSessionStatus() {
+    const req = http.createHttp();
+    const url = this.viewModel.buildUrlWithDir(this.backendUrl, '/session/status', this.directory);
+    req.request(
+      url,
+      {
+        method: http.RequestMethod.GET,
+        header: this.viewModel.getHeaders(this.backendUrl, this.authToken, this.directory, this.username),
+        connectTimeout: 5000,
+        readTimeout: 5000,
+      },
+      (err, data) => {
+        req.destroy();
+        if (err || data.responseCode !== 200) {
+          console.info(`[ChatPage] session status error code=${data.responseCode} err=${err}`);
+          return;
+        }
+        try {
+          const status = JSON.parse(data.result as string) as Record<string, SessionStatusEntry>;
+          const ourSession = status[this.realSessionId || ''] as SessionStatusEntry;
+          console.info(`[ChatPage] session status raw=${data.result} ourSession=${JSON.stringify(ourSession)}`);
+        } catch (e) {
+          console.info(`[ChatPage] session status parse error: ${e}, raw=${data.result}`);
+        }
+      }
+    );
+  }
+
+  private fetchSessionInfo() {
+    if (!this.realSessionId) return;
+    const req = http.createHttp();
+    const url = this.viewModel.buildUrlWithDir(this.backendUrl, `/session/${encodeURIComponent(this.realSessionId)}`, this.directory);
+    req.request(
+      url,
+      {
+        method: http.RequestMethod.GET,
+        header: this.viewModel.getHeaders(this.backendUrl, this.authToken, this.directory, this.username),
+        connectTimeout: 5000,
+        readTimeout: 5000,
+      },
+      (err, data) => {
+        req.destroy();
+        if (err || data.responseCode !== 200) {
+          console.info(`[ChatPage] session info error code=${data.responseCode} err=${err}`);
+          return;
+        }
+        try {
+          const info = JSON.parse(data.result as string) as SessionInfo;
+          console.info(`[ChatPage] session info updated=${info.time?.updated} inputTokens=${info.tokens?.input} outputTokens=${info.tokens?.output}`);
+        } catch (e) {
+          console.info(`[ChatPage] session info raw=${data.result}`);
+        }
+      }
+    );
+  }
+
+  private fetchAgents() {
+    const req = http.createHttp();
+    const url = this.viewModel.buildUrlWithDir(this.backendUrl, '/agent', this.directory);
+    req.request(
+      url,
+      {
+        method: http.RequestMethod.GET,
+        header: this.viewModel.getHeaders(this.backendUrl, this.authToken, this.directory, this.username),
+        connectTimeout: 5000,
+        readTimeout: 5000,
+      },
+      (err, data) => {
+        req.destroy();
+        if (err || data.responseCode !== 200) {
+          console.info(`[ChatPage] agents error code=${data.responseCode} err=${err}`);
+          return;
+        }
+        try {
+          const agents = JSON.parse(data.result as string) as Record<string, string>[];
+          console.info(`[ChatPage] agents count=${agents.length} agents=${JSON.stringify(agents.map((a: Record<string, string>) => a.name))}`);
+        } catch (e) {
+          console.info(`[ChatPage] agents raw=${data.result}`);
+        }
+      }
+    );
+  }
+
+  private fetchProviders() {
+    const req = http.createHttp();
+    const url = `${this.backendUrl.replace(/\/+$/, '')}/provider`;
+    req.request(
+      url,
+      {
+        method: http.RequestMethod.GET,
+        header: this.viewModel.getHeaders(this.backendUrl, this.authToken, this.directory, this.username),
+        connectTimeout: 5000,
+        readTimeout: 5000,
+      },
+      (err, data) => {
+        req.destroy();
+        if (err || data.responseCode !== 200) {
+          console.info(`[ChatPage] providers error code=${data.responseCode} err=${err}`);
+          return;
+        }
+        console.info(`[ChatPage] providers raw=${data.result}`);
+      }
+    );
   }
 
   private stopPolling() {
@@ -630,7 +809,7 @@ struct ChatPage {
     console.info('[ChatPage] fetchAndRefreshMessages retry=', retryCount, 'promptId=', effectivePromptMessageId, 'loadingId=', effectiveLoadingMessageId);
 
     const req = http.createHttp();
-    const url = `${this.backendUrl.replace(/\/+$/, '')}/session/${encodeURIComponent(this.realSessionId)}/message`;
+    const url = this.viewModel.buildUrlWithDir(this.backendUrl, `/session/${encodeURIComponent(this.realSessionId)}/message`, this.directory);
     req.request(
       url,
       {
@@ -647,32 +826,55 @@ struct ChatPage {
           return;
         }
         try {
-          const msgs = JSON.parse(data.result as string) as OpenCodeMessage[];
-          console.info('[ChatPage] fetch got', msgs.length, 'messages');
+          const rawStr = data.result as string;
+          const msgs = JSON.parse(rawStr) as OpenCodeMessage[];
+          console.info('[ChatPage] fetch got', msgs.length, 'messages rawLen=', rawStr.length);
+          const sortedMsgs = [...msgs].sort((a, b) => a.info.time.created - b.info.time.created);
+          for (let i = Math.max(0, sortedMsgs.length - 5); i < sortedMsgs.length; i++) {
+            const m = sortedMsgs[i];
+            const textPart = m.parts?.find(p => p.type === 'text');
+            console.info(`[ChatPage] msg[${i}] id=${m.info.id} role=${m.info.role} text='${textPart?.text ?? ''}'`);
+          }
           this.resetMessageCacheFromServer(msgs);
           this.replaceMessagesFromServer(msgs);
-          const hasPromptMessage = effectivePromptMessageId
-            ? msgs.some(m => m.info.id === effectivePromptMessageId)
-            : false;
-          const hasRenderableAssistant = msgs.some(m => {
-            if (m.info.role !== 'assistant') return false;
-            const content = this.viewModel.formatMessage(m);
+          const promptIdx = effectivePromptMessageId
+            ? sortedMsgs.findIndex(m => m.info.id === effectivePromptMessageId)
+            : -1;
+          const hasPromptMessage = promptIdx >= 0;
+          const followingAssistant = promptIdx >= 0
+            ? sortedMsgs.slice(promptIdx + 1).find(m => m.info.role === 'assistant')
+            : null;
+          const hasRenderableAssistant = !!followingAssistant && (() => {
+            const content = this.viewModel.formatMessage(followingAssistant);
+            console.info(`[ChatPage] followingAssistant msg=${followingAssistant.info.id} formatMessage='${content.substring(0, 80)}'`);
             return !!content && content.trim().length > 0;
-          });
+          })();
 
           if (hasPromptMessage && hasRenderableAssistant) {
             console.info('[ChatPage] reply synced from server');
+            this.pollTimeout = false;
+            this.timeoutErrorMsg = '';
             this.clearPendingState(false);
             this.stopPolling();
             this.scrollToBottom();
-          } else if (retryCount < 10) {
-            // 没拿到，继续轮询（最多10次 = 20秒）
-            console.info('[ChatPage] assistant not ready, will retry');
-            // 不做任何事，保持思考中，等待下一次轮询
+          } else if (retryCount < 20) {
+            if (!hasPromptMessage && retryCount >= 3) {
+              console.warn('[ChatPage] prompt message not on server after 3 retries, giving up');
+              this.pollTimeout = true;
+              this.timeoutErrorMsg = '消息未能发送到服务器，请检查网络或服务器状态';
+              this.isLoading = false;
+              this.clearPendingState(true);
+              this.scrollToBottom();
+            } else {
+              console.info(`[ChatPage] assistant not ready, promptIdx=${promptIdx} followingAssistant=${followingAssistant?.info.id ?? 'none'}, will retry`);
+            }
           } else {
-            // 轮询超时，保持思考中
-            console.info('[ChatPage] poll timeout, keep thinking');
-            this.isLoading = true;
+            console.info('[ChatPage] poll timeout, giving up');
+            this.pollTimeout = true;
+            this.timeoutErrorMsg = 'AI 响应超时，服务器可能正忙。请稍后重试或创建新会话。';
+            this.isLoading = false;
+            this.clearPendingState(true);
+            this.stopPolling();
             this.scrollToBottom();
           }
         } catch (e) {
@@ -960,7 +1162,7 @@ struct ChatPage {
     }
 
     const req = http.createHttp();
-    const url = `${this.backendUrl.replace(/\/+$/, '')}/session/${encodeURIComponent(this.realSessionId)}/abort`;
+    const url = this.viewModel.buildUrlWithDir(this.backendUrl, `/session/${encodeURIComponent(this.realSessionId)}/abort`, this.directory);
     console.info('[ChatPage] abort.request.', stage);
     req.request(
       url,
