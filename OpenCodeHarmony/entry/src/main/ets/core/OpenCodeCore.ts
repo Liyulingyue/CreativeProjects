@@ -1,6 +1,7 @@
 import dataPreferences from '@ohos.data.preferences';
 import common from '@ohos.app.ability.common';
 import http from '@ohos.net.http';
+import util from '@ohos.util';
 import { OpenCodeApiClient, OpenCodeSession, OpenCodeMessage } from './OpenCodeApiClient';
 
 export { OpenCodeSession, OpenCodeMessage, OpenCodeProviderModel } from './OpenCodeApiClient';
@@ -49,6 +50,30 @@ export interface PendingMessage {
 
 export type MessageCallback = (result: { response: OpenCodeMessage | null; error: string | null; loadingId: string }) => void;
 
+export interface SseEvent {
+  type: string;
+  properties?: {
+    sessionID?: string;
+    status?: {
+      type: string;
+      attempt?: number;
+      message?: string;
+      next?: number;
+    };
+    error?: Record<string, Object>;
+    part?: OpenCodeMessage;
+    delta?: string;
+    requestID?: string;
+    permission?: string;
+    patterns?: string[];
+    metadata?: Record<string, Object>;
+    always?: string[];
+  };
+  directory?: string;
+}
+
+export type SseEventCallback = (event: SseEvent) => void;
+
 export class OpenCodeCore {
   private static instance: OpenCodeCore;
   private projects: OpenCodeProject[] = [];
@@ -64,6 +89,9 @@ export class OpenCodeCore {
   private pendingRequest: http.HttpRequest | null = null;
   private pendingMessage: PendingMessage | null = null;
   private messageCallback: MessageCallback | null = null;
+  private sseRequest: http.HttpRequest | null = null;
+  private sseBuffer: string = '';
+  private sseEventCallback: SseEventCallback | null = null;
 
   private constructor() {}
 
@@ -456,6 +484,133 @@ export class OpenCodeCore {
 
   public isPendingForSession(sessionId: string): boolean {
     return this.pendingMessage?.sessionId === sessionId && this.pendingMessage.isLoading;
+  }
+
+  public setSseEventCallback(callback: SseEventCallback): void {
+    this.sseEventCallback = callback;
+  }
+
+  public startSse(projectId: string): void {
+    const project = this.projects.find(p => p.id === projectId);
+    if (!project) {
+      console.warn('[OpenCodeCore] startSse: project not found:', projectId);
+      return;
+    }
+    this.stopSse();
+
+    const url = `${project.url.replace(/\/+$/, '')}/event`;
+    const headers: Record<string, string> = {
+      'Accept': 'text/event-stream',
+      'x-opencode-directory': encodeURIComponent(project.path || '/'),
+    };
+
+    const req = http.createHttp();
+    console.info('[OpenCodeCore] startSse: connecting to', url);
+
+    req.on('dataReceive', (data: ArrayBuffer) => {
+      try {
+        const decoder = new util.TextDecoder('utf-8');
+        const chunk = decoder.decode(new Uint8Array(data));
+        this.handleSseChunk(chunk);
+      } catch (e) {
+        console.warn('[OpenCodeCore][SSE] decode error:', e);
+      }
+    });
+
+    req.on('dataEnd', () => {
+      console.info('[OpenCodeCore][SSE] stream ended, reconnecting in 3s...');
+      this.sseRequest = null;
+      this.sseBuffer = '';
+      setTimeout(() => {
+        const proj = this.projects.find(p => p.id === projectId);
+        if (proj && proj.id === projectId) {
+          this.startSse(projectId);
+        }
+      }, 3000);
+    });
+
+    req.requestInStream(
+      url,
+      {
+        method: http.RequestMethod.GET,
+        header: headers,
+        connectTimeout: 60000,
+        readTimeout: 0,
+      },
+      (err: Error, responseCode: number) => {
+        if (err) {
+          console.warn('[OpenCodeCore][SSE] requestInStream error:', JSON.stringify(err));
+        } else {
+          console.info('[OpenCodeCore][SSE] connected, responseCode:', responseCode);
+        }
+      }
+    );
+    this.sseRequest = req;
+  }
+
+  public stopSse(): void {
+    if (this.sseRequest) {
+      this.sseRequest.off('dataReceive');
+      this.sseRequest.off('dataEnd');
+      this.sseRequest.destroy();
+      this.sseRequest = null;
+    }
+    this.sseBuffer = '';
+  }
+
+  private handleSseChunk(chunk: string): void {
+    this.sseBuffer += chunk;
+    const events = this.sseBuffer.split('\n\n');
+    this.sseBuffer = events.pop() ?? '';
+    for (const raw of events) {
+      const lines = raw.split('\n');
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const json = line.slice(6).trim();
+          if (!json) continue;
+          try {
+            const event = JSON.parse(json) as SseEvent;
+            console.info('[OpenCodeCore][SSE] event:', event.type, 'sessionId:', event.properties?.sessionID);
+            this.sseEventCallback?.(event);
+          } catch (e) {
+            console.warn('[OpenCodeCore][SSE] JSON parse error:', e);
+          }
+        }
+      }
+    }
+  }
+
+  public async replyPermission(sessionId: string, requestID: string, response: 'once' | 'always' | 'reject'): Promise<boolean> {
+    const project = this.projects.find(p => p.id === this.currentProjectId);
+    if (!project) {
+      console.warn('[OpenCodeCore] replyPermission: project not found:', this.currentProjectId);
+      return false;
+    }
+
+    const url = `${project.url.replace(/\/+$/, '')}/session/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(requestID)}`;
+    try {
+      const result = await new Promise<http.HttpResponse>((resolve, reject) => {
+        http.createHttp().request(
+          url,
+          {
+            method: http.RequestMethod.POST,
+            header: this.getHeaders(project.url, project.authToken, project.path),
+            extraData: JSON.stringify({ response }),
+            connectTimeout: 10000,
+            readTimeout: 10000,
+          },
+          (err, data) => {
+            if (err) reject(err);
+            else resolve(data);
+          }
+        );
+      });
+      console.info('[OpenCodeCore] replyPermission:', response, 'result:', result.responseCode);
+      return result.responseCode === 200 || result.responseCode === 204;
+    } catch (e) {
+      console.error('[OpenCodeCore] replyPermission error:', e);
+      return false;
+    }
   }
 
   private getHeaders(backendUrl: string, authToken: string, directory: string): Record<string, string> {
