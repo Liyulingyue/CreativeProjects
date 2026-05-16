@@ -142,6 +142,8 @@ export struct BackendList {
                 url: 'pages/BackendWebView',
                 params: {
                   url: backend.url,
+                  username: backend.username,
+                  authToken: backend.authToken,
                   notes: backend.notes
                 }
               });
