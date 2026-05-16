@@ -60,6 +60,7 @@ struct SessionDetail {
           if (project.preferredModel) {
             this.selectedModel = project.preferredModel;
           }
+          console.info('[SessionDetail] Loaded project model:', this.selectedModel);
         }
       }
     }
@@ -206,6 +207,7 @@ struct SessionDetail {
 
     this.isCreating = true;
     this.errorMessage = '';
+    console.info('[SessionDetail] >>> createSession, selectedModel:', this.selectedModel);
 
     try {
       const success = await this.viewModel.createOrUpdateSession(
@@ -407,6 +409,7 @@ struct SessionDetail {
               .justifyContent(FlexAlign.SpaceBetween)
               .onClick(() => {
                 this.selectedModel = this.getModelValue(model);
+                console.info('[SessionDetail] Model selected:', this.selectedModel);
                 this.showModelPicker = false;
               })
 

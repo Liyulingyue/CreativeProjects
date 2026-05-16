@@ -79,6 +79,8 @@ export class OpenCodeCore {
 
       const projectsJson = await this.preferences.get(OpenCodeCore.KEY_PROJECTS, '[]') as string;
       this.projects = JSON.parse(projectsJson) as OpenCodeProject[];
+      const models = this.projects.map(p => ({ id: p.id, preferredModel: p.preferredModel }));
+      console.info('[OpenCodeCore] loadProjects, count:', this.projects.length, 'models:', JSON.stringify(models));
     } catch (err) {
       console.error('[OpenCodeCore] Failed to load from storage:', err);
       this.backends = [];
@@ -101,6 +103,8 @@ export class OpenCodeCore {
     if (!this.preferences) return;
 
     try {
+      const models = this.projects.map(p => ({ id: p.id, preferredModel: p.preferredModel }));
+      console.info('[OpenCodeCore] saveProjects, projects count:', this.projects.length, 'models:', JSON.stringify(models));
       await this.preferences.put(OpenCodeCore.KEY_PROJECTS, JSON.stringify(this.projects));
       await this.preferences.flush();
     } catch (err) {
@@ -136,10 +140,14 @@ export class OpenCodeCore {
   }
 
   public getProjectById(id: string): OpenCodeProject | undefined {
-    return this.projects.find(p => p.id === id);
+    const project = this.projects.find(p => p.id === id);
+    console.info('[OpenCodeCore] getProjectById:', id, 'found:', project ? project.preferredModel : 'undefined');
+    return project;
   }
 
   public updateProject(id: string, name: string, url: string, username: string, authToken: string, path: string, notes: string = '', backendId: string = '', preferredModel?: string): void {
+    console.info('[OpenCodeCore] >>> updateProject called, id:', id);
+    console.info('[OpenCodeCore]   preferredModel param:', JSON.stringify(preferredModel));
     const index = this.projects.findIndex(p => p.id === id);
     if (index !== -1) {
       const backend = this.backends.find(b => b.url === url);
@@ -155,6 +163,7 @@ export class OpenCodeCore {
         preferredModel: preferredModel !== undefined ? preferredModel : this.projects[index].preferredModel,
         lastAccess: Date.now()
       };
+      console.info('[OpenCodeCore]   saved preferredModel:', JSON.stringify(this.projects[index].preferredModel));
       this.saveProjects();
     }
   }

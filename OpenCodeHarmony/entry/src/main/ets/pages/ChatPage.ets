@@ -8,8 +8,15 @@ interface MessagePart {
   text: string;
 }
 
+interface ModelRef {
+  providerID: string;
+  modelID: string;
+}
+
 interface MessageBody {
   parts: MessagePart[];
+  model?: ModelRef;
+  agent?: string;
 }
 
 @Entry
@@ -29,6 +36,7 @@ struct ChatPage {
   private viewModel: ChatViewModel = new ChatViewModel();
   private currentRequest: http.HttpRequest | null = null;
   @State realSessionId: string = '';
+  @State preferredModel: string = '';
 
   aboutToAppear() {
     const params = router.getParams() as Record<string, Object>;
@@ -40,10 +48,18 @@ struct ChatPage {
       this.authToken = (params['authToken'] as string) || '';
       this.directory = (params['directory'] as string) || '/';
       const project = this.core.getProjectById(this.sessionId);
+      console.info('[ChatPage] project from core:', JSON.stringify({
+        id: project?.id,
+        name: project?.name,
+        preferredModel: project?.preferredModel,
+        remoteSessionId: project?.remoteSessionId
+      }));
       if (project && project.remoteSessionId) {
         this.realSessionId = project.remoteSessionId;
         console.info('[ChatPage] Loaded existing remote session ID:', this.realSessionId);
       }
+      this.preferredModel = project?.preferredModel || '';
+      console.info('[ChatPage] preferredModel set to:', this.preferredModel);
     }
     this.core.setCurrentProject(this.sessionId);
     if (this.realSessionId) {
@@ -211,7 +227,9 @@ struct ChatPage {
           .enabled(this.isLoading || this.inputText.length > 0)
           .onClick(() => {
             if (this.isLoading) {
-              this.cancelRequest();
+    console.info('[ChatPage] Before cancelRequest, currentRequest:', this.currentRequest ? 'exists' : 'null');
+    this.cancelRequest();
+    console.info('[ChatPage] After cancelRequest');
               this.isLoading = false;
               this.messages = this.messages.filter(m => !m.isLoading);
               return;
@@ -227,6 +245,7 @@ struct ChatPage {
   }
 
   private async sendMessage() {
+    console.info('[ChatPage] sendMessage called, isLoading:', this.isLoading, 'backendUrl:', !!this.backendUrl);
     const text = this.inputText.trim();
     if (!text || !this.backendUrl || this.isLoading) return;
 
@@ -277,9 +296,28 @@ struct ChatPage {
     this.currentRequest = http.createHttp();
     const url = `${this.backendUrl.replace(/\/+$/, '')}/session/${encodeURIComponent(this.realSessionId)}/message`;
 
-    const body: MessageBody = { parts: [{ type: 'text', text: text }] };
+    const currentPreferredModel = this.core.getProjectById(this.sessionId)?.preferredModel || '';
+    let model: ModelRef | undefined;
+    if (currentPreferredModel && currentPreferredModel.includes('/')) {
+      const parts = currentPreferredModel.split('/');
+      model = { providerID: parts[0], modelID: parts[1] };
+    }
 
+    const body: MessageBody = { parts: [{ type: 'text', text: text }], model: model };
+
+    console.info('[ChatPage] >>> sendMessage params:');
+    console.info('[ChatPage]   preferredModel (fresh):', JSON.stringify(currentPreferredModel));
+    console.info('[ChatPage]   realSessionId:', this.realSessionId);
+    console.info('[ChatPage]   model:', JSON.stringify(model));
+    console.info('[ChatPage]   agent:', 'build');
+    console.info('[ChatPage] body:', JSON.stringify(body));
+
+    console.info('[ChatPage] About to enter try block');
     try {
+      console.info('[ChatPage] Inside try block, creating request');
+      console.info('[ChatPage] Creating HTTP request, URL:', url);
+      console.info('[ChatPage] Headers:', JSON.stringify(this.viewModel.getHeaders(this.backendUrl, this.authToken, this.directory)));
+      
       const result = await new Promise<http.HttpResponse>((resolve, reject) => {
         this.currentRequest!.request(
           url,
@@ -287,15 +325,23 @@ struct ChatPage {
             method: http.RequestMethod.POST,
             header: this.viewModel.getHeaders(this.backendUrl, this.authToken, this.directory),
             extraData: JSON.stringify(body),
-            connectTimeout: 120000,
-            readTimeout: 120000,
+            connectTimeout: 30000,
+            readTimeout: 30000,
           },
           (err, data) => {
-            if (err) reject(err);
-            else resolve(data);
+            console.info('[ChatPage] HTTP callback, err:', JSON.stringify(err), 'responseCode:', data?.responseCode, 'result len:', (data?.result as string)?.length);
+            if (err) {
+              console.error('[ChatPage] HTTP error:', err);
+              reject(err);
+            } else {
+              resolve(data);
+            }
           }
         );
+        console.info('[ChatPage] HTTP request issued');
       });
+
+      console.info('[ChatPage] HTTP response, code:', result.responseCode, 'result:', (result.result as string)?.slice(0, 300));
 
       this.messages = this.messages.filter(m => m.id !== loadingId);
 
