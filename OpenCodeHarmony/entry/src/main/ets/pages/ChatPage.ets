@@ -1,6 +1,7 @@
-﻿import { OpenCodeCore, OpenCodeMessage } from '../core/OpenCodeCore';
+﻿import { OpenCodeCore, OpenCodeMessage, SseEvent } from '../core/OpenCodeCore';
 import { ChatViewModel, DisplayMessage } from '../viewmodel/ChatViewModel';
 import router from '@ohos.router';
+import promptAction from '@ohos.promptAction';
 
 interface MessagePart {
   type: string;
@@ -32,6 +33,13 @@ interface ErrorObject {
   message?: string;
 }
 
+interface PendingPermission {
+  requestID: string;
+  permission: string;
+  patterns: string[];
+  metadata?: Record<string, Object>;
+}
+
 @Entry
 @Component
 struct ChatPage {
@@ -49,6 +57,7 @@ struct ChatPage {
   private viewModel: ChatViewModel = new ChatViewModel();
   @State realSessionId: string = '';
   @State preferredModel: string = '';
+  @State pendingPermission: PendingPermission | null = null;
 
   aboutToAppear() {
     const params = router.getParams() as Record<string, Object>;
@@ -78,10 +87,43 @@ struct ChatPage {
       this.core.setCurrentSession(this.realSessionId);
     }
 
+    this.core.setSseEventCallback((event: SseEvent) => this.handleSseEvent(event));
+    if (this.realSessionId) {
+      this.core.startSse(this.sessionId);
+    }
+
     this.loadHistory();
   }
 
   aboutToDisappear() {
+    this.core.stopSse();
+  }
+
+  private handleSseEvent(event: SseEvent): void {
+    if (event.type === 'permission.asked') {
+      const props = event.properties;
+      if (!props || !props.requestID) return;
+      if (props.sessionID && props.sessionID !== this.realSessionId) return;
+      const tools = props.metadata?.['tools'];
+      const toolStr = Array.isArray(tools) ? (tools as string[]).join(', ') : '';
+      console.info('[ChatPage] permission.asked:', props.permission, 'patterns:', props.patterns, 'tools:', toolStr);
+      this.pendingPermission = {
+        requestID: props.requestID || '',
+        permission: props.permission || '',
+        patterns: props.patterns || [],
+        metadata: props.metadata,
+      } as PendingPermission;
+    }
+  }
+
+  private async replyPermission(response: 'once' | 'always' | 'reject'): Promise<void> {
+    if (!this.pendingPermission || !this.realSessionId) return;
+    const requestID = this.pendingPermission.requestID;
+    this.pendingPermission = null;
+    const success = await this.core.replyPermission(this.realSessionId, requestID, response);
+    if (!success) {
+      promptAction.showToast({ message: '审批回复失败' });
+    }
   }
 
   private async loadHistory() {
@@ -271,6 +313,76 @@ struct ChatPage {
     }
     .width('100%')
     .height('100%')
+    .bindSheet(!!this.pendingPermission, () => {
+      this.buildPermissionSheet()
+    }, {
+      dragBar: true,
+      showClose: false,
+      preferType: SheetType.BOTTOM,
+      maskColor: 'rgba(0,0,0,0.5)',
+      onDisappear: () => {}
+    })
+  }
+
+  @Builder
+  buildPermissionSheet() {
+    Column() {
+      Row() {
+        Text('权限请求')
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+        Blank()
+        Text('X')
+          .fontSize(18)
+          .fontColor('#888888')
+          .onClick(() => { this.pendingPermission = null; })
+      }
+      .padding({ top: 16, bottom: 12, left: 20, right: 20 })
+
+      Divider().color('#E0E0E0')
+
+      Column() {
+        Text(`权限类型: ${this.pendingPermission?.permission || ''}`)
+          .fontSize(14)
+          .fontColor('#333333')
+          .width('100%')
+        Text(`操作: ${this.pendingPermission?.patterns?.join(', ') || ''}`)
+          .fontSize(13)
+          .fontColor('#666666')
+          .margin({ top: 6 })
+          .width('100%')
+      }
+      .padding(20)
+      .alignItems(HorizontalAlign.Start)
+      .width('100%')
+
+      Divider().color('#E0E0E0')
+
+      Row() {
+        Button('仅本次')
+          .layoutWeight(1)
+          .height(44)
+          .backgroundColor('#F5F5F5')
+          .fontColor('#333333')
+          .onClick(() => this.replyPermission('once'))
+        Divider().width(0.5).color('#E0E0E0').height(44)
+        Button('始终允许')
+          .layoutWeight(1)
+          .height(44)
+          .backgroundColor('#07C160')
+          .fontColor('#FFFFFF')
+          .onClick(() => this.replyPermission('always'))
+        Divider().width(0.5).color('#E0E0E0').height(44)
+        Button('拒绝')
+          .layoutWeight(1)
+          .height(44)
+          .backgroundColor('#FF3B30')
+          .fontColor('#FFFFFF')
+          .onClick(() => this.replyPermission('reject'))
+      }
+    }
+    .width('100%')
+    .backgroundColor('#FFFFFF')
   }
 
   private async sendMessage() {
@@ -287,6 +399,7 @@ struct ChatPage {
           this.core.setCurrentSession(resp.id);
           await this.core.updateRemoteSessionId(this.sessionId, resp.id);
           console.info('[ChatPage] Backend session created and linked:', this.realSessionId);
+          this.core.startSse(this.sessionId);
         } else {
           throw new Error('Failed to create backend session');
         }
@@ -301,6 +414,8 @@ struct ChatPage {
         this.isLoading = false;
         return;
       }
+    } else {
+      this.core.startSse(this.sessionId);
     }
 
     this.messages = [...this.messages, {
