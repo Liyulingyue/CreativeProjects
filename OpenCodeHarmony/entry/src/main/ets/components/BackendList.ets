@@ -44,6 +44,13 @@ export struct BackendList {
       .padding({ left: 20, right: 4, top: 15, bottom: 15 })
       .backgroundColor('#EDEDED')
 
+      Text('暂不支持鉴权 WebView')
+        .width('100%')
+        .fontSize(12)
+        .fontColor('#999999')
+        .padding({ left: 20, right: 20, bottom: 8 })
+        .backgroundColor('#EDEDED')
+
       if (this.backends.length === 0) {
         Column({ space: 16 }) {
           Stack() {

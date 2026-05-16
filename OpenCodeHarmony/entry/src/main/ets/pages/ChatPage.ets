@@ -130,7 +130,7 @@ struct ChatPage {
   @State realSessionId: string = '';
   private sseReq: http.HttpRequest | null = null;
   private sseBuffer: string = '';
-  private readonly useSse: boolean = true;
+  private readonly useSse: boolean = false;
   private loadingMsgId: string = '';
   private promptStartAt: number = 0;
   private idCounter: number = 0;
@@ -247,19 +247,13 @@ struct ChatPage {
       this.realSessionId,
       (msgs: DisplayMessage[]) => {
         if (this.hasSentSinceLoad) {
-          if (this.shouldUseEventStream() && this.realSessionId) {
-            this.startSse();
-          }
           return;
         }
         if (!this.isLoading && msgs.length > 0) {
           // 按时间倒序：最新的在前面，ForEach渲染后最新的在底部
-          msgs.sort((a, b) => b.timestamp - a.timestamp);
+          msgs.sort((a, b) => a.timestamp - b.timestamp);
           this.messages = msgs;
           this.scrollToBottom();
-        }
-        if (this.shouldUseEventStream() && this.realSessionId) {
-          this.startSse();
         }
       }
     );
@@ -323,14 +317,27 @@ struct ChatPage {
   private appendMessagesFromServer(msgs: OpenCodeMessage[]) {
     if (msgs.length === 0) return;
     const newMsgs: DisplayMessage[] = msgs
-      .sort((a, b) => b.info.time.created - a.info.time.created)
+      .sort((a, b) => a.info.time.created - b.info.time.created)
       .map((msg, i): DisplayMessage => ({
         id: msg.info.id || `msg-${i}`,
         role: msg.info.role as 'user' | 'assistant',
         content: this.viewModel.formatMessage(msg),
         timestamp: msg.info.time.created
       }));
-    this.messages = [...this.messages, ...newMsgs];
+    const existingIds = new Set(this.messages.map(m => m.id));
+    this.messages = [...this.messages, ...newMsgs.filter(m => !existingIds.has(m.id))]
+      .sort((a, b) => a.timestamp - b.timestamp);
+  }
+
+  private replaceMessagesFromServer(msgs: OpenCodeMessage[]) {
+    this.messages = msgs
+      .sort((a, b) => a.info.time.created - b.info.time.created)
+      .map((msg, i): DisplayMessage => ({
+        id: msg.info.id || `msg-${i}`,
+        role: msg.info.role as 'user' | 'assistant',
+        content: this.viewModel.formatMessage(msg),
+        timestamp: msg.info.time.created
+      }));
   }
 
   private scrollToBottom() {
@@ -503,9 +510,6 @@ struct ChatPage {
           this.core.setCurrentSession(resp.id);
           await this.core.updateRemoteSessionId(this.sessionId, resp.id);
           console.info('[ChatPage] Backend session created and linked:', this.realSessionId);
-          if (this.shouldUseEventStream()) {
-            this.startSse();
-          }
           console.info('[ChatPage] backend session ready:', this.realSessionId);
         } else {
           throw new Error('Failed to create backend session');
@@ -520,8 +524,6 @@ struct ChatPage {
         this.isLoading = false;
         return;
       }
-    } else if (this.shouldUseEventStream() && !this.sseReq) {
-      this.startSse();
     }
 
     const promptMessageId = this.createAscendingId('msg');
@@ -539,19 +541,8 @@ struct ChatPage {
 
     this.currentPromptMessageId = promptMessageId;
     this.promptAccepted = false;
-    const loadingId = `loading-${Date.now()}`;
-    this.loadingMsgId = loadingId;
+    this.loadingMsgId = '';
     this.promptStartAt = Date.now();
-
-    // 追加思考中（绝不替换）
-    this.messages = [...this.messages, {
-      id: loadingId,
-      role: 'assistant',
-      content: '思考中...',
-      timestamp: Date.now(),
-      isLoading: true
-    }];
-    this.scrollToBottom();
 
     this.cancelRequest();
     this.currentRequest = http.createHttp();
@@ -566,7 +557,7 @@ struct ChatPage {
           url,
           {
             method: http.RequestMethod.POST,
-            header: this.viewModel.getHeaders(this.backendUrl, this.username, this.authToken, this.directory),
+            header: this.viewModel.getHeaders(this.backendUrl, this.authToken, this.directory, this.username),
             extraData: JSON.stringify(body),
             connectTimeout: 120000,
             readTimeout: 120000,
@@ -582,11 +573,8 @@ struct ChatPage {
         console.info('[ChatPage] prompt_async accepted, code=', result.responseCode);
         this.lastStatusType = 'unknown';
         this.promptAccepted = true;
-        this.scheduleEventFetchFallback(10000);
         console.info('[ChatPage] prompt_async accepted');
-        if (!this.sseReq) {
-          this.startSse();
-        }
+        this.startPolling();
       } else {
         console.warn('[ChatPage] prompt_async rejected, code=', result.responseCode);
         this.clearPendingState(true);
@@ -647,7 +635,7 @@ struct ChatPage {
       url,
       {
         method: http.RequestMethod.GET,
-        header: this.viewModel.getHeaders(this.backendUrl, this.username, this.authToken, this.directory),
+        header: this.viewModel.getHeaders(this.backendUrl, this.authToken, this.directory, this.username),
         connectTimeout: 10000,
         readTimeout: 10000,
       },
@@ -661,25 +649,20 @@ struct ChatPage {
         try {
           const msgs = JSON.parse(data.result as string) as OpenCodeMessage[];
           console.info('[ChatPage] fetch got', msgs.length, 'messages');
+          this.resetMessageCacheFromServer(msgs);
+          this.replaceMessagesFromServer(msgs);
+          const hasPromptMessage = effectivePromptMessageId
+            ? msgs.some(m => m.info.id === effectivePromptMessageId)
+            : false;
+          const hasRenderableAssistant = msgs.some(m => {
+            if (m.info.role !== 'assistant') return false;
+            const content = this.viewModel.formatMessage(m);
+            return !!content && content.trim().length > 0;
+          });
 
-          const promptIndex = effectivePromptMessageId
-            ? msgs.findIndex(m => m.info.id === effectivePromptMessageId)
-            : -1;
-
-          // 找到助理回复
-          const assistantAfterPrompt = promptIndex >= 0
-            ? msgs.slice(promptIndex + 1).find(m => {
-                if (m.info.role !== 'assistant') return false;
-                const content = this.viewModel.formatMessage(m);
-                return !!content && content.trim().length > 0;
-              })
-            : undefined;
-
-          if (assistantAfterPrompt) {
-            // 拿到助理回复了！只追加新消息，绝不清空
-            console.info('[ChatPage] assistant found, appending messages');
-            this.appendMessagesFromServer(msgs.slice(promptIndex + 1));
-            this.clearPendingState(false); // 保留思考中的位置，移除loadingMsgId
+          if (hasPromptMessage && hasRenderableAssistant) {
+            console.info('[ChatPage] reply synced from server');
+            this.clearPendingState(false);
             this.stopPolling();
             this.scrollToBottom();
           } else if (retryCount < 10) {
@@ -700,28 +683,6 @@ struct ChatPage {
   }
 
   private scheduleEventFetchFallback(delayMs: number = 10000) {
-    if (this.eventFetchTimer !== -1) {
-      clearTimeout(this.eventFetchTimer);
-      this.eventFetchTimer = -1;
-    }
-
-    const promptMessageId = this.currentPromptMessageId;
-    const loadingMessageId = this.loadingMsgId;
-    if (!promptMessageId || !loadingMessageId) {
-      return;
-    }
-
-    this.eventFetchTimer = setTimeout(() => {
-      this.eventFetchTimer = -1;
-      if (!this.promptAccepted || !this.loadingMsgId) {
-        return;
-      }
-      if (this.lastStatusType !== 'unknown') {
-        return;
-      }
-      console.info('[ChatPage] fallback fetch');
-      this.fetchAndRefreshMessages(promptMessageId, loadingMessageId, 0);
-    }, delayMs) as number;
   }
 
   // ==================== SSE 处理 ====================
@@ -747,7 +708,7 @@ struct ChatPage {
     this.stopSse();
     const req = http.createHttp();
     const url = `${this.backendUrl.replace(/\/+$/, '')}/event`;
-    const headers = this.viewModel.getHeaders(this.backendUrl, this.username, this.authToken, this.directory);
+    const headers = this.viewModel.getHeaders(this.backendUrl, this.authToken, this.directory, this.username);
     headers['Accept'] = 'text/event-stream';
 
     req.on('dataReceive', (data: ArrayBuffer) => {
@@ -852,13 +813,10 @@ struct ChatPage {
       }
 
       if (statusType === 'idle') {
-        if (!this.loadingMsgId) return;
         if (!this.promptAccepted) {
           console.info('[ChatPage][SSE] idle ignored before prompt accepted');
           return;
         }
-        const promptMessageId = this.currentPromptMessageId;
-        const loadingMessageId = this.loadingMsgId;
         console.info('[ChatPage][SSE] idle, start polling');
         this.startPolling();
       } else if (statusType === 'busy') {
@@ -902,10 +860,10 @@ struct ChatPage {
       const msgIdx = this.messages.findIndex(m => m.id === props.part!.messageID);
       if (msgIdx >= 0) {
         const msg = this.messages[msgIdx];
-        if (msg.role === 'assistant' && !msg.isLoading) {
+        if (msg.role === 'assistant') {
           const parts = this.messageParts.get(props.part!.messageID) || [];
           const text = parts.map(p => p.text).join('');
-          this.messages = [...this.messages.slice(0, msgIdx), { id: msg.id, role: msg.role, content: text, timestamp: msg.timestamp, isLoading: msg.isLoading }, ...this.messages.slice(msgIdx + 1)];
+          this.messages = [...this.messages.slice(0, msgIdx), { id: msg.id, role: msg.role, content: text, timestamp: msg.timestamp }, ...this.messages.slice(msgIdx + 1)];
         }
       }
       this.scrollToBottom();
@@ -918,10 +876,10 @@ struct ChatPage {
       const msgIdx = this.messages.findIndex(m => m.id === props.messageID);
       if (msgIdx >= 0) {
         const msg = this.messages[msgIdx];
-        if (msg.role === 'assistant' && !msg.isLoading) {
+        if (msg.role === 'assistant') {
           const parts = this.messageParts.get(props.messageID) || [];
           const text = parts.map(p => p.text).join('');
-          this.messages = [...this.messages.slice(0, msgIdx), { id: msg.id, role: msg.role, content: text, timestamp: msg.timestamp, isLoading: msg.isLoading }, ...this.messages.slice(msgIdx + 1)];
+          this.messages = [...this.messages.slice(0, msgIdx), { id: msg.id, role: msg.role, content: text, timestamp: msg.timestamp }, ...this.messages.slice(msgIdx + 1)];
         }
       }
       this.scrollToBottom();
@@ -1008,7 +966,7 @@ struct ChatPage {
       url,
       {
         method: http.RequestMethod.POST,
-        header: this.viewModel.getHeaders(this.backendUrl, this.username, this.authToken, this.directory),
+        header: this.viewModel.getHeaders(this.backendUrl, this.authToken, this.directory, this.username),
         connectTimeout: 10000,
         readTimeout: 10000,
       },
