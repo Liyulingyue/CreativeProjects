@@ -26,8 +26,15 @@ interface TextPart {
   text: string;
 }
 
+interface ModelRef {
+  providerID: string;
+  modelID: string;
+}
+
 interface MessageBody {
   parts: TextPart[];
+  model?: ModelRef;
+  agent?: string;
 }
 
 export class ChatViewModel {
@@ -231,6 +238,7 @@ export class ChatViewModel {
     directory: string,
     realSessionId: string,
     text: string,
+    preferredModel: string | undefined,
     loadingId: string,
     onUpdate: (messages: DisplayMessage[]) => void,
     onError: (msg: string) => void
@@ -239,9 +247,21 @@ export class ChatViewModel {
     this.currentRequest = http.createHttp();
     const url = this.buildUrlWithDir(backendUrl, `/session/${encodeURIComponent(realSessionId)}/message`, directory);
 
+    let model: ModelRef | undefined;
+    if (preferredModel && preferredModel.includes('/')) {
+      const parts = preferredModel.split('/');
+      model = { providerID: parts[0], modelID: parts[1] };
+    }
+
     const body: MessageBody = {
       parts: [{ type: 'text', text: text }]
     };
+
+    console.info('[ChatViewModel] >>> performSendMessage params:');
+    console.info('[ChatViewModel]   preferredModel:', JSON.stringify(preferredModel));
+    console.info('[ChatViewModel]   model:', JSON.stringify(model));
+    console.info('[ChatViewModel]   agent:', 'build');
+    console.info('[ChatViewModel]   body:', JSON.stringify(body));
 
     try {
       const result = await new Promise<http.HttpResponse>((resolve, reject) => {

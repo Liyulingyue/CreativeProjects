@@ -275,6 +275,9 @@ export class SessionDetailViewModel {
     selectedRemoteSessionId: string,
     preferredModel?: string
   ): Promise<boolean> {
+    console.info('[SessionDetailViewModel] >>> createOrUpdateSession called');
+    console.info('[SessionDetailViewModel]   isEditing:', isEditing, 'editingId:', editingId);
+    console.info('[SessionDetailViewModel]   preferredModel incoming:', JSON.stringify(preferredModel));
     const sessionTitle = title || `${directory.split('/').pop() || directory}`;
 
     if (isEditing && editingId) {
