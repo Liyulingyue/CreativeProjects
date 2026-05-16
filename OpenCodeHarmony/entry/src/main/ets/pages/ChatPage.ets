@@ -1,7 +1,6 @@
 ﻿import { OpenCodeCore, OpenCodeMessage } from '../core/OpenCodeCore';
 import { ChatViewModel, DisplayMessage } from '../viewmodel/ChatViewModel';
 import router from '@ohos.router';
-import http from '@ohos.net.http';
 
 interface MessagePart {
   type: string;
@@ -48,7 +47,6 @@ struct ChatPage {
   private scroller: Scroller = new Scroller();
   private core: OpenCodeCore = OpenCodeCore.getInstance();
   private viewModel: ChatViewModel = new ChatViewModel();
-  private currentRequest: http.HttpRequest | null = null;
   @State realSessionId: string = '';
   @State preferredModel: string = '';
 
@@ -79,38 +77,39 @@ struct ChatPage {
     if (this.realSessionId) {
       this.core.setCurrentSession(this.realSessionId);
     }
+
     this.loadHistory();
   }
 
   aboutToDisappear() {
-    this.cancelRequest();
-  }
-
-  private cancelRequest() {
-    if (this.currentRequest) {
-      this.currentRequest.destroy();
-      this.currentRequest = null;
-    }
-    if (this.realSessionId && this.backendUrl) {
-      const abortUrl = `${this.backendUrl.replace(/\/+$/, '')}/session/${encodeURIComponent(this.realSessionId)}/abort`;
-      http.createHttp().request(abortUrl, {
-        method: http.RequestMethod.POST,
-        header: this.viewModel.getHeaders(this.backendUrl, this.authToken, this.directory),
-        connectTimeout: 5000,
-        readTimeout: 5000,
-      }).catch(() => {});
-    }
   }
 
   private async loadHistory() {
+    const pending = this.core.getPendingMessage();
+    const hasPending = pending && pending.sessionId === this.realSessionId && pending.isLoading;
+    if (hasPending) {
+      console.info('[ChatPage] loadHistory: pending request detected, loadingId:', pending!.loadingId);
+    }
+
     this.viewModel.loadHistory(
       this.backendUrl,
       this.authToken,
       this.directory,
       this.realSessionId,
       (msgs: DisplayMessage[]) => {
-        if (!this.isLoading && msgs.length > 0) {
-          this.messages = msgs;
+        this.messages = msgs;
+        if (msgs.length > 0) {
+          this.scrollToBottom();
+        }
+        if (hasPending) {
+          this.isLoading = true;
+          this.messages = [...this.messages, {
+            id: pending!.loadingId,
+            role: 'assistant',
+            content: '思考中...',
+            timestamp: Date.now(),
+            isLoading: true
+          }];
           this.scrollToBottom();
         }
       }
@@ -144,37 +143,38 @@ struct ChatPage {
         .margin({ left: 12, right: 8 })
         .alignContent(Alignment.Center)
 
-        if (msg.isLoading) {
-          Column() {
-            Row() {
-              LoadingProgress().width(16).height(16)
-              Text('思考中...')
-                .fontSize(13)
-                .fontColor('#888888')
-                .margin({ left: 6 })
-            }
-            Text('如果长时间没有回复，请检查目标模型是否欠费或速率限制...')
-              .fontSize(10)
-              .fontColor('#BBBBBB')
-              .margin({ top: 6, left: 22 })
+        Column() {
+          Row() {
+            LoadingProgress().width(16).height(16)
+            Text('思考中...')
+              .fontSize(13)
+              .fontColor('#888888')
+              .margin({ left: 6 })
           }
+          Text('如果长时间没有回复，请检查目标模型是否欠费或速率限制...')
+            .fontSize(10)
+            .fontColor('#BBBBBB')
+            .margin({ top: 6, left: 22 })
+        }
+        .padding(12)
+        .backgroundColor('#FFFFFF')
+        .borderRadius({ topLeft: 2, topRight: 8, bottomLeft: 8, bottomRight: 8 })
+        .alignItems(HorizontalAlign.Start)
+        .visibility(msg.isLoading ? Visibility.Visible : Visibility.None)
+
+        Text(msg.content)
           .padding(12)
           .backgroundColor('#FFFFFF')
           .borderRadius({ topLeft: 2, topRight: 8, bottomLeft: 8, bottomRight: 8 })
-          .alignItems(HorizontalAlign.Start)
-        } else {
-          Text(msg.content)
-            .padding(12)
-            .backgroundColor('#FFFFFF')
-            .borderRadius({ topLeft: 2, topRight: 8, bottomLeft: 8, bottomRight: 8 })
-            .constraintSize({ maxWidth: '75%' })
-            .fontSize(15)
-        }
+          .constraintSize({ maxWidth: '75%' })
+          .fontSize(15)
+          .visibility(msg.isLoading ? Visibility.None : Visibility.Visible)
         Blank()
       }
     }
     .width('100%')
     .alignItems(VerticalAlign.Top)
+    .padding({ left: 8, right: 8 })
   }
 
   build() {
@@ -258,9 +258,8 @@ struct ChatPage {
             .enabled(this.isLoading || this.inputText.length > 0)
             .onClick(() => {
               if (this.isLoading) {
-                console.info('[ChatPage] Before cancelRequest, currentRequest:', this.currentRequest ? 'exists' : 'null');
-                this.cancelRequest();
-                console.info('[ChatPage] After cancelRequest');
+                console.info('[ChatPage] Stop button clicked');
+                this.core.cancelPendingRequest();
                 this.isLoading = false;
                 this.messages = this.messages.filter(m => !m.isLoading);
                 return;
@@ -269,8 +268,6 @@ struct ChatPage {
             })
         }
       }
-      .padding({ left: 12, right: 12, top: 8, bottom: 12 })
-      .backgroundColor('#F5F5F5')
     }
     .width('100%')
     .height('100%')
@@ -294,10 +291,11 @@ struct ChatPage {
           throw new Error('Failed to create backend session');
         }
       } catch (e) {
+        const err = e as Error;
         this.messages = [...this.messages, {
           id: `err-${Date.now()}`,
           role: 'assistant',
-          content: `创建后端会话失败: ${e.message || e}`,
+          content: `创建后端会话失败: ${err.message || String(e)}`,
           timestamp: Date.now()
         }];
         this.isLoading = false;
@@ -324,112 +322,43 @@ struct ChatPage {
       isLoading: true
     }];
 
-    this.cancelRequest();
-    this.currentRequest = http.createHttp();
-    const url = `${this.backendUrl.replace(/\/+$/, '')}/session/${encodeURIComponent(this.realSessionId)}/message`;
-
     const currentPreferredModel = this.core.getProjectById(this.sessionId)?.preferredModel || '';
-    let model: ModelRef | undefined;
-    if (currentPreferredModel && currentPreferredModel.includes('/')) {
-      const parts = currentPreferredModel.split('/');
-      model = { providerID: parts[0], modelID: parts[1] };
-    }
 
-    const body: MessageBody = { parts: [{ type: 'text', text: text }], model: model };
-
-    console.info('[ChatPage] >>> sendMessage params:');
-    console.info('[ChatPage]   preferredModel (fresh):', JSON.stringify(currentPreferredModel));
-    console.info('[ChatPage]   realSessionId:', this.realSessionId);
-    console.info('[ChatPage]   model:', JSON.stringify(model));
-    console.info('[ChatPage]   agent:', 'build');
-    console.info('[ChatPage] body:', JSON.stringify(body));
-
-    console.info('[ChatPage] About to enter try block');
-    let result: http.HttpResponse | null = null;
-    try {
-      console.info('[ChatPage] Inside try block, creating request');
-      console.info('[ChatPage] Creating HTTP request, URL:', url);
-      console.info('[ChatPage] Headers:', JSON.stringify(this.viewModel.getHeaders(this.backendUrl, this.authToken, this.directory)));
-
-      result = await new Promise<http.HttpResponse>((resolve, reject) => {
-        this.currentRequest!.request(
-          url,
-          {
-            method: http.RequestMethod.POST,
-            header: this.viewModel.getHeaders(this.backendUrl, this.authToken, this.directory),
-            extraData: JSON.stringify(body),
-            connectTimeout: 60000,
-            readTimeout: 0,
-          },
-          (err, data) => {
-            console.info('[ChatPage] HTTP callback, err:', JSON.stringify(err), 'responseCode:', data?.responseCode, 'result len:', (data?.result as string)?.length);
-            if (err) {
-              console.error('[ChatPage] HTTP error:', err);
-              reject(err);
-            } else {
-              resolve(data);
-            }
-          }
-        );
-        console.info('[ChatPage] HTTP request issued');
-      });
-
-      console.info('[ChatPage] HTTP response, code:', result.responseCode, 'result:', (result.result as string)?.slice(0, 300));
-
-      this.messages = this.messages.filter(m => m.id !== loadingId);
-
-      if (result.responseCode === 200) {
-        const response: OpenCodeMessage = JSON.parse(result.result as string) as OpenCodeMessage;
-        const content = this.viewModel.formatMessage(response);
-        this.messages = [...this.messages, {
-          id: response.info?.id || `resp-${Date.now()}`,
-          role: 'assistant',
-          content: content || '完成',
-          timestamp: Date.now()
-        }];
-      } else {
-        let errMsg = '';
-        if (result.responseCode === 429) {
-          try {
-            const body = JSON.parse(result.result as string) as ErrorResponse;
-            errMsg = body?.error?.message || body?.message || '请求频率超限';
-          } catch {
-            errMsg = '请求频率超限';
-          }
-        } else {
-          errMsg = `请求失败: HTTP ${result.responseCode}`;
+    this.core.sendMessagePersistent(
+      this.sessionId,
+      this.realSessionId,
+      loadingId,
+      text,
+      currentPreferredModel,
+      (result) => {
+        const response = result.response;
+        const error = result.error;
+        const respLoadingId = result.loadingId;
+        if (this.isLoading) {
+          this.isLoading = false;
         }
-        this.messages = [...this.messages, {
-          id: `error-${Date.now()}`,
-          role: 'assistant',
-          content: errMsg,
-          timestamp: Date.now()
-        }];
-      }
-    } catch (e) {
-      this.messages = this.messages.filter(m => m.id !== loadingId);
-      let errMsg = '';
-      if (result && result.responseCode === 429) {
-        try {
-          const body = JSON.parse(result.result as string) as ErrorResponse;
-          errMsg = body?.error?.message || body?.message || '请求频率超限';
-        } catch {
-          errMsg = '请求频率超限';
+
+        this.messages = this.messages.filter(m => m.id !== respLoadingId);
+
+        if (error) {
+          this.messages = [...this.messages, {
+            id: `error-${Date.now()}`,
+            role: 'assistant',
+            content: error,
+            timestamp: Date.now()
+          }];
+        } else if (response) {
+          const content = this.viewModel.formatMessage(response);
+          this.messages = [...this.messages, {
+            id: response.info?.id || `resp-${Date.now()}`,
+            role: 'assistant',
+            content: content || '完成',
+            timestamp: Date.now()
+          }];
         }
-      } else {
-        const errObj = e as ErrorObject;
-        errMsg = errObj?.message || (typeof e === 'object' ? JSON.stringify(e) : String(e));
+
+        this.scrollToBottom();
       }
-      this.messages = [...this.messages, {
-        id: `error-${Date.now()}`,
-        role: 'assistant',
-        content: errMsg || `请求失败`,
-        timestamp: Date.now()
-      }];
-    } finally {
-      this.isLoading = false;
-      this.cancelRequest();
-      this.scrollToBottom();
-    }
+    );
   }
 }
