@@ -19,6 +19,7 @@ export interface OpenCodeProject {
   remoteSessionId?: string;
   preferredModel?: string;
   lastAccess: number;
+  // hasPendingWork: 由 isWorking || unreadCount 派生，表示有待处理事项
   isWorking: boolean;
   unreadCount: number;
 }
@@ -140,6 +141,11 @@ export class OpenCodeCore {
 
       const projectsJson = await this.preferences.get(OpenCodeCore.KEY_PROJECTS, '[]') as string;
       this.projects = JSON.parse(projectsJson) as OpenCodeProject[];
+      // 补充旧数据缺失字段
+      for (const p of this.projects) {
+        if (p.isWorking === undefined) { p.isWorking = false; }
+        if (p.unreadCount === undefined) { p.unreadCount = 0; }
+      }
       const models = this.projects.map(p => ({ id: p.id, preferredModel: p.preferredModel }));
       console.info('[OpenCodeCore] loadProjects, count:', this.projects.length, 'models:', JSON.stringify(models));
     } catch (err) {
@@ -237,6 +243,10 @@ export class OpenCodeCore {
     this.notifySessionsChanged();
   }
 
+  // 进入会话时：仅清除未读数，不清 isWorking
+  // hasPendingWork 由 isWorking || unreadCount 派生
+  // - isWorking 由 SSE status 事件或 HTTP 请求状态驱动，进入会话时保留蓝点（后端可能仍在工作）
+  // - unreadCount 由其他会话的新消息触发，进入即视为已读，清零
   public setCurrentProject(id: string): void {
     this.currentProjectId = id;
     const project = this.projects.find(p => p.id === id);
@@ -405,6 +415,7 @@ export class OpenCodeCore {
     this.cancelPendingRequest();
     this.pendingMessage = { projectId, sessionId, loadingId, text, model, isLoading: true };
     this.messageCallback = callback;
+    // 发送请求时：标记为工作中（SSE 调试完成后可改为设置 hasPendingWork）
     this.setProjectWorking(projectId, true);
 
     const url = `${project.url.replace(/\/+$/, '')}/session/${encodeURIComponent(sessionId)}/message`;
@@ -442,7 +453,6 @@ export class OpenCodeCore {
           const errObj = err as { code?: number; message?: string };
           if (errObj?.code === 2300023 || errObj?.code === 2300028) {
             this.messageCallback = null;
-            this.setProjectWorking(projectId, false);
             return;
           }
           this.messageCallback({ response: null, error: errObj?.message || String(err), loadingId: pending.loadingId });
@@ -470,6 +480,7 @@ export class OpenCodeCore {
           this.messageCallback?.({ response: null, error: `请求失败: HTTP ${data?.responseCode}`, loadingId: pending.loadingId });
         }
         this.messageCallback = null;
+        // 请求结束（无论成功失败）都取消工作中状态
         this.setProjectWorking(projectId, false);
       }
     );
@@ -605,32 +616,29 @@ export class OpenCodeCore {
             const event = JSON.parse(json) as SseEvent;
             console.info('[OpenCodeCore][SSE] event:', event.type, 'sessionId:', event.properties?.sessionID);
 
-            // 处理未读消息逻辑
-            if (event.type === 'message.created' || event.type === 'message.delta' || event.type === 'status') {
-              const remoteId = event.properties?.sessionID;
-              if (remoteId) {
-                const project = this.projects.find(p => p.remoteSessionId === remoteId);
-                if (project) {
-                  // 如果收到 status 事件，更新 working 状态
-                  if (event.type === 'status') {
-                    const statusType = event.properties?.status?.type;
-                    const isWorking = statusType === 'busy' || statusType === 'thinking' || statusType === 'executing';
-                    if (project.isWorking !== isWorking) {
-                      project.isWorking = isWorking;
-                      this.saveProjects();
-                      this.notifySessionsChanged();
-                    }
-                  }
-                  
-                  // 未读数逻辑：仅针对 message.created 且非当前激活会话
-                  if (event.type === 'message.created' && this.currentProjectId !== project.id) {
-                    project.unreadCount = (project.unreadCount || 0) + 1;
-                    this.saveProjects();
-                    this.notifySessionsChanged();
-                  }
-                }
-              }
-            }
+            // TODO: SSE 调试完成后恢复以下状态更新逻辑
+            // if (event.type === 'message.created' || event.type === 'message.delta' || event.type === 'status') {
+            //   const remoteId = event.properties?.sessionID;
+            //   if (remoteId) {
+            //     const project = this.projects.find(p => p.remoteSessionId === remoteId);
+            //     if (project) {
+            //       if (event.type === 'status') {
+            //         const statusType = event.properties?.status?.type;
+            //         const isWorking = statusType === 'busy' || statusType === 'thinking' || statusType === 'executing';
+            //         if (project.isWorking !== isWorking) {
+            //           project.isWorking = isWorking;
+            //           this.saveProjects();
+            //           this.notifySessionsChanged();
+            //         }
+            //       }
+            //       if (event.type === 'message.created' && this.currentProjectId !== project.id) {
+            //         project.unreadCount = (project.unreadCount || 0) + 1;
+            //         this.saveProjects();
+            //         this.notifySessionsChanged();
+            //       }
+            //     }
+            //   }
+            // }
 
             this.sseEventCallback?.(event);
           } catch (e) {
@@ -674,17 +682,12 @@ export class OpenCodeCore {
     }
   }
 
-  private getHeaders(backendUrl: string, authToken: string, directory: string): Record<string, string> {
-    return {
-      'Content-Type': 'application/json',
-      'x-opencode-directory': encodeURIComponent(directory || '/'),
-    };
-  }
-
+  // 设置/取消工作中状态（由 SSE status 事件驱动，或由本地发送请求触发）
   private async setProjectWorking(projectId: string, working: boolean): Promise<void> {
     const project = this.projects.find(p => p.id === projectId);
     if (project) {
       project.isWorking = working;
+      console.info(`[setProjectWorking] project=${projectId} isWorking=${working}`);
       await this.saveProjects();
       this.notifySessionsChanged();
     }
@@ -694,4 +697,12 @@ export class OpenCodeCore {
     const project = this.projects.find(p => p.id === projectId);
     return project?.isWorking ?? false;
   }
+
+  private getHeaders(backendUrl: string, authToken: string, directory: string): Record<string, string> {
+    return {
+      'Content-Type': 'application/json',
+      'x-opencode-directory': encodeURIComponent(directory || '/'),
+    };
+  }
+
 }

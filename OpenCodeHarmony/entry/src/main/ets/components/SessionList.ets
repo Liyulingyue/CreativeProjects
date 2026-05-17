@@ -35,6 +35,7 @@ export struct SessionList {
 
   onRefreshNow() {
     if (this.refreshSessionsNow) {
+      console.info('[SessionList] onRefreshNow triggered, value:', this.refreshSessionsNow);
       this.refreshSessions();
     }
   }
@@ -44,6 +45,10 @@ export struct SessionList {
     try {
       const localSessions = this.core.getSessions();
       console.info('[SessionList] Loading local sessions:', localSessions.length);
+      localSessions.forEach(s => {
+        const p = this.core.getProjectById(s.id);
+        console.info(`[SessionList] session=${s.id} isWorking=${p?.isWorking} unread=${p?.unreadCount}`);
+      });
       
       this.sessions = localSessions.map((s): SessionDisplayItem => {
         const project = this.core.getProjectById(s.id);
@@ -198,6 +203,7 @@ export struct SessionList {
                     Text(item.name.charAt(0).toUpperCase())
                       .fontSize(20).fontColor('#FFFFFF').fontWeight(FontWeight.Bold)
                     
+                    // hasPendingWork 由 isWorking || unreadCount 派生
                     if (item.isWorking) {
                       Circle().width(12).height(12)
                         .fill('#2196F3')
@@ -235,6 +241,7 @@ export struct SessionList {
                         .maxLines(1)
                         .textOverflow({ overflow: TextOverflow.Ellipsis })
                         .layoutWeight(1)
+                      // hasPendingWork = isWorking || unreadCount > 0（未读数标记）
                       if (item.unreadCount > 0) {
                         Text(`${item.unreadCount}`)
                           .fontSize(10)
