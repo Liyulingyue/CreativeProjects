@@ -142,8 +142,12 @@ struct ChatPage {
       this.directory,
       this.realSessionId,
       (msgs: DisplayMessage[]) => {
-        this.messages = msgs;
         if (msgs.length > 0) {
+          if (this.messages.length === 0) {
+            this.messages = msgs;
+          } else {
+            this.messages = [...msgs, ...this.messages];
+          }
           this.scrollToBottom();
         }
         if (hasPending) {
@@ -157,7 +161,8 @@ struct ChatPage {
           }];
           this.scrollToBottom();
         }
-      }
+      },
+      this.username
     );
   }
 
@@ -453,6 +458,7 @@ struct ChatPage {
           await this.core.updateRemoteSessionId(this.sessionId, resp.id);
           console.info('[ChatPage] Backend session created and linked:', this.realSessionId);
           this.core.startSse(this.sessionId);
+          this.loadHistory();
         } else {
           throw new Error('Failed to create backend session');
         }

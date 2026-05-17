@@ -419,7 +419,7 @@ export class OpenCodeCore {
     this.setProjectWorking(projectId, true);
 
     const url = `${project.url.replace(/\/+$/, '')}/session/${encodeURIComponent(sessionId)}/message`;
-    const headers = this.getHeaders(project.url, project.authToken, project.path);
+    const headers = this.getHeaders(project.url, project.username, project.authToken, project.path);
 
     let modelRef: { providerID: string; modelID: string } | undefined;
     if (model && model.includes('/')) {
@@ -500,7 +500,7 @@ export class OpenCodeCore {
         const abortUrl = `${project.url.replace(/\/+$/, '')}/session/${encodeURIComponent(sid)}/abort`;
         http.createHttp().request(abortUrl, {
           method: http.RequestMethod.POST,
-          header: this.getHeaders(project.url, project.authToken, project.path),
+          header: this.getHeaders(project.url, project.username, project.authToken, project.path),
           connectTimeout: 5000,
           readTimeout: 5000,
         }).catch(() => {});
@@ -547,6 +547,9 @@ export class OpenCodeCore {
       'Accept': 'text/event-stream',
       'x-opencode-directory': encodeURIComponent(project.path || '/'),
     };
+    if (project.authToken) {
+      headers['Authorization'] = 'Basic ' + this.base64Encode((project.username || 'opencode') + ':' + project.authToken);
+    }
 
     const req = http.createHttp();
     console.info('[OpenCodeCore] startSse: connecting to', url);
@@ -663,7 +666,7 @@ export class OpenCodeCore {
           url,
           {
             method: http.RequestMethod.POST,
-            header: this.getHeaders(project.url, project.authToken, project.path),
+          header: this.getHeaders(project.url, project.username, project.authToken, project.path),
             extraData: JSON.stringify({ response }),
             connectTimeout: 10000,
             readTimeout: 10000,
@@ -698,11 +701,35 @@ export class OpenCodeCore {
     return project?.isWorking ?? false;
   }
 
-  private getHeaders(backendUrl: string, authToken: string, directory: string): Record<string, string> {
-    return {
+  private getHeaders(backendUrl: string, username: string, authToken: string, directory: string): Record<string, string> {
+    const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'x-opencode-directory': encodeURIComponent(directory || '/'),
     };
+    if (authToken) {
+      headers['Authorization'] = 'Basic ' + this.base64Encode((username || 'opencode') + ':' + authToken);
+    }
+    return headers;
+  }
+
+  private base64Encode(str: string): string {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    let result = '';
+    let i = 0;
+    const len = str.length;
+    while (i < len) {
+      const b1 = str.charCodeAt(i);
+      i++;
+      const b2 = i < len ? str.charCodeAt(i) : NaN;
+      i++;
+      const b3 = i < len ? str.charCodeAt(i) : NaN;
+      i++;
+      result += chars.charAt(b1 >> 2);
+      result += chars.charAt(((b1 & 3) << 4) | (isNaN(b2) ? 0 : (b2 >> 4)));
+      result += isNaN(b2) ? '=' : chars.charAt(((b2 & 15) << 2) | (isNaN(b3) ? 0 : (b3 >> 6)));
+      result += isNaN(b3) ? '=' : chars.charAt(b3 & 63);
+    }
+    return result;
   }
 
 }

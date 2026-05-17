@@ -141,7 +141,8 @@ export class ChatViewModel {
     authToken: string,
     directory: string,
     realSessionId: string,
-    onResult: (messages: DisplayMessage[]) => void
+    onResult: (messages: DisplayMessage[]) => void,
+    username?: string
   ): Promise<void> {
     if (!backendUrl) return;
 
@@ -161,7 +162,7 @@ export class ChatViewModel {
           url,
           {
             method: http.RequestMethod.GET,
-            header: this.getHeaders(backendUrl, authToken, directory),
+            header: this.getHeaders(backendUrl, authToken, directory, username),
             connectTimeout: 10000,
             readTimeout: 10000,
           },
