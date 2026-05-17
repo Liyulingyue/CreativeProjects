@@ -8,6 +8,8 @@ interface SessionDisplayItem {
   backendId: string;
   directory: string;
   updatedAt: string;
+  isWorking: boolean;
+  unreadCount: number;
   session: OpenCodeSession;
 }
 
@@ -43,22 +45,27 @@ export struct SessionList {
       const localSessions = this.core.getSessions();
       console.info('[SessionList] Loading local sessions:', localSessions.length);
       
-      this.sessions = localSessions.map((s): SessionDisplayItem => ({
-        id: s.id,
-        name: s.name,
-        backendUrl: s.backendUrl,
-        backendId: s.backendId,
-        directory: s.directory,
-        updatedAt: s.updatedAt,
-        session: {
+      this.sessions = localSessions.map((s): SessionDisplayItem => {
+        const project = this.core.getProjectById(s.id);
+        return {
           id: s.id,
-          projectID: '',
+          name: s.name,
+          backendUrl: s.backendUrl,
+          backendId: s.backendId,
           directory: s.directory,
-          title: s.name,
-          version: '1',
-          time: { created: 0, updated: 0 }
-        }
-      }));
+          updatedAt: s.updatedAt,
+          isWorking: project?.isWorking ?? false,
+          unreadCount: project?.unreadCount ?? 0,
+          session: {
+            id: s.id,
+            projectID: '',
+            directory: s.directory,
+            title: s.name,
+            version: '1',
+            time: { created: 0, updated: 0 }
+          }
+        };
+      });
     } catch (e) {
       console.error('[SessionList] Failed to load sessions:', e);
       this.sessions = [];
@@ -83,6 +90,7 @@ export struct SessionList {
               params: {
                 backendId: this.selectedBackendId,
                 backendUrl: this.backends.find(b => b.id === this.selectedBackendId)?.url || '',
+                username: this.backends.find(b => b.id === this.selectedBackendId)?.username || '',
                 authToken: this.backends.find(b => b.id === this.selectedBackendId)?.authToken || ''
               }
             });
@@ -169,6 +177,7 @@ export struct SessionList {
                   params: {
                     backendId: this.selectedBackendId,
                     backendUrl: this.backends.find(b => b.id === this.selectedBackendId)?.url || '',
+                    username: this.backends.find(b => b.id === this.selectedBackendId)?.username || '',
                     authToken: this.backends.find(b => b.id === this.selectedBackendId)?.authToken || ''
                   }
                 });
@@ -184,12 +193,27 @@ export struct SessionList {
             ForEach(this.sessions, (item: SessionDisplayItem) => {
               ListItem() {
                 Row() {
-                  Stack() {
+                  Stack({ alignContent: Alignment.TopEnd }) {
                     Rect().fill('#07C160').width(48).height(48).borderRadius(8)
                     Text(item.name.charAt(0).toUpperCase())
                       .fontSize(20).fontColor('#FFFFFF').fontWeight(FontWeight.Bold)
+                    
+                    if (item.isWorking) {
+                      Circle().width(12).height(12)
+                        .fill('#2196F3')
+                        .stroke('#FFFFFF')
+                        .strokeWidth(2)
+                        .offset({ x: 4, y: -4 })
+                    } else if (item.unreadCount > 0) {
+                      Circle().width(12).height(12)
+                        .fill('#FF3B30')
+                        .stroke('#FFFFFF')
+                        .strokeWidth(2)
+                        .offset({ x: 4, y: -4 })
+                    }
                   }
-                  .margin({ right: 12 })
+                  .width(48).height(48)
+                  .margin({ right: 16 })
 
                   Column() {
                     Text(item.name)
@@ -211,6 +235,15 @@ export struct SessionList {
                         .maxLines(1)
                         .textOverflow({ overflow: TextOverflow.Ellipsis })
                         .layoutWeight(1)
+                      if (item.unreadCount > 0) {
+                        Text(`${item.unreadCount}`)
+                          .fontSize(10)
+                          .fontColor('#FFFFFF')
+                          .backgroundColor('#FF3B30')
+                          .borderRadius(8)
+                          .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+                          .margin({ left: 4 })
+                      }
                     }
                     .margin({ top: 2 })
                     Text(item.updatedAt)
@@ -233,6 +266,7 @@ export struct SessionList {
                           params: {
                             backendId: item.backendId,
                             backendUrl: item.backendUrl,
+                            username: backend?.username || '',
                             authToken: backend?.authToken || '',
                             title: item.name,
                             directory: item.directory,
@@ -283,6 +317,7 @@ export struct SessionList {
                     sessionId: item.id,
                     sessionName: item.name,
                     backendUrl: item.backendUrl,
+                    username: this.backends.find(b => b.id === item.backendId)?.username || '',
                     authToken: this.backends.find(b => b.id === item.backendId)?.authToken || '',
                     directory: item.directory
                   }

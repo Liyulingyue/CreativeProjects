@@ -12,7 +12,8 @@
 /.appanalyzer
 
 # OpenCode 参考目录（仅本地使用，不提交）
-/opencode/
+/reference/
+/references/
 
 # IDE patterns
 .DS_Store

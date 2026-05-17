@@ -26,8 +26,15 @@ interface TextPart {
   text: string;
 }
 
+interface ModelRef {
+  providerID: string;
+  modelID: string;
+}
+
 interface MessageBody {
   parts: TextPart[];
+  model?: ModelRef;
+  agent?: string;
 }
 
 export class ChatViewModel {
@@ -61,15 +68,21 @@ export class ChatViewModel {
     }
   }
 
-  getHeaders(backendUrl: string, authToken: string, directory: string): Record<string, string> {
+  getHeaders(backendUrl: string, authToken: string, directory: string, username?: string): Record<string, string> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'x-opencode-directory': encodeURIComponent(directory)
     };
     if (authToken) {
-      headers['Authorization'] = 'Basic ' + this.base64Encode('opencode:' + authToken);
+      const authUsername = username || 'opencode';
+      headers['Authorization'] = 'Basic ' + this.base64Encode(authUsername + ':' + authToken);
     }
     return headers;
+  }
+
+  buildUrlWithDir(baseUrl: string, path: string, directory: string): string {
+    const base = baseUrl.replace(/\/+$/, '');
+    return `${base}${path}`;
   }
 
   private formatPartContent(part: OpenCodeMessagePart): string {
@@ -140,7 +153,7 @@ export class ChatViewModel {
 
     this.cancelRequest();
     this.currentRequest = http.createHttp();
-    const url = `${backendUrl.replace(/\/+$/, '')}/session/${encodeURIComponent(realSessionId)}/message`;
+    const url = this.buildUrlWithDir(backendUrl, `/session/${encodeURIComponent(realSessionId)}/message`, directory);
 
     try {
       const result = await new Promise<http.HttpResponse>((resolve, reject) => {
@@ -225,17 +238,30 @@ export class ChatViewModel {
     directory: string,
     realSessionId: string,
     text: string,
+    preferredModel: string | undefined,
     loadingId: string,
     onUpdate: (messages: DisplayMessage[]) => void,
     onError: (msg: string) => void
   ): Promise<void> {
     this.cancelRequest();
     this.currentRequest = http.createHttp();
-    const url = `${backendUrl.replace(/\/+$/, '')}/session/${encodeURIComponent(realSessionId)}/message`;
+    const url = this.buildUrlWithDir(backendUrl, `/session/${encodeURIComponent(realSessionId)}/message`, directory);
+
+    let model: ModelRef | undefined;
+    if (preferredModel && preferredModel.includes('/')) {
+      const parts = preferredModel.split('/');
+      model = { providerID: parts[0], modelID: parts[1] };
+    }
 
     const body: MessageBody = {
       parts: [{ type: 'text', text: text }]
     };
+
+    console.info('[ChatViewModel] >>> performSendMessage params:');
+    console.info('[ChatViewModel]   preferredModel:', JSON.stringify(preferredModel));
+    console.info('[ChatViewModel]   model:', JSON.stringify(model));
+    console.info('[ChatViewModel]   agent:', 'build');
+    console.info('[ChatViewModel]   body:', JSON.stringify(body));
 
     try {
       const result = await new Promise<http.HttpResponse>((resolve, reject) => {
