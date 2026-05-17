@@ -491,7 +491,8 @@ struct ChatPage {
     }];
 
     const currentPreferredModel = this.core.getProjectById(this.sessionId)?.preferredModel || '';
-    console.info('[ChatPage] calling sendMessagePersistent, sessionId:', this.sessionId);
+    const proj = this.core.getProjectById(this.sessionId);
+    console.info('[ChatPage] calling sendMessagePersistent, sessionId:', this.sessionId, 'proj url:', proj?.url, 'username:', proj?.username);
 
     this.core.sendMessagePersistent(
       this.sessionId,
