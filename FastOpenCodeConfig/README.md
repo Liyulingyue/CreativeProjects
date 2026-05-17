@@ -46,6 +46,16 @@ chmod +x setup_service.sh
 opencode web --hostname 0.0.0.0 --port 4096
 ```
 
+### 2) 身份验证配置 (可选)
+支持通过环境变量配置账户和密码保护服务器访问：
+- `OPENCODE_SERVER_PASSWORD`：设置访问密码
+- `OPENCODE_SERVER_USERNAME`：设置用户名（默认为 opencode）
+
+示例：
+```bash
+OPENCODE_SERVER_PASSWORD=secret opencode web --hostname 0.0.0.0 --port 4096
+```
+
 ### 2) 创建服务文件
 创建文件 `/etc/systemd/system/opencode.service` (需要 sudo 权限)：
 
@@ -64,6 +74,9 @@ WorkingDirectory=/home/youruser
 ExecStart=/usr/bin/opencode web --hostname 0.0.0.0 --port 4096
 Restart=on-failure
 RestartSec=5s
+# 身份验证配置 (可选)
+Environment=OPENCODE_SERVER_USERNAME=opencode
+Environment=OPENCODE_SERVER_PASSWORD=your_password
 
 [Install]
 WantedBy=multi-user.target
@@ -90,6 +103,7 @@ sudo systemctl start opencode.service
 
 - **虚拟环境**：如果 `opencode` 安装在虚拟环境，请手动修改 `ExecStart` 的路径。
 - **端口访问**：默认端口 `4096` 超过 1024，无需 root 即可运行，但确保您的防火墙已开放该端口。
+- **身份验证**：推荐配置 `OPENCODE_SERVER_USERNAME` 和 `OPENCODE_SERVER_PASSWORD` 环境变量保护服务器访问安全。
 
 ---
 
