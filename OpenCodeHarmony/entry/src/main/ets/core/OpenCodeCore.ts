@@ -19,6 +19,8 @@ export interface OpenCodeProject {
   remoteSessionId?: string;
   preferredModel?: string;
   lastAccess: number;
+  isWorking: boolean;
+  unreadCount: number;
 }
 
 export interface ChatSession {
@@ -74,6 +76,9 @@ export interface SseEvent {
 
 export type SseEventCallback = (event: SseEvent) => void;
 
+// 会话变更事件类型
+export type SessionsChangedCallback = (timestamp: number) => void;
+
 export class OpenCodeCore {
   private static instance: OpenCodeCore;
   private projects: OpenCodeProject[] = [];
@@ -92,6 +97,7 @@ export class OpenCodeCore {
   private sseRequest: http.HttpRequest | null = null;
   private sseBuffer: string = '';
   private sseEventCallback: SseEventCallback | null = null;
+  private sessionsChangedCallback: SessionsChangedCallback | null = null;
 
   private constructor() {}
 
@@ -110,6 +116,18 @@ export class OpenCodeCore {
       console.info('[OpenCodeCore] Persistence initialized, backends:', this.backends.length);
     } catch (err) {
       console.error('[OpenCodeCore] Failed to init preferences:', err);
+    }
+  }
+
+  // 注册会话变更监听器
+  public setSessionsChangedCallback(callback: SessionsChangedCallback | null): void {
+    this.sessionsChangedCallback = callback;
+  }
+
+  // 触发会话变更事件
+  private notifySessionsChanged(): void {
+    if (this.sessionsChangedCallback) {
+      this.sessionsChangedCallback(Date.now());
     }
   }
 
@@ -169,11 +187,13 @@ export class OpenCodeCore {
       path: path,
       notes: notes,
       backendId: backendId,
-      lastAccess: Date.now()
+      lastAccess: Date.now(),
+      isWorking: false,
+      unreadCount: 0
     };
     this.projects.push(newProject);
     await this.saveProjects();
-    AppStorage.SetOrCreate<string>('needRefreshSessions', 'true');
+    this.notifySessionsChanged();
     return newProject.id;
   }
 
@@ -214,7 +234,7 @@ export class OpenCodeCore {
   public removeProject(id: string): void {
     this.projects = this.projects.filter(p => p.id !== id);
     this.saveProjects();
-    AppStorage.SetOrCreate<string>('needRefreshSessions', 'true');
+    this.notifySessionsChanged();
   }
 
   public setCurrentProject(id: string): void {
@@ -222,6 +242,11 @@ export class OpenCodeCore {
     const project = this.projects.find(p => p.id === id);
     if (project) {
       project.lastAccess = Date.now();
+      if (project.unreadCount > 0) {
+        project.unreadCount = 0;
+        this.saveProjects();
+        this.notifySessionsChanged();
+      }
       this.apiClient.updateConfig(project.url, project.username, project.authToken, project.path);
     }
   }
@@ -380,6 +405,7 @@ export class OpenCodeCore {
     this.cancelPendingRequest();
     this.pendingMessage = { projectId, sessionId, loadingId, text, model, isLoading: true };
     this.messageCallback = callback;
+    this.setProjectWorking(projectId, true);
 
     const url = `${project.url.replace(/\/+$/, '')}/session/${encodeURIComponent(sessionId)}/message`;
     const headers = this.getHeaders(project.url, project.authToken, project.path);
@@ -416,10 +442,12 @@ export class OpenCodeCore {
           const errObj = err as { code?: number; message?: string };
           if (errObj?.code === 2300023 || errObj?.code === 2300028) {
             this.messageCallback = null;
+            this.setProjectWorking(projectId, false);
             return;
           }
           this.messageCallback({ response: null, error: errObj?.message || String(err), loadingId: pending.loadingId });
           this.messageCallback = null;
+          this.setProjectWorking(projectId, false);
           return;
         }
 
@@ -442,6 +470,7 @@ export class OpenCodeCore {
           this.messageCallback?.({ response: null, error: `请求失败: HTTP ${data?.responseCode}`, loadingId: pending.loadingId });
         }
         this.messageCallback = null;
+        this.setProjectWorking(projectId, false);
       }
     );
   }
@@ -451,6 +480,7 @@ export class OpenCodeCore {
       this.pendingRequest.destroy();
       this.pendingRequest = null;
     }
+    const projectId = this.pendingMessage?.projectId;
     if (this.pendingMessage) {
       console.info('[OpenCodeCore] cancelPendingRequest, sessionId:', this.pendingMessage.sessionId);
       const sid = this.pendingMessage.sessionId;
@@ -467,6 +497,9 @@ export class OpenCodeCore {
     }
     this.pendingMessage = null;
     this.messageCallback = null;
+    if (projectId) {
+      this.setProjectWorking(projectId, false);
+    }
   }
 
   public clearPendingState(): void {
@@ -571,6 +604,34 @@ export class OpenCodeCore {
           try {
             const event = JSON.parse(json) as SseEvent;
             console.info('[OpenCodeCore][SSE] event:', event.type, 'sessionId:', event.properties?.sessionID);
+
+            // 处理未读消息逻辑
+            if (event.type === 'message.created' || event.type === 'message.delta' || event.type === 'status') {
+              const remoteId = event.properties?.sessionID;
+              if (remoteId) {
+                const project = this.projects.find(p => p.remoteSessionId === remoteId);
+                if (project) {
+                  // 如果收到 status 事件，更新 working 状态
+                  if (event.type === 'status') {
+                    const statusType = event.properties?.status?.type;
+                    const isWorking = statusType === 'busy' || statusType === 'thinking' || statusType === 'executing';
+                    if (project.isWorking !== isWorking) {
+                      project.isWorking = isWorking;
+                      this.saveProjects();
+                      this.notifySessionsChanged();
+                    }
+                  }
+                  
+                  // 未读数逻辑：仅针对 message.created 且非当前激活会话
+                  if (event.type === 'message.created' && this.currentProjectId !== project.id) {
+                    project.unreadCount = (project.unreadCount || 0) + 1;
+                    this.saveProjects();
+                    this.notifySessionsChanged();
+                  }
+                }
+              }
+            }
+
             this.sseEventCallback?.(event);
           } catch (e) {
             console.warn('[OpenCodeCore][SSE] JSON parse error:', e);
@@ -618,5 +679,19 @@ export class OpenCodeCore {
       'Content-Type': 'application/json',
       'x-opencode-directory': encodeURIComponent(directory || '/'),
     };
+  }
+
+  private async setProjectWorking(projectId: string, working: boolean): Promise<void> {
+    const project = this.projects.find(p => p.id === projectId);
+    if (project) {
+      project.isWorking = working;
+      await this.saveProjects();
+      this.notifySessionsChanged();
+    }
+  }
+
+  public isProjectWorking(projectId: string): boolean {
+    const project = this.projects.find(p => p.id === projectId);
+    return project?.isWorking ?? false;
   }
 }
