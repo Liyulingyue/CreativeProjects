@@ -99,6 +99,7 @@ struct ChatPage {
 
   aboutToDisappear() {
     this.core.stopSse();
+    AppStorage.SetOrCreate<string>('refreshSessionsNow', Date.now().toString());
   }
 
   private handleSseEvent(event: SseEvent): void {
@@ -490,6 +491,7 @@ struct ChatPage {
     }];
 
     const currentPreferredModel = this.core.getProjectById(this.sessionId)?.preferredModel || '';
+    console.info('[ChatPage] calling sendMessagePersistent, sessionId:', this.sessionId);
 
     this.core.sendMessagePersistent(
       this.sessionId,
