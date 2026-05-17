@@ -15,6 +15,7 @@ struct SessionDetail {
   @State errorMessage: string = '';
   @State backendId: string = '';
   @State backendUrl: string = '';
+  @State username: string = '';
   @State authToken: string = '';
   @State backends: OpenCodeBackend[] = [];
   @State showBackendPicker: boolean = false;
@@ -44,6 +45,7 @@ struct SessionDetail {
     if (params) {
       this.backendId = (params['backendId'] as string) || '';
       this.backendUrl = (params['backendUrl'] as string) || '';
+      this.username = (params['username'] as string) || '';
       this.authToken = (params['authToken'] as string) || '';
       this.isEditing = (params['isEditing'] as boolean) || false;
       this.editingId = (params['id'] as string) || '';
@@ -58,6 +60,7 @@ struct SessionDetail {
           if (project.preferredModel) {
             this.selectedModel = project.preferredModel;
           }
+          console.info('[SessionDetail] Loaded project model:', this.selectedModel);
         }
       }
     }
@@ -74,7 +77,7 @@ struct SessionDetail {
     if (!this.backendUrl) return;
     this.isLoadingRemoteSessions = true;
     try {
-      this.remoteSessions = await this.viewModel.fetchRemoteSessions(this.backendUrl, this.authToken, this.directory);
+        this.remoteSessions = await this.viewModel.fetchRemoteSessions(this.backendUrl, this.username, this.authToken, this.directory);
     } catch (e) {
       console.error('[SessionDetail] Fetch remote sessions error:', e);
     } finally {
@@ -86,7 +89,7 @@ struct SessionDetail {
     if (!this.backendUrl) return;
     this.isLoadingModels = true;
     try {
-      this.availableModels = await this.viewModel.fetchModels(this.backendUrl, this.authToken);
+        this.availableModels = await this.viewModel.fetchModels(this.backendUrl, this.username, this.authToken);
       // 兼容旧数据：历史上可能只保存了 model.id，这里自动迁移为 provider/model。
       if (this.selectedModel && !this.selectedModel.includes('/')) {
         const matches = this.availableModels.filter(
@@ -114,6 +117,7 @@ struct SessionDetail {
   private selectBackend(backend: OpenCodeBackend) {
     this.backendId = backend.id;
     this.backendUrl = backend.url;
+    this.username = backend.username;
     this.authToken = backend.authToken;
     this.showBackendPicker = false;
     this.fetchRemoteSessions();
@@ -156,6 +160,7 @@ struct SessionDetail {
   private searchPaths(query: string, fullPath: string) {
     this.viewModel.searchPaths(
       this.backendUrl,
+      this.username,
       this.authToken,
       this.directory,
       query,
@@ -170,6 +175,7 @@ struct SessionDetail {
   private listDirectory(path: string) {
     this.viewModel.listDirectory(
       this.backendUrl,
+      this.username,
       this.authToken,
       this.directory,
       path,
@@ -201,6 +207,7 @@ struct SessionDetail {
 
     this.isCreating = true;
     this.errorMessage = '';
+    console.info('[SessionDetail] >>> createSession, selectedModel:', this.selectedModel);
 
     try {
       const success = await this.viewModel.createOrUpdateSession(
@@ -209,6 +216,7 @@ struct SessionDetail {
         this.title,
         this.directory,
         this.backendUrl,
+        this.username,
         this.authToken,
         this.backendId,
         this.selectedRemoteSessionId,
@@ -401,6 +409,7 @@ struct SessionDetail {
               .justifyContent(FlexAlign.SpaceBetween)
               .onClick(() => {
                 this.selectedModel = this.getModelValue(model);
+                console.info('[SessionDetail] Model selected:', this.selectedModel);
                 this.showModelPicker = false;
               })
 

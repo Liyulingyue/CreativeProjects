@@ -24,7 +24,13 @@ export default class EntryAbility extends UIAbility {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageCreate');
 
     // 先初始化持久化存储，再加载页面
-    await OpenCodeCore.getInstance().init(this.context);
+    const core = OpenCodeCore.getInstance();
+    await core.init(this.context);
+
+    // 注册会话变更回调，由 UI 层负责更新 AppStorage
+    core.setSessionsChangedCallback((timestamp: number) => {
+      AppStorage.SetOrCreate<string>('needRefreshSessions', timestamp.toString());
+    });
 
     windowStage.loadContent('pages/MainPage', (err) => {
       if (err.code) {
