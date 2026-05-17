@@ -1,58 +1,48 @@
-import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
+import { UIAbility, Want } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
 import { OpenCodeCore } from '../core/OpenCodeCore';
 
-const DOMAIN = 0x0000;
-
 export default class EntryAbility extends UIAbility {
-  async onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): Promise<void> {
-    try {
-      this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
-    } catch (err) {
-      hilog.error(DOMAIN, 'testTag', 'Failed to set colorMode. Cause: %{public}s', JSON.stringify(err));
-    }
-    hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onCreate');
+  async onCreate(want: Want, launchParam: Object): Promise<void> {
+    console.info('[EntryAbility] Ability onCreate');
   }
 
   onDestroy(): void {
-    hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onDestroy');
+    console.info('[EntryAbility] Ability onDestroy');
   }
 
   async onWindowStageCreate(windowStage: window.WindowStage): Promise<void> {
-    // Main window is created, set main page for this ability
-    hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageCreate');
+    console.info('[EntryAbility] Ability onWindowStageCreate');
 
-    // 先初始化持久化存储，再加载页面
     const core = OpenCodeCore.getInstance();
-    await core.init(this.context);
+    try {
+      await core.init(this.context);
+    } catch (e) {
+      console.error('[EntryAbility] init failed:', e);
+    }
 
-    // 注册会话变更回调，由 UI 层负责更新 AppStorage
     core.setSessionsChangedCallback((timestamp: number) => {
-      AppStorage.SetOrCreate<string>('needRefreshSessions', timestamp.toString());
+      AppStorage.setOrCreate<string>('needRefreshSessions', timestamp.toString());
     });
 
     windowStage.loadContent('pages/MainPage', (err) => {
       if (err.code) {
-        hilog.error(DOMAIN, 'testTag', 'Failed to load the content. Cause: %{public}s', JSON.stringify(err));
+        console.error('[EntryAbility] Failed to load the content. Cause:', JSON.stringify(err));
         return;
       }
-      hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
+      console.info('[EntryAbility] Succeeded in loading the content.');
     });
   }
 
   onWindowStageDestroy(): void {
-    // Main window is destroyed, release UI related resources
-    hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageDestroy');
+    console.info('[EntryAbility] Ability onWindowStageDestroy');
   }
 
   onForeground(): void {
-    // Ability has brought to foreground
-    hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onForeground');
+    console.info('[EntryAbility] Ability onForeground');
   }
 
   onBackground(): void {
-    // Ability has back to background
-    hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onBackground');
+    console.info('[EntryAbility] Ability onBackground');
   }
 }

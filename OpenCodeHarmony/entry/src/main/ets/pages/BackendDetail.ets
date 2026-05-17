@@ -111,7 +111,7 @@ struct BackendDetail {
     } else {
       await this.core.addBackend(normalizedUrl, this.username, this.authToken, this.notes);
     }
-    AppStorage.SetOrCreate<string>('needRefreshBackends', 'true');
+    AppStorage.setOrCreate<string>('needRefreshBackends', 'true');
     router.back();
   }
 
@@ -253,7 +253,7 @@ struct BackendDetail {
             .fontColor('#FF4D4F')
             .onClick(async () => {
               await this.core.removeBackend(this.editId);
-              AppStorage.SetOrCreate<string>('needRefreshBackends', 'true');
+              AppStorage.setOrCreate<string>('needRefreshBackends', 'true');
               router.back();
             })
         }

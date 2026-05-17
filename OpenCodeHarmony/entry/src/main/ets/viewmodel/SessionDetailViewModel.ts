@@ -259,7 +259,7 @@ export class SessionDetailViewModel {
     const normalized = path.replace(/\/+$/, '') || '/';
     const existing = currentRecent.filter(p => p !== normalized);
     const updated = [normalized, ...existing].slice(0, 10);
-    AppStorage.SetOrCreate<string[]>('recentWorktreePaths', updated);
+    AppStorage.setOrCreate<string[]>('recentWorktreePaths', updated);
     return updated;
   }
 
@@ -286,7 +286,7 @@ export class SessionDetailViewModel {
         this.core.updateRemoteSessionId(editingId, selectedRemoteSessionId);
       }
       console.info('[SessionDetailViewModel] Local session updated:', editingId, 'with model:', preferredModel);
-      AppStorage.SetOrCreate<string>('refreshSessionsNow', Date.now().toString());
+      AppStorage.setOrCreate<string>('refreshSessionsNow', Date.now().toString());
       return true;
     } else {
       const newProjectId = await this.core.addProject(sessionTitle, backendUrl, username, authToken, directory, '', backendId);
@@ -297,7 +297,7 @@ export class SessionDetailViewModel {
         this.core.updateRemoteSessionId(newProjectId, selectedRemoteSessionId);
       }
       console.info('[SessionDetailViewModel] Local session created for directory:', directory);
-      AppStorage.SetOrCreate<string>('refreshSessionsNow', Date.now().toString());
+      AppStorage.setOrCreate<string>('refreshSessionsNow', Date.now().toString());
       return true;
     }
   }

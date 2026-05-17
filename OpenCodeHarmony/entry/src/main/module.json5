@@ -34,29 +34,9 @@
         ]
       }
     ],
-    "extensionAbilities": [
-      {
-        "name": "EntryBackupAbility",
-        "srcEntry": "./ets/entrybackupability/EntryBackupAbility.ets",
-        "type": "backup",
-        "exported": false,
-        "metadata": [
-          {
-            "name": "ohos.extension.backup",
-            "resource": "$profile:backup_config"
-          }
-        ],
-      }
-    ],
     "requestPermissions": [
       {
         "name": "ohos.permission.INTERNET"
-      }
-    ],
-    "metadata": [
-      {
-        "name": "network_config",
-        "value": "{\"allow_http\":true}"
       }
     ]
   }

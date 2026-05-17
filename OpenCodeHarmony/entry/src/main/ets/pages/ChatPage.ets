@@ -2,7 +2,6 @@
 import { ChatViewModel, DisplayMessage } from '../viewmodel/ChatViewModel';
 import { parseMessageSegments, MessageSegment, MessageSegmentType } from '../utils/MessageParser';
 import router from '@ohos.router';
-import promptAction from '@ohos.promptAction';
 
 interface MessagePart {
   type: string;
@@ -99,7 +98,7 @@ struct ChatPage {
 
   aboutToDisappear() {
     this.core.stopSse();
-    AppStorage.SetOrCreate<string>('refreshSessionsNow', Date.now().toString());
+    AppStorage.setOrCreate<string>('refreshSessionsNow', Date.now().toString());
   }
 
   private handleSseEvent(event: SseEvent): void {
@@ -125,7 +124,7 @@ struct ChatPage {
     this.pendingPermission = null;
     const success = await this.core.replyPermission(this.realSessionId, requestID, response);
     if (!success) {
-      promptAction.showToast({ message: '审批回复失败' });
+      AlertDialog.show({ message: '审批回复失败' });
     }
   }
 

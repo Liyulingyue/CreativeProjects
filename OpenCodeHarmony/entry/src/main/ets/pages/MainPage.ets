@@ -11,7 +11,7 @@ struct MainPage {
   onPageShow() {
     if (this.needRefreshSessions === 'true') {
       this.needRefreshSessions = '';
-      AppStorage.SetOrCreate<string>('refreshSessionsNow', Date.now().toString());
+      AppStorage.setOrCreate<string>('refreshSessionsNow', Date.now().toString());
     }
   }
 

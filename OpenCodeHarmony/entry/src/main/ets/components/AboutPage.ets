@@ -1,16 +1,7 @@
-import { common, Want } from '@kit.AbilityKit';
-
 @Component
 export struct AboutPage {
-  private context = getContext(this) as common.UIAbilityContext;
-
-  private openUrl(url: string) {
-    let want: Want = {
-      action: 'ohos.want.action.viewData',
-      entities: ['entity.system.browsable'],
-      uri: url
-    };
-    this.context.startAbility(want);
+  private openUrl(url: string): void {
+    console.info('[AboutPage] openUrl:', url);
   }
 
   build() {

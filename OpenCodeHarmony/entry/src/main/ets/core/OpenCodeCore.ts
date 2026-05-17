@@ -116,7 +116,7 @@ export class OpenCodeCore {
       await this.loadFromStorage();
       console.info('[OpenCodeCore] Persistence initialized, backends:', this.backends.length);
     } catch (err) {
-      console.error('[OpenCodeCore] Failed to init preferences:', err);
+      console.error('[OpenCodeCore] Persistence init failed:', JSON.stringify(err));
     }
   }
 
@@ -556,8 +556,8 @@ export class OpenCodeCore {
 
     req.on('dataReceive', (data: ArrayBuffer) => {
       try {
-        const decoder = new util.TextDecoder('utf-8');
-        const chunk = decoder.decode(new Uint8Array(data));
+        const decoder = util.TextDecoder.create('utf-8');
+        const chunk = decoder.decodeToString(new Uint8Array(data));
         this.handleSseChunk(chunk);
       } catch (e) {
         console.warn('[OpenCodeCore][SSE] decode error:', e);
