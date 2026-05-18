@@ -35,6 +35,8 @@ signing.properties
 # ArkUI-X Android artifacts
 .arkui-x/android/.gradle/
 .arkui-x/android/app/src/main/assets/
+.arkui-x/android/app/libs/
+.arkui-x/android/app/build/
 
 # Log files
 *.log
