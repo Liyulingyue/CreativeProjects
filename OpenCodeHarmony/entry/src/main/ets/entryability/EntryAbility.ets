@@ -11,18 +11,12 @@ export default class EntryAbility extends UIAbility {
     console.info('[EntryAbility] Ability onDestroy');
   }
 
-  async onWindowStageCreate(windowStage: window.WindowStage): Promise<void> {
+  onWindowStageCreate(windowStage: window.WindowStage): void {
     console.info('[EntryAbility] Ability onWindowStageCreate');
 
     const core = OpenCodeCore.getInstance();
-    try {
-      await core.init(this.context);
-    } catch (e) {
-      console.error('[EntryAbility] init failed:', e);
-    }
-
     core.setSessionsChangedCallback((timestamp: number) => {
-      AppStorage.setOrCreate<string>('needRefreshSessions', timestamp.toString());
+      AppStorage.setOrCreate<string>('refreshSessionsNow', timestamp.toString());
     });
 
     windowStage.loadContent('pages/MainPage', (err) => {
@@ -32,6 +26,17 @@ export default class EntryAbility extends UIAbility {
       }
       console.info('[EntryAbility] Succeeded in loading the content.');
     });
+
+    this.initCore(core);
+  }
+
+  private async initCore(core: OpenCodeCore): Promise<void> {
+    try {
+      await core.init(this.context);
+    } catch (e) {
+      console.error('[EntryAbility] init failed:', e);
+    }
+    AppStorage.setOrCreate<string>('refreshSessionsNow', Date.now().toString());
   }
 
   onWindowStageDestroy(): void {
