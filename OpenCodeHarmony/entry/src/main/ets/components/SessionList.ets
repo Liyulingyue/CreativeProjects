@@ -43,6 +43,10 @@ export struct SessionList {
   async refreshSessions() {
     this.isLoading = true;
     try {
+      this.backends = this.core.getBackends();
+      if (!this.selectedBackendId && this.backends.length > 0) {
+        this.selectedBackendId = this.backends[0].id;
+      }
       const localSessions = this.core.getSessions();
       console.info('[SessionList] Loading local sessions:', localSessions.length);
       localSessions.forEach(s => {
