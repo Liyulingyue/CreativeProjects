@@ -32,6 +32,10 @@ node_modules/
 local.properties
 signing.properties
 
+# ArkUI-X Android artifacts
+.arkui-x/android/.gradle/
+.arkui-x/android/app/src/main/assets/
+
 # Log files
 *.log
 logs/
