@@ -291,7 +291,7 @@ export class ChatViewModel {
           content: content || '完成',
           timestamp: Date.now()
         };
-        return assistantMsg as unknown as void;
+        return;
       } else {
         onError(`请求失败: HTTP ${result.responseCode}`);
       }

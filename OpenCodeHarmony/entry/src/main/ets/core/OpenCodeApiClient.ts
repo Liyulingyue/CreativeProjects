@@ -50,8 +50,8 @@ export interface OpenCodeMessagePart {
   tool?: string;
   callID?: string;
   status?: 'pending' | 'running' | 'completed' | 'error';
-  state?: unknown;
-  metadata?: Record<string, unknown>;
+  state?: Object;
+  metadata?: Record<string, Object>;
   time?: {
     start: number;
     end?: number;
@@ -83,6 +83,11 @@ export interface OpenCodeMessage {
 export interface TextPartInput {
   type: 'text';
   text: string;
+}
+
+interface ModelRef {
+  providerID: string;
+  modelID: string;
 }
 
 export class OpenCodeApiClient {
@@ -382,12 +387,16 @@ export class OpenCodeApiClient {
     this.cancelRequest();
     this.currentRequest = http.createHttp();
     const url = this.buildUrlWithDir(`/session/${encodeURIComponent(sessionID)}/message`);
-    const body: Record<string, any> = { parts: parts };
+    interface PromptBody {
+      parts: TextPartInput[];
+      model?: ModelRef;
+    }
+    const body: PromptBody = { parts: parts };
     if (model && model.includes('/')) {
-      const parts = model.split('/');
-      body['model'] = {
-        providerID: parts[0],
-        modelID: parts[1]
+      const mparts = model.split('/');
+      body.model = {
+        providerID: mparts[0],
+        modelID: mparts[1]
       };
     }
     try {
@@ -424,12 +433,16 @@ export class OpenCodeApiClient {
     this.cancelRequest();
     this.currentRequest = http.createHttp();
     const url = this.buildUrlWithDir(`/session/${encodeURIComponent(sessionID)}/prompt_async`);
-    const body: Record<string, any> = { parts: parts };
+    interface PromptAsyncBody {
+      parts: TextPartInput[];
+      model?: ModelRef;
+    }
+    const body: PromptAsyncBody = { parts: parts };
     if (model && model.includes('/')) {
-      const parts = model.split('/');
-      body['model'] = {
-        providerID: parts[0],
-        modelID: parts[1]
+      const mparts = model.split('/');
+      body.model = {
+        providerID: mparts[0],
+        modelID: mparts[1]
       };
     }
     try {
