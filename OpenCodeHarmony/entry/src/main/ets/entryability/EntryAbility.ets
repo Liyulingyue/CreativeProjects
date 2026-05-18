@@ -15,15 +15,6 @@ export default class EntryAbility extends UIAbility {
     console.info('[EntryAbility] Ability onWindowStageCreate');
 
     const core = OpenCodeCore.getInstance();
-    try {
-      await core.init(this.context);
-    } catch (e) {
-      console.error('[EntryAbility] init failed:', e);
-    }
-
-    core.setSessionsChangedCallback((timestamp: number) => {
-      AppStorage.setOrCreate<string>('needRefreshSessions', timestamp.toString());
-    });
 
     windowStage.loadContent('pages/MainPage', (err) => {
       if (err.code) {
@@ -31,6 +22,18 @@ export default class EntryAbility extends UIAbility {
         return;
       }
       console.info('[EntryAbility] Succeeded in loading the content.');
+
+      try {
+        core.init(this.context).catch((e) => {
+          console.error('[EntryAbility] init failed:', JSON.stringify(e));
+        });
+      } catch (e) {
+        console.error('[EntryAbility] init throw:', JSON.stringify(e));
+      }
+
+      core.setSessionsChangedCallback((timestamp: number) => {
+        AppStorage.setOrCreate<string>('needRefreshSessions', timestamp.toString());
+      });
     });
   }
 
