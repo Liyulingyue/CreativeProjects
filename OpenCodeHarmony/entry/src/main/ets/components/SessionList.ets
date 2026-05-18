@@ -316,7 +316,7 @@ export struct SessionList {
                 .backgroundColor('#FFFFFF')
               }
               .onClick(() => {
-                this.core.setCurrentProject(item.backendId);
+                this.core.setCurrentProject(item.id);
                 this.core.setCurrentSession(item.id);
                 router.pushUrl({
                   url: 'pages/ChatPage',

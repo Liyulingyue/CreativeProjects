@@ -5,7 +5,7 @@ import util from '@ohos.util';
 import { OpenCodeApiClient, OpenCodeSession, OpenCodeMessage } from './OpenCodeApiClient';
 
 export { OpenCodeSession, OpenCodeMessage, OpenCodeProviderModel } from './OpenCodeApiClient';
-export type { OpenCodeApiClient, TextPartInput, OpenCodeMessagePart } from './OpenCodeApiClient';
+export type { TextPartInput, OpenCodeMessagePart } from './OpenCodeApiClient';
 
 export interface OpenCodeProject {
   id: string;
