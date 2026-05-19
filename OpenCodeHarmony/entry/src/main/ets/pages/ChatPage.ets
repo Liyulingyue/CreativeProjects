@@ -59,6 +59,8 @@ struct ChatPage {
   @State realSessionId: string = '';
   @State preferredModel: string = '';
   @State pendingPermission: PendingPermission | null = null;
+  @State isImmersiveMode: boolean = true;
+  @State displayUsername: string = 'User';
 
   aboutToAppear() {
     const params = router.getParams() as Record<string, Object>;
@@ -92,6 +94,9 @@ struct ChatPage {
     if (this.realSessionId) {
       this.core.startSse(this.sessionId);
     }
+
+    this.isImmersiveMode = this.core.getImmersiveMode();
+    this.displayUsername = this.core.getDisplayUsername() || 'User';
 
     this.loadHistory();
   }
@@ -173,107 +178,155 @@ struct ChatPage {
 
   @Builder
   buildMessageItem(msg: DisplayMessage) {
-    Row() {
-      if (msg.role === 'user') {
-        Blank()
-        Text(msg.content)
-          .padding(12)
-          .backgroundColor('#95EC69')
-          .borderRadius({ topLeft: 8, topRight: 2, bottomLeft: 8, bottomRight: 8 })
-          .constraintSize({ maxWidth: '75%' })
-          .fontSize(15)
-          .margin({ right: 12 })
-      } else {
-        Row() {
-          Stack() {
-            Rect().fill('#07C160').width(36).height(36).borderRadius(4)
-            Text('AI')
-              .fontSize(12).fontColor('#FFFFFF').fontWeight(FontWeight.Bold)
+    Column() {
+      if (!this.isImmersiveMode) {
+        if (msg.role === 'user') {
+          Row() {
+            Blank()
+            Text(this.formatTime(msg.timestamp))
+              .fontSize(11)
+              .fontColor('#BBBBBB')
+            Text(this.displayUsername)
+              .fontSize(11)
+              .fontColor('#888888')
+              .margin({ left: 8 })
           }
-          .margin({ right: 8 })
-          .alignContent(Alignment.Center)
-
-          Column() {
-            if (msg.isLoading) {
-              Column() {
-                Row() {
-                  LoadingProgress().width(16).height(16)
-                  Text('思考中...')
-                    .fontSize(13)
-                    .fontColor('#888888')
-                    .margin({ left: 6 })
-                }
-                Text('如果长时间没有回复，请检查目标模型是否欠费或速率限制...')
-                  .fontSize(10)
-                  .fontColor('#BBBBBB')
-                  .margin({ top: 6, left: 22 })
-              }
-              .padding(12)
-              .backgroundColor('#FFFFFF')
-              .borderRadius({ topLeft: 2, topRight: 8, bottomLeft: 8, bottomRight: 8 })
-              .alignItems(HorizontalAlign.Start)
+          .width('100%')
+          .padding({ left: 16, right: 16, top: 8, bottom: 2 })
+        } else {
+          Row() {
+            if (msg.model) {
+              Text(msg.model.split('/').pop() || msg.model)
+                .fontSize(11)
+                .fontColor('#07C160')
+              Text(this.formatTime(msg.timestamp))
+                .fontSize(11)
+                .fontColor('#BBBBBB')
+                .margin({ left: 8 })
             } else {
-              Column() {
-                ForEach(parseMessageSegments(msg.content), (segment: MessageSegment, index: number) => {
-                  if (segment.type === MessageSegmentType.TEXT) {
-                    if (segment.content.trim().length > 0) {
-                      Text(segment.content)
-                        .fontSize(15)
-                        .padding({ left: 12, right: 12, top: 10, bottom: 10 })
-                    }
-                  } else {
-                    Column() {
-                      Row() {
-                        Text('执行过程' + (this.collapsedIds.indexOf(`${msg.id}_${index}`) === -1 ? ' (展开)' : ' (收起)'))
-                          .fontSize(10)
-                          .fontColor('#999999')
-                      }
-                      .width('100%')
-                      .justifyContent(FlexAlign.Center)
-                      .padding({ top: 6, bottom: 6 })
-                      .backgroundColor('#F0F0F0')
-                      .borderRadius(4)
-                      .onClick(() => {
-                        const key = `${msg.id}_${index}`;
-                        const idx = this.collapsedIds.indexOf(key);
-                        if (idx === -1) {
-                          this.collapsedIds.push(key);
-                        } else {
-                          this.collapsedIds.splice(idx, 1);
-                        }
-                      })
-
-                      if (this.collapsedIds.indexOf(`${msg.id}_${index}`) !== -1) {
-                        Text(segment.content)
-                          .fontSize(12)
-                          .fontColor('#777777')
-                          .padding(10)
-                          .width('100%')
-                          .textAlign(TextAlign.Start)
-                      }
-                    }
-                    .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-                  }
-                }, (segment: MessageSegment, index: number) => `${msg.id}_${index}`)
-              }
-              .backgroundColor('#FFFFFF')
-              .borderRadius({ topLeft: 2, topRight: 8, bottomLeft: 8, bottomRight: 8 })
-              .alignItems(HorizontalAlign.Start)
+              Text(this.formatTime(msg.timestamp))
+                .fontSize(11)
+                .fontColor('#BBBBBB')
             }
+            Blank()
           }
-          .layoutWeight(1)
-          .constraintSize({ maxWidth: '80%' })
+          .width('100%')
+          .padding({ left: 16, right: 16, top: 8, bottom: 2 })
         }
-        .width('100%')
-        .padding({ left: 12, right: 12 })
-        .alignItems(VerticalAlign.Top)
-        
-        Blank()
       }
+
+      Row() {
+        if (msg.role === 'user') {
+          Blank()
+          Text(msg.content)
+            .padding(12)
+            .backgroundColor('#95EC69')
+            .borderRadius({ topLeft: 8, topRight: 2, bottomLeft: 8, bottomRight: 8 })
+            .constraintSize({ maxWidth: '75%' })
+            .fontSize(15)
+            .margin({ right: 12 })
+        } else {
+          Row() {
+            Stack() {
+              Rect().fill('#07C160').width(36).height(36).borderRadius(4)
+              Text('AI')
+                .fontSize(12).fontColor('#FFFFFF').fontWeight(FontWeight.Bold)
+            }
+            .margin({ right: 8 })
+            .alignContent(Alignment.Center)
+
+            Column() {
+              if (msg.isLoading) {
+                Column() {
+                  Row() {
+                    LoadingProgress().width(16).height(16)
+                    Text('思考中...')
+                      .fontSize(13)
+                      .fontColor('#888888')
+                      .margin({ left: 6 })
+                  }
+                  Text('如果长时间没有回复，请检查目标模型是否欠费或速率限制...')
+                    .fontSize(10)
+                    .fontColor('#BBBBBB')
+                    .margin({ top: 6, left: 22 })
+                }
+                .padding(12)
+                .backgroundColor('#FFFFFF')
+                .borderRadius({ topLeft: 2, topRight: 8, bottomLeft: 8, bottomRight: 8 })
+                .alignItems(HorizontalAlign.Start)
+              } else {
+                Column() {
+                  ForEach(parseMessageSegments(msg.content), (segment: MessageSegment, index: number) => {
+                    if (segment.type === MessageSegmentType.TEXT) {
+                      if (segment.content.trim().length > 0) {
+                        Text(segment.content)
+                          .fontSize(15)
+                          .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+                      }
+                    } else {
+                      Column() {
+                        Row() {
+                          Text('执行过程' + (this.collapsedIds.indexOf(`${msg.id}_${index}`) === -1 ? ' (展开)' : ' (收起)'))
+                            .fontSize(10)
+                            .fontColor('#999999')
+                        }
+                        .width('100%')
+                        .justifyContent(FlexAlign.Center)
+                        .padding({ top: 6, bottom: 6 })
+                        .backgroundColor('#F0F0F0')
+                        .borderRadius(4)
+                        .onClick(() => {
+                          const key = `${msg.id}_${index}`;
+                          const idx = this.collapsedIds.indexOf(key);
+                          if (idx === -1) {
+                            this.collapsedIds.push(key);
+                          } else {
+                            this.collapsedIds.splice(idx, 1);
+                          }
+                        })
+
+                        if (this.collapsedIds.indexOf(`${msg.id}_${index}`) !== -1) {
+                          Text(segment.content)
+                            .fontSize(12)
+                            .fontColor('#777777')
+                            .padding(10)
+                            .width('100%')
+                            .textAlign(TextAlign.Start)
+                        }
+                      }
+                      .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+                    }
+                  }, (segment: MessageSegment, index: number) => `${msg.id}_${index}`)
+                }
+                .backgroundColor('#FFFFFF')
+                .borderRadius({ topLeft: 2, topRight: 8, bottomLeft: 8, bottomRight: 8 })
+                .alignItems(HorizontalAlign.Start)
+              }
+            }
+            .layoutWeight(1)
+            .constraintSize({ maxWidth: '80%' })
+          }
+          .width('100%')
+          .padding({ left: 12, right: 12 })
+          .alignItems(VerticalAlign.Top)
+
+          Blank()
+        }
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Top)
     }
     .width('100%')
-    .alignItems(VerticalAlign.Top)
     .padding({ left: 8, right: 8 })
+  }
+
+  private formatTime(ts: number): string {
+    const d = new Date(ts);
+    const month = (d.getMonth() + 1).toString().padStart(2, '0');
+    const day = d.getDate().toString().padStart(2, '0');
+    const hour = d.getHours().toString().padStart(2, '0');
+    const min = d.getMinutes().toString().padStart(2, '0');
+    return `${month}-${day} ${hour}:${min}`;
   }
 
   build() {
@@ -528,7 +581,8 @@ struct ChatPage {
             id: response.info?.id || `resp-${Date.now()}`,
             role: 'assistant',
             content: content || '完成',
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            model: this.preferredModel
           }];
         }
 
