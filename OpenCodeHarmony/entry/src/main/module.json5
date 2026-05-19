@@ -22,12 +22,6 @@
         "startWindowIcon": "$media:colorfulO288",
         "startWindowBackground": "$color:start_window_background",
         "exported": true,
-        "metadata": [
-          {
-            "name": "network_security_config",
-            "value": "$profile:network_security_config"
-          }
-        ],
         "skills": [
           {
             "entities": [
