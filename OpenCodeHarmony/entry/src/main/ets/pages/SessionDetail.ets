@@ -546,6 +546,21 @@ struct SessionDetail {
                 .fontColor('#FF4D4F')
                 .margin({ bottom: 16 })
             }
+
+            if (this.isEditing) {
+              Button('删除此会话', { type: ButtonType.Normal })
+                .width('100%')
+                .height(44)
+                .borderRadius(8)
+                .backgroundColor('#FFF2F0')
+                .fontColor('#FF4D4F')
+                .margin({ top: 8 })
+                .onClick(async () => {
+                  await this.core.removeProject(this.editingId);
+                  AppStorage.setOrCreate<string>('refreshSessionsNow', Date.now().toString());
+                  router.back();
+                })
+            }
           }
           .width('100%')
           .padding({ left: 20, right: 20, top: 24 })
