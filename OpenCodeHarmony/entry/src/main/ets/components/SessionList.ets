@@ -8,6 +8,7 @@ interface SessionDisplayItem {
   backendId: string;
   directory: string;
   updatedAt: string;
+  updatedAtTimestamp: number;
   isWorking: boolean;
   unreadCount: number;
   session: OpenCodeSession;
@@ -63,6 +64,7 @@ export struct SessionList {
           backendId: s.backendId,
           directory: s.directory,
           updatedAt: s.updatedAt,
+          updatedAtTimestamp: s.updatedAtTimestamp,
           isWorking: project?.isWorking ?? false,
           unreadCount: project?.unreadCount ?? 0,
           session: {
@@ -74,7 +76,7 @@ export struct SessionList {
             time: { created: 0, updated: 0 }
           }
         };
-      });
+      }).sort((a, b) => (b.updatedAtTimestamp ?? 0) - (a.updatedAtTimestamp ?? 0));
     } catch (e) {
       console.error('[SessionList] Failed to load sessions:', e);
       this.sessions = [];
@@ -266,8 +268,7 @@ export struct SessionList {
                   .layoutWeight(1)
                   .alignItems(HorizontalAlign.Start)
 
-                  Row({ space: 8 }) {
-                    Text('配置')
+                  Text('配置')
                       .fontSize(13)
                       .fontColor('#1677FF')
                       .padding(8)
@@ -287,29 +288,6 @@ export struct SessionList {
                           }
                         });
                       })
-
-                    Text('删除')
-                      .fontSize(13)
-                      .fontColor('#FF4D4F')
-                      .padding(8)
-                      .onClick(() => {
-                        AlertDialog.show({
-                          title: '删除会话',
-                          message: `确定要删除会话 "${item.name}" 吗？`,
-                          primaryButton: {
-                            value: '取消',
-                            action: () => {}
-                          },
-                          secondaryButton: {
-                            value: '删除',
-                            fontColor: '#FF4D4F',
-                            action: () => {
-                              this.core.removeProject(item.id);
-                            }
-                          }
-                        });
-                      })
-                  }
                 }
                 .width('100%')
                 .padding({

@@ -32,6 +32,7 @@ export interface ChatSession {
   directory: string;
   remoteSessionId?: string;
   updatedAt: string;
+  updatedAtTimestamp: number;
 }
 
 export interface OpenCodeBackend {
@@ -388,7 +389,8 @@ export class OpenCodeCore {
       backendId: p.backendId,
       directory: p.path,
       remoteSessionId: p.remoteSessionId,
-      updatedAt: new Date(p.lastAccess).toLocaleString()
+      updatedAt: new Date(p.lastAccess).toLocaleString(),
+          updatedAtTimestamp: p.lastAccess
     }));
   }
 
