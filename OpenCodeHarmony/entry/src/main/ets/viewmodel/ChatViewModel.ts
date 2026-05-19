@@ -8,6 +8,7 @@ export interface DisplayMessage {
   content: string;
   timestamp: number;
   isLoading?: boolean;
+  model?: string;
 }
 
 interface ToolState {
@@ -175,12 +176,19 @@ export class ChatViewModel {
 
       if (result.responseCode === 200) {
         const messages = JSON.parse(result.result as string) as OpenCodeMessage[];
-        const displayMessages: DisplayMessage[] = messages.map((msg, index): DisplayMessage => ({
-          id: msg.info.id || `msg-${index}`,
-          role: msg.info.role as 'user' | 'assistant',
-          content: this.formatMessage(msg),
-          timestamp: msg.info.time.created
-        }));
+        const displayMessages: DisplayMessage[] = messages.map((msg, index): DisplayMessage => {
+          let model: string | undefined;
+          if (msg.info.role === 'assistant' && msg.info.providerID && msg.info.modelID) {
+            model = `${msg.info.providerID}/${msg.info.modelID}`;
+          }
+          return {
+            id: msg.info.id || `msg-${index}`,
+            role: msg.info.role as 'user' | 'assistant',
+            content: this.formatMessage(msg),
+            timestamp: msg.info.time.created,
+            model: model
+          };
+        });
         onResult(displayMessages);
       } else {
         onResult([]);

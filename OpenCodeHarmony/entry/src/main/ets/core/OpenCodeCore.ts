@@ -92,6 +92,8 @@ export class OpenCodeCore {
   private static readonly PREF_NAME = 'opencode_data';
   private static readonly KEY_BACKENDS = 'backends';
   private static readonly KEY_PROJECTS = 'projects';
+  private static readonly KEY_IMMERSIVE_MODE = 'immersiveMode';
+  private static readonly KEY_DISPLAY_USERNAME = 'displayUsername';
   private pendingRequest: http.HttpRequest | null = null;
   private pendingMessage: PendingMessage | null = null;
   private messageCallback: MessageCallback | null = null;
@@ -176,6 +178,45 @@ export class OpenCodeCore {
       await this.preferences.flush();
     } catch (err) {
       console.error('[OpenCodeCore] Failed to save projects:', err);
+    }
+  }
+
+  public getImmersiveMode(): boolean {
+    if (!this.preferences) return true;
+    try {
+      const val = this.preferences.getSync(OpenCodeCore.KEY_IMMERSIVE_MODE, 'true') as string;
+      return val === 'true';
+    } catch {
+      return true;
+    }
+  }
+
+  public async setImmersiveMode(value: boolean): Promise<void> {
+    if (!this.preferences) return;
+    try {
+      await this.preferences.put(OpenCodeCore.KEY_IMMERSIVE_MODE, value.toString());
+      await this.preferences.flush();
+    } catch (err) {
+      console.error('[OpenCodeCore] Failed to save immersiveMode:', err);
+    }
+  }
+
+  public getDisplayUsername(): string {
+    if (!this.preferences) return '';
+    try {
+      return this.preferences.getSync(OpenCodeCore.KEY_DISPLAY_USERNAME, '') as string;
+    } catch {
+      return '';
+    }
+  }
+
+  public async setDisplayUsername(value: string): Promise<void> {
+    if (!this.preferences) return;
+    try {
+      await this.preferences.put(OpenCodeCore.KEY_DISPLAY_USERNAME, value);
+      await this.preferences.flush();
+    } catch (err) {
+      console.error('[OpenCodeCore] Failed to save displayUsername:', err);
     }
   }
 

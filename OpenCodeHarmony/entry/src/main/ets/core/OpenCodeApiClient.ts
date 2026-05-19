@@ -64,10 +64,8 @@ export interface OpenCodeMessage {
     sessionID: string;
     role: 'user' | 'assistant';
     agent?: string;
-    model?: {
-      providerID: string;
-      modelID: string;
-    };
+    modelID?: string;
+    providerID?: string;
     time: {
       created: number;
       completed?: number;

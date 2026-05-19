@@ -47,7 +47,7 @@ struct MainPage {
       Row() {
         this.TabBar(0, '💬', '会话')
         this.TabBar(1, '🖥', '后端')
-        this.TabBar(2, 'ℹ', '关于')
+        this.TabBar(2, '⚙', '控制台')
       }
       .width('100%')
       .height(60)
