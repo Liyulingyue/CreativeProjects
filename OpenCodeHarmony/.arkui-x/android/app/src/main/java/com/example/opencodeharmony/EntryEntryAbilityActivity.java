@@ -2,6 +2,7 @@ package com.example.opencodeharmony;
 
 import android.os.Bundle;
 import android.util.Log;
+import android.view.WindowManager;
 
 import ohos.stage.ability.adapter.StageActivity;
 
@@ -17,6 +18,8 @@ public class EntryEntryAbilityActivity extends StageActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         Log.i("HiHelloWorld", "EntryEntryAbilityActivity");
+
+        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN);
 
         setInstanceName("com.example.opencodeharmony:entry:EntryAbility:");
         super.onCreate(savedInstanceState);
