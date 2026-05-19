@@ -95,6 +95,7 @@ export class OpenCodeCore {
   private static readonly KEY_PROJECTS = 'projects';
   private static readonly KEY_IMMERSIVE_MODE = 'immersiveMode';
   private static readonly KEY_DISPLAY_USERNAME = 'displayUsername';
+  private static readonly KEY_ROTATION_LOCKED = 'rotationLocked';
   private pendingRequest: http.HttpRequest | null = null;
   private pendingMessage: PendingMessage | null = null;
   private messageCallback: MessageCallback | null = null;
@@ -218,6 +219,26 @@ export class OpenCodeCore {
       await this.preferences.flush();
     } catch (err) {
       console.error('[OpenCodeCore] Failed to save displayUsername:', err);
+    }
+  }
+
+  public isRotationLocked(): boolean {
+    if (!this.preferences) return false;
+    try {
+      const val = this.preferences.getSync(OpenCodeCore.KEY_ROTATION_LOCKED, 'false') as string;
+      return val === 'true';
+    } catch {
+      return false;
+    }
+  }
+
+  public async setRotationLocked(value: boolean): Promise<void> {
+    if (!this.preferences) return;
+    try {
+      await this.preferences.put(OpenCodeCore.KEY_ROTATION_LOCKED, value.toString());
+      await this.preferences.flush();
+    } catch (err) {
+      console.error('[OpenCodeCore] Failed to save rotationLocked:', err);
     }
   }
 

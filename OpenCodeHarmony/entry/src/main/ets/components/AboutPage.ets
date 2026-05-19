@@ -8,10 +8,13 @@ export struct AboutPage {
   @State showAbout: boolean = false;
   @State showSettings: boolean = false;
   @State displayUsername: string = '';
+  @State isRotationLocked: boolean = false;
 
   aboutToAppear() {
     this.isImmersiveMode = this.core.getImmersiveMode();
     this.displayUsername = this.core.getDisplayUsername();
+    this.isRotationLocked = this.core.isRotationLocked();
+    AppStorage.setOrCreate<boolean>('rotationLocked', this.isRotationLocked);
   }
 
   private openUrl(url: string): void {
@@ -325,6 +328,74 @@ export struct AboutPage {
               this.displayUsername = v;
               this.core.setDisplayUsername(v);
             })
+
+          Text('屏幕旋转')
+            .fontSize(13)
+            .fontColor('#999999')
+            .fontWeight(FontWeight.Medium)
+            .width('100%')
+            .padding({ left: 4, top: 16, bottom: 8 })
+
+          Column({ space: 0 }) {
+            Row() {
+              Column() {
+                Text('跟随系统')
+                  .fontSize(16)
+                  .fontColor('#333333')
+                Text('根据重力感应自动旋转屏幕')
+                  .fontSize(12)
+                  .fontColor('#999999')
+                  .margin({ top: 2 })
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+
+              if (!this.isRotationLocked) {
+                Text('✓')
+                  .fontSize(18)
+                  .fontColor('#07C160')
+              }
+            }
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+            .onClick(() => {
+              this.isRotationLocked = false;
+              this.core.setRotationLocked(false);
+              AppStorage.setOrCreate<boolean>('rotationLocked', false);
+            })
+
+            Divider().height(0.5).color('#F0F0F0').margin({ left: 16 })
+
+            Row() {
+              Column() {
+                Text('锁定竖屏')
+                  .fontSize(16)
+                  .fontColor('#333333')
+                Text('屏幕不会随手机旋转而改变方向')
+                  .fontSize(12)
+                  .fontColor('#999999')
+                  .margin({ top: 2 })
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+
+              if (this.isRotationLocked) {
+                Text('✓')
+                  .fontSize(18)
+                  .fontColor('#07C160')
+              }
+            }
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+            .onClick(() => {
+              this.isRotationLocked = true;
+              this.core.setRotationLocked(true);
+              AppStorage.setOrCreate<boolean>('rotationLocked', true);
+            })
+          }
+          .width('100%')
+          .backgroundColor('#FFFFFF')
+          .borderRadius(12)
         }
         .width('100%')
         .padding({ left: 16, right: 16, top: 16, bottom: 32 })

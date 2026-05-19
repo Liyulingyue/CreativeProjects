@@ -4,14 +4,10 @@ import router from '@ohos.router';
 @Component
 export struct BackendList {
   @State backends: OpenCodeBackend[] = [];
+  @StorageLink('needRefreshBackends') @Watch('onRefreshNow') needRefreshBackends: string = '';
   private core: OpenCodeCore = OpenCodeCore.getInstance();
 
   aboutToAppear() {
-    const needRefresh = AppStorage.get<string>('needRefreshBackends');
-    if (needRefresh === 'true') {
-      AppStorage.set('needRefreshBackends', 'false');
-    }
-    this.refreshBackends();
   }
 
   aboutToDisappear() {
@@ -19,6 +15,13 @@ export struct BackendList {
 
   onPageShow() {
     this.refreshBackends();
+  }
+
+  onRefreshNow() {
+    if (this.needRefreshBackends === 'true') {
+      this.needRefreshBackends = '';
+      this.refreshBackends();
+    }
   }
 
   refreshBackends() {

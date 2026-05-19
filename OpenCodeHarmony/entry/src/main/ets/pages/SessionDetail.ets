@@ -587,6 +587,7 @@ struct SessionDetail {
             .onClick(async () => {
               const success = await this.createSession();
               if (success) {
+                AppStorage.setOrCreate<string>('refreshSessionsNow', Date.now().toString());
                 router.back();
               }
             })
