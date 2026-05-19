@@ -203,6 +203,12 @@ export struct SessionList {
               ListItem() {
                 Row() {
                   Stack({ alignContent: Alignment.TopEnd }) {
+                    Stack() {
+                      Rect().fill('#07C160').width(48).height(48).borderRadius(8)
+                      Text(item.name.charAt(0).toUpperCase())
+                        .fontSize(20).fontColor('#FFFFFF').fontWeight(FontWeight.Bold)
+                    }
+
                     if (item.isWorking) {
                       Circle().width(12).height(12)
                         .fill('#2196F3')
@@ -215,12 +221,6 @@ export struct SessionList {
                         .stroke('#FFFFFF')
                         .strokeWidth(2)
                         .offset({ x: 4, y: -4 })
-                    }
-
-                    Stack() {
-                      Rect().fill('#07C160').width(48).height(48).borderRadius(8)
-                      Text(item.name.charAt(0).toUpperCase())
-                        .fontSize(20).fontColor('#FFFFFF').fontWeight(FontWeight.Bold)
                     }
                   }
                   .width(48).height(48)
