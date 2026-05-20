@@ -464,7 +464,7 @@ export struct AboutPage {
 
   private getThemeColor(name: string): string {
     if (name === '极光绿') { return '#07C160'; }
-    if (name === '暗夜黑') { return '#4ADE80'; }
+    if (name === '暗夜黑') { return '#1A1A1A'; }
     if (name === '樱花粉') { return '#FF69B4'; }
     if (name === '天空蓝') { return '#1E90FF'; }
     if (name === '日落橙') { return '#FF8C00'; }
