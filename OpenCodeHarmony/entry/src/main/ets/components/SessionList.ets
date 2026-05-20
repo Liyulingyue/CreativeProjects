@@ -21,6 +21,19 @@ export struct SessionList {
   @State selectedBackendId: string = '';
   @State isLoading: boolean = false;
   @StorageLink('refreshSessionsNow') @Watch('onRefreshNow') refreshSessionsNow: string = '';
+  @StorageLink('themeAccent') themeAccent: string = '#07C160';
+  @StorageLink('themeBgPrimary') themeBgPrimary: string = '#F5F5F5';
+  @StorageLink('themeBgSecondary') themeBgSecondary: string = '#EDEDED';
+  @StorageLink('themeBgCard') themeBgCard: string = '#FFFFFF';
+  @StorageLink('themeTextPrimary') themeTextPrimary: string = '#333333';
+  @StorageLink('themeTextSecondary') themeTextSecondary: string = '#888888';
+  @StorageLink('themeTextTertiary') themeTextTertiary: string = '#999999';
+  @StorageLink('themeTextMuted') themeTextMuted: string = '#BBBBBB';
+  @StorageLink('themeBorderPrimary') themeBorderPrimary: string = '#E0E0E0';
+  @StorageLink('themeStatusWorking') themeStatusWorking: string = '#2196F3';
+  @StorageLink('themeStatusUnread') themeStatusUnread: string = '#FF3B30';
+  @StorageLink('themeLink') themeLink: string = '#007DFF';
+  @StorageLink('themeConfig') themeConfig: string = '#1677FF';
   private core: OpenCodeCore = OpenCodeCore.getInstance();
 
   aboutToAppear() {
@@ -94,7 +107,7 @@ export struct SessionList {
         Blank()
         Text('+')
           .fontSize(28)
-          .fontColor('#07C160')
+          .fontColor(this.themeAccent)
           .onClick(() => {
             router.pushUrl({
               url: 'pages/SessionDetail',
@@ -114,7 +127,7 @@ export struct SessionList {
         top: 15,
         bottom: 15
       })
-      .backgroundColor('#EDEDED')
+      .backgroundColor(this.themeBgSecondary)
 
       if (this.backends.length === 0) {
         Column({ space: 16 }) {
@@ -122,7 +135,7 @@ export struct SessionList {
             Circle()
               .width(80)
               .height(80)
-              .fill('#F0F5FF')
+              .fill(this.themeBgCard)
             Text('💬')
               .fontSize(36)
           }
@@ -130,15 +143,15 @@ export struct SessionList {
           Text('暂无后端连接')
             .fontSize(18)
             .fontWeight(FontWeight.Medium)
-            .fontColor('#333333')
+            .fontColor(this.themeTextPrimary)
           Text('请先在"后端"页签添加 OpenCode 服务器')
             .fontSize(14)
-            .fontColor('#999999')
+            .fontColor(this.themeTextTertiary)
             .textAlign(TextAlign.Center)
         }
         .width('100%')
         .height('100%')
-        .backgroundColor('#FFFFFF')
+        .backgroundColor(this.themeBgCard)
         .justifyContent(FlexAlign.Center)
         .alignItems(HorizontalAlign.Center)
       } else {
@@ -149,7 +162,7 @@ export struct SessionList {
               .height(48)
             Text('加载中...')
               .fontSize(14)
-              .fontColor('#999999')
+              .fontColor(this.themeTextTertiary)
               .margin({ top: 12 })
           }
           .width('100%')
@@ -162,7 +175,7 @@ export struct SessionList {
               Circle()
                 .width(80)
                 .height(80)
-                .fill('#F0F5FF')
+                .fill(this.themeBgCard)
               Text('💬')
                 .fontSize(36)
             }
@@ -170,15 +183,15 @@ export struct SessionList {
             Text('暂无会话')
               .fontSize(18)
               .fontWeight(FontWeight.Medium)
-              .fontColor('#333333')
+              .fontColor(this.themeTextPrimary)
             Text('点击右上角 + 新建会话')
               .fontSize(14)
-              .fontColor('#999999')
+              .fontColor(this.themeTextTertiary)
             Button('新建会话', { type: ButtonType.Normal })
               .width(160)
               .height(44)
               .borderRadius(22)
-              .backgroundColor('#07C160')
+              .backgroundColor(this.themeAccent)
               .fontColor('#FFFFFF')
               .fontSize(15)
               .margin({ top: 8 })
@@ -196,7 +209,7 @@ export struct SessionList {
           }
           .width('100%')
           .height('100%')
-          .backgroundColor('#FFFFFF')
+          .backgroundColor(this.themeBgCard)
           .justifyContent(FlexAlign.Center)
           .alignItems(HorizontalAlign.Center)
         } else {
@@ -206,20 +219,20 @@ export struct SessionList {
                 Row() {
                   Stack({ alignContent: Alignment.TopEnd }) {
                     Stack() {
-                      Rect().fill('#07C160').width(48).height(48).borderRadius(8)
+                      Rect().fill(this.themeAccent).width(48).height(48).borderRadius(8)
                       Text(item.name.charAt(0).toUpperCase())
                         .fontSize(20).fontColor('#FFFFFF').fontWeight(FontWeight.Bold)
                     }
 
                     if (item.isWorking) {
                       Circle().width(12).height(12)
-                        .fill('#2196F3')
+                        .fill(this.themeStatusWorking)
                         .stroke('#FFFFFF')
                         .strokeWidth(2)
                         .offset({ x: 4, y: -4 })
                     } else if (item.unreadCount > 0) {
                       Circle().width(12).height(12)
-                        .fill('#FF3B30')
+                        .fill(this.themeStatusUnread)
                         .stroke('#FFFFFF')
                         .strokeWidth(2)
                         .offset({ x: 4, y: -4 })
@@ -236,7 +249,7 @@ export struct SessionList {
                     Row() {
                       Text('后端: ' + (this.backends.find(b => b.id === item.backendId)?.notes || item.backendUrl))
                         .fontSize(11)
-                        .fontColor('#07C160')
+                        .fontColor(this.themeAccent)
                         .maxLines(1)
                         .textOverflow({ overflow: TextOverflow.Ellipsis })
                       Text(' | ')
@@ -244,7 +257,7 @@ export struct SessionList {
                         .fontColor('#CCCCCC')
                       Text(item.directory || '/')
                         .fontSize(11)
-                        .fontColor('#888888')
+                        .fontColor(this.themeTextSecondary)
                         .maxLines(1)
                         .textOverflow({ overflow: TextOverflow.Ellipsis })
                         .layoutWeight(1)
@@ -253,7 +266,7 @@ export struct SessionList {
                         Text(`${item.unreadCount}`)
                           .fontSize(10)
                           .fontColor('#FFFFFF')
-                          .backgroundColor('#FF3B30')
+                          .backgroundColor(this.themeStatusUnread)
                           .borderRadius(8)
                           .padding({ left: 6, right: 6, top: 2, bottom: 2 })
                           .margin({ left: 4 })
@@ -262,7 +275,7 @@ export struct SessionList {
                     .margin({ top: 2 })
                     Text(item.updatedAt)
                       .fontSize(11)
-                      .fontColor('#AAAAAA')
+                      .fontColor(this.themeTextMuted)
                       .margin({ top: 2 })
                   }
                   .layoutWeight(1)
@@ -270,7 +283,7 @@ export struct SessionList {
 
                   Text('配置')
                       .fontSize(13)
-                      .fontColor('#1677FF')
+                      .fontColor(this.themeConfig)
                       .padding(8)
                       .onClick(() => {
                         const backend = this.backends.find(b => b.id === item.backendId);
@@ -296,7 +309,7 @@ export struct SessionList {
                   top: 12,
                   bottom: 12
                 })
-                .backgroundColor('#FFFFFF')
+                .backgroundColor(this.themeBgCard)
               }
               .onClick(() => {
                 this.core.setCurrentProject(item.id);
@@ -315,13 +328,13 @@ export struct SessionList {
               })
             }, (item: SessionDisplayItem) => item.id)
           }
-          .divider({ strokeWidth: 0.5, color: '#EEEEEE', startMargin: 76 })
-          .backgroundColor('#FFFFFF')
+          .divider({ strokeWidth: 0.5, color: this.themeBorderPrimary, startMargin: 76 })
+          .backgroundColor(this.themeBgCard)
           .flexGrow(1)
         }
       }
     }
     .width('100%')
-    .backgroundColor('#EDEDED')
+    .backgroundColor(this.themeBgSecondary)
   }
 }

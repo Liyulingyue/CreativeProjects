@@ -7,6 +7,9 @@ import { AboutPage } from '../components/AboutPage';
 struct MainPage {
   @State currentTab: number = 0;
   @StorageLink('needRefreshSessions') needRefreshSessions: string = '';
+  @StorageLink('themeAccent') themeAccent: string = '#07C160';
+  @StorageLink('themeBgCard') themeBgCard: string = '#FFFFFF';
+  @StorageLink('themeBorderPrimary') themeBorderPrimary: string = '#E0E0E0';
 
   onBackPress(): boolean {
     const aboutOpen = AppStorage.get<boolean>('aboutPanelVisible') ?? false;
@@ -33,10 +36,10 @@ struct MainPage {
     Column({ space: 4 }) {
       Text(icon)
         .fontSize(22)
-        .fontColor(this.currentTab === index ? '#07C160' : '#888888')
+        .fontColor(this.currentTab === index ? this.themeAccent : '#888888')
       Text(label)
         .fontSize(10)
-        .fontColor(this.currentTab === index ? '#07C160' : '#888888')
+        .fontColor(this.currentTab === index ? this.themeAccent : '#888888')
     }
     .padding({ top: 8, bottom: 8 })
     .layoutWeight(1)
@@ -65,8 +68,8 @@ struct MainPage {
       }
       .width('100%')
       .height(60)
-      .backgroundColor('#FFFFFF')
-      .border({ width: { top: 0.5 }, color: '#E0E0E0' })
+      .backgroundColor(this.themeBgCard)
+      .border({ width: { top: 0.5 }, color: this.themeBorderPrimary })
     }
     .width('100%')
     .height('100%')

@@ -18,6 +18,15 @@ struct BackendDetail {
   @State editId: string = '';
   @State isTesting: boolean = false;
   @State testResult: string = ''; // 'success' | 'fail' | ''
+  @StorageLink('themeAccent') themeAccent: string = '#07C160';
+  @StorageLink('themeBgPrimary') themeBgPrimary: string = '#F5F5F5';
+  @StorageLink('themeBgSecondary') themeBgSecondary: string = '#EDEDED';
+  @StorageLink('themeBgCard') themeBgCard: string = '#FFFFFF';
+  @StorageLink('themeTextPrimary') themeTextPrimary: string = '#333333';
+  @StorageLink('themeTextSecondary') themeTextSecondary: string = '#888888';
+  @StorageLink('themeTextTertiary') themeTextTertiary: string = '#999999';
+  @StorageLink('themeBorderPrimary') themeBorderPrimary: string = '#E0E0E0';
+  @StorageLink('themeBorderSecondary') themeBorderSecondary: string = '#F0F0F0';
   private core: OpenCodeCore = OpenCodeCore.getInstance();
 
   aboutToAppear() {
@@ -121,7 +130,7 @@ struct BackendDetail {
       Row() {
         Text('←')
           .fontSize(24)
-          .fontColor('#333333')
+          .fontColor(this.themeTextPrimary)
           .padding({ right: 16 })
           .onClick(() => router.back())
 
@@ -133,9 +142,9 @@ struct BackendDetail {
       .width('100%')
       .height(56)
       .padding({ left: 16, right: 16 })
-      .backgroundColor('#FFFFFF')
+      .backgroundColor(this.themeBgCard)
 
-      Divider().height(0.5).color('#E0E0E0')
+      Divider().height(0.5).color(this.themeBorderPrimary)
 
       // 表单内容
       Column() {
@@ -143,12 +152,12 @@ struct BackendDetail {
         Column() {
           Text('后端地址')
             .fontSize(13)
-            .fontColor('#999999')
+            .fontColor(this.themeTextTertiary)
             .margin({ bottom: 8 })
           TextInput({ placeholder: 'http://192.168.1.5:3000', text: this.url })
             .onChange(v => this.url = v)
             .height(44)
-            .backgroundColor('#F5F5F5')
+            .backgroundColor(this.themeBgPrimary)
             .borderRadius(8)
         }
         .width('100%')
@@ -159,12 +168,12 @@ struct BackendDetail {
         Column() {
           Text('鉴权用户名')
             .fontSize(13)
-            .fontColor('#999999')
+            .fontColor(this.themeTextTertiary)
             .margin({ bottom: 8 })
           TextInput({ placeholder: '可选，默认为 opencode', text: this.username })
             .onChange(v => this.username = v)
             .height(44)
-            .backgroundColor('#F5F5F5')
+            .backgroundColor(this.themeBgPrimary)
             .borderRadius(8)
         }
         .width('100%')
@@ -175,13 +184,13 @@ struct BackendDetail {
         Column() {
           Text('鉴权密钥 / Token')
             .fontSize(13)
-            .fontColor('#999999')
+            .fontColor(this.themeTextTertiary)
             .margin({ bottom: 8 })
           TextInput({ placeholder: '可选，用于身份验证', text: this.authToken })
             .type(InputType.Password)
             .onChange(v => this.authToken = v)
             .height(44)
-            .backgroundColor('#F5F5F5')
+            .backgroundColor(this.themeBgPrimary)
             .borderRadius(8)
         }
         .width('100%')
@@ -192,12 +201,12 @@ struct BackendDetail {
         Column() {
           Text('备注')
             .fontSize(13)
-            .fontColor('#999999')
+            .fontColor(this.themeTextTertiary)
             .margin({ bottom: 8 })
           TextInput({ placeholder: '可选，方便识别', text: this.notes })
             .onChange(v => this.notes = v)
             .height(44)
-            .backgroundColor('#F5F5F5')
+            .backgroundColor(this.themeBgPrimary)
             .borderRadius(8)
         }
         .width('100%')
@@ -230,10 +239,10 @@ struct BackendDetail {
           Row({ space: 8 }) {
             Text(this.testResult === 'success' ? '✓' : '✗')
               .fontSize(16)
-              .fontColor(this.testResult === 'success' ? '#07C160' : '#FF4D4F')
+              .fontColor(this.testResult === 'success' ? this.themeAccent : '#FF4D4F')
             Text(this.testResult === 'success' ? '连接成功' : '连接失败')
               .fontSize(14)
-              .fontColor(this.testResult === 'success' ? '#07C160' : '#FF4D4F')
+              .fontColor(this.testResult === 'success' ? this.themeAccent : '#FF4D4F')
           }
           .margin({ top: 16 })
         }
@@ -263,15 +272,15 @@ struct BackendDetail {
             .layoutWeight(1)
             .height(44)
             .borderRadius(8)
-            .backgroundColor('#F0F0F0')
-            .fontColor('#333333')
+            .backgroundColor(this.themeBorderSecondary)
+            .fontColor(this.themeTextPrimary)
             .onClick(() => router.back())
 
           Button('确认', { type: ButtonType.Normal })
             .layoutWeight(1)
             .height(44)
             .borderRadius(8)
-            .backgroundColor('#07C160')
+            .backgroundColor(this.themeAccent)
             .fontColor('#FFFFFF')
             .enabled(this.url.length > 10)
             .onClick(() => this.saveBackend())
@@ -283,6 +292,6 @@ struct BackendDetail {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor('#FFFFFF')
+    .backgroundColor(this.themeBgCard)
   }
 }

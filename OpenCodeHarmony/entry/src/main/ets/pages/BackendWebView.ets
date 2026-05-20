@@ -19,6 +19,9 @@ struct BackendWebView {
   @State authToken: string = '';
   @State title: string = 'OpenCode';
   @State currentUrl: string = '';
+  @StorageLink('themeBgCard') themeBgCard: string = '#FFFFFF';
+  @StorageLink('themeTextPrimary') themeTextPrimary: string = '#333333';
+  @StorageLink('themeBorderPrimary') themeBorderPrimary: string = '#E0E0E0';
   controller: webview.WebviewController = new webview.WebviewController();
   private storageShimInjectedForUrl: string = '';
 
@@ -100,7 +103,7 @@ struct BackendWebView {
       Row() {
         Text('<')
           .fontSize(24)
-          .fontColor('#333333')
+          .fontColor(this.themeTextPrimary)
           .padding({ right: 16 })
           .onClick(() => router.back())
 
@@ -113,9 +116,9 @@ struct BackendWebView {
       .width('100%')
       .height(56)
       .padding({ left: 16, right: 16 })
-      .backgroundColor('#FFFFFF')
+      .backgroundColor(this.themeBgCard)
 
-      Divider().height(0.5).color('#E0E0E0')
+      Divider().height(0.5).color(this.themeBorderPrimary)
 
       Web({ src: this.currentUrl, controller: this.controller })
         .width('100%')
@@ -145,7 +148,7 @@ struct BackendWebView {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor('#FFFFFF')
+    .backgroundColor(this.themeBgCard)
   }
 
 }

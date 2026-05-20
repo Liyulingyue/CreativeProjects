@@ -33,6 +33,17 @@ struct SessionDetail {
   @State isLoadingModels: boolean = false;
   @State selectedModel: string = '';
   @State showModelPicker: boolean = false;
+  @StorageLink('themeAccent') themeAccent: string = '#07C160';
+  @StorageLink('themeBgPrimary') themeBgPrimary: string = '#F5F5F5';
+  @StorageLink('themeBgSecondary') themeBgSecondary: string = '#EDEDED';
+  @StorageLink('themeBgCard') themeBgCard: string = '#FFFFFF';
+  @StorageLink('themeTextPrimary') themeTextPrimary: string = '#333333';
+  @StorageLink('themeTextSecondary') themeTextSecondary: string = '#888888';
+  @StorageLink('themeTextTertiary') themeTextTertiary: string = '#999999';
+  @StorageLink('themeBorderPrimary') themeBorderPrimary: string = '#E0E0E0';
+  @StorageLink('themeBorderSecondary') themeBorderSecondary: string = '#F0F0F0';
+  @StorageLink('themeLink') themeLink: string = '#007DFF';
+  @StorageLink('themeConfig') themeConfig: string = '#1677FF';
 
   private viewModel: SessionDetailViewModel = new SessionDetailViewModel();
   private core: OpenCodeCore = OpenCodeCore.getInstance();
@@ -242,25 +253,25 @@ struct SessionDetail {
     Column() {
       Text('模型 / 后端服务器')
         .fontSize(13)
-        .fontColor('#999999')
+          .fontColor(this.themeTextTertiary)
         .margin({ bottom: 8 })
       Row() {
         Text(this.getSelectedBackend()?.notes || this.backendUrl || '选择模型')
           .fontSize(15)
-          .fontColor(this.backendId ? '#333333' : '#AAAAAA')
+          .fontColor(this.backendId ? this.themeTextPrimary : this.themeTextTertiary)
           .layoutWeight(1)
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
         if (!this.isEditing) {
           Text(this.showBackendPicker ? '▲' : '▼')
             .fontSize(12)
-            .fontColor('#999999')
+            .fontColor(this.themeTextTertiary)
         }
       }
       .width('100%')
       .height(44)
       .padding({ left: 12, right: 12 })
-      .backgroundColor(this.isEditing ? '#EBEBEB' : '#F5F5F5')
+      .backgroundColor(this.isEditing ? this.themeBorderSecondary : this.themeBgPrimary)
       .borderRadius(8)
       .onClick(() => {
         if (!this.isEditing) {
@@ -278,32 +289,32 @@ struct SessionDetail {
     Column() {
       Text('工作目录')
         .fontSize(13)
-        .fontColor('#999999')
+          .fontColor(this.themeTextTertiary)
         .margin({ bottom: 8 })
       if (this.isEditing) {
         Text(this.directory || '/')
           .fontSize(15)
-          .fontColor('#666666')
+          .fontColor(this.themeTextSecondary)
           .width('100%')
           .height(44)
           .padding({ left: 12, right: 12 })
-          .backgroundColor('#EBEBEB')
+          .backgroundColor(this.themeBorderSecondary)
           .borderRadius(8)
       } else if (this.selectedRemoteSessionId) {
         Row() {
           Image($r('app.media.startIcon')).width(16).height(16).margin({ right: 8 }).opacity(0.6)
           Text(this.directory || '/')
             .fontSize(15)
-            .fontColor('#666666')
+            .fontColor(this.themeTextSecondary)
             .layoutWeight(1)
           Text('继承自 Session')
             .fontSize(12)
-            .fontColor('#07C160')
+            .fontColor(this.themeAccent)
         }
         .width('100%')
         .height(44)
         .padding({ left: 12, right: 12 })
-        .backgroundColor('#F0F9EB')
+        .backgroundColor(this.themeBgPrimary)
         .borderRadius(8)
       } else {
         TextInput({ placeholder: '输入目录路径，如 /home', text: this.directory })
@@ -323,7 +334,7 @@ struct SessionDetail {
             }, 200);
           })
           .height(44)
-          .backgroundColor('#F5F5F5')
+          .backgroundColor(this.themeBgPrimary)
           .borderRadius(8)
       }
     }
@@ -337,7 +348,7 @@ struct SessionDetail {
     Column() {
       Text('接下来对话使用的模型 (可选)')
         .fontSize(13)
-        .fontColor('#999999')
+          .fontColor(this.themeTextTertiary)
         .margin({ bottom: 8 })
 
       Row() {
@@ -346,19 +357,19 @@ struct SessionDetail {
         }
         Text(this.selectedModel || '使用服务器默认模型')
           .fontSize(15)
-          .fontColor(this.selectedModel ? '#333333' : '#AAAAAA')
+          .fontColor(this.selectedModel ? this.themeTextPrimary : this.themeTextTertiary)
           .layoutWeight(1)
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
 
         Text(this.showModelPicker ? '▲' : '▼')
           .fontSize(12)
-          .fontColor('#999999')
+          .fontColor(this.themeTextTertiary)
       }
       .width('100%')
       .height(44)
       .padding({ left: 12, right: 12 })
-      .backgroundColor('#F5F5F5')
+      .backgroundColor(this.themeBgPrimary)
       .borderRadius(8)
       .onClick(() => {
         this.showModelPicker = !this.showModelPicker;
@@ -370,14 +381,13 @@ struct SessionDetail {
       if (this.showModelPicker) {
         Scroll() {
           Column() {
-            // Option to clear selection
             Row() {
               Text('使用服务器默认模型')
                 .fontSize(14)
-                .fontColor(this.selectedModel === '' ? '#07C160' : '#666666')
+                .fontColor(this.selectedModel === '' ? this.themeAccent : this.themeTextSecondary)
                 .fontWeight(this.selectedModel === '' ? FontWeight.Bold : FontWeight.Normal)
               if (this.selectedModel === '') {
-                Image($r('app.media.startIcon')).width(16).height(16).fillColor('#07C160')
+                Image($r('app.media.startIcon')).width(16).height(16).fillColor(this.themeAccent)
               }
             }
             .width('100%')
@@ -388,20 +398,20 @@ struct SessionDetail {
               this.showModelPicker = false;
             })
 
-            Divider().color('#F0F0F0').margin({ left: 12, right: 12 })
+            Divider().color(this.themeBorderSecondary).margin({ left: 12, right: 12 })
 
             ForEach(this.availableModels, (model: OpenCodeProviderModel) => {
               Row() {
                 Column() {
                   Text(`${model.providerName || 'Unknown'} · ${model.name || model.id}`)
                     .fontSize(14)
-                    .fontColor(this.selectedModel === this.getModelValue(model) ? '#07C160' : '#333333')
+                    .fontColor(this.selectedModel === this.getModelValue(model) ? this.themeAccent : this.themeTextPrimary)
                     .fontWeight(this.selectedModel === this.getModelValue(model) ? FontWeight.Bold : FontWeight.Normal)
                 }
                 .alignItems(HorizontalAlign.Start)
 
                 if (this.selectedModel === this.getModelValue(model)) {
-                  Image($r('app.media.startIcon')).width(16).height(16).fillColor('#07C160')
+                  Image($r('app.media.startIcon')).width(16).height(16).fillColor(this.themeAccent)
                 }
               }
               .width('100%')
@@ -413,17 +423,17 @@ struct SessionDetail {
                 this.showModelPicker = false;
               })
 
-              Divider().color('#F0F0F0').margin({ left: 12, right: 12 })
+              Divider().color(this.themeBorderSecondary).margin({ left: 12, right: 12 })
             }, (model: OpenCodeProviderModel) => this.getModelValue(model))
 
             if (!this.isLoadingModels && this.availableModels.length === 0) {
               Text('未获取到可用模型')
                 .fontSize(13)
-                .fontColor('#999999')
+                .fontColor(this.themeTextTertiary)
                 .margin(20)
             }
           }
-          .backgroundColor('#F9F9F9')
+          .backgroundColor(this.themeBgPrimary)
           .borderRadius(8)
           .margin({ top: 4 })
         }
@@ -441,7 +451,7 @@ struct SessionDetail {
     Column() {
       Text('绑定远程会话 (可选)')
         .fontSize(13)
-        .fontColor('#999999')
+          .fontColor(this.themeTextTertiary)
         .margin({ bottom: 8 })
 
       Row() {
@@ -452,7 +462,7 @@ struct SessionDetail {
           (this.remoteSessions.find(s => s.id === this.selectedRemoteSessionId)?.title || this.selectedRemoteSessionId) :
           '不绑定 (创建新会话)')
           .fontSize(15)
-          .fontColor(this.selectedRemoteSessionId ? '#333333' : '#AAAAAA')
+          .fontColor(this.selectedRemoteSessionId ? this.themeTextPrimary : this.themeTextTertiary)
           .layoutWeight(1)
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -460,13 +470,13 @@ struct SessionDetail {
         if (!this.isEditing) {
           Text(this.showRemoteSessionPicker ? '▲' : '▼')
             .fontSize(12)
-            .fontColor('#999999')
+            .fontColor(this.themeTextTertiary)
         }
       }
       .width('100%')
       .height(44)
       .padding({ left: 12, right: 12 })
-      .backgroundColor(this.isEditing ? '#EBEBEB' : '#F5F5F5')
+      .backgroundColor(this.isEditing ? this.themeBorderSecondary : this.themeBgPrimary)
       .borderRadius(8)
       .onClick(() => {
         if (!this.isEditing) {
@@ -497,12 +507,12 @@ struct SessionDetail {
     Column() {
       Text('会话标题（可选）')
         .fontSize(13)
-        .fontColor('#999999')
+          .fontColor(this.themeTextTertiary)
         .margin({ bottom: 8 })
       TextInput({ placeholder: '方便识别此会话', text: this.title })
         .onChange(v => this.title = v)
         .height(44)
-        .backgroundColor('#F5F5F5')
+        .backgroundColor(this.themeBgPrimary)
         .borderRadius(8)
     }
     .width('100%')
@@ -516,7 +526,7 @@ struct SessionDetail {
         Row() {
           Text('<')
             .fontSize(24)
-            .fontColor('#333333')
+            .fontColor(this.themeTextPrimary)
             .padding({ right: 16 })
             .onClick(() => router.back())
 
@@ -528,9 +538,9 @@ struct SessionDetail {
         .width('100%')
         .height(56)
         .padding({ left: 16, right: 16 })
-        .backgroundColor('#FFFFFF')
+            .backgroundColor(this.themeBgCard)
 
-        Divider().height(0.5).color('#E0E0E0')
+        Divider().height(0.5).color(this.themeBorderPrimary)
 
         Scroll() {
           Column() {
@@ -573,15 +583,15 @@ struct SessionDetail {
             .layoutWeight(1)
             .height(44)
             .borderRadius(8)
-            .backgroundColor('#F0F0F0')
-            .fontColor('#333333')
+            .backgroundColor(this.themeBorderSecondary)
+            .fontColor(this.themeTextPrimary)
             .onClick(() => router.back())
 
           Button(this.isCreating ? (this.isEditing ? '保存中...' : '创建中...') : (this.isEditing ? '保存' : '创建'), { type: ButtonType.Normal })
             .layoutWeight(1)
             .height(44)
             .borderRadius(8)
-            .backgroundColor('#07C160')
+            .backgroundColor(this.themeAccent)
             .fontColor('#FFFFFF')
             .enabled(!this.isCreating)
             .onClick(async () => {
@@ -597,7 +607,7 @@ struct SessionDetail {
       }
       .width('100%')
       .height('100%')
-      .backgroundColor('#FFFFFF')
+      .backgroundColor(this.themeBgCard)
 
       if (this.showPathPicker) {
         PathAutocomplete({
