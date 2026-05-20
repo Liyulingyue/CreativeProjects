@@ -96,6 +96,11 @@ export class OpenCodeCore {
   private static readonly KEY_IMMERSIVE_MODE = 'immersiveMode';
   private static readonly KEY_DISPLAY_USERNAME = 'displayUsername';
   private static readonly KEY_ROTATION_LOCKED = 'rotationLocked';
+  private static readonly KEY_THEME_NAME = 'themeName';
+
+  public static readonly THEME_NAMES: string[] = [
+    '极光绿', '暗夜黑', '樱花粉', '天空蓝', '日落橙', '薰衣草'
+  ];
   private pendingRequest: http.HttpRequest | null = null;
   private pendingMessage: PendingMessage | null = null;
   private messageCallback: MessageCallback | null = null;
@@ -240,6 +245,113 @@ export class OpenCodeCore {
     } catch (err) {
       console.error('[OpenCodeCore] Failed to save rotationLocked:', err);
     }
+  }
+
+  public getThemeName(): string {
+    if (!this.preferences) return '极光绿';
+    try {
+      return this.preferences.getSync(OpenCodeCore.KEY_THEME_NAME, '极光绿') as string;
+    } catch {
+      return '极光绿';
+    }
+  }
+
+  public async setThemeName(value: string): Promise<void> {
+    if (!this.preferences) return;
+    try {
+      await this.preferences.put(OpenCodeCore.KEY_THEME_NAME, value);
+      await this.preferences.flush();
+    } catch (err) {
+      console.error('[OpenCodeCore] Failed to save themeName:', err);
+    }
+  }
+
+  public applyTheme(name: string): void {
+    interface ThemeColors {
+      themeAccent: string;
+      themeBgPrimary: string;
+      themeBgSecondary: string;
+      themeBgCard: string;
+      themeTextPrimary: string;
+      themeTextSecondary: string;
+      themeTextTertiary: string;
+      themeTextMuted: string;
+      themeBorderPrimary: string;
+      themeBorderSecondary: string;
+      themeDivider: string;
+      themeChatUserBg: string;
+      themeStatusWorking: string;
+      themeStatusUnread: string;
+      themeLink: string;
+      themeConfig: string;
+    }
+    const themes: Record<string, ThemeColors> = {
+      '极光绿': {
+        themeAccent: '#07C160', themeBgPrimary: '#F5F5F5', themeBgSecondary: '#EDEDED',
+        themeBgCard: '#FFFFFF', themeTextPrimary: '#333333', themeTextSecondary: '#888888',
+        themeTextTertiary: '#999999', themeTextMuted: '#BBBBBB', themeBorderPrimary: '#E0E0E0',
+        themeBorderSecondary: '#F0F0F0', themeDivider: '#EEEEEE', themeChatUserBg: '#95EC69',
+        themeStatusWorking: '#2196F3', themeStatusUnread: '#FF3B30', themeLink: '#007DFF',
+        themeConfig: '#1677FF'
+      },
+      '暗夜黑': {
+        themeAccent: '#4ADE80', themeBgPrimary: '#1A1A2E', themeBgSecondary: '#16213E',
+        themeBgCard: '#0F3460', themeTextPrimary: '#EAEAEA', themeTextSecondary: '#AAAAAA',
+        themeTextTertiary: '#888888', themeTextMuted: '#666666', themeBorderPrimary: '#333355',
+        themeBorderSecondary: '#252540', themeDivider: '#2A2A4A', themeChatUserBg: '#4A7C59',
+        themeStatusWorking: '#60A5FA', themeStatusUnread: '#F87171', themeLink: '#60A5FA',
+        themeConfig: '#818CF8'
+      },
+      '樱花粉': {
+        themeAccent: '#FF69B4', themeBgPrimary: '#FFF0F5', themeBgSecondary: '#FFE4EC',
+        themeBgCard: '#FFFFFF', themeTextPrimary: '#333333', themeTextSecondary: '#888888',
+        themeTextTertiary: '#999999', themeTextMuted: '#BBBBBB', themeBorderPrimary: '#E8C8D8',
+        themeBorderSecondary: '#F5E0EB', themeDivider: '#F0D0E0', themeChatUserBg: '#FFB6C1',
+        themeStatusWorking: '#2196F3', themeStatusUnread: '#FF69B4', themeLink: '#FF69B4',
+        themeConfig: '#E879A9'
+      },
+      '天空蓝': {
+        themeAccent: '#1E90FF', themeBgPrimary: '#F0F8FF', themeBgSecondary: '#E6F3FF',
+        themeBgCard: '#FFFFFF', themeTextPrimary: '#333333', themeTextSecondary: '#888888',
+        themeTextTertiary: '#999999', themeTextMuted: '#BBBBBB', themeBorderPrimary: '#CCE4FF',
+        themeBorderSecondary: '#E0EDFF', themeDivider: '#D0E8FF', themeChatUserBg: '#87CEEB',
+        themeStatusWorking: '#2196F3', themeStatusUnread: '#FF6B6B', themeLink: '#1E90FF',
+        themeConfig: '#4A90E2'
+      },
+      '日落橙': {
+        themeAccent: '#FF8C00', themeBgPrimary: '#FFF8F0', themeBgSecondary: '#FFF0E0',
+        themeBgCard: '#FFFFFF', themeTextPrimary: '#333333', themeTextSecondary: '#888888',
+        themeTextTertiary: '#999999', themeTextMuted: '#BBBBBB', themeBorderPrimary: '#FFE0B0',
+        themeBorderSecondary: '#FFF0D0', themeDivider: '#FFE8C0', themeChatUserBg: '#FFDAB9',
+        themeStatusWorking: '#2196F3', themeStatusUnread: '#FF6B6B', themeLink: '#FF8C00',
+        themeConfig: '#E67E22'
+      },
+      '薰衣草': {
+        themeAccent: '#9B59B6', themeBgPrimary: '#F8F4FF', themeBgSecondary: '#EDE4F7',
+        themeBgCard: '#FFFFFF', themeTextPrimary: '#333333', themeTextSecondary: '#888888',
+        themeTextTertiary: '#999999', themeTextMuted: '#BBBBBB', themeBorderPrimary: '#D8C4E8',
+        themeBorderSecondary: '#E8DCF4', themeDivider: '#DDD0EC', themeChatUserBg: '#C9A0DC',
+        themeStatusWorking: '#2196F3', themeStatusUnread: '#FF6B6B', themeLink: '#9B59B6',
+        themeConfig: '#8E44AD'
+      }
+    };
+    const theme = themes[name] || themes['极光绿'];
+    AppStorage.setOrCreate<string>('themeAccent', theme.themeAccent);
+    AppStorage.setOrCreate<string>('themeBgPrimary', theme.themeBgPrimary);
+    AppStorage.setOrCreate<string>('themeBgSecondary', theme.themeBgSecondary);
+    AppStorage.setOrCreate<string>('themeBgCard', theme.themeBgCard);
+    AppStorage.setOrCreate<string>('themeTextPrimary', theme.themeTextPrimary);
+    AppStorage.setOrCreate<string>('themeTextSecondary', theme.themeTextSecondary);
+    AppStorage.setOrCreate<string>('themeTextTertiary', theme.themeTextTertiary);
+    AppStorage.setOrCreate<string>('themeTextMuted', theme.themeTextMuted);
+    AppStorage.setOrCreate<string>('themeBorderPrimary', theme.themeBorderPrimary);
+    AppStorage.setOrCreate<string>('themeBorderSecondary', theme.themeBorderSecondary);
+    AppStorage.setOrCreate<string>('themeDivider', theme.themeDivider);
+    AppStorage.setOrCreate<string>('themeChatUserBg', theme.themeChatUserBg);
+    AppStorage.setOrCreate<string>('themeStatusWorking', theme.themeStatusWorking);
+    AppStorage.setOrCreate<string>('themeStatusUnread', theme.themeStatusUnread);
+    AppStorage.setOrCreate<string>('themeLink', theme.themeLink);
+    AppStorage.setOrCreate<string>('themeConfig', theme.themeConfig);
   }
 
   public getProjects(): OpenCodeProject[] {

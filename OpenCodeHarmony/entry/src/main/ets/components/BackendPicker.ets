@@ -5,6 +5,10 @@ export struct BackendPicker {
   @Prop backends: OpenCodeBackend[] = [];
   @Prop selectedId: string = '';
   onSelect: (backend: OpenCodeBackend) => void = () => {};
+  @StorageLink('themeAccent') themeAccent: string = '#07C160';
+  @StorageLink('themeBgCard') themeBgCard: string = '#FFFFFF';
+  @StorageLink('themeTextPrimary') themeTextPrimary: string = '#333333';
+  @StorageLink('themeBorderPrimary') themeBorderPrimary: string = '#E0E0E0';
 
   build() {
     Column() {
@@ -12,12 +16,12 @@ export struct BackendPicker {
         Row() {
           Text(backend.notes || backend.url)
             .fontSize(14)
-            .fontColor('#333333')
+            .fontColor(this.themeTextPrimary)
             .layoutWeight(1)
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
           if (backend.id === this.selectedId) {
-            Text('✓').fontColor('#07C160').fontSize(14)
+            Text('✓').fontColor(this.themeAccent).fontSize(14)
           }
         }
         .width('100%')
@@ -28,9 +32,9 @@ export struct BackendPicker {
     }
     .width('calc(100% - 40vp)')
     .constraintSize({ maxHeight: 200 })
-    .backgroundColor('#FFFFFF')
+    .backgroundColor(this.themeBgCard)
     .borderRadius(8)
-    .border({ width: 1, color: '#E0E0E0' })
+    .border({ width: 1, color: this.themeBorderPrimary })
     .shadow({ radius: 8, color: '#1A000000', offsetX: 0, offsetY: 2 })
     .margin({ top: 145, left: 20 })
     .zIndex(999)

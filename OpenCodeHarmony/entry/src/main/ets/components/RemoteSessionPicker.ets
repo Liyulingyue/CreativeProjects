@@ -7,6 +7,11 @@ export struct RemoteSessionPicker {
   @Prop isLoading: boolean = false;
   @Link showPicker: boolean;
   onSelect: (session: OpenCodeSession | null) => void = () => {};
+  @StorageLink('themeBgCard') themeBgCard: string = '#FFFFFF';
+  @StorageLink('themeTextPrimary') themeTextPrimary: string = '#333333';
+  @StorageLink('themeTextSecondary') themeTextSecondary: string = '#888888';
+  @StorageLink('themeTextTertiary') themeTextTertiary: string = '#999999';
+  @StorageLink('themeBorderPrimary') themeBorderPrimary: string = '#E0E0E0';
 
   build() {
     Column() {
@@ -16,7 +21,7 @@ export struct RemoteSessionPicker {
             .fontSize(14)
             .padding(12)
             .width('100%')
-            .fontColor('#666666')
+            .fontColor(this.themeTextSecondary)
         }
         .onClick(() => {
           this.onSelect(null);
@@ -27,11 +32,11 @@ export struct RemoteSessionPicker {
             Column() {
               Text(session.title || session.id)
                 .fontSize(14)
-                .fontColor('#333333')
+                .fontColor(this.themeTextPrimary)
                 .maxLines(1)
               Text(`${session.directory} (${new Date(session.time.updated).toLocaleDateString()})`)
                 .fontSize(11)
-                .fontColor('#999999')
+                .fontColor(this.themeTextTertiary)
                 .margin({ top: 2 })
             }
             .alignItems(HorizontalAlign.Start)
@@ -43,11 +48,11 @@ export struct RemoteSessionPicker {
           })
         })
       }
-      .divider({ strokeWidth: 0.5, color: '#EEEEEE' })
+      .divider({ strokeWidth: 0.5, color: this.themeBorderPrimary })
       .constraintSize({ maxHeight: 200 })
     }
     .width('100%')
-    .backgroundColor('#FFFFFF')
+    .backgroundColor(this.themeBgCard)
     .borderRadius(8)
     .shadow({ radius: 10, color: '#10000000' })
     .margin({ top: 4 })

@@ -8,11 +8,29 @@ export struct AboutPage {
   @StorageLink('settingsPanelVisible') showSettings: boolean = false;
   @State displayUsername: string = '';
   @State isRotationLocked: boolean = false;
+  @State currentThemeName: string = '极光绿';
+  @StorageLink('themeAccent') themeAccent: string = '#07C160';
+  @StorageLink('themeBgPrimary') themeBgPrimary: string = '#F5F5F5';
+  @StorageLink('themeBgCard') themeBgCard: string = '#FFFFFF';
+  @StorageLink('themeTextPrimary') themeTextPrimary: string = '#333333';
+  @StorageLink('themeTextSecondary') themeTextSecondary: string = '#888888';
+  @StorageLink('themeTextTertiary') themeTextTertiary: string = '#999999';
+  @StorageLink('themeBorderPrimary') themeBorderPrimary: string = '#E0E0E0';
+  @StorageLink('themeBorderSecondary') themeBorderSecondary: string = '#F0F0F0';
+  @StorageLink('themeLink') themeLink: string = '#007DFF';
+  @StorageLink('themeConfig') themeConfig: string = '#1677FF';
+  @StorageLink('themeDivider') themeDivider: string = '#EEEEEE';
+  @StorageLink('themeStatusWorking') themeStatusWorking: string = '#2196F3';
+  @StorageLink('themeStatusUnread') themeStatusUnread: string = '#FF3B30';
+  @StorageLink('themeBgSecondary') themeBgSecondary: string = '#EDEDED';
+  @StorageLink('themeTextMuted') themeTextMuted: string = '#BBBBBB';
+  @StorageLink('themeChatUserBg') themeChatUserBg: string = '#95EC69';
 
   aboutToAppear() {
     this.isImmersiveMode = this.core.getImmersiveMode();
     this.displayUsername = this.core.getDisplayUsername();
     this.isRotationLocked = this.core.isRotationLocked();
+    this.currentThemeName = this.core.getThemeName();
     AppStorage.setOrCreate<boolean>('rotationLocked', this.isRotationLocked);
     AppStorage.setOrCreate<boolean>('aboutPanelVisible', false);
     AppStorage.setOrCreate<boolean>('settingsPanelVisible', false);
@@ -33,10 +51,10 @@ export struct AboutPage {
       Column() {
         Text(title)
           .fontSize(16)
-          .fontColor('#333333')
+          .fontColor(this.themeTextPrimary)
         Text(subtitle)
           .fontSize(12)
-          .fontColor('#999999')
+          .fontColor(this.themeTextTertiary)
           .margin({ top: 2 })
       }
       .alignItems(HorizontalAlign.Start)
@@ -48,7 +66,7 @@ export struct AboutPage {
     }
     .width('100%')
     .padding({ left: 16, right: 16, top: 14, bottom: 14 })
-    .backgroundColor('#FFFFFF')
+    .backgroundColor(this.themeBgCard)
     .onClick(onClick)
   }
 
@@ -58,7 +76,7 @@ export struct AboutPage {
         Column({ space: 12 }) {
           Column({ space: 8 }) {
             Stack() {
-              Rect().fill('#07C160').width(80).height(80).borderRadius(20)
+              Rect().fill(this.themeAccent).width(80).height(80).borderRadius(20)
               Text('OC')
                 .fontSize(28).fontColor('#FFFFFF').fontWeight(FontWeight.Bold)
             }
@@ -67,7 +85,7 @@ export struct AboutPage {
               .fontWeight(FontWeight.Bold)
             Text('v0.1.0-alpha')
               .fontSize(13)
-              .fontColor('#999999')
+              .fontColor(this.themeTextTertiary)
           }
           .width('100%')
           .padding({ top: 40, bottom: 24 })
@@ -75,7 +93,7 @@ export struct AboutPage {
 
           Column({ space: 0 }) {
             this.ListItem('关于', '了解项目介绍与使用方法', () => { this.showAbout = true; })
-            Divider().height(0.5).color('#F0F0F0').margin({ left: 16 })
+            Divider().height(0.5).color(this.themeBorderSecondary).margin({ left: 16 })
             this.ListItem('设置', this.isImmersiveMode ? '当前: 沉浸模式' : '当前: 完整模式', () => { this.showSettings = true; })
           }
           .width('100%')
@@ -87,7 +105,7 @@ export struct AboutPage {
       }
       .width('100%')
       .height('100%')
-      .backgroundColor('#F5F5F5')
+      .backgroundColor(this.themeBgPrimary)
 
       if (this.showAbout) {
         this.buildAboutPanel()
@@ -108,7 +126,7 @@ export struct AboutPage {
         Row() {
           Text('<')
             .fontSize(22)
-            .fontColor('#07C160')
+            .fontColor(this.themeAccent)
             .padding({ left: 4, right: 12 })
             .onClick(() => { this.showAbout = false; })
           Text('关于')
@@ -119,16 +137,16 @@ export struct AboutPage {
         .width('100%')
         .padding({ left: 20, right: 20, top: 16, bottom: 12 })
 
-        Divider().height(0.5).color('#E0E0E0')
+        Divider().height(0.5).color(this.themeBorderPrimary)
       }
       .width('100%')
-      .backgroundColor('#FFFFFF')
+      .backgroundColor(this.themeBgCard)
 
       Scroll() {
         Column({ space: 16 }) {
           Column({ space: 8 }) {
             Stack() {
-              Rect().fill('#07C160').width(64).height(64).borderRadius(16)
+              Rect().fill(this.themeAccent).width(64).height(64).borderRadius(16)
               Text('OC')
                 .fontSize(22).fontColor('#FFFFFF').fontWeight(FontWeight.Bold)
             }
@@ -137,7 +155,7 @@ export struct AboutPage {
               .fontWeight(FontWeight.Bold)
             Text('v0.1.0-alpha')
               .fontSize(13)
-              .fontColor('#999999')
+              .fontColor(this.themeTextTertiary)
           }
           .width('100%')
           .padding({ top: 24, bottom: 16 })
@@ -148,7 +166,7 @@ export struct AboutPage {
           Column({ space: 8 }) {
             Text('快速上手')
               .fontSize(13)
-              .fontColor('#999999')
+              .fontColor(this.themeTextTertiary)
               .fontWeight(FontWeight.Medium)
               .width('100%')
 
@@ -160,8 +178,8 @@ export struct AboutPage {
               Span('【远程访问】推荐使用 ngrok 内网穿透:\n')
               Span('1. 电脑环境配置参考 ')
               Span('ngrok 官方指南')
-                .fontColor('#007DFF')
-                .decoration({ type: TextDecorationType.Underline, color: '#007DFF' })
+                .fontColor(this.themeLink)
+                .decoration({ type: TextDecorationType.Underline, color: this.themeLink })
                 .onClick(() => this.openUrl('https://dashboard.ngrok.com/get-started/setup/linux'))
               Span('\n2. 运行: ')
               Span('ngrok http 4096')
@@ -169,19 +187,19 @@ export struct AboutPage {
               Span('⚠️ 强烈建议开启 Auth 认证以保障安全。\n\n')
               Span('【开机自启】可参考 ')
               Span('FastOpenCodeConfig')
-                .fontColor('#007DFF')
-                .decoration({ type: TextDecorationType.Underline, color: '#007DFF' })
+                .fontColor(this.themeLink)
+                .decoration({ type: TextDecorationType.Underline, color: this.themeLink })
                 .onClick(() => this.openUrl('https://github.com/Liyulingyue/CreativeProjects/tree/main/FastOpenCodeConfig'))
               Span(' 中的脚本实现 Linux 服务化。')
             }
             .fontSize(14)
-            .fontColor('#333333')
+            .fontColor(this.themeTextPrimary)
             .lineHeight(22)
             .width('100%')
           }
           .width('100%')
           .padding(16)
-          .backgroundColor('#FFFFFF')
+          .backgroundColor(this.themeBgCard)
           .borderRadius(12)
 
           this.InfoCard('功能', '• 后端收藏夹管理\n• 一键连接 OpenCode 服务\n• 内嵌浏览器体验完整功能\n• 自动注入鉴权 Token')
@@ -189,26 +207,26 @@ export struct AboutPage {
           Column({ space: 8 }) {
             Text('开源参考')
               .fontSize(13)
-              .fontColor('#999999')
+              .fontColor(this.themeTextTertiary)
               .fontWeight(FontWeight.Medium)
               .width('100%')
 
             Text() {
               Span('OpenCode 后端: ')
               Span('anomalyco/opencode')
-                .fontColor('#007DFF')
-                .decoration({ type: TextDecorationType.Underline, color: '#007DFF' })
+                .fontColor(this.themeLink)
+                .decoration({ type: TextDecorationType.Underline, color: this.themeLink })
                 .onClick(() => this.openUrl('https://github.com/anomalyco/opencode'))
               Span('\n\n本项目定位为 OpenCode 的移动端客户端，仅负责 UI 呈现和指令下发。')
             }
             .fontSize(14)
-            .fontColor('#333333')
+            .fontColor(this.themeTextPrimary)
             .lineHeight(22)
             .width('100%')
           }
           .width('100%')
           .padding(16)
-          .backgroundColor('#FFFFFF')
+          .backgroundColor(this.themeBgCard)
           .borderRadius(12)
         }
         .width('100%')
@@ -218,7 +236,7 @@ export struct AboutPage {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor('#F5F5F5')
+    .backgroundColor(this.themeBgPrimary)
   }
 
   @Builder
@@ -228,7 +246,7 @@ export struct AboutPage {
         Row() {
           Text('<')
             .fontSize(22)
-            .fontColor('#07C160')
+            .fontColor(this.themeAccent)
             .padding({ left: 4, right: 12 })
             .onClick(() => { this.showSettings = false; })
           Text('设置')
@@ -239,16 +257,16 @@ export struct AboutPage {
         .width('100%')
         .padding({ left: 20, right: 20, top: 16, bottom: 12 })
 
-        Divider().height(0.5).color('#E0E0E0')
+        Divider().height(0.5).color(this.themeBorderPrimary)
       }
       .width('100%')
-      .backgroundColor('#FFFFFF')
+      .backgroundColor(this.themeBgCard)
 
       Scroll() {
         Column({ space: 12 }) {
           Text('聊天展示模式')
             .fontSize(13)
-            .fontColor('#999999')
+            .fontColor(this.themeTextTertiary)
             .fontWeight(FontWeight.Medium)
             .width('100%')
             .padding({ left: 4, top: 16, bottom: 8 })
@@ -258,10 +276,10 @@ export struct AboutPage {
               Column() {
                 Text('沉浸模式')
                   .fontSize(16)
-                  .fontColor('#333333')
+                  .fontColor(this.themeTextPrimary)
                 Text('仅显示对话内容，最大化阅读空间')
                   .fontSize(12)
-                  .fontColor('#999999')
+                  .fontColor(this.themeTextTertiary)
                   .margin({ top: 2 })
               }
               .alignItems(HorizontalAlign.Start)
@@ -270,7 +288,7 @@ export struct AboutPage {
               if (this.isImmersiveMode) {
                 Text('✓')
                   .fontSize(18)
-                  .fontColor('#07C160')
+                  .fontColor(this.themeAccent)
               }
             }
             .width('100%')
@@ -280,16 +298,16 @@ export struct AboutPage {
               this.core.setImmersiveMode(true);
             })
 
-            Divider().height(0.5).color('#F0F0F0').margin({ left: 16 })
+            Divider().height(0.5).color(this.themeBorderSecondary).margin({ left: 16 })
 
             Row() {
               Column() {
                 Text('完整模式')
                   .fontSize(16)
-                  .fontColor('#333333')
+                  .fontColor(this.themeTextPrimary)
                 Text('显示用户名、时间等信息')
                   .fontSize(12)
-                  .fontColor('#999999')
+                  .fontColor(this.themeTextTertiary)
                   .margin({ top: 2 })
               }
               .alignItems(HorizontalAlign.Start)
@@ -298,7 +316,7 @@ export struct AboutPage {
               if (!this.isImmersiveMode) {
                 Text('✓')
                   .fontSize(18)
-                  .fontColor('#07C160')
+                  .fontColor(this.themeAccent)
               }
             }
             .width('100%')
@@ -309,12 +327,12 @@ export struct AboutPage {
             })
           }
           .width('100%')
-          .backgroundColor('#FFFFFF')
+          .backgroundColor(this.themeBgCard)
           .borderRadius(12)
 
           Text('用户名显示')
             .fontSize(13)
-            .fontColor('#999999')
+            .fontColor(this.themeTextTertiary)
             .fontWeight(FontWeight.Medium)
             .width('100%')
             .padding({ left: 4, top: 16, bottom: 8 })
@@ -322,7 +340,7 @@ export struct AboutPage {
           TextInput({ placeholder: '默认显示 User', text: this.displayUsername })
             .width('100%')
             .height(44)
-            .backgroundColor('#FFFFFF')
+            .backgroundColor(this.themeBgCard)
             .borderRadius(12)
             .padding({ left: 16, right: 16 })
             .onChange((v: string) => {
@@ -332,7 +350,7 @@ export struct AboutPage {
 
           Text('屏幕旋转')
             .fontSize(13)
-            .fontColor('#999999')
+            .fontColor(this.themeTextTertiary)
             .fontWeight(FontWeight.Medium)
             .width('100%')
             .padding({ left: 4, top: 16, bottom: 8 })
@@ -342,10 +360,10 @@ export struct AboutPage {
               Column() {
                 Text('跟随系统')
                   .fontSize(16)
-                  .fontColor('#333333')
+                  .fontColor(this.themeTextPrimary)
                 Text('根据重力感应自动旋转屏幕')
                   .fontSize(12)
-                  .fontColor('#999999')
+                  .fontColor(this.themeTextTertiary)
                   .margin({ top: 2 })
               }
               .alignItems(HorizontalAlign.Start)
@@ -354,7 +372,7 @@ export struct AboutPage {
               if (!this.isRotationLocked) {
                 Text('✓')
                   .fontSize(18)
-                  .fontColor('#07C160')
+                  .fontColor(this.themeAccent)
               }
             }
             .width('100%')
@@ -365,16 +383,16 @@ export struct AboutPage {
               AppStorage.setOrCreate<boolean>('rotationLocked', false);
             })
 
-            Divider().height(0.5).color('#F0F0F0').margin({ left: 16 })
+            Divider().height(0.5).color(this.themeBorderSecondary).margin({ left: 16 })
 
             Row() {
               Column() {
                 Text('锁定竖屏')
                   .fontSize(16)
-                  .fontColor('#333333')
+                  .fontColor(this.themeTextPrimary)
                 Text('屏幕不会随手机旋转而改变方向')
                   .fontSize(12)
-                  .fontColor('#999999')
+                  .fontColor(this.themeTextTertiary)
                   .margin({ top: 2 })
               }
               .alignItems(HorizontalAlign.Start)
@@ -383,7 +401,7 @@ export struct AboutPage {
               if (this.isRotationLocked) {
                 Text('✓')
                   .fontSize(18)
-                  .fontColor('#07C160')
+                  .fontColor(this.themeAccent)
               }
             }
             .width('100%')
@@ -395,7 +413,43 @@ export struct AboutPage {
             })
           }
           .width('100%')
-          .backgroundColor('#FFFFFF')
+          .backgroundColor(this.themeBgCard)
+          .borderRadius(12)
+
+          Text('颜色主题')
+            .fontSize(13)
+            .fontColor(this.themeTextTertiary)
+            .fontWeight(FontWeight.Medium)
+            .width('100%')
+            .padding({ left: 4, top: 16, bottom: 8 })
+
+          Column({ space: 8 }) {
+            Row() {
+              ForEach(OpenCodeCore.THEME_NAMES, (name: string) => {
+                Column() {
+                  Stack() {
+                    Circle().width(32).height(32).fill(this.getThemeColor(name))
+                    if (this.currentThemeName === name) {
+                      Text('✓').fontSize(14).fontColor('#FFFFFF')
+                    }
+                  }
+                  .onClick(() => {
+                    this.currentThemeName = name;
+                    this.core.setThemeName(name);
+                    this.core.applyTheme(name);
+                  })
+                  Text(name)
+                    .fontSize(10)
+                    .fontColor(this.currentThemeName === name ? this.themeAccent : this.themeTextTertiary)
+                    .margin({ top: 4 })
+                }
+                .margin({ right: 12 })
+              })
+            }
+          }
+          .width('100%')
+          .padding(16)
+          .backgroundColor(this.themeBgCard)
           .borderRadius(12)
         }
         .width('100%')
@@ -405,7 +459,17 @@ export struct AboutPage {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor('#F5F5F5')
+    .backgroundColor(this.themeBgPrimary)
+  }
+
+  private getThemeColor(name: string): string {
+    if (name === '极光绿') { return '#07C160'; }
+    if (name === '暗夜黑') { return '#4ADE80'; }
+    if (name === '樱花粉') { return '#FF69B4'; }
+    if (name === '天空蓝') { return '#1E90FF'; }
+    if (name === '日落橙') { return '#FF8C00'; }
+    if (name === '薰衣草') { return '#9B59B6'; }
+    return '#07C160';
   }
 
   @Builder
@@ -413,19 +477,19 @@ export struct AboutPage {
     Column({ space: 8 }) {
       Text(title)
         .fontSize(13)
-        .fontColor('#999999')
+        .fontColor(this.themeTextTertiary)
         .fontWeight(FontWeight.Medium)
         .width('100%')
 
       Text(content)
         .fontSize(14)
-        .fontColor('#333333')
+        .fontColor(this.themeTextPrimary)
         .lineHeight(22)
         .width('100%')
     }
     .width('100%')
     .padding(16)
-    .backgroundColor('#FFFFFF')
+    .backgroundColor(this.themeBgCard)
     .borderRadius(12)
   }
 }

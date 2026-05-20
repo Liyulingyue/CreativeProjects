@@ -61,6 +61,21 @@ struct ChatPage {
   @State pendingPermission: PendingPermission | null = null;
   @State isImmersiveMode: boolean = true;
   @State displayUsername: string = 'User';
+  @StorageLink('themeAccent') themeAccent: string = '#07C160';
+  @StorageLink('themeBgPrimary') themeBgPrimary: string = '#F5F5F5';
+  @StorageLink('themeBgSecondary') themeBgSecondary: string = '#EDEDED';
+  @StorageLink('themeBgCard') themeBgCard: string = '#FFFFFF';
+  @StorageLink('themeTextPrimary') themeTextPrimary: string = '#333333';
+  @StorageLink('themeTextSecondary') themeTextSecondary: string = '#888888';
+  @StorageLink('themeTextTertiary') themeTextTertiary: string = '#999999';
+  @StorageLink('themeTextMuted') themeTextMuted: string = '#BBBBBB';
+  @StorageLink('themeBorderPrimary') themeBorderPrimary: string = '#E0E0E0';
+  @StorageLink('themeLink') themeLink: string = '#007DFF';
+  @StorageLink('themeStatusWorking') themeStatusWorking: string = '#2196F3';
+  @StorageLink('themeStatusUnread') themeStatusUnread: string = '#FF3B30';
+  @StorageLink('themeChatUserBg') themeChatUserBg: string = '#95EC69';
+  @StorageLink('themeBorderSecondary') themeBorderSecondary: string = '#F0F0F0';
+  @StorageLink('themeConfig') themeConfig: string = '#1677FF';
 
   aboutToAppear() {
     const params = router.getParams() as Record<string, Object>;
@@ -185,10 +200,10 @@ struct ChatPage {
             Blank()
             Text(this.formatTime(msg.timestamp))
               .fontSize(11)
-              .fontColor('#BBBBBB')
+              .fontColor(this.themeTextMuted)
             Text(this.displayUsername)
               .fontSize(11)
-              .fontColor('#888888')
+              .fontColor(this.themeTextSecondary)
               .margin({ left: 8 })
           }
           .width('100%')
@@ -198,15 +213,15 @@ struct ChatPage {
             if (msg.model) {
               Text(msg.model.split('/').pop() || msg.model)
                 .fontSize(11)
-                .fontColor('#07C160')
+                .fontColor(this.themeAccent)
               Text(this.formatTime(msg.timestamp))
                 .fontSize(11)
-                .fontColor('#BBBBBB')
+                .fontColor(this.themeTextMuted)
                 .margin({ left: 8 })
             } else {
               Text(this.formatTime(msg.timestamp))
                 .fontSize(11)
-                .fontColor('#BBBBBB')
+                .fontColor(this.themeTextMuted)
             }
             Blank()
           }
@@ -221,7 +236,7 @@ struct ChatPage {
           Text(msg.content)
             .copyOption(CopyOptions.LocalDevice)
             .padding(12)
-            .backgroundColor('#95EC69')
+            .backgroundColor(this.themeChatUserBg)
             .borderRadius({ topLeft: 8, topRight: 2, bottomLeft: 8, bottomRight: 8 })
             .constraintSize({ maxWidth: '75%' })
             .fontSize(15)
@@ -229,7 +244,7 @@ struct ChatPage {
         } else {
           Row() {
             Stack() {
-              Rect().fill('#07C160').width(36).height(36).borderRadius(4)
+              Rect().fill(this.themeAccent).width(36).height(36).borderRadius(4)
               Text('AI')
                 .fontSize(12).fontColor('#FFFFFF').fontWeight(FontWeight.Bold)
             }
@@ -243,16 +258,16 @@ struct ChatPage {
                     LoadingProgress().width(16).height(16)
                     Text('思考中...')
                       .fontSize(13)
-                      .fontColor('#888888')
+                      .fontColor(this.themeTextSecondary)
                       .margin({ left: 6 })
                   }
                   Text('如果长时间没有回复，请检查目标模型是否欠费或速率限制...')
                     .fontSize(10)
-                    .fontColor('#BBBBBB')
+                    .fontColor(this.themeTextMuted)
                     .margin({ top: 6, left: 22 })
                 }
                 .padding(12)
-                .backgroundColor('#FFFFFF')
+                .backgroundColor(this.themeBgCard)
                 .borderRadius({ topLeft: 2, topRight: 8, bottomLeft: 8, bottomRight: 8 })
                 .alignItems(HorizontalAlign.Start)
               } else {
@@ -270,12 +285,12 @@ struct ChatPage {
                         Row() {
                           Text('执行过程' + (this.collapsedIds.indexOf(`${msg.id}_${index}`) === -1 ? ' (展开)' : ' (收起)'))
                             .fontSize(10)
-                            .fontColor('#999999')
+                            .fontColor(this.themeTextTertiary)
                         }
                         .width('100%')
                         .justifyContent(FlexAlign.Center)
                         .padding({ top: 6, bottom: 6 })
-                        .backgroundColor('#F0F0F0')
+                        .backgroundColor(this.themeBorderSecondary)
                         .borderRadius(4)
                         .onClick(() => {
                           const key = `${msg.id}_${index}`;
@@ -291,7 +306,7 @@ struct ChatPage {
                           Text(segment.content)
                             .copyOption(CopyOptions.LocalDevice)
                             .fontSize(12)
-                            .fontColor('#777777')
+                            .fontColor(this.themeTextSecondary)
                             .padding(10)
                             .width('100%')
                             .textAlign(TextAlign.Start)
@@ -301,7 +316,7 @@ struct ChatPage {
                     }
                   }, (segment: MessageSegment, index: number) => `${msg.id}_${index}`)
                 }
-                .backgroundColor('#FFFFFF')
+                .backgroundColor(this.themeBgCard)
                 .borderRadius({ topLeft: 2, topRight: 8, bottomLeft: 8, bottomRight: 8 })
                 .alignItems(HorizontalAlign.Start)
               }
@@ -337,7 +352,7 @@ struct ChatPage {
       Row() {
         Text('<')
           .fontSize(22)
-          .fontColor('#07C160')
+          .fontColor(this.themeAccent)
           .padding({ left: 16, right: 16, top: 12, bottom: 12 })
           .onClick(() => router.back())
 
@@ -348,7 +363,7 @@ struct ChatPage {
             .maxLines(1)
           Text(this.directory || '/')
             .fontSize(11)
-            .fontColor('#888888')
+            .fontColor(this.themeTextSecondary)
             .maxLines(1)
         }
         .layoutWeight(1)
@@ -378,10 +393,10 @@ struct ChatPage {
       .width('100%')
       .height(56)
       .padding({ left: 8, right: 8 })
-      .backgroundColor('#FFFFFF')
+      .backgroundColor(this.themeBgCard)
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP])
 
-      Divider().height(0.5).color('#E0E0E0')
+      Divider().height(0.5).color(this.themeBorderPrimary)
 
       Scroll(this.scroller) {
         Column({ space: 8 }) {
@@ -393,7 +408,7 @@ struct ChatPage {
         .width('100%')
       }
       .layoutWeight(1)
-      .backgroundColor('#EDEDED')
+      .backgroundColor(this.themeBgSecondary)
       .scrollBar(BarState.Off)
       .align(Alignment.Top)
 
@@ -401,7 +416,7 @@ struct ChatPage {
         Row() {
           TextInput({ placeholder: '发送指令...', text: this.inputText })
             .layoutWeight(1)
-            .backgroundColor('#FFFFFF')
+            .backgroundColor(this.themeBgCard)
             .borderRadius(20)
             .padding({ left: 16, right: 16 })
             .onChange(v => this.inputText = v)
@@ -409,7 +424,7 @@ struct ChatPage {
 
           Button(this.isLoading ? '停止' : '发送')
             .margin({ left: 8 })
-            .backgroundColor('#07C160')
+            .backgroundColor(this.themeAccent)
             .borderRadius(20)
             .enabled(this.isLoading || this.inputText.length > 0)
             .onClick(() => {
@@ -425,7 +440,7 @@ struct ChatPage {
         }
       }
       .padding({ left: 8, right: 8, top: 8, bottom: 8 })
-      .backgroundColor('#FFFFFF')
+      .backgroundColor(this.themeBgCard)
     }
     .width('100%')
     .height('100%')
@@ -449,21 +464,21 @@ struct ChatPage {
         Blank()
         Text('X')
           .fontSize(18)
-          .fontColor('#888888')
+          .fontColor(this.themeTextSecondary)
           .onClick(() => { this.pendingPermission = null; })
       }
       .padding({ top: 16, bottom: 12, left: 20, right: 20 })
 
-      Divider().color('#E0E0E0')
+      Divider().color(this.themeBorderPrimary)
 
       Column() {
         Text(`权限类型: ${this.pendingPermission?.permission || ''}`)
           .fontSize(14)
-          .fontColor('#333333')
+          .fontColor(this.themeTextPrimary)
           .width('100%')
         Text(`操作: ${this.pendingPermission?.patterns?.join(', ') || ''}`)
           .fontSize(13)
-          .fontColor('#666666')
+          .fontColor(this.themeTextSecondary)
           .margin({ top: 6 })
           .width('100%')
       }
@@ -471,33 +486,33 @@ struct ChatPage {
       .alignItems(HorizontalAlign.Start)
       .width('100%')
 
-      Divider().color('#E0E0E0')
+      Divider().color(this.themeBorderPrimary)
 
       Row() {
         Button('仅本次')
           .layoutWeight(1)
           .height(44)
-          .backgroundColor('#F5F5F5')
-          .fontColor('#333333')
+          .backgroundColor(this.themeBgPrimary)
+          .fontColor(this.themeTextPrimary)
           .onClick(() => this.replyPermission('once'))
-        Divider().width(0.5).color('#E0E0E0').height(44)
+        Divider().width(0.5).color(this.themeBorderPrimary).height(44)
         Button('始终允许')
           .layoutWeight(1)
           .height(44)
-          .backgroundColor('#07C160')
+          .backgroundColor(this.themeAccent)
           .fontColor('#FFFFFF')
           .onClick(() => this.replyPermission('always'))
-        Divider().width(0.5).color('#E0E0E0').height(44)
+        Divider().width(0.5).color(this.themeBorderPrimary).height(44)
         Button('拒绝')
           .layoutWeight(1)
           .height(44)
-          .backgroundColor('#FF3B30')
+          .backgroundColor(this.themeStatusUnread)
           .fontColor('#FFFFFF')
           .onClick(() => this.replyPermission('reject'))
       }
     }
     .width('100%')
-    .backgroundColor('#FFFFFF')
+    .backgroundColor(this.themeBgCard)
   }
 
   private async sendMessage() {
