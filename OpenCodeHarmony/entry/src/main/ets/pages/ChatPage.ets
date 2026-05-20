@@ -379,6 +379,7 @@ struct ChatPage {
       .height(56)
       .padding({ left: 8, right: 8 })
       .backgroundColor('#FFFFFF')
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP])
 
       Divider().height(0.5).color('#E0E0E0')
 
@@ -423,12 +424,13 @@ struct ChatPage {
             })
         }
       }
+      .padding({ left: 8, right: 8, top: 8, bottom: 8 })
+      .backgroundColor('#FFFFFF')
     }
     .width('100%')
     .height('100%')
-    .bindSheet(!!this.pendingPermission, () => {
-      this.buildPermissionSheet()
-    }, {
+    .expandSafeArea([SafeAreaType.KEYBOARD], [])
+    .bindSheet(!!this.pendingPermission, this.buildPermissionSheet, {
       dragBar: true,
       showClose: false,
       preferType: SheetType.BOTTOM,
