@@ -368,6 +368,7 @@ struct ChatPage {
             .fontColor(this.themeTextSecondary)
             .maxLines(1)
         }
+        .alignItems(HorizontalAlign.Center)
         .layoutWeight(1)
 
         Blank()
