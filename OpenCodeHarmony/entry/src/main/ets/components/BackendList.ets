@@ -8,6 +8,7 @@ export struct BackendList {
   private core: OpenCodeCore = OpenCodeCore.getInstance();
 
   aboutToAppear() {
+    this.refreshBackends();
   }
 
   aboutToDisappear() {
