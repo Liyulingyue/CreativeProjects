@@ -219,7 +219,7 @@ struct ChatPage {
         if (msg.role === 'user') {
           Blank()
           Text(msg.content)
-            .selectable(true)
+            .copyOption(CopyOptions.LocalDevice)
             .padding(12)
             .backgroundColor('#95EC69')
             .borderRadius({ topLeft: 8, topRight: 2, bottomLeft: 8, bottomRight: 8 })
@@ -261,7 +261,7 @@ struct ChatPage {
                     if (segment.type === MessageSegmentType.TEXT) {
                       if (segment.content.trim().length > 0) {
                         Text(segment.content)
-                          .selectable(true)
+                          .copyOption(CopyOptions.LocalDevice)
                           .fontSize(15)
                           .padding({ left: 12, right: 12, top: 10, bottom: 10 })
                       }
@@ -289,7 +289,7 @@ struct ChatPage {
 
                         if (this.collapsedIds.indexOf(`${msg.id}_${index}`) !== -1) {
                           Text(segment.content)
-                            .selectable(true)
+                            .copyOption(CopyOptions.LocalDevice)
                             .fontSize(12)
                             .fontColor('#777777')
                             .padding(10)
