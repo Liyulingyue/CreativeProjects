@@ -108,6 +108,7 @@ export class OpenCodeCore {
   private sseBuffer: string = '';
   private sseEventCallback: SseEventCallback | null = null;
   private sessionsChangedCallback: SessionsChangedCallback | null = null;
+  private leftCurrentProject: boolean = false;
 
   private constructor() {}
 
@@ -448,6 +449,14 @@ export class OpenCodeCore {
     return this.currentSessionId;
   }
 
+  public markCurrentProjectLeft(): void {
+    this.leftCurrentProject = true;
+  }
+
+  public clearLeftFlag(): void {
+    this.leftCurrentProject = false;
+  }
+
   public getBackendUrl(): string {
     const project = this.getCurrentProject();
     return project ? project.url : '';
@@ -656,8 +665,19 @@ export class OpenCodeCore {
           this.messageCallback?.({ response: null, error: `请求失败: HTTP ${data?.responseCode}`, loadingId: pending.loadingId });
         }
         this.messageCallback = null;
-        // 请求结束（无论成功失败）都取消工作中状态
+
+        const wasLeft = this.leftCurrentProject;
+        this.leftCurrentProject = false;
         this.setProjectWorking(projectId, false);
+
+        if (wasLeft) {
+          const proj = this.projects.find(p => p.id === projectId);
+          if (proj) {
+            proj.unreadCount++;
+            this.saveProjects();
+            this.notifySessionsChanged();
+          }
+        }
       }
     );
   }

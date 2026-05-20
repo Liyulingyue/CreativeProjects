@@ -101,6 +101,7 @@ struct ChatPage {
       console.info('[ChatPage] preferredModel set to:', this.preferredModel);
     }
     this.core.setCurrentProject(this.sessionId);
+    this.core.clearLeftFlag();
     if (this.realSessionId) {
       this.core.setCurrentSession(this.realSessionId);
     }
@@ -117,6 +118,7 @@ struct ChatPage {
   }
 
   aboutToDisappear() {
+    this.core.markCurrentProjectLeft();
     this.core.stopSse();
     AppStorage.setOrCreate<string>('refreshSessionsNow', Date.now().toString());
   }
