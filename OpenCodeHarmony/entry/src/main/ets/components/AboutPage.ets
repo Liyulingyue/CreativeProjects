@@ -1,12 +1,11 @@
-import router from '@ohos.router';
 import { OpenCodeCore } from '../core/OpenCodeCore';
 
 @Component
 export struct AboutPage {
   private core: OpenCodeCore = OpenCodeCore.getInstance();
   @State isImmersiveMode: boolean = true;
-  @State showAbout: boolean = false;
-  @State showSettings: boolean = false;
+  @StorageLink('aboutPanelVisible') showAbout: boolean = false;
+  @StorageLink('settingsPanelVisible') showSettings: boolean = false;
   @State displayUsername: string = '';
   @State isRotationLocked: boolean = false;
 
@@ -15,6 +14,8 @@ export struct AboutPage {
     this.displayUsername = this.core.getDisplayUsername();
     this.isRotationLocked = this.core.isRotationLocked();
     AppStorage.setOrCreate<boolean>('rotationLocked', this.isRotationLocked);
+    AppStorage.setOrCreate<boolean>('aboutPanelVisible', false);
+    AppStorage.setOrCreate<boolean>('settingsPanelVisible', false);
   }
 
   private openUrl(url: string): void {

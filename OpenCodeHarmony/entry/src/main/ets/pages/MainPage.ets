@@ -8,6 +8,20 @@ struct MainPage {
   @State currentTab: number = 0;
   @StorageLink('needRefreshSessions') needRefreshSessions: string = '';
 
+  onBackPress(): boolean {
+    const aboutOpen = AppStorage.get<boolean>('aboutPanelVisible') ?? false;
+    const settingsOpen = AppStorage.get<boolean>('settingsPanelVisible') ?? false;
+    if (aboutOpen) {
+      AppStorage.setOrCreate<boolean>('aboutPanelVisible', false);
+      return true;
+    }
+    if (settingsOpen) {
+      AppStorage.setOrCreate<boolean>('settingsPanelVisible', false);
+      return true;
+    }
+    return false;
+  }
+
   onPageShow() {
     if (this.needRefreshSessions === 'true') {
       this.needRefreshSessions = '';
