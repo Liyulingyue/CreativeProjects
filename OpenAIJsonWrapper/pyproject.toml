@@ -1,5 +1,5 @@
 [project]
-name = "openai-json-wrapper"
+name = "openaijsonwrapper"
 version = "0.1.0"
 description = "小型 JSON 封装，适配 OpenAI 风格的数据与自定义类型序列化"
 authors = [ { name = "Your Name" } ]

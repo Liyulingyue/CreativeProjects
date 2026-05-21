@@ -33,7 +33,7 @@ vocab_wrapper = None
 def _get_article_wrapper():
     global article_wrapper
     if article_wrapper is None:
-        from OpenAIJsonWrapper import OpenAIJsonWrapper
+        from openaijsonwrapper import OpenAIJsonWrapper
         article_wrapper = OpenAIJsonWrapper(
             client,
             model=model_name,
@@ -45,7 +45,7 @@ def _get_article_wrapper():
 def _get_vocab_wrapper():
     global vocab_wrapper
     if vocab_wrapper is None:
-        from OpenAIJsonWrapper import OpenAIJsonWrapper
+        from openaijsonwrapper import OpenAIJsonWrapper
         vocab_wrapper = OpenAIJsonWrapper(
             client,
             model=model_name,

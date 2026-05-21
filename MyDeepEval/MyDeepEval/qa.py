@@ -1,5 +1,5 @@
 from typing import Any, Dict, List, Optional, Union
-from OpenAIJsonWrapper import OpenAIJsonWrapper
+from openaijsonwrapper import OpenAIJsonWrapper
 
 DEFAULT_QA_TARGET = {
     "score": "int",        # 0-100

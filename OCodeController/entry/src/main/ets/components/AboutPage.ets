@@ -9,6 +9,7 @@ export struct AboutPage {
   @State displayUsername: string = '';
   @State isRotationLocked: boolean = false;
   @State currentThemeName: string = '极光绿';
+  @State isDarkMode: boolean = false;
   @StorageLink('themeAccent') themeAccent: string = '#07C160';
   @StorageLink('themeBgPrimary') themeBgPrimary: string = '#F5F5F5';
   @StorageLink('themeBgCard') themeBgCard: string = '#FFFFFF';
@@ -31,9 +32,11 @@ export struct AboutPage {
     this.displayUsername = this.core.getDisplayUsername();
     this.isRotationLocked = this.core.isRotationLocked();
     this.currentThemeName = this.core.getThemeName();
+    this.isDarkMode = this.core.getDarkMode();
     AppStorage.setOrCreate<boolean>('rotationLocked', this.isRotationLocked);
     AppStorage.setOrCreate<boolean>('aboutPanelVisible', false);
     AppStorage.setOrCreate<boolean>('settingsPanelVisible', false);
+    AppStorage.setOrCreate<boolean>('isDarkMode', this.isDarkMode);
   }
 
   private openUrl(url: string): void {
@@ -80,7 +83,7 @@ export struct AboutPage {
               Text('OC')
                 .fontSize(28).fontColor('#FFFFFF').fontWeight(FontWeight.Bold)
             }
-            Text('OpenCode Harmony')
+            Text('O-Code Controller')
               .fontSize(22)
               .fontWeight(FontWeight.Bold)
             Text('v0.1.0-alpha')
@@ -150,7 +153,7 @@ export struct AboutPage {
               Text('OC')
                 .fontSize(22).fontColor('#FFFFFF').fontWeight(FontWeight.Bold)
             }
-            Text('OpenCode Harmony')
+            Text('O-Code Controller')
               .fontSize(18)
               .fontWeight(FontWeight.Bold)
             Text('v0.1.0-alpha')
@@ -416,6 +419,58 @@ export struct AboutPage {
           .backgroundColor(this.themeBgCard)
           .borderRadius(12)
 
+          Text('颜色深浅')
+            .fontSize(13)
+            .fontColor(this.themeTextTertiary)
+            .fontWeight(FontWeight.Medium)
+            .width('100%')
+            .padding({ left: 4, top: 16, bottom: 8 })
+
+          Column({ space: 0 }) {
+            Row() {
+              Text('浅色模式')
+                .fontSize(16)
+                .fontColor(this.themeTextPrimary)
+              Blank()
+              if (!this.isDarkMode) {
+                Text('✓')
+                  .fontSize(18)
+                  .fontColor(this.themeAccent)
+              }
+            }
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+            .onClick(() => {
+              this.isDarkMode = false;
+              this.core.setDarkMode(false);
+              this.core.applyTheme(this.currentThemeName, false);
+            })
+
+            Divider().height(0.5).color(this.themeBorderSecondary).margin({ left: 16 })
+
+            Row() {
+              Text('深色模式')
+                .fontSize(16)
+                .fontColor(this.themeTextPrimary)
+              Blank()
+              if (this.isDarkMode) {
+                Text('✓')
+                  .fontSize(18)
+                  .fontColor(this.themeAccent)
+              }
+            }
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+            .onClick(() => {
+              this.isDarkMode = true;
+              this.core.setDarkMode(true);
+              this.core.applyTheme(this.currentThemeName, true);
+            })
+          }
+          .width('100%')
+          .backgroundColor(this.themeBgCard)
+          .borderRadius(12)
+
           Text('颜色主题')
             .fontSize(13)
             .fontColor(this.themeTextTertiary)
@@ -423,31 +478,30 @@ export struct AboutPage {
             .width('100%')
             .padding({ left: 4, top: 16, bottom: 8 })
 
-          Column({ space: 8 }) {
-            Row() {
-              ForEach(OpenCodeCore.THEME_NAMES, (name: string) => {
-                Column() {
-                  Stack() {
-                    Circle().width(32).height(32).fill(this.getThemeColor(name))
-                    if (this.currentThemeName === name) {
-                      Text('✓').fontSize(14).fontColor('#FFFFFF')
-                    }
+          Row({ space: 16 }) {
+            ForEach(OpenCodeCore.THEME_NAMES, (name: string) => {
+              Column() {
+                Stack() {
+                  Circle().width(28).height(28).fill(this.getThemeColor(name))
+                  if (this.currentThemeName === name) {
+                    Text('✓').fontSize(12).fontColor('#FFFFFF')
                   }
-                  .onClick(() => {
-                    this.currentThemeName = name;
-                    this.core.setThemeName(name);
-                    this.core.applyTheme(name);
-                  })
-                  Text(name)
-                    .fontSize(10)
-                    .fontColor(this.currentThemeName === name ? this.themeAccent : this.themeTextTertiary)
-                    .margin({ top: 4 })
                 }
-                .margin({ right: 12 })
-              })
-            }
+                .onClick(() => {
+                  this.currentThemeName = name;
+                  this.core.setThemeName(name);
+                  this.core.applyTheme(name, this.isDarkMode);
+                })
+                Text(name)
+                  .fontSize(10)
+                  .fontColor(this.currentThemeName === name ? this.themeAccent : this.themeTextTertiary)
+                  .margin({ top: 4 })
+              }
+              .width(42)
+            })
           }
           .width('100%')
+          .justifyContent(FlexAlign.Center)
           .padding(16)
           .backgroundColor(this.themeBgCard)
           .borderRadius(12)
@@ -464,7 +518,6 @@ export struct AboutPage {
 
   private getThemeColor(name: string): string {
     if (name === '极光绿') { return '#07C160'; }
-    if (name === '暗夜黑') { return '#1A1A1A'; }
     if (name === '樱花粉') { return '#FF69B4'; }
     if (name === '天空蓝') { return '#1E90FF'; }
     if (name === '日落橙') { return '#FF8C00'; }

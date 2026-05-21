@@ -1,4 +1,4 @@
 openai
 python-dotenv
 # 使用我们刚发布的自定义包地址
-https://github.com/Liyulingyue/CreativeProjects/releases/download/OpenAIJsonWrapper/openai_json_wrapper-0.1.0-py3-none-any.whl
+openaijsonwrapper

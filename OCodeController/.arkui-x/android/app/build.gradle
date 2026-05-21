@@ -7,7 +7,7 @@ android {
     buildToolsVersion "30.0.3"
 
     defaultConfig {
-        applicationId "com.example.opencodeharmony"
+        applicationId "com.liyulingyue.ocodecontroller"
         minSdkVersion 26
         targetSdkVersion 33
         versionCode 1

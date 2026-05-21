@@ -13,7 +13,7 @@ pip install -e .
 或通过 Git 直接安装：
 
 ```bash
-pip install https://github.com/Liyulingyue/CreativeProjects/releases/download/OpenAIJsonWrapper/openai_json_wrapper-0.1.0-py3-none-any.whl
+pip install openaijsonwrapper
 ```
 
 ## 打包与分发
@@ -38,7 +38,7 @@ pip install https://github.com/Liyulingyue/CreativeProjects/releases/download/Op
 
 ```python
 from openai import OpenAI
-from OpenAIJsonWrapper import OpenAIJsonWrapper
+from openaijsonwrapper import OpenAIJsonWrapper
 
 client = OpenAI(api_key="sk-...", base_url="...")
 
