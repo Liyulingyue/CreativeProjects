@@ -1,7 +1,7 @@
 import os
 import json
 from openai import OpenAI
-from OpenAIJsonWrapper import OpenAIJsonWrapper
+from openaijsonwrapper import OpenAIJsonWrapper
 
 def test_real_openai_wrapper():
     # 优先从环境变量获取配置，参考 OpenAIProxy.py 的默认值

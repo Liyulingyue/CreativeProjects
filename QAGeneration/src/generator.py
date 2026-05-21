@@ -1,6 +1,6 @@
 import json
 from typing import Any, Dict, List, Optional
-from OpenAIJsonWrapper import OpenAIJsonWrapper
+from openaijsonwrapper import OpenAIJsonWrapper
 
 class QAGenerator:
     """

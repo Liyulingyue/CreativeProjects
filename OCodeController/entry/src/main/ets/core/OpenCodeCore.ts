@@ -97,9 +97,10 @@ export class OpenCodeCore {
   private static readonly KEY_DISPLAY_USERNAME = 'displayUsername';
   private static readonly KEY_ROTATION_LOCKED = 'rotationLocked';
   private static readonly KEY_THEME_NAME = 'themeName';
+  private static readonly KEY_DARK_MODE = 'darkMode';
 
   public static readonly THEME_NAMES: string[] = [
-    '极光绿', '暗夜黑', '樱花粉', '天空蓝', '日落橙', '薰衣草'
+    '极光绿', '樱花粉', '天空蓝', '日落橙', '薰衣草'
   ];
   private pendingRequest: http.HttpRequest | null = null;
   private pendingMessage: PendingMessage | null = null;
@@ -267,7 +268,26 @@ export class OpenCodeCore {
     }
   }
 
-  public applyTheme(name: string): void {
+  public getDarkMode(): boolean {
+    if (!this.preferences) return false;
+    try {
+      return this.preferences.getSync(OpenCodeCore.KEY_DARK_MODE, false) as boolean;
+    } catch {
+      return false;
+    }
+  }
+
+  public async setDarkMode(value: boolean): Promise<void> {
+    if (!this.preferences) return;
+    try {
+      await this.preferences.put(OpenCodeCore.KEY_DARK_MODE, value);
+      await this.preferences.flush();
+    } catch (err) {
+      console.error('[OpenCodeCore] Failed to save darkMode:', err);
+    }
+  }
+
+  public applyTheme(name: string, darkMode?: boolean): void {
     interface ThemeColors {
       themeAccent: string;
       themeBgPrimary: string;
@@ -287,56 +307,90 @@ export class OpenCodeCore {
       themeConfig: string;
     }
     const themes: Record<string, ThemeColors> = {
-      '极光绿': {
+      '极光绿-light': {
         themeAccent: '#07C160', themeBgPrimary: '#F5F5F5', themeBgSecondary: '#EDEDED',
         themeBgCard: '#FFFFFF', themeTextPrimary: '#333333', themeTextSecondary: '#888888',
         themeTextTertiary: '#999999', themeTextMuted: '#BBBBBB', themeBorderPrimary: '#E0E0E0',
         themeBorderSecondary: '#F0F0F0', themeDivider: '#EEEEEE', themeChatUserBg: '#95EC69',
-        themeStatusWorking: '#2196F3', themeStatusUnread: '#FF3B30', themeLink: '#007DFF',
-        themeConfig: '#1677FF'
+        themeStatusWorking: '#2196F3', themeStatusUnread: '#FF3B30', themeLink: '#07C160',
+        themeConfig: '#07C160'
       },
-      '暗夜黑': {
-        themeAccent: '#4ADE80', themeBgPrimary: '#1A1A2E', themeBgSecondary: '#16213E',
-        themeBgCard: '#0F3460', themeTextPrimary: '#EAEAEA', themeTextSecondary: '#AAAAAA',
-        themeTextTertiary: '#888888', themeTextMuted: '#666666', themeBorderPrimary: '#333355',
-        themeBorderSecondary: '#252540', themeDivider: '#2A2A4A', themeChatUserBg: '#4A7C59',
-        themeStatusWorking: '#60A5FA', themeStatusUnread: '#F87171', themeLink: '#60A5FA',
-        themeConfig: '#818CF8'
+      '极光绿-dark': {
+        themeAccent: '#4ADE80', themeBgPrimary: '#0F1F15', themeBgSecondary: '#162B20',
+        themeBgCard: '#1E3A2A', themeTextPrimary: '#E8F5EC', themeTextSecondary: '#A8D5B8',
+        themeTextTertiary: '#7BC49A', themeTextMuted: '#5AAD7E', themeBorderPrimary: '#2A4A35',
+        themeBorderSecondary: '#1E3525', themeDivider: '#243A2C', themeChatUserBg: '#2A5A3A',
+        themeStatusWorking: '#60A5FA', themeStatusUnread: '#F87171', themeLink: '#4ADE80',
+        themeConfig: '#4ADE80'
       },
-      '樱花粉': {
+      '樱花粉-light': {
         themeAccent: '#FF69B4', themeBgPrimary: '#FFF0F5', themeBgSecondary: '#FFE4EC',
         themeBgCard: '#FFFFFF', themeTextPrimary: '#333333', themeTextSecondary: '#888888',
         themeTextTertiary: '#999999', themeTextMuted: '#BBBBBB', themeBorderPrimary: '#E8C8D8',
         themeBorderSecondary: '#F5E0EB', themeDivider: '#F0D0E0', themeChatUserBg: '#FFB6C1',
         themeStatusWorking: '#2196F3', themeStatusUnread: '#FF69B4', themeLink: '#FF69B4',
-        themeConfig: '#E879A9'
+        themeConfig: '#FF69B4'
       },
-      '天空蓝': {
+      '樱花粉-dark': {
+        themeAccent: '#FF69B4', themeBgPrimary: '#1F1018', themeBgSecondary: '#2B1520',
+        themeBgCard: '#3A1E2A', themeTextPrimary: '#F5E8EE', themeTextSecondary: '#D8A8C0',
+        themeTextTertiary: '#C088A0', themeTextMuted: '#A86888', themeBorderPrimary: '#4A2535',
+        themeBorderSecondary: '#351825', themeDivider: '#3C1E2C', themeChatUserBg: '#4A2535',
+        themeStatusWorking: '#60A5FA', themeStatusUnread: '#F87171', themeLink: '#FF69B4',
+        themeConfig: '#FF69B4'
+      },
+      '天空蓝-light': {
         themeAccent: '#1E90FF', themeBgPrimary: '#F0F8FF', themeBgSecondary: '#E6F3FF',
         themeBgCard: '#FFFFFF', themeTextPrimary: '#333333', themeTextSecondary: '#888888',
         themeTextTertiary: '#999999', themeTextMuted: '#BBBBBB', themeBorderPrimary: '#CCE4FF',
         themeBorderSecondary: '#E0EDFF', themeDivider: '#D0E8FF', themeChatUserBg: '#87CEEB',
         themeStatusWorking: '#2196F3', themeStatusUnread: '#FF6B6B', themeLink: '#1E90FF',
-        themeConfig: '#4A90E2'
+        themeConfig: '#1E90FF'
       },
-      '日落橙': {
+      '天空蓝-dark': {
+        themeAccent: '#60A5FA', themeBgPrimary: '#0F1825', themeBgSecondary: '#152035',
+        themeBgCard: '#1E2A40', themeTextPrimary: '#E8F0FA', themeTextSecondary: '#A8C4E8',
+        themeTextTertiary: '#7AACDC', themeTextMuted: '#5A94C8', themeBorderPrimary: '#2A3850',
+        themeBorderSecondary: '#1E2835', themeDivider: '#243040', themeChatUserBg: '#2A3850',
+        themeStatusWorking: '#93C5FD', themeStatusUnread: '#F87171', themeLink: '#60A5FA',
+        themeConfig: '#60A5FA'
+      },
+      '日落橙-light': {
         themeAccent: '#FF8C00', themeBgPrimary: '#FFF8F0', themeBgSecondary: '#FFF0E0',
         themeBgCard: '#FFFFFF', themeTextPrimary: '#333333', themeTextSecondary: '#888888',
         themeTextTertiary: '#999999', themeTextMuted: '#BBBBBB', themeBorderPrimary: '#FFE0B0',
         themeBorderSecondary: '#FFF0D0', themeDivider: '#FFE8C0', themeChatUserBg: '#FFDAB9',
         themeStatusWorking: '#2196F3', themeStatusUnread: '#FF6B6B', themeLink: '#FF8C00',
-        themeConfig: '#E67E22'
+        themeConfig: '#FF8C00'
       },
-      '薰衣草': {
+      '日落橙-dark': {
+        themeAccent: '#FFB347', themeBgPrimary: '#1F1510', themeBgSecondary: '#2B1E15',
+        themeBgCard: '#3A2A1E', themeTextPrimary: '#FAF0E8', themeTextSecondary: '#E8C8A8',
+        themeTextTertiary: '#DCAC80', themeTextMuted: '#C89060', themeBorderPrimary: '#4A3525',
+        themeBorderSecondary: '#352015', themeDivider: '#3C2018', themeChatUserBg: '#4A3525',
+        themeStatusWorking: '#60A5FA', themeStatusUnread: '#F87171', themeLink: '#FFB347',
+        themeConfig: '#FFB347'
+      },
+      '薰衣草-light': {
         themeAccent: '#9B59B6', themeBgPrimary: '#F8F4FF', themeBgSecondary: '#EDE4F7',
         themeBgCard: '#FFFFFF', themeTextPrimary: '#333333', themeTextSecondary: '#888888',
         themeTextTertiary: '#999999', themeTextMuted: '#BBBBBB', themeBorderPrimary: '#D8C4E8',
         themeBorderSecondary: '#E8DCF4', themeDivider: '#DDD0EC', themeChatUserBg: '#C9A0DC',
         themeStatusWorking: '#2196F3', themeStatusUnread: '#FF6B6B', themeLink: '#9B59B6',
-        themeConfig: '#8E44AD'
+        themeConfig: '#9B59B6'
+      },
+      '薰衣草-dark': {
+        themeAccent: '#C084FC', themeBgPrimary: '#1A1520', themeBgSecondary: '#251B2B',
+        themeBgCard: '#30253A', themeTextPrimary: '#F0E8F8', themeTextSecondary: '#C8A8E0',
+        themeTextTertiary: '#AC88D0', themeTextMuted: '#9068B8', themeBorderPrimary: '#3E2E4A',
+        themeBorderSecondary: '#2B1E35', themeDivider: '#342438', themeChatUserBg: '#3E2E4A',
+        themeStatusWorking: '#60A5FA', themeStatusUnread: '#F87171', themeLink: '#C084FC',
+        themeConfig: '#C084FC'
       }
     };
-    const theme = themes[name] || themes['极光绿'];
+    const dm = darkMode ?? this.getDarkMode();
+    const key = `${name}-${dm ? 'dark' : 'light'}`;
+    const theme = themes[key] || themes[`${name}-light`] || themes['极光绿-light'];
     AppStorage.setOrCreate<string>('themeAccent', theme.themeAccent);
     AppStorage.setOrCreate<string>('themeBgPrimary', theme.themeBgPrimary);
     AppStorage.setOrCreate<string>('themeBgSecondary', theme.themeBgSecondary);
@@ -353,6 +407,7 @@ export class OpenCodeCore {
     AppStorage.setOrCreate<string>('themeStatusUnread', theme.themeStatusUnread);
     AppStorage.setOrCreate<string>('themeLink', theme.themeLink);
     AppStorage.setOrCreate<string>('themeConfig', theme.themeConfig);
+    AppStorage.setOrCreate<boolean>('isDarkMode', dm);
   }
 
   public getProjects(): OpenCodeProject[] {

@@ -1,6 +1,6 @@
 import json
 from typing import Any, Dict, List, Optional, Union
-from OpenAIJsonWrapper import OpenAIJsonWrapper
+from openaijsonwrapper import OpenAIJsonWrapper
 
 
 DEFAULT_TARGET = {

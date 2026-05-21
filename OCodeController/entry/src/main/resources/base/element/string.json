@@ -10,11 +10,11 @@
     },
     {
       "name": "EntryAbility_label",
-      "value": "OpenCodeHarmony"
+      "value": "OCodeController"
     },
     {
       "name": "app_name",
-      "value": "OpenCodeHarmony"
+      "value": "OCodeController"
     }
   ]
 }

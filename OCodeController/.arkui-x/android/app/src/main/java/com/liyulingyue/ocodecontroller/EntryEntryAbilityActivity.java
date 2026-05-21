@@ -1,4 +1,4 @@
-package com.example.opencodeharmony;
+package com.liyulingyue.ocodecontroller;
 
 import android.os.Bundle;
 import android.util.Log;
@@ -24,7 +24,7 @@ public class EntryEntryAbilityActivity extends StageActivity {
 
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN);
 
-        setInstanceName("com.example.opencodeharmony:entry:EntryAbility:");
+        setInstanceName("com.liyulingyue.ocodecontroller:entry:EntryAbility:");
         super.onCreate(savedInstanceState);
     }
 

@@ -36,7 +36,7 @@ export default class EntryAbility extends UIAbility {
     } catch (e) {
       console.error('[EntryAbility] init failed:', e);
     }
-    core.applyTheme(core.getThemeName());
+    core.applyTheme(core.getThemeName(), core.getDarkMode());
     AppStorage.setOrCreate<string>('refreshSessionsNow', Date.now().toString());
   }
 
