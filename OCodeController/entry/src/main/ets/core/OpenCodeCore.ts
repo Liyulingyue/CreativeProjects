@@ -99,6 +99,7 @@ export class OpenCodeCore {
   private static readonly KEY_THEME_NAME = 'themeName';
   private static readonly KEY_DARK_MODE = 'darkMode';
   private static readonly KEY_MESSAGES = 'messages';
+  private static readonly KEY_MESSAGE_LOAD_MODE = 'messageLoadMode';
 
   public static readonly THEME_NAMES: string[] = [
     '极光绿', '樱花粉', '天空蓝', '日落橙', '薰衣草'
@@ -285,6 +286,25 @@ export class OpenCodeCore {
       await this.preferences.flush();
     } catch (err) {
       console.error('[OpenCodeCore] Failed to save darkMode:', err);
+    }
+  }
+
+  public getMessageLoadMode(): string {
+    if (!this.preferences) return 'all';
+    try {
+      return this.preferences.getSync(OpenCodeCore.KEY_MESSAGE_LOAD_MODE, 'all') as string;
+    } catch {
+      return 'all';
+    }
+  }
+
+  public async setMessageLoadMode(value: string): Promise<void> {
+    if (!this.preferences) return;
+    try {
+      await this.preferences.put(OpenCodeCore.KEY_MESSAGE_LOAD_MODE, value);
+      await this.preferences.flush();
+    } catch (err) {
+      console.error('[OpenCodeCore] Failed to save messageLoadMode:', err);
     }
   }
 

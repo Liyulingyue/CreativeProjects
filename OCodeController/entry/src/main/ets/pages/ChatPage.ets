@@ -157,34 +157,65 @@ struct ChatPage {
       console.info('[ChatPage] loadHistory: pending request detected, loadingId:', pending!.loadingId);
     }
 
-    this.viewModel.loadHistory(
-      this.backendUrl,
-      this.authToken,
-      this.directory,
-      this.realSessionId,
-      (msgs: DisplayMessage[]) => {
-        if (msgs.length > 0) {
-          if (this.messages.length === 0) {
-            this.messages = msgs;
-          } else {
-            this.messages = [...msgs, ...this.messages];
+    const loadMode = this.core.getMessageLoadMode();
+
+    if (loadMode === 'latest') {
+      const page = await this.viewModel.loadHistoryPage(
+        this.backendUrl,
+        this.authToken,
+        this.directory,
+        this.realSessionId,
+        undefined,
+        20,
+        'desc',
+        this.username
+      );
+      console.info('[ChatPage] loadHistory got', page.items.length, 'items (latest mode)');
+      if (page.items.length > 0) {
+        this.messages = page.items;
+        this.scrollToBottom();
+      }
+      if (hasPending) {
+        this.isLoading = true;
+        this.messages = [...this.messages, {
+          id: pending!.loadingId,
+          role: 'assistant',
+          content: '思考中...',
+          timestamp: Date.now(),
+          isLoading: true
+        }];
+        this.scrollToBottom();
+      }
+    } else {
+      this.viewModel.loadHistory(
+        this.backendUrl,
+        this.authToken,
+        this.directory,
+        this.realSessionId,
+        (msgs: DisplayMessage[]) => {
+          if (msgs.length > 0) {
+            if (this.messages.length === 0) {
+              this.messages = msgs;
+            } else {
+              this.messages = [...msgs, ...this.messages];
+            }
+            this.scrollToBottom();
           }
-          this.scrollToBottom();
-        }
-        if (hasPending) {
-          this.isLoading = true;
-          this.messages = [...this.messages, {
-            id: pending!.loadingId,
-            role: 'assistant',
-            content: '思考中...',
-            timestamp: Date.now(),
-            isLoading: true
-          }];
-          this.scrollToBottom();
-        }
-      },
-      this.username
-    );
+          if (hasPending) {
+            this.isLoading = true;
+            this.messages = [...this.messages, {
+              id: pending!.loadingId,
+              role: 'assistant',
+              content: '思考中...',
+              timestamp: Date.now(),
+              isLoading: true
+            }];
+            this.scrollToBottom();
+          }
+        },
+        this.username
+      );
+    }
   }
 
   private scrollToBottom() {

@@ -4,6 +4,7 @@ import { OpenCodeCore } from '../core/OpenCodeCore';
 export struct AboutPage {
   private core: OpenCodeCore = OpenCodeCore.getInstance();
   @State isImmersiveMode: boolean = true;
+  @State messageLoadMode: string = 'all';
   @StorageLink('aboutPanelVisible') showAbout: boolean = false;
   @StorageLink('settingsPanelVisible') showSettings: boolean = false;
   @State displayUsername: string = '';
@@ -33,6 +34,7 @@ export struct AboutPage {
     this.isRotationLocked = this.core.isRotationLocked();
     this.currentThemeName = this.core.getThemeName();
     this.isDarkMode = this.core.getDarkMode();
+    this.messageLoadMode = this.core.getMessageLoadMode();
     AppStorage.setOrCreate<boolean>('rotationLocked', this.isRotationLocked);
     AppStorage.setOrCreate<boolean>('aboutPanelVisible', false);
     AppStorage.setOrCreate<boolean>('settingsPanelVisible', false);
@@ -329,6 +331,72 @@ export struct AboutPage {
             .onClick(() => {
               this.isImmersiveMode = false;
               this.core.setImmersiveMode(false);
+            })
+          }
+          .width('100%')
+          .backgroundColor(this.themeBgCard)
+          .borderRadius(12)
+
+          Text('历史消息加载')
+            .fontSize(13)
+            .fontColor(this.themeTextTertiary)
+            .fontWeight(FontWeight.Medium)
+            .width('100%')
+            .padding({ left: 4, top: 16, bottom: 8 })
+
+          Column({ space: 0 }) {
+            Row() {
+              Column() {
+                Text('全部消息')
+                  .fontSize(16)
+                  .fontColor(this.themeTextPrimary)
+                Text('加载所有历史消息，渲染压力较大')
+                  .fontSize(12)
+                  .fontColor(this.themeTextTertiary)
+                  .margin({ top: 2 })
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+
+              if (this.messageLoadMode === 'all') {
+                Text('✓')
+                  .fontSize(18)
+                  .fontColor(this.themeAccent)
+              }
+            }
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+            .onClick(() => {
+              this.messageLoadMode = 'all';
+              this.core.setMessageLoadMode('all');
+            })
+
+            Divider().height(0.5).color(this.themeBorderSecondary).margin({ left: 16 })
+
+            Row() {
+              Column() {
+                Text('仅最新20条')
+                  .fontSize(16)
+                  .fontColor(this.themeTextPrimary)
+                Text('只加载最近20条消息，启动更快')
+                  .fontSize(12)
+                  .fontColor(this.themeTextTertiary)
+                  .margin({ top: 2 })
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+
+              if (this.messageLoadMode === 'latest') {
+                Text('✓')
+                  .fontSize(18)
+                  .fontColor(this.themeAccent)
+              }
+            }
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+            .onClick(() => {
+              this.messageLoadMode = 'latest';
+              this.core.setMessageLoadMode('latest');
             })
           }
           .width('100%')
