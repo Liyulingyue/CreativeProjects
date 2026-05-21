@@ -4,13 +4,13 @@
 
 ## 安装
 
-您可以直接将本项目以文件夹形式提交到仓库，或通过本地路径安装：
+您可以通过本地路径安装：
 
 ```bash
 pip install -e .
 ```
 
-或通过 Git 直接安装：
+或通过 Pypi 直接安装：
 
 ```bash
 pip install openaijsonwrapper
