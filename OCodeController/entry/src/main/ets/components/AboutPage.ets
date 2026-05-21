@@ -79,9 +79,10 @@ export struct AboutPage {
         Column({ space: 12 }) {
           Column({ space: 8 }) {
             Stack() {
-              Rect().fill(this.themeAccent).width(80).height(80).borderRadius(20)
-              Text('OC')
-                .fontSize(28).fontColor('#FFFFFF').fontWeight(FontWeight.Bold)
+              Image($r('app.media.colorfulO288'))
+                .width(80)
+                .height(80)
+                .borderRadius(20)
             }
             Text('O-Code Controller')
               .fontSize(22)
@@ -149,9 +150,10 @@ export struct AboutPage {
         Column({ space: 16 }) {
           Column({ space: 8 }) {
             Stack() {
-              Rect().fill(this.themeAccent).width(64).height(64).borderRadius(16)
-              Text('OC')
-                .fontSize(22).fontColor('#FFFFFF').fontWeight(FontWeight.Bold)
+              Image($r('app.media.colorfulO288'))
+                .width(64)
+                .height(64)
+                .borderRadius(16)
             }
             Text('O-Code Controller')
               .fontSize(18)
