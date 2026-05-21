@@ -137,6 +137,22 @@ export class ChatViewModel {
     return parts.join('\n\n');
   }
 
+  private toDisplayMessages(messages: OpenCodeMessage[]): DisplayMessage[] {
+    return messages.map((msg, index): DisplayMessage => {
+      let model: string | undefined;
+      if (msg.info.role === 'assistant' && msg.info.providerID && msg.info.modelID) {
+        model = `${msg.info.providerID}/${msg.info.modelID}`;
+      }
+      return {
+        id: msg.info.id || `msg-${index}`,
+        role: msg.info.role as 'user' | 'assistant',
+        content: this.formatMessage(msg),
+        timestamp: msg.info.time.created,
+        model: model
+      };
+    });
+  }
+
   async loadHistory(
     backendUrl: string,
     authToken: string,
@@ -176,26 +192,16 @@ export class ChatViewModel {
 
       if (result.responseCode === 200) {
         const messages = JSON.parse(result.result as string) as OpenCodeMessage[];
-        const displayMessages: DisplayMessage[] = messages.map((msg, index): DisplayMessage => {
-          let model: string | undefined;
-          if (msg.info.role === 'assistant' && msg.info.providerID && msg.info.modelID) {
-            model = `${msg.info.providerID}/${msg.info.modelID}`;
-          }
-          return {
-            id: msg.info.id || `msg-${index}`,
-            role: msg.info.role as 'user' | 'assistant',
-            content: this.formatMessage(msg),
-            timestamp: msg.info.time.created,
-            model: model
-          };
-        });
-        onResult(displayMessages);
+        await this.core.cacheMessages(realSessionId, messages);
+        onResult(this.toDisplayMessages(messages));
       } else {
-        onResult([]);
+        const cached = await this.core.getCachedMessages(realSessionId);
+        onResult(this.toDisplayMessages(cached));
       }
     } catch (e) {
       console.error('[ChatViewModel] Load history error:', e);
-      onResult([]);
+      const cached = await this.core.getCachedMessages(realSessionId);
+      onResult(this.toDisplayMessages(cached));
     } finally {
       this.cancelRequest();
     }
@@ -299,6 +305,9 @@ export class ChatViewModel {
           content: content || '完成',
           timestamp: Date.now()
         };
+        const cached = await this.core.getCachedMessages(realSessionId);
+        cached.push(response);
+        await this.core.cacheMessages(realSessionId, cached);
         return;
       } else {
         onError(`请求失败: HTTP ${result.responseCode}`);

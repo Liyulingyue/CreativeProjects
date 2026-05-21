@@ -98,6 +98,7 @@ export class OpenCodeCore {
   private static readonly KEY_ROTATION_LOCKED = 'rotationLocked';
   private static readonly KEY_THEME_NAME = 'themeName';
   private static readonly KEY_DARK_MODE = 'darkMode';
+  private static readonly KEY_MESSAGES = 'messages';
 
   public static readonly THEME_NAMES: string[] = [
     '极光绿', '樱花粉', '天空蓝', '日落橙', '薰衣草'
@@ -628,6 +629,31 @@ export class OpenCodeCore {
 
   public async getBackendMessages(sessionId: string): Promise<OpenCodeMessage[]> {
     return await this.apiClient.getMessages(sessionId);
+  }
+
+  public async cacheMessages(sessionId: string, messages: OpenCodeMessage[]): Promise<void> {
+    if (!this.preferences) return;
+    try {
+      const allJson = await this.preferences.get(OpenCodeCore.KEY_MESSAGES, '{}') as string;
+      const all: Record<string, OpenCodeMessage[]> = JSON.parse(allJson);
+      all[sessionId] = messages;
+      await this.preferences.put(OpenCodeCore.KEY_MESSAGES, JSON.stringify(all));
+      await this.preferences.flush();
+    } catch (err) {
+      console.error('[OpenCodeCore] Failed to cache messages:', err);
+    }
+  }
+
+  public async getCachedMessages(sessionId: string): Promise<OpenCodeMessage[]> {
+    if (!this.preferences) return [];
+    try {
+      const allJson = await this.preferences.get(OpenCodeCore.KEY_MESSAGES, '{}') as string;
+      const all: Record<string, OpenCodeMessage[]> = JSON.parse(allJson);
+      return all[sessionId] || [];
+    } catch (err) {
+      console.error('[OpenCodeCore] Failed to load cached messages:', err);
+      return [];
+    }
   }
 
   public async sendBackendPrompt(sessionId: string, text: string, model?: string): Promise<OpenCodeMessage | null> {
