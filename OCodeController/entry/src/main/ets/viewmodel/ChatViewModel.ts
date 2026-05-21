@@ -11,6 +11,14 @@ export interface DisplayMessage {
   model?: string;
 }
 
+export interface MessagePage {
+  items: DisplayMessage[];
+  cursor: {
+    previous?: string;
+    next?: string;
+  };
+}
+
 interface ToolState {
   status?: string;
   title?: string;
@@ -151,6 +159,93 @@ export class ChatViewModel {
         model: model
       };
     });
+  }
+
+  async loadHistoryPage(
+    backendUrl: string,
+    authToken: string,
+    directory: string,
+    realSessionId: string,
+    cursor?: string,
+    limit: number = 20,
+    order: string = 'desc',
+    username?: string
+  ): Promise<MessagePage> {
+    if (!backendUrl) {
+      return { items: [], cursor: {} };
+    }
+
+    if (!realSessionId) {
+      console.info('[ChatViewModel] No realSessionId yet, skipping history load');
+      return { items: [], cursor: {} };
+    }
+
+    this.cancelRequest();
+    this.currentRequest = http.createHttp();
+    let url = this.buildUrlWithDir(backendUrl, `/session/${encodeURIComponent(realSessionId)}/message`, directory);
+    const params: string[] = [];
+    if (limit) params.push(`limit=${limit}`);
+    if (order) params.push(`order=${order}`);
+    if (cursor) params.push(`cursor=${encodeURIComponent(cursor)}`);
+    if (params.length > 0) {
+      url += '?' + params.join('&');
+    }
+
+    try {
+      const result = await new Promise<http.HttpResponse>((resolve, reject) => {
+        this.currentRequest!.request(
+          url,
+          {
+            method: http.RequestMethod.GET,
+            header: this.getHeaders(backendUrl, authToken, directory, username),
+            connectTimeout: 10000,
+            readTimeout: 10000,
+          },
+          (err, data) => {
+            if (err) reject(err);
+            else resolve(data);
+          }
+        );
+      });
+
+      if (result.responseCode === 200) {
+        const raw = JSON.parse(result.result as string);
+        let messages: OpenCodeMessage[] = [];
+        let cursor: { previous?: string; next?: string } = {};
+        if (Array.isArray(raw)) {
+          messages = raw as OpenCodeMessage[];
+        } else {
+          const resp = raw as {
+            items?: OpenCodeMessage[];
+            cursor?: { previous?: string; next?: string };
+          };
+          messages = resp.items || [];
+          cursor = resp.cursor || {};
+        }
+        await this.core.cacheMessages(realSessionId, messages);
+        return {
+          items: this.toDisplayMessages(messages),
+          cursor: cursor
+        };
+      } else {
+        console.info('[ChatViewModel] Non-200 response:', result.responseCode);
+        const cached = await this.core.getCachedMessages(realSessionId);
+        return {
+          items: this.toDisplayMessages(cached),
+          cursor: {}
+        };
+      }
+    } catch (e) {
+      console.error('[ChatViewModel] Load history page error:', e);
+      const cached = await this.core.getCachedMessages(realSessionId);
+      console.info('[ChatViewModel] Cached messages count:', cached.length);
+      return {
+        items: this.toDisplayMessages(cached),
+        cursor: {}
+      };
+    } finally {
+      this.cancelRequest();
+    }
   }
 
   async loadHistory(
