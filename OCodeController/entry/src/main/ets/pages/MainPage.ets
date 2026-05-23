@@ -14,12 +14,17 @@ struct MainPage {
   onBackPress(): boolean {
     const aboutOpen = AppStorage.get<boolean>('aboutPanelVisible') ?? false;
     const settingsOpen = AppStorage.get<boolean>('settingsPanelVisible') ?? false;
+    const accountOpen = AppStorage.get<boolean>('accountPanelVisible') ?? false;
     if (aboutOpen) {
       AppStorage.setOrCreate<boolean>('aboutPanelVisible', false);
       return true;
     }
     if (settingsOpen) {
       AppStorage.setOrCreate<boolean>('settingsPanelVisible', false);
+      return true;
+    }
+    if (accountOpen) {
+      AppStorage.setOrCreate<boolean>('accountPanelVisible', false);
       return true;
     }
     return false;
