@@ -110,6 +110,17 @@ export type SseEventCallback = (event: SseEvent) => void;
 // 会话变更事件类型
 export type SessionsChangedCallback = (timestamp: number) => void;
 
+export interface ContainerInfo {
+  id: string;
+  name: string;
+  port: number | null;
+  opencode_url: string | null;
+  opencode_token: string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export class OpenCodeCore {
   private static instance: OpenCodeCore;
   private projects: OpenCodeProject[] = [];
@@ -1245,6 +1256,219 @@ export class OpenCodeCore {
         }
       );
     });
+  }
+
+  public async listContainers(): Promise<{ success: boolean; containers: ContainerInfo[]; error?: string }> {
+    const accountUrl = this.getAccountServerUrl();
+    const accountToken = this.getAccountToken();
+    if (!accountUrl || !accountToken) {
+      return { success: false, containers: [], error: '未配置账户服务器或未登录' };
+    }
+
+    const url = `${accountUrl.replace(/\/+$/, '')}/api/containers`;
+    return new Promise((resolve) => {
+      const req = http.createHttp();
+      req.request(
+        url,
+        {
+          method: http.RequestMethod.GET,
+          header: { 'Authorization': 'Bearer ' + accountToken },
+          connectTimeout: 10000,
+          readTimeout: 10000,
+        },
+        (err, data) => {
+          req.destroy();
+          if (err) {
+            resolve({ success: false, containers: [], error: '网络错误: ' + String(err) });
+            return;
+          }
+          if (data.responseCode === 200) {
+            try {
+              const containers = JSON.parse(data.result as string) as ContainerInfo[];
+              resolve({ success: true, containers });
+            } catch {
+              resolve({ success: false, containers: [], error: '解析响应失败' });
+            }
+          } else if (data.responseCode === 401) {
+            resolve({ success: false, containers: [], error: '未授权，请重新登录' });
+          } else {
+            resolve({ success: false, containers: [], error: `查询失败 (${data.responseCode})` });
+          }
+        }
+      );
+    });
+  }
+
+  public async createContainer(name: string): Promise<{ success: boolean; container: ContainerInfo | null; error?: string }> {
+    const accountUrl = this.getAccountServerUrl();
+    const accountToken = this.getAccountToken();
+    if (!accountUrl || !accountToken) {
+      return { success: false, container: null, error: '未配置账户服务器或未登录' };
+    }
+
+    interface CreateBody {
+      name: string;
+    }
+    const body: CreateBody = { name: name };
+
+    const url = `${accountUrl.replace(/\/+$/, '')}/api/containers`;
+    return new Promise((resolve) => {
+      const req = http.createHttp();
+      req.request(
+        url,
+        {
+          method: http.RequestMethod.POST,
+          header: { 'Authorization': 'Bearer ' + accountToken, 'Content-Type': 'application/json' },
+          extraData: JSON.stringify(body),
+          connectTimeout: 15000,
+          readTimeout: 15000,
+        },
+        (err, data) => {
+          req.destroy();
+          if (err) {
+            resolve({ success: false, container: null, error: '网络错误: ' + String(err) });
+            return;
+          }
+          if (data.responseCode === 200) {
+            try {
+              const container = JSON.parse(data.result as string) as ContainerInfo;
+              resolve({ success: true, container });
+            } catch {
+              resolve({ success: false, container: null, error: '解析响应失败' });
+            }
+          } else if (data.responseCode === 401) {
+            resolve({ success: false, container: null, error: '未授权，请重新登录' });
+          } else if (data.responseCode === 403) {
+            try {
+              const errBody = JSON.parse(data.result as string) as { detail?: string };
+              resolve({ success: false, container: null, error: errBody.detail || '权限不足' });
+            } catch {
+              resolve({ success: false, container: null, error: '权限不足' });
+            }
+          } else {
+            resolve({ success: false, container: null, error: `创建失败 (${data.responseCode})` });
+          }
+        }
+      );
+    });
+  }
+
+  public async startContainer(containerId: string): Promise<{ success: boolean; container: ContainerInfo | null; error?: string }> {
+    const accountUrl = this.getAccountServerUrl();
+    const accountToken = this.getAccountToken();
+    if (!accountUrl || !accountToken) {
+      return { success: false, container: null, error: '未配置账户服务器或未登录' };
+    }
+
+    const url = `${accountUrl.replace(/\/+$/, '')}/api/containers/${containerId}/start`;
+    return new Promise((resolve) => {
+      const req = http.createHttp();
+      req.request(
+        url,
+        {
+          method: http.RequestMethod.POST,
+          header: { 'Authorization': 'Bearer ' + accountToken },
+          connectTimeout: 60000,
+          readTimeout: 60000,
+        },
+        (err, data) => {
+          req.destroy();
+          if (err) {
+            resolve({ success: false, container: null, error: '网络错误: ' + String(err) });
+            return;
+          }
+          if (data.responseCode === 200) {
+            try {
+              const container = JSON.parse(data.result as string) as ContainerInfo;
+              resolve({ success: true, container });
+            } catch {
+              resolve({ success: false, container: null, error: '解析响应失败' });
+            }
+          } else if (data.responseCode === 401) {
+            resolve({ success: false, container: null, error: '未授权，请重新登录' });
+          } else {
+            resolve({ success: false, container: null, error: `启动失败 (${data.responseCode})` });
+          }
+        }
+      );
+    });
+  }
+
+  public async stopContainer(containerId: string): Promise<{ success: boolean; error?: string }> {
+    const accountUrl = this.getAccountServerUrl();
+    const accountToken = this.getAccountToken();
+    if (!accountUrl || !accountToken) {
+      return { success: false, error: '未配置账户服务器或未登录' };
+    }
+
+    const url = `${accountUrl.replace(/\/+$/, '')}/api/containers/${containerId}/stop`;
+    return new Promise((resolve) => {
+      const req = http.createHttp();
+      req.request(
+        url,
+        {
+          method: http.RequestMethod.POST,
+          header: { 'Authorization': 'Bearer ' + accountToken },
+          connectTimeout: 30000,
+          readTimeout: 30000,
+        },
+        (err, data) => {
+          req.destroy();
+          if (err) {
+            resolve({ success: false, error: '网络错误: ' + String(err) });
+            return;
+          }
+          if (data.responseCode === 200) {
+            resolve({ success: true });
+          } else if (data.responseCode === 401) {
+            resolve({ success: false, error: '未授权，请重新登录' });
+          } else {
+            resolve({ success: false, error: `停止失败 (${data.responseCode})` });
+          }
+        }
+      );
+    });
+  }
+
+  public async deleteContainer(containerId: string): Promise<{ success: boolean; error?: string }> {
+    const accountUrl = this.getAccountServerUrl();
+    const accountToken = this.getAccountToken();
+    if (!accountUrl || !accountToken) {
+      return { success: false, error: '未配置账户服务器或未登录' };
+    }
+
+    const url = `${accountUrl.replace(/\/+$/, '')}/api/containers/${containerId}`;
+    return new Promise((resolve) => {
+      const req = http.createHttp();
+      req.request(
+        url,
+        {
+          method: http.RequestMethod.DELETE,
+          header: { 'Authorization': 'Bearer ' + accountToken },
+          connectTimeout: 30000,
+          readTimeout: 30000,
+        },
+        (err, data) => {
+          req.destroy();
+          if (err) {
+            resolve({ success: false, error: '网络错误: ' + String(err) });
+            return;
+          }
+          if (data.responseCode === 200) {
+            resolve({ success: true });
+          } else if (data.responseCode === 401) {
+            resolve({ success: false, error: '未授权，请重新登录' });
+          } else {
+            resolve({ success: false, error: `删除失败 (${data.responseCode})` });
+          }
+        }
+      );
+    });
+  }
+
+  public async addBackendFromContainer(opencodeUrl: string, opencodeToken: string): Promise<void> {
+    const name: string = '远程后端 ' + new Date().toLocaleString();
+    await this.addBackend(opencodeUrl, '', opencodeToken, name);
   }
 
 }

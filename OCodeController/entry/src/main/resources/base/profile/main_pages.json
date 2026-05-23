@@ -4,6 +4,7 @@
     "pages/BackendDetail",
     "pages/BackendWebView",
     "pages/SessionDetail",
-    "pages/ChatPage"
+    "pages/ChatPage",
+    "pages/ContainerList"
   ]
 }

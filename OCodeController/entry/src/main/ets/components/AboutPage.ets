@@ -1,5 +1,6 @@
 import { OpenCodeCore } from '../core/OpenCodeCore';
 import http from '@ohos.net.http';
+import router from '@ohos.router';
 
 interface UserInfo {
   id: string;
@@ -337,6 +338,8 @@ export struct AboutPage {
             this.ListItem('关于', '了解项目介绍与使用方法', () => { this.showAbout = true; })
             Divider().height(0.5).color(this.themeBorderSecondary).margin({ left: 16 })
             this.ListItem('账户', '登录或注册后端账户', () => { this.showAccount = true; this.loadAccountInfo(); })
+            Divider().height(0.5).color(this.themeBorderSecondary).margin({ left: 16 })
+            this.ListItem('远程环境', '管理远程后端容器', () => { router.pushUrl({ url: 'pages/ContainerList' }); })
             Divider().height(0.5).color(this.themeBorderSecondary).margin({ left: 16 })
             this.ListItem('设置', this.isImmersiveMode ? '当前: 沉浸模式' : '当前: 完整模式', () => { this.showSettings = true; })
           }
