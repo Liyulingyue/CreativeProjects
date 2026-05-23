@@ -690,9 +690,9 @@ export struct AboutPage {
           .padding({ top: 8 })
       }
 
-      Row({ space: 12 }) {
-        Button('保存当前配置')
-          .width('50%')
+      Column({ space: 8 }) {
+        Button('保存当前配置到服务器')
+          .width('100%')
           .height(44)
           .fontSize(14)
           .fontColor('#FFFFFF')
@@ -701,8 +701,8 @@ export struct AboutPage {
           .enabled(!this.syncLoading)
           .onClick(() => this.doSaveConfig())
 
-        Button('同步配置')
-          .width('50%')
+        Button('获取服务器配置到本机')
+          .width('100%')
           .height(44)
           .fontSize(14)
           .fontColor('#FFFFFF')
@@ -712,7 +712,6 @@ export struct AboutPage {
           .onClick(() => this.doSyncConfig())
       }
       .width('100%')
-      .padding({ top: 8 })
 
       Button('退出登录')
         .width('100%')
