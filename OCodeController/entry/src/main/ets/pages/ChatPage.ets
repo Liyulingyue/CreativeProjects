@@ -106,10 +106,11 @@ struct ChatPage {
       this.core.setCurrentSession(this.realSessionId);
     }
 
-    this.core.setSseEventCallback((event: SseEvent) => this.handleSseEvent(event));
-    if (this.realSessionId) {
-      this.core.startSse(this.sessionId);
-    }
+    // TODO: SSE 已禁用，避免干扰 HTTP 响应
+    // this.core.setSseEventCallback((event: SseEvent) => this.handleSseEvent(event));
+    // if (this.realSessionId) {
+    //   this.core.startSse(this.sessionId);
+    // }
 
     this.isImmersiveMode = this.core.getImmersiveMode();
     this.displayUsername = this.core.getDisplayUsername() || 'User';
@@ -119,7 +120,8 @@ struct ChatPage {
 
   aboutToDisappear() {
     this.core.markCurrentProjectLeft();
-    this.core.stopSse();
+    // TODO: SSE 已禁用
+    // this.core.stopSse();
     AppStorage.setOrCreate<string>('refreshSessionsNow', Date.now().toString());
   }
 
@@ -563,7 +565,8 @@ struct ChatPage {
           this.core.setCurrentSession(resp.id);
           await this.core.updateRemoteSessionId(this.sessionId, resp.id);
           console.info('[ChatPage] Backend session created and linked:', this.realSessionId);
-          this.core.startSse(this.sessionId);
+          // TODO: SSE 已禁用
+          // this.core.startSse(this.sessionId);
           this.loadHistory();
         } else {
           throw new Error('Failed to create backend session');
@@ -580,7 +583,8 @@ struct ChatPage {
         return;
       }
     } else {
-      this.core.startSse(this.sessionId);
+      // TODO: SSE 已禁用
+      // this.core.startSse(this.sessionId);
     }
 
     this.messages = [...this.messages, {
