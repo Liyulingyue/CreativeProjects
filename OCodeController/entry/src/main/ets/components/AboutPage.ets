@@ -1,4 +1,19 @@
 import { OpenCodeCore } from '../core/OpenCodeCore';
+import http from '@ohos.net.http';
+
+interface UserInfo {
+  id: string;
+  username: string;
+  created_at: string;
+}
+
+interface TokenData {
+  access_token: string;
+}
+
+interface RegisterErrorBody {
+  detail?: string;
+}
 
 @Component
 export struct AboutPage {
@@ -7,6 +22,7 @@ export struct AboutPage {
   @State messageLoadMode: string = 'all';
   @StorageLink('aboutPanelVisible') showAbout: boolean = false;
   @StorageLink('settingsPanelVisible') showSettings: boolean = false;
+  @StorageLink('accountPanelVisible') showAccount: boolean = false;
   @State displayUsername: string = '';
   @State isRotationLocked: boolean = false;
   @State currentThemeName: string = '极光绿';
@@ -17,6 +33,7 @@ export struct AboutPage {
   @StorageLink('themeTextPrimary') themeTextPrimary: string = '#333333';
   @StorageLink('themeTextSecondary') themeTextSecondary: string = '#888888';
   @StorageLink('themeTextTertiary') themeTextTertiary: string = '#999999';
+  @StorageLink('themeTextMuted') themeTextMuted: string = '#BBBBBB';
   @StorageLink('themeBorderPrimary') themeBorderPrimary: string = '#E0E0E0';
   @StorageLink('themeBorderSecondary') themeBorderSecondary: string = '#F0F0F0';
   @StorageLink('themeLink') themeLink: string = '#007DFF';
@@ -25,8 +42,24 @@ export struct AboutPage {
   @StorageLink('themeStatusWorking') themeStatusWorking: string = '#2196F3';
   @StorageLink('themeStatusUnread') themeStatusUnread: string = '#FF3B30';
   @StorageLink('themeBgSecondary') themeBgSecondary: string = '#EDEDED';
-  @StorageLink('themeTextMuted') themeTextMuted: string = '#BBBBBB';
-  @StorageLink('themeChatUserBg') themeChatUserBg: string = '#95EC69';
+
+  @State accountServerUrl: string = '';
+  @State accountToken: string = '';
+  @State isLoggedIn: boolean = false;
+  @State currentUser: UserInfo | null = null;
+  @State isLoading: boolean = false;
+  @State errorMsg: string = '';
+  @State loginUsername: string = '';
+  @State loginPassword: string = '';
+  @State registerUsername: string = '';
+  @State registerPassword: string = '';
+  @State registerConfirm: string = '';
+  @State registerError: string = '';
+  @State activeForm: 'login' | 'register' = 'login';
+  @State showServerConfig: boolean = false;
+  @State configServerUrl: string = '';
+  @State syncLoading: boolean = false;
+  @State syncMsg: string = '';
 
   aboutToAppear() {
     this.isImmersiveMode = this.core.getImmersiveMode();
@@ -38,7 +71,8 @@ export struct AboutPage {
     AppStorage.setOrCreate<boolean>('rotationLocked', this.isRotationLocked);
     AppStorage.setOrCreate<boolean>('aboutPanelVisible', false);
     AppStorage.setOrCreate<boolean>('settingsPanelVisible', false);
-    AppStorage.setOrCreate<boolean>('isDarkMode', this.isDarkMode);
+    AppStorage.setOrCreate<boolean>('accountPanelVisible', false);
+    this.loadAccountInfo();
   }
 
   private openUrl(url: string): void {
@@ -48,6 +82,208 @@ export struct AboutPage {
   private toggleMode() {
     this.isImmersiveMode = !this.isImmersiveMode;
     AppStorage.setOrCreate<boolean>('immersiveMode', this.isImmersiveMode);
+  }
+
+  private loadAccountInfo(): void {
+    this.accountServerUrl = this.core.getAccountServerUrl();
+    this.accountToken = this.core.getAccountToken();
+    if (this.accountToken) {
+      this.loadCurrentUser();
+    }
+  }
+
+  private async fetchMe(): Promise<UserInfo | null> {
+    if (!this.accountServerUrl || !this.accountToken) return null;
+
+    const url = `${this.accountServerUrl.replace(/\/+$/, '')}/api/auth/me`;
+    return new Promise((resolve) => {
+      const req = http.createHttp();
+      req.request(
+        url,
+        {
+          method: http.RequestMethod.GET,
+          header: { 'Authorization': 'Bearer ' + this.accountToken },
+          connectTimeout: 10000,
+          readTimeout: 10000
+        },
+        (err, data) => {
+          req.destroy();
+          if (err || data.responseCode !== 200) {
+            resolve(null);
+            return;
+          }
+          try {
+            resolve(JSON.parse(data.result as string) as UserInfo);
+          } catch {
+            resolve(null);
+          }
+        }
+      );
+    });
+  }
+
+  private async doLogin(): Promise<void> {
+    if (!this.loginUsername || !this.loginPassword) {
+      this.errorMsg = '请填写用户名和密码';
+      return;
+    }
+    if (!this.accountServerUrl) {
+      this.errorMsg = '请先配置账户服务器地址';
+      return;
+    }
+    this.isLoading = true;
+    this.errorMsg = '';
+
+    const url = `${this.accountServerUrl.replace(/\/+$/, '')}/api/auth/login`;
+    const bodyStr = `username=${encodeURIComponent(this.loginUsername)}&password=${encodeURIComponent(this.loginPassword)}`;
+
+    const req = http.createHttp();
+    req.request(
+      url,
+      {
+        method: http.RequestMethod.POST,
+        header: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        extraData: bodyStr,
+        connectTimeout: 10000,
+        readTimeout: 10000
+      },
+      (err, data) => {
+        req.destroy();
+        this.isLoading = false;
+        if (err) {
+          this.errorMsg = '网络错误: ' + String(err);
+          return;
+        }
+        if (data.responseCode === 200) {
+          try {
+            const tokenData = JSON.parse(data.result as string) as TokenData;
+            this.core.setAccountToken(tokenData.access_token);
+            this.accountToken = tokenData.access_token;
+            this.isLoggedIn = true;
+            this.loadCurrentUser();
+          } catch {
+            this.errorMsg = '响应解析失败';
+          }
+        } else if (data.responseCode === 401) {
+          this.errorMsg = '用户名或密码错误';
+        } else {
+          this.errorMsg = `登录失败 (${data.responseCode})`;
+        }
+      }
+    );
+  }
+
+  private async doRegister(): Promise<void> {
+    if (!this.registerUsername || !this.registerPassword) {
+      this.registerError = '请填写所有字段';
+      return;
+    }
+    if (this.registerPassword !== this.registerConfirm) {
+      this.registerError = '两次密码不一致';
+      return;
+    }
+    if (this.registerPassword.length < 6) {
+      this.registerError = '密码至少6位';
+      return;
+    }
+    if (!this.accountServerUrl) {
+      this.registerError = '请先配置账户服务器地址';
+      return;
+    }
+    this.isLoading = true;
+    this.registerError = '';
+
+    const url = `${this.accountServerUrl.replace(/\/+$/, '')}/api/auth/register`;
+    const req = http.createHttp();
+    req.request(
+      url,
+      {
+        method: http.RequestMethod.POST,
+        header: { 'Content-Type': 'application/json' },
+        extraData: JSON.stringify({ username: this.registerUsername, password: this.registerPassword }),
+        connectTimeout: 10000,
+        readTimeout: 10000
+      },
+      (err, data) => {
+        req.destroy();
+        this.isLoading = false;
+        if (err) {
+          this.registerError = '网络错误: ' + String(err);
+          return;
+        }
+        if (data.responseCode === 200) {
+          this.activeForm = 'login';
+          this.loginUsername = this.registerUsername;
+          this.loginPassword = '';
+          this.registerUsername = '';
+          this.registerPassword = '';
+          this.registerConfirm = '';
+          this.registerError = '';
+        } else if (data.responseCode === 400) {
+          try {
+            const body = JSON.parse(data.result as string) as RegisterErrorBody;
+            this.registerError = body.detail || '注册失败';
+          } catch {
+            this.registerError = '用户名已存在';
+          }
+        } else {
+          this.registerError = `注册失败 (${data.responseCode})`;
+        }
+      }
+    );
+  }
+
+  private async loadCurrentUser(): Promise<void> {
+    const user = await this.fetchMe();
+    if (user) {
+      this.currentUser = user;
+      this.isLoggedIn = true;
+    }
+  }
+
+  private async logout(): Promise<void> {
+    this.isLoggedIn = false;
+    this.currentUser = null;
+    this.loginUsername = '';
+    this.loginPassword = '';
+    await this.core.setAccountToken('');
+    this.accountToken = '';
+  }
+
+  private async saveServerConfig(): Promise<void> {
+    await this.core.setAccountServerUrl(this.configServerUrl.trim());
+    this.accountServerUrl = this.configServerUrl.trim();
+    this.showServerConfig = false;
+    this.isLoggedIn = false;
+    this.currentUser = null;
+    this.accountToken = '';
+    await this.core.setAccountToken('');
+  }
+
+  private async doSaveConfig(): Promise<void> {
+    this.syncLoading = true;
+    this.syncMsg = '';
+    const result = await this.core.saveCurrentConfigToServer();
+    this.syncLoading = false;
+    if (result.success) {
+      this.syncMsg = '保存成功';
+    } else {
+      this.syncMsg = result.error || '保存失败';
+    }
+    setTimeout(() => { this.syncMsg = ''; }, 3000);
+  }
+
+  private async doSyncConfig(): Promise<void> {
+    this.syncLoading = true;
+    this.syncMsg = '';
+    const result = await this.core.syncConfigFromServer();
+    this.syncLoading = false;
+    if (result.success) {
+      this.syncMsg = `同步成功：${result.backends} 个后端，${result.sessions} 个会话`;
+    } else {
+      this.syncMsg = result.error || '同步失败';
+    }
+    setTimeout(() => { this.syncMsg = ''; }, 3000);
   }
 
   @Builder
@@ -100,6 +336,8 @@ export struct AboutPage {
           Column({ space: 0 }) {
             this.ListItem('关于', '了解项目介绍与使用方法', () => { this.showAbout = true; })
             Divider().height(0.5).color(this.themeBorderSecondary).margin({ left: 16 })
+            this.ListItem('账户', '登录或注册后端账户', () => { this.showAccount = true; this.loadAccountInfo(); })
+            Divider().height(0.5).color(this.themeBorderSecondary).margin({ left: 16 })
             this.ListItem('设置', this.isImmersiveMode ? '当前: 沉浸模式' : '当前: 完整模式', () => { this.showSettings = true; })
           }
           .width('100%')
@@ -119,6 +357,10 @@ export struct AboutPage {
 
       if (this.showSettings) {
         this.buildSettingsPanel()
+      }
+
+      if (this.showAccount) {
+        this.buildAccountPanel()
       }
     }
     .width('100%')
@@ -244,6 +486,388 @@ export struct AboutPage {
     .width('100%')
     .height('100%')
     .backgroundColor(this.themeBgPrimary)
+  }
+
+  @Builder
+  buildAccountPanel() {
+    Stack() {
+      Column() {
+        Column() {
+          Row() {
+            Text('<')
+              .fontSize(22)
+              .fontColor(this.themeAccent)
+              .padding({ left: 4, right: 12 })
+              .onClick(() => { this.showAccount = false; })
+            Text('账户')
+              .fontSize(18)
+              .fontWeight(FontWeight.Bold)
+              .layoutWeight(1)
+            Text('···')
+              .fontSize(22)
+              .fontColor(this.themeTextSecondary)
+              .padding({ left: 12, right: 4 })
+              .onClick(() => {
+                this.configServerUrl = this.accountServerUrl;
+                this.showServerConfig = true;
+              })
+          }
+          .width('100%')
+          .padding({ left: 20, right: 20, top: 16, bottom: 12 })
+
+          Divider().height(0.5).color(this.themeBorderPrimary)
+        }
+        .width('100%')
+        .backgroundColor(this.themeBgCard)
+
+        Scroll() {
+          Column({ space: 12 }) {
+            Column({ space: 8 }) {
+              Stack({ alignContent: Alignment.Center }) {
+                Circle().width(80).height(80).fill(this.themeAccent + '22')
+                Text('👤').fontSize(40)
+              }
+              Text('账户')
+                .fontSize(22)
+                .fontWeight(FontWeight.Bold)
+              Text(this.isLoggedIn && this.currentUser ? `已登录: ${this.currentUser.username}` : '连接账户服务器')
+                .fontSize(13)
+                .fontColor(this.themeTextTertiary)
+            }
+            .width('100%')
+            .padding({ top: 24, bottom: 16 })
+            .alignItems(HorizontalAlign.Center)
+
+            if (!this.accountServerUrl) {
+              Column({ space: 8 }) {
+                Text('⚠️ 未配置账户服务器')
+                  .fontSize(16)
+                  .fontColor(this.themeTextSecondary)
+                Text('点击右上角 ··· 配置服务器地址')
+                  .fontSize(13)
+                  .fontColor(this.themeTextTertiary)
+              }
+              .width('100%')
+              .padding(24)
+              .alignItems(HorizontalAlign.Center)
+              .backgroundColor(this.themeBgCard)
+              .borderRadius(12)
+            } else if (this.isLoggedIn && this.currentUser) {
+              this.buildLoggedInView()
+            } else {
+              this.buildAuthForm()
+            }
+          }
+          .width('100%')
+          .padding({ left: 16, right: 16, top: 16, bottom: 32 })
+        }
+        .layoutWeight(1)
+      }
+      .width('100%')
+      .height('100%')
+      .backgroundColor(this.themeBgPrimary)
+
+      if (this.showServerConfig) {
+        Column() {
+          Column() {
+            Row() {
+              Text('取消')
+                .fontSize(16)
+                .fontColor(this.themeTextSecondary)
+                .onClick(() => { this.showServerConfig = false; })
+              Text('服务器配置')
+                .fontSize(18)
+                .fontWeight(FontWeight.Bold)
+                .layoutWeight(1)
+                .textAlign(TextAlign.Center)
+              Text('保存')
+                .fontSize(16)
+                .fontColor(this.themeAccent)
+                .onClick(() => this.saveServerConfig())
+            }
+            .width('100%')
+            .padding({ left: 20, right: 20, top: 16, bottom: 12 })
+
+            Divider().height(0.5).color(this.themeBorderPrimary)
+          }
+          .width('100%')
+          .backgroundColor(this.themeBgCard)
+
+          Column({ space: 16 }) {
+            Text('账户服务器地址')
+              .fontSize(13)
+              .fontColor(this.themeTextTertiary)
+              .fontWeight(FontWeight.Medium)
+              .width('100%')
+              .padding({ left: 4 })
+
+            TextInput({ placeholder: 'http://localhost:4096', text: this.configServerUrl })
+              .width('100%')
+              .height(48)
+              .backgroundColor(this.themeBgCard)
+              .borderRadius(12)
+              .padding({ left: 16, right: 16 })
+              .onChange((v: string) => { this.configServerUrl = v; })
+          }
+          .width('100%')
+          .padding(20)
+        }
+        .width('100%')
+        .height('100%')
+        .backgroundColor(this.themeBgPrimary)
+      }
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  @Builder
+  buildLoggedInView() {
+    Column({ space: 12 }) {
+      Column({ space: 8 }) {
+        Text('当前用户')
+          .fontSize(13)
+          .fontColor(this.themeTextTertiary)
+          .fontWeight(FontWeight.Medium)
+          .width('100%')
+
+        Row() {
+          Stack({ alignContent: Alignment.Center }) {
+            Circle().width(48).height(48).fill(this.themeAccent + '22')
+            Text((this.currentUser?.username ?? 'U').charAt(0).toUpperCase())
+              .fontSize(22)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(this.themeAccent)
+          }
+
+          Column({ space: 4 }) {
+            Text(this.currentUser?.username ?? '')
+              .fontSize(18)
+              .fontColor(this.themeTextPrimary)
+              .fontWeight(FontWeight.Medium)
+            Text(`ID: ${this.currentUser?.id ?? ''}`)
+              .fontSize(12)
+              .fontColor(this.themeTextTertiary)
+          }
+          .alignItems(HorizontalAlign.Start)
+          .layoutWeight(1)
+          .margin({ left: 12 })
+        }
+        .width('100%')
+        .padding(16)
+        .backgroundColor(this.themeBgCard)
+        .borderRadius(12)
+      }
+      .width('100%')
+
+      Column({ space: 0 }) {
+        Row() {
+          Column() {
+            Text('账户服务器')
+              .fontSize(16)
+              .fontColor(this.themeTextPrimary)
+            Text(this.accountServerUrl)
+              .fontSize(12)
+              .fontColor(this.themeTextTertiary)
+              .margin({ top: 2 })
+          }
+          .alignItems(HorizontalAlign.Start)
+          .layoutWeight(1)
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+      }
+      .width('100%')
+      .backgroundColor(this.themeBgCard)
+      .borderRadius(12)
+
+      if (this.syncMsg) {
+        Text(this.syncMsg)
+          .fontSize(13)
+          .fontColor(this.syncMsg.includes('成功') ? this.themeAccent : '#FF3B30')
+          .width('100%')
+          .textAlign(TextAlign.Center)
+          .padding({ top: 8 })
+      }
+
+      Row({ space: 12 }) {
+        Button('保存当前配置')
+          .width('50%')
+          .height(44)
+          .fontSize(14)
+          .fontColor('#FFFFFF')
+          .backgroundColor(this.themeAccent)
+          .borderRadius(12)
+          .enabled(!this.syncLoading)
+          .onClick(() => this.doSaveConfig())
+
+        Button('同步配置')
+          .width('50%')
+          .height(44)
+          .fontSize(14)
+          .fontColor('#FFFFFF')
+          .backgroundColor(this.themeConfig)
+          .borderRadius(12)
+          .enabled(!this.syncLoading)
+          .onClick(() => this.doSyncConfig())
+      }
+      .width('100%')
+      .padding({ top: 8 })
+
+      Button('退出登录')
+        .width('100%')
+        .height(48)
+        .fontSize(16)
+        .fontColor('#FFFFFF')
+        .backgroundColor('#FF3B30')
+        .borderRadius(12)
+        .onClick(() => this.logout())
+    }
+    .width('100%')
+  }
+
+  @Builder
+  buildAuthForm() {
+    Column({ space: 12 }) {
+      if (this.activeForm === 'login') {
+        this.buildLoginForm()
+      } else {
+        this.buildRegisterForm()
+      }
+    }
+    .width('100%')
+  }
+
+  @Builder
+  buildLoginForm() {
+    Column({ space: 12 }) {
+      Text('登录')
+        .fontSize(13)
+        .fontColor(this.themeTextTertiary)
+        .fontWeight(FontWeight.Medium)
+        .width('100%')
+        .padding({ left: 4 })
+
+      Column({ space: 0 }) {
+        TextInput({ placeholder: '用户名', text: this.loginUsername })
+          .width('100%')
+          .height(48)
+          .backgroundColor(this.themeBgCard)
+          .borderRadius(0)
+          .border({ width: { bottom: 0.5 }, color: this.themeBorderSecondary })
+          .onChange((v: string) => { this.loginUsername = v; })
+
+        TextInput({ placeholder: '密码', text: this.loginPassword })
+          .width('100%')
+          .height(48)
+          .backgroundColor(this.themeBgCard)
+          .borderRadius(0)
+          .type(InputType.Password)
+          .onChange((v: string) => { this.loginPassword = v; })
+      }
+      .width('100%')
+      .backgroundColor(this.themeBgCard)
+      .borderRadius(12)
+
+      if (this.errorMsg) {
+        Text(this.errorMsg)
+          .fontSize(13)
+          .fontColor('#FF3B30')
+          .width('100%')
+          .padding({ left: 4 })
+      }
+
+      Button(this.isLoading ? '登录中...' : '登录')
+        .width('100%')
+        .height(48)
+        .fontSize(16)
+        .fontColor('#FFFFFF')
+        .backgroundColor(this.themeAccent)
+        .borderRadius(12)
+        .enabled(!this.isLoading)
+        .onClick(() => this.doLogin())
+
+      Text('没有账号？')
+        .fontSize(13)
+        .fontColor(this.themeTextTertiary)
+        .width('100%')
+        .textAlign(TextAlign.Center)
+        .onClick(() => {
+          this.activeForm = 'register';
+          this.errorMsg = '';
+        })
+    }
+    .width('100%')
+  }
+
+  @Builder
+  buildRegisterForm() {
+    Column({ space: 12 }) {
+      Text('注册')
+        .fontSize(13)
+        .fontColor(this.themeTextTertiary)
+        .fontWeight(FontWeight.Medium)
+        .width('100%')
+        .padding({ left: 4 })
+
+      Column({ space: 0 }) {
+        TextInput({ placeholder: '用户名', text: this.registerUsername })
+          .width('100%')
+          .height(48)
+          .backgroundColor(this.themeBgCard)
+          .borderRadius(0)
+          .border({ width: { bottom: 0.5 }, color: this.themeBorderSecondary })
+          .onChange((v: string) => { this.registerUsername = v; })
+
+        TextInput({ placeholder: '密码（至少6位）', text: this.registerPassword })
+          .width('100%')
+          .height(48)
+          .backgroundColor(this.themeBgCard)
+          .borderRadius(0)
+          .type(InputType.Password)
+          .onChange((v: string) => { this.registerPassword = v; })
+
+        TextInput({ placeholder: '确认密码', text: this.registerConfirm })
+          .width('100%')
+          .height(48)
+          .backgroundColor(this.themeBgCard)
+          .borderRadius(0)
+          .type(InputType.Password)
+          .onChange((v: string) => { this.registerConfirm = v; })
+      }
+      .width('100%')
+      .backgroundColor(this.themeBgCard)
+      .borderRadius(12)
+
+      if (this.registerError) {
+        Text(this.registerError)
+          .fontSize(13)
+          .fontColor('#FF3B30')
+          .width('100%')
+          .padding({ left: 4 })
+      }
+
+      Button(this.isLoading ? '注册中...' : '注册')
+        .width('100%')
+        .height(48)
+        .fontSize(16)
+        .fontColor('#FFFFFF')
+        .backgroundColor(this.themeAccent)
+        .borderRadius(12)
+        .enabled(!this.isLoading)
+        .onClick(() => this.doRegister())
+
+      Text('已有账号？')
+        .fontSize(13)
+        .fontColor(this.themeTextTertiary)
+        .width('100%')
+        .textAlign(TextAlign.Center)
+        .onClick(() => {
+          this.activeForm = 'login';
+          this.registerError = '';
+        })
+    }
+    .width('100%')
   }
 
   @Builder

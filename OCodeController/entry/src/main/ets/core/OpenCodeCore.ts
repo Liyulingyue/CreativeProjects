@@ -43,6 +43,35 @@ export interface OpenCodeBackend {
   notes: string;
 }
 
+export interface SyncBackend {
+  id: string;
+  backend_url: string;
+  username: string | null;
+  auth_token: string | null;
+  remark: string | null;
+}
+
+export interface SyncSession {
+  id: string;
+  title: string | null;
+  backend_url: string | null;
+  backend_id: string | null;
+  directory: string | null;
+  remote_session_id: string | null;
+  preferred_model: string | null;
+  last_access: string | null;
+}
+
+export interface SyncRequest {
+  backends: SyncBackend[];
+  sessions: SyncSession[];
+}
+
+export interface SyncResponse {
+  backends: SyncBackend[];
+  sessions: SyncSession[];
+}
+
 export interface PendingMessage {
   projectId: string;
   sessionId: string;
@@ -100,6 +129,8 @@ export class OpenCodeCore {
   private static readonly KEY_DARK_MODE = 'darkMode';
   private static readonly KEY_MESSAGES = 'messages';
   private static readonly KEY_MESSAGE_LOAD_MODE = 'messageLoadMode';
+  private static readonly KEY_ACCOUNT_SERVER_URL = 'accountServerUrl';
+  private static readonly KEY_ACCOUNT_TOKEN = 'accountToken';
 
   public static readonly THEME_NAMES: string[] = [
     '极光绿', '樱花粉', '天空蓝', '日落橙', '薰衣草'
@@ -305,6 +336,44 @@ export class OpenCodeCore {
       await this.preferences.flush();
     } catch (err) {
       console.error('[OpenCodeCore] Failed to save messageLoadMode:', err);
+    }
+  }
+
+  public getAccountServerUrl(): string {
+    if (!this.preferences) return '';
+    try {
+      return this.preferences.getSync(OpenCodeCore.KEY_ACCOUNT_SERVER_URL, '') as string;
+    } catch {
+      return '';
+    }
+  }
+
+  public async setAccountServerUrl(value: string): Promise<void> {
+    if (!this.preferences) return;
+    try {
+      await this.preferences.put(OpenCodeCore.KEY_ACCOUNT_SERVER_URL, value);
+      await this.preferences.flush();
+    } catch (err) {
+      console.error('[OpenCodeCore] Failed to save accountServerUrl:', err);
+    }
+  }
+
+  public getAccountToken(): string {
+    if (!this.preferences) return '';
+    try {
+      return this.preferences.getSync(OpenCodeCore.KEY_ACCOUNT_TOKEN, '') as string;
+    } catch {
+      return '';
+    }
+  }
+
+  public async setAccountToken(value: string): Promise<void> {
+    if (!this.preferences) return;
+    try {
+      await this.preferences.put(OpenCodeCore.KEY_ACCOUNT_TOKEN, value);
+      await this.preferences.flush();
+    } catch (err) {
+      console.error('[OpenCodeCore] Failed to save accountToken:', err);
     }
   }
 
@@ -1027,6 +1096,155 @@ export class OpenCodeCore {
       result += isNaN(b3) ? '=' : chars.charAt(b3 & 63);
     }
     return result;
+  }
+
+  public async saveCurrentConfigToServer(): Promise<{ success: boolean; error?: string }> {
+    const accountUrl = this.getAccountServerUrl();
+    const accountToken = this.getAccountToken();
+    if (!accountUrl || !accountToken) {
+      return { success: false, error: '未配置账户服务器或未登录' };
+    }
+
+    const syncBackends: SyncBackend[] = this.backends.map(b => ({
+      id: b.id,
+      backend_url: b.url,
+      username: b.username || null,
+      auth_token: b.authToken || null,
+      remark: b.notes || null,
+    }));
+
+    const syncSessions: SyncSession[] = this.projects.map(p => ({
+      id: p.id,
+      title: p.name,
+      backend_url: p.url,
+      backend_id: p.backendId,
+      directory: p.path,
+      remote_session_id: p.remoteSessionId || null,
+      preferred_model: p.preferredModel || null,
+      last_access: new Date(p.lastAccess).toISOString(),
+    }));
+
+    const body: SyncRequest = { backends: syncBackends, sessions: syncSessions };
+    const url = `${accountUrl.replace(/\/+$/, '')}/api/sync`;
+
+    return new Promise((resolve) => {
+      const req = http.createHttp();
+      req.request(
+        url,
+        {
+          method: http.RequestMethod.PUT,
+          header: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + accountToken,
+          },
+          extraData: JSON.stringify(body),
+          connectTimeout: 15000,
+          readTimeout: 15000,
+        },
+        (err, data) => {
+          req.destroy();
+          if (err) {
+            resolve({ success: false, error: '网络错误: ' + String(err) });
+            return;
+          }
+          if (data.responseCode === 200) {
+            resolve({ success: true });
+          } else if (data.responseCode === 401) {
+            resolve({ success: false, error: '未授权，请重新登录' });
+          } else {
+            resolve({ success: false, error: `保存失败 (${data.responseCode})` });
+          }
+        }
+      );
+    });
+  }
+
+  public async syncConfigFromServer(): Promise<{ success: boolean; backends: number; sessions: number; error?: string }> {
+    const accountUrl = this.getAccountServerUrl();
+    const accountToken = this.getAccountToken();
+    if (!accountUrl || !accountToken) {
+      return { success: false, backends: 0, sessions: 0, error: '未配置账户服务器或未登录' };
+    }
+
+    const url = `${accountUrl.replace(/\/+$/, '')}/api/sync`;
+
+    return new Promise((resolve) => {
+      const req = http.createHttp();
+      req.request(
+        url,
+        {
+          method: http.RequestMethod.GET,
+          header: {
+            'Authorization': 'Bearer ' + accountToken,
+          },
+          connectTimeout: 15000,
+          readTimeout: 15000,
+        },
+        (err, data) => {
+          req.destroy();
+          if (err) {
+            resolve({ success: false, backends: 0, sessions: 0, error: '网络错误: ' + String(err) });
+            return;
+          }
+          if (data.responseCode === 200) {
+            try {
+              console.info('[syncConfigFromServer] raw result:', data.result as string);
+              const resp = JSON.parse(data.result as string) as SyncResponse;
+              console.info('[syncConfigFromServer] parsed backends:', resp.backends.length, 'sessions:', resp.sessions.length);
+
+              let addedBackends = 0;
+              for (const b of resp.backends) {
+                const existing = this.backends.find(x => x.url === b.backend_url);
+                if (!existing) {
+                  this.backends.push({
+                    id: b.id,
+                    url: b.backend_url,
+                    username: b.username || '',
+                    authToken: b.auth_token || '',
+                    notes: b.remark || '',
+                  });
+                  addedBackends++;
+                }
+              }
+              this.saveBackends();
+
+              let addedSessions = 0;
+              for (const s of resp.sessions) {
+                const existing = this.projects.find(p => p.id === s.id);
+                if (!existing) {
+                  this.projects.push({
+                    id: s.id,
+                    name: s.title || '未命名会话',
+                    url: s.backend_url || '',
+                    username: '',
+                    authToken: '',
+                    path: s.directory || '/',
+                    notes: '',
+                    backendId: s.backend_id || '',
+                    remoteSessionId: s.remote_session_id || undefined,
+                    preferredModel: s.preferred_model || undefined,
+                    lastAccess: s.last_access ? new Date(s.last_access).getTime() : Date.now(),
+                    isWorking: false,
+                    unreadCount: 0,
+                  });
+                  addedSessions++;
+                }
+              }
+              this.saveProjects();
+              this.notifySessionsChanged();
+
+              resolve({ success: true, backends: addedBackends, sessions: addedSessions });
+            } catch {
+              resolve({ success: false, backends: 0, sessions: 0, error: '解析响应失败' });
+            }
+          } else if (data.responseCode === 401) {
+            resolve({ success: false, backends: 0, sessions: 0, error: '未授权，请重新登录' });
+          } else {
+            resolve({ success: false, backends: 0, sessions: 0, error: `同步失败 (${data.responseCode})` });
+          }
+        }
+      );
+    });
   }
 
 }
