@@ -392,6 +392,11 @@ export class OpenCodeCore {
     }
   }
 
+  public async clearAccount(): Promise<void> {
+    await this.setAccountToken('');
+    AppStorage.setOrCreate('isLoggedIn', false);
+  }
+
   public applyTheme(name: string, darkMode?: boolean): void {
     interface ThemeColors {
       themeAccent: string;
@@ -1166,6 +1171,7 @@ export class OpenCodeCore {
             resolve({ success: true });
           } else if (data.responseCode === 401) {
             resolve({ success: false, error: '未授权，请重新登录' });
+            this.clearAccount();
           } else {
             resolve({ success: false, error: `保存失败 (${data.responseCode})` });
           }
@@ -1426,6 +1432,7 @@ export class OpenCodeCore {
             resolve({ success: true });
           } else if (data.responseCode === 401) {
             resolve({ success: false, error: '未授权，请重新登录' });
+            this.clearAccount();
           } else {
             resolve({ success: false, error: `停止失败 (${data.responseCode})` });
           }
@@ -1462,6 +1469,7 @@ export class OpenCodeCore {
             resolve({ success: true });
           } else if (data.responseCode === 401) {
             resolve({ success: false, error: '未授权，请重新登录' });
+            this.clearAccount();
           } else {
             resolve({ success: false, error: `删除失败 (${data.responseCode})` });
           }
