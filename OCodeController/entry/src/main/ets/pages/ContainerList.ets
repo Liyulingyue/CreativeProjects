@@ -114,7 +114,7 @@ struct ContainerList {
 
   private async doAddAsBackend(c: ContainerInfo): Promise<void> {
     if (c.opencode_url && c.opencode_username) {
-      await this.core.addBackendFromContainer(c.opencode_url, c.opencode_username, c.opencode_password || '');
+      await this.core.addBackendFromContainer(c.opencode_url, c.opencode_username, c.opencode_password || '', c.name);
       this.msg = '已添加到后端列表';
       setTimeout(() => { this.msg = ''; }, 3000);
     }
@@ -168,6 +168,7 @@ struct ContainerList {
             .backgroundColor(this.themeAccent)
             .borderRadius(8)
             .enabled(!this.loading)
+            .layoutWeight(1)
             .onClick(() => this.doStart(c.id))
         } else if (c.status === 'running') {
           Button('停止')
@@ -177,23 +178,24 @@ struct ContainerList {
             .backgroundColor('#FF9800')
             .borderRadius(8)
             .enabled(!this.loading)
+            .layoutWeight(1)
             .onClick(() => this.doStop(c.id))
         } else {
           Text('处理中...')
             .fontSize(13)
             .fontColor(this.themeTextTertiary)
+            .layoutWeight(1)
         }
 
-        Button('添加')
+        Button('添加到后端')
           .height(32)
           .fontSize(13)
           .fontColor('#FFFFFF')
           .backgroundColor(this.themeConfig)
           .borderRadius(8)
           .enabled(!this.loading)
+          .layoutWeight(1)
           .onClick(() => this.doAddAsBackend(c))
-
-        Blank()
 
         Button('删除')
           .height(32)
@@ -202,6 +204,7 @@ struct ContainerList {
           .backgroundColor('#FF3B30')
           .borderRadius(8)
           .enabled(!this.loading)
+          .layoutWeight(1)
           .onClick(() => this.doDelete(c.id))
       }
       .width('100%')
@@ -214,53 +217,53 @@ struct ContainerList {
   }
 
   build() {
-    Stack() {
+    Column() {
       Column() {
-        Column() {
-          Row() {
-            Text('<')
-              .fontSize(22)
-              .fontColor(this.themeAccent)
-              .padding({ left: 4, right: 12 })
-              .onClick(() => router.back())
-            Text('远程环境')
-              .fontSize(18)
-              .fontWeight(FontWeight.Bold)
-              .layoutWeight(1)
-            Button('新建')
-              .height(32)
-              .fontSize(14)
-              .fontColor('#FFFFFF')
-              .backgroundColor(this.themeAccent)
-              .borderRadius(8)
-              .enabled(!this.loading)
-              .onClick(() => this.doCreate())
-          }
-          .width('100%')
-          .padding({ left: 20, right: 20, top: 16, bottom: 12 })
-
-          Divider().height(0.5).color(this.themeBorderPrimary)
+        Row() {
+          Text('<')
+            .fontSize(22)
+            .fontColor(this.themeAccent)
+            .padding({ left: 4, right: 12 })
+            .onClick(() => router.back())
+          Text('远程环境')
+            .fontSize(18)
+            .fontWeight(FontWeight.Bold)
+            .layoutWeight(1)
+          Button('新建')
+            .height(32)
+            .fontSize(14)
+            .fontColor('#FFFFFF')
+            .backgroundColor(this.themeAccent)
+            .borderRadius(8)
+            .enabled(!this.loading)
+            .onClick(() => this.doCreate())
         }
         .width('100%')
-        .backgroundColor(this.themeBgCard)
+        .padding({ left: 20, right: 20, top: 16, bottom: 12 })
 
-        if (this.msg) {
-          Text(this.msg)
-            .fontSize(13)
-            .fontColor(this.msg.includes('已') ? this.themeAccent : '#FF3B30')
-            .width('100%')
-            .padding(12)
-            .textAlign(TextAlign.Center)
-        }
+        Divider().height(0.5).color(this.themeBorderPrimary)
+      }
+      .width('100%')
+      .backgroundColor(this.themeBgCard)
 
-        if (this.loading) {
-          Text('加载中...')
-            .fontSize(14)
-            .fontColor(this.themeTextTertiary)
-            .width('100%')
-            .padding(24)
-            .textAlign(TextAlign.Center)
-        } else if (this.containers.length === 0) {
+      if (this.msg) {
+        Text(this.msg)
+          .fontSize(13)
+          .fontColor(this.msg.includes('已') ? this.themeAccent : '#FF3B30')
+          .width('100%')
+          .padding(12)
+          .textAlign(TextAlign.Center)
+      }
+
+      if (this.loading) {
+        Text('加载中...')
+          .fontSize(14)
+          .fontColor(this.themeTextTertiary)
+          .width('100%')
+          .padding(24)
+          .textAlign(TextAlign.Center)
+      } else if (this.containers.length === 0) {
+        Scroll() {
           Column({ space: 12 }) {
             Text('暂无远程环境')
               .fontSize(16)
@@ -270,27 +273,25 @@ struct ContainerList {
               .fontColor(this.themeTextTertiary)
           }
           .width('100%')
-          .padding(40)
-          .alignItems(HorizontalAlign.Center)
-        } else {
-          Scroll() {
-            Column({ space: 0 }) {
-              ForEach(this.containers, (c: ContainerInfo) => {
-                this.containerItem(c)
-              })
-            }
-            .width('100%')
-            .padding({ left: 16, right: 16, top: 8, bottom: 32 })
-          }
-          .layoutWeight(1)
+          .padding(24)
         }
+        .layoutWeight(1)
+      } else {
+        Scroll() {
+          Column({ space: 0 }) {
+            ForEach(this.containers, (c: ContainerInfo) => {
+              this.containerItem(c)
+            })
+          }
+          .width('100%')
+          .padding({ left: 16, right: 16, top: 8, bottom: 32 })
+        }
+        .layoutWeight(1)
       }
-      .width('100%')
-      .height('100%')
-      .backgroundColor(this.themeBgPrimary)
     }
     .width('100%')
     .height('100%')
+    .backgroundColor(this.themeBgPrimary)
   }
 }
 

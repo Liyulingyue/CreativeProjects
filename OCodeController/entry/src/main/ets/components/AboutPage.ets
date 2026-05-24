@@ -62,6 +62,8 @@ export struct AboutPage {
   @State configServerUrl: string = '';
   @State syncLoading: boolean = false;
   @State syncMsg: string = '';
+  @State redeemCode: string = '';
+  @State redeemMsg: string = '';
 
   aboutToAppear() {
     this.isImmersiveMode = this.core.getImmersiveMode();
@@ -286,6 +288,25 @@ export struct AboutPage {
       this.syncMsg = result.error || '同步失败';
     }
     setTimeout(() => { this.syncMsg = ''; }, 3000);
+  }
+
+  private async doRedeem(): Promise<void> {
+    if (!this.redeemCode.trim()) {
+      this.redeemMsg = '请输入兑换码';
+      return;
+    }
+    this.syncLoading = true;
+    this.redeemMsg = '';
+    const result = await this.core.redeemCode(this.redeemCode.trim().toUpperCase());
+    this.syncLoading = false;
+    if (result.success) {
+      this.redeemMsg = result.message;
+      this.redeemCode = '';
+      this.loadCurrentUser();
+      setTimeout(() => { this.redeemMsg = ''; }, 3000);
+    } else {
+      this.redeemMsg = result.message;
+    }
   }
 
   @Builder
@@ -616,10 +637,10 @@ export struct AboutPage {
           .width('100%')
           .padding(20)
         }
-        .width('100%')
-        .height('100%')
-        .backgroundColor(this.themeBgPrimary)
-      }
+    .width('100%')
+    .height('100%')
+    .backgroundColor(this.themeBgPrimary)
+  }
     }
     .width('100%')
     .height('100%')
@@ -629,11 +650,24 @@ export struct AboutPage {
   buildLoggedInView() {
     Column({ space: 12 }) {
       Column({ space: 8 }) {
-        Text('当前用户')
-          .fontSize(13)
-          .fontColor(this.themeTextTertiary)
-          .fontWeight(FontWeight.Medium)
-          .width('100%')
+        Row() {
+          Text('当前用户')
+            .fontSize(13)
+            .fontColor(this.themeTextTertiary)
+            .fontWeight(FontWeight.Medium)
+          Blank()
+          Text(this.currentUser?.plan ?? '')
+            .fontSize(13)
+            .fontColor(this.themeAccent)
+            .fontWeight(FontWeight.Medium)
+        }
+        .width('100%')
+        .height(24)
+        .alignItems(VerticalAlign.Center)
+        .padding({ left: 12, right: 12 })
+        .margin({ top: 4 })
+
+        Divider().height(1).color('#E0E0E0').margin({ left: 4, right: 4 })
 
         Row() {
           Stack({ alignContent: Alignment.Center }) {
@@ -664,6 +698,55 @@ export struct AboutPage {
       }
       .width('100%')
 
+      Column({ space: 0 }) {
+        Row() {
+          Column() {
+            Text('升级用户组')
+              .fontSize(13)
+              .fontColor(this.themeTextTertiary)
+              .fontWeight(FontWeight.Medium)
+            TextInput({ placeholder: '输入兑换码', text: this.redeemCode })
+              .height(40)
+              .fontSize(14)
+              .backgroundColor(this.themeBgPrimary)
+              .borderRadius(8)
+              .margin({ top: 6 })
+              .onChange((value: string) => {
+                this.redeemCode = value;
+              })
+          }
+          .alignItems(HorizontalAlign.Start)
+          .layoutWeight(1)
+          .margin({ right: 8 })
+
+          Column() {
+            Text('')
+              .height(13)
+            Button('兑换')
+              .height(40)
+              .fontSize(13)
+              .fontColor('#FFFFFF')
+              .backgroundColor(this.themeAccent)
+              .borderRadius(8)
+              .enabled(!this.syncLoading)
+              .onClick(() => this.doRedeem())
+          }
+          .alignItems(HorizontalAlign.End)
+        }
+        .width('100%')
+        .padding(16)
+        .backgroundColor(this.themeBgCard)
+        .borderRadius(12)
+
+        if (this.redeemMsg) {
+          Text(this.redeemMsg)
+            .fontSize(12)
+            .fontColor(this.redeemMsg.includes('成功') ? this.themeAccent : '#FF3B30')
+            .padding({ left: 16, bottom: 8 })
+        }
+      }
+      .width('100%')
+
       // Column({ space: 0 }) {
       //   Row() {
       //     Column() {
@@ -681,18 +764,9 @@ export struct AboutPage {
       //   .width('100%')
       //   .padding({ left: 16, right: 16, top: 14, bottom: 14 })
       // }
-      .width('100%')
-      .backgroundColor(this.themeBgCard)
-      .borderRadius(12)
-
-      if (this.syncMsg) {
-        Text(this.syncMsg)
-          .fontSize(13)
-          .fontColor(this.syncMsg.includes('成功') ? this.themeAccent : '#FF3B30')
-          .width('100%')
-          .textAlign(TextAlign.Center)
-          .padding({ top: 8 })
-      }
+      // .width('100%')
+      // .backgroundColor(this.themeBgCard)
+      // .borderRadius(12)
 
       Column({ space: 8 }) {
         Button('保存当前配置到服务器')

@@ -11,6 +11,8 @@ class Settings(BaseSettings):
 
     DOCKER_IMAGE: str = "opencode-service:latest"
     SERVER_HOST: str = "localhost"
+    REDEEM_MEMBER: str = "MEMBER2025"
+    REDEEM_VIP: str = "VIP2025"
     DOCKER_SUDO_PASSWORD: str = ""
 
     class Config:

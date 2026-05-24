@@ -397,6 +397,56 @@ export class OpenCodeCore {
     AppStorage.setOrCreate('isLoggedIn', false);
   }
 
+  public async redeemCode(code: string): Promise<{ success: boolean; message: string }> {
+    const accountUrl = this.getAccountServerUrl();
+    const accountToken = this.getAccountToken();
+    if (!accountUrl || !accountToken) {
+      return { success: false, message: '未配置账户服务器或未登录' };
+    }
+
+    interface RedeemBody {
+      code: string;
+    }
+    const body: RedeemBody = { code: code };
+
+    return new Promise((resolve) => {
+      const req = http.createHttp();
+      req.request(
+        `${accountUrl.replace(/\/+$/, '')}/api/auth/redeem`,
+        {
+          method: http.RequestMethod.POST,
+          header: {
+            'Authorization': 'Bearer ' + accountToken,
+            'Content-Type': 'application/json',
+          },
+          extraData: JSON.stringify(body),
+          connectTimeout: 15000,
+          readTimeout: 15000,
+        },
+        (err, data) => {
+          req.destroy();
+          if (err) {
+            resolve({ success: false, message: '网络错误: ' + String(err) });
+            return;
+          }
+          if (data.responseCode === 200) {
+            resolve({ success: true, message: '升级成功' });
+          } else if (data.responseCode === 401) {
+            this.clearAccount();
+            resolve({ success: false, message: '未授权，请重新登录' });
+          } else {
+            try {
+              const errBody = JSON.parse(data.result as string) as { detail?: string };
+              resolve({ success: false, message: errBody.detail || '兑换失败' });
+            } catch {
+              resolve({ success: false, message: `兑换失败 (${data.responseCode})` });
+            }
+          }
+        }
+      );
+    });
+  }
+
   public applyTheme(name: string, darkMode?: boolean): void {
     interface ThemeColors {
       themeAccent: string;
@@ -1478,8 +1528,7 @@ export class OpenCodeCore {
     });
   }
 
-  public async addBackendFromContainer(opencodeUrl: string, username: string, password: string): Promise<void> {
-    const name: string = '远程后端 ' + new Date().toLocaleString();
+  public async addBackendFromContainer(opencodeUrl: string, username: string, password: string, name: string): Promise<void> {
     await this.addBackend(opencodeUrl, username, password, name);
   }
 
