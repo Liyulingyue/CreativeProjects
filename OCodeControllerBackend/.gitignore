@@ -2,3 +2,5 @@ venv/
 .venv/
 .env
 *.db
+
+references/
