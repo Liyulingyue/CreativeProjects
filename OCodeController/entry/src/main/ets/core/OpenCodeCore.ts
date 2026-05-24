@@ -115,7 +115,11 @@ export interface ContainerInfo {
   name: string;
   port: number | null;
   opencode_url: string | null;
-  opencode_token: string | null;
+  opencode_username: string | null;
+  opencode_password: string | null;
+  filebrowser_url: string | null;
+  fb_username: string | null;
+  fb_password: string | null;
   status: string;
   created_at: string;
   updated_at: string;
@@ -1466,9 +1470,9 @@ export class OpenCodeCore {
     });
   }
 
-  public async addBackendFromContainer(opencodeUrl: string, opencodeToken: string): Promise<void> {
+  public async addBackendFromContainer(opencodeUrl: string, username: string, password: string): Promise<void> {
     const name: string = '远程后端 ' + new Date().toLocaleString();
-    await this.addBackend(opencodeUrl, '', opencodeToken, name);
+    await this.addBackend(opencodeUrl, username, password, name);
   }
 
 }

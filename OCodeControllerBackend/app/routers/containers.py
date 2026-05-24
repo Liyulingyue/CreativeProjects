@@ -1,6 +1,5 @@
 import logging
 import random
-import socket
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,11 +12,10 @@ from app.schemas.container import ContainerCreate, ContainerResponse
 from app.core.security import get_current_user
 from app.core.docker import (
     generate_credentials,
-    start_container,
-    stop_container,
-    remove_container,
-    is_running,
     container_name,
+    is_running,
+    start_container as docker_start,
+    stop_container as docker_stop,
 )
 from app.config import settings
 
@@ -26,29 +24,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/containers", tags=["containers"])
 
 
-async def _find_free_port(db: AsyncSession, start: int = 32000, end: int = 60000) -> int:
-    used_ports: set[int] = set()
-    for offset in (0, 1):
-        result = await db.execute(select(Container.port + offset).where(Container.port.isnot(None)))
-        for (p,) in result.all():
-            used_ports.add(p)
-
-    attempts = 0
-    while True:
-        port = random.randint(start, end)
-        if port in used_ports:
-            attempts += 1
-            if attempts > 1000:
-                raise RuntimeError("无法找到空闲端口，请稍后重试")
-            continue
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.bind(("0.0.0.0", port))
-                return port
-            except OSError:
-                attempts += 1
-                if attempts > 1000:
-                    raise RuntimeError("无法找到空闲端口，请稍后重试")
+async def _allocate_port(db: AsyncSession) -> int:
+    result = await db.execute(select(Container.port).where(Container.port.isnot(None)))
+    used = set(r[0] for r in result.all())
+    for _ in range(100):
+        port = random.randint(32000, 60000)
+        if port not in used and (port + 1) not in used:
+            return port
+    raise RuntimeError("无法分配空闲端口，请稍后重试")
 
 
 @router.get("", response_model=list[ContainerResponse])
@@ -80,14 +63,21 @@ async def create_container(
         )
 
     name = body.name if body else "未命名环境"
-    port = await _find_free_port(db)
+    port = await _allocate_port(db)
+    creds = generate_credentials()
+    server_host = settings.SERVER_HOST
 
-    # TODO: 考虑在创建时直接启动容器（合并 create + start），减少一次请求
     container = Container(
         user_id=current_user.id,
         name=name,
         port=port,
-        status="created",
+        opencode_url=f"http://{server_host}:{port}",
+        opencode_username=creds["opencode_username"],
+        opencode_password=creds["opencode_password"],
+        filebrowser_url=f"http://{server_host}:{port + 1}",
+        fb_username=creds["fb_username"],
+        fb_password=creds["fb_password"],
+        status="stopped",
     )
     db.add(container)
     await db.commit()
@@ -121,7 +111,7 @@ async def start_container_endpoint(
     try:
         credentials = generate_credentials()
 
-        docker_id = start_container(
+        docker_id = docker_start(
             container_id=container.id,
             port=container.port,
             credentials=credentials,
@@ -199,7 +189,7 @@ async def delete_container_endpoint(
 
     try:
         if is_running(container.id):
-            stop_container(container.id)
+        docker_stop(container.id)
     except Exception as e:
         logger.warning(f"[Container] Failed to stop before delete id={container_id}: {e}")
 
