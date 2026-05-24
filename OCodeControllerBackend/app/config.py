@@ -9,6 +9,9 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str = "sqlite+aiosqlite:///./opencode_harmony.db"
 
+    DOCKER_IMAGE: str = "opencode-service:latest"
+    SERVER_HOST: str = "localhost"
+
     class Config:
         env_file = ".env"
 

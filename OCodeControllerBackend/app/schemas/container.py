@@ -8,7 +8,11 @@ class ContainerResponse(BaseModel):
     name: str
     port: int | None = None
     opencode_url: str | None = None
-    opencode_token: str | None = None
+    opencode_username: str | None = None
+    opencode_password: str | None = None
+    filebrowser_url: str | None = None
+    fb_username: str | None = None
+    fb_password: str | None = None
     status: str
     created_at: datetime
     updated_at: datetime
