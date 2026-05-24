@@ -10,10 +10,14 @@ logger = logging.getLogger(__name__)
 
 def _docker_command(args: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
     cmd = ["docker"] + args
+    if settings.DOCKER_SUDO_PASSWORD:
+        cmd = ["sudo", "-S"] + cmd
+
     logger.debug(f"[Docker] Running: {' '.join(cmd)}")
     try:
         result = subprocess.run(
             cmd,
+            input=(settings.DOCKER_SUDO_PASSWORD + "\n") if settings.DOCKER_SUDO_PASSWORD else None,
             capture_output=True,
             text=True,
             timeout=timeout,

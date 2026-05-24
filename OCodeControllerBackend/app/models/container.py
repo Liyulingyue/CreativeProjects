@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, DateTime, ForeignKey
+from sqlalchemy import String, DateTime, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -14,7 +14,7 @@ class Container(Base):
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     name: Mapped[str] = mapped_column(String(128), nullable=False, default="未命名环境")
     container_id: Mapped[str] = mapped_column(String(128), nullable=True)
-    port: Mapped[int] = mapped_column(String(16), nullable=True)
+    port: Mapped[int] = mapped_column(Integer, nullable=True)
     opencode_url: Mapped[str] = mapped_column(String(512), nullable=True)
     opencode_username: Mapped[str] = mapped_column(String(64), nullable=True)
     opencode_password: Mapped[str] = mapped_column(String(128), nullable=True)
