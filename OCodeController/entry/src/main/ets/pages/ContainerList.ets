@@ -17,18 +17,28 @@ struct ContainerList {
   @StorageLink('themeBorderPrimary') themeBorderPrimary: string = '#E0E0E0';
   @StorageLink('themeBorderSecondary') themeBorderSecondary: string = '#F0F0F0';
   @StorageLink('themeConfig') themeConfig: string = '#1677FF';
-  dialogController: CustomDialogController = new CustomDialogController({
-    builder: CreateContainerDialog({ onConfirm: (name: string) => this.doConfirmCreateFromDialog(name) }),
-    alignment: DialogAlignment.Center,
-    customStyle: true
-  });
+  dialogController: CustomDialogController | null = null;
 
   aboutToAppear() {
     this.loadContainers();
+    this.dialogController = new CustomDialogController({
+      builder: CreateContainerDialog({ onConfirm: (name: string) => this.doConfirmCreateFromDialog(name) }),
+      alignment: DialogAlignment.Center,
+      customStyle: true
+    });
+  }
+
+  aboutToDisappear() {
+    if (this.dialogController) {
+      this.dialogController.close();
+      this.dialogController = null;
+    }
   }
 
   private async doCreate(): Promise<void> {
-    this.dialogController.open();
+    if (this.dialogController) {
+      this.dialogController.open();
+    }
   }
 
   private async doConfirmCreateFromDialog(name: string): Promise<void> {
@@ -39,15 +49,21 @@ struct ContainerList {
       return;
     }
     this.loading = true;
-    const result = await this.core.createContainer(trimmed);
-    this.loading = false;
-    if (result.success && result.container) {
-      this.containers = [...this.containers, result.container as ContainerInfo];
-      this.msg = '创建成功';
-      setTimeout(() => { this.msg = ''; }, 2000);
-    } else {
-      this.msg = result.error || '创建失败';
+    try {
+      const result = await this.core.createContainer(trimmed);
+      if (result.success && result.container) {
+        this.containers = [...this.containers, result.container as ContainerInfo];
+        this.msg = '创建成功';
+        setTimeout(() => { this.msg = ''; }, 2000);
+      } else {
+        this.msg = result.error || '创建失败';
+        setTimeout(() => { this.msg = ''; }, 3000);
+      }
+    } catch (e) {
+      this.msg = '创建失败';
       setTimeout(() => { this.msg = ''; }, 3000);
+    } finally {
+      this.loading = false;
     }
   }
 
@@ -97,8 +113,8 @@ struct ContainerList {
   }
 
   private async doAddAsBackend(c: ContainerInfo): Promise<void> {
-    if (c.opencode_url && c.opencode_token) {
-      await this.core.addBackendFromContainer(c.opencode_url, c.opencode_token);
+    if (c.opencode_url && c.opencode_username) {
+      await this.core.addBackendFromContainer(c.opencode_url, c.opencode_username, c.opencode_password || '');
       this.msg = '已添加到后端列表';
       setTimeout(() => { this.msg = ''; }, 3000);
     }

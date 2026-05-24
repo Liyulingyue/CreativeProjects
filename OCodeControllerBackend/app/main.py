@@ -12,6 +12,7 @@ from app.api import api_router
 
 MIGRATIONS = [
     ("users", "plan", "ALTER TABLE users ADD COLUMN plan VARCHAR(16) DEFAULT 'member'"),
+    ("containers", "name", "ALTER TABLE containers ADD COLUMN name VARCHAR(128) DEFAULT '未命名环境'"),
     ("containers", "opencode_username", "ALTER TABLE containers ADD COLUMN opencode_username VARCHAR(64)"),
     ("containers", "opencode_password", "ALTER TABLE containers ADD COLUMN opencode_password VARCHAR(128)"),
     ("containers", "filebrowser_url", "ALTER TABLE containers ADD COLUMN filebrowser_url VARCHAR(512)"),
