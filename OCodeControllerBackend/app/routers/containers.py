@@ -26,8 +26,8 @@ router = APIRouter(prefix="/api/containers", tags=["containers"])
 
 async def _allocate_port(db: AsyncSession) -> int:
     result = await db.execute(select(Container.port).where(Container.port.isnot(None)))
-    used = set(r[0] for r in result.all())
-    for _ in range(100):
+    used = set(int(r[0]) for r in result.all() if r[0] is not None)
+    for _ in range(1000):
         port = random.randint(32000, 60000)
         if port not in used and (port + 1) not in used:
             return port
@@ -42,7 +42,15 @@ async def list_containers(
     result = await db.execute(
         select(Container).where(Container.user_id == current_user.id)
     )
-    return result.scalars().all()
+    containers = result.scalars().all()
+
+    for container in containers:
+        docker_status = "running" if is_running(container.id) else "stopped"
+        if container.status != docker_status:
+            container.status = docker_status
+
+    await db.commit()
+    return containers
 
 
 @router.post("", response_model=ContainerResponse)
@@ -110,10 +118,11 @@ async def start_container_endpoint(
 
     try:
         credentials = generate_credentials()
+        logger.info(f"[Container] Generated credentials: opencode={credentials['opencode_username']}/{credentials['opencode_password']}, fb={credentials['fb_username']}/{credentials['fb_password']}")
 
         docker_id = docker_start(
             container_id=container.id,
-            port=container.port,
+            port=int(container.port),
             credentials=credentials,
         )
 
@@ -123,7 +132,7 @@ async def start_container_endpoint(
         container.opencode_url = f"http://{settings.SERVER_HOST}:{container.port}"
         container.fb_username = credentials["fb_username"]
         container.fb_password = credentials["fb_password"]
-        container.filebrowser_url = f"http://{settings.SERVER_HOST}:{container.port + 1}"
+        container.filebrowser_url = f"http://{settings.SERVER_HOST}:{int(container.port) + 1}"
         container.status = "running"
         await db.commit()
         await db.refresh(container)
@@ -160,7 +169,7 @@ async def stop_container_endpoint(
     await db.commit()
 
     try:
-        stop_container(container.id)
+        docker_stop(container.id)
         container.status = "stopped"
         container.container_id = None
         await db.commit()
@@ -189,7 +198,7 @@ async def delete_container_endpoint(
 
     try:
         if is_running(container.id):
-        docker_stop(container.id)
+            docker_stop(container.id)
     except Exception as e:
         logger.warning(f"[Container] Failed to stop before delete id={container_id}: {e}")
 

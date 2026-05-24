@@ -11,6 +11,7 @@ class Settings(BaseSettings):
 
     DOCKER_IMAGE: str = "opencode-service:latest"
     SERVER_HOST: str = "localhost"
+    DOCKER_SUDO_PASSWORD: str = ""
 
     class Config:
         env_file = ".env"
