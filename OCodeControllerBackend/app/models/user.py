@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, DateTime, Integer
+from sqlalchemy import String, DateTime
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -19,7 +19,7 @@ class User(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     username: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
-    plan: Mapped[str] = mapped_column(String(16), default="member")
+    plan: Mapped[str] = mapped_column(String(16), default="free")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     devices: Mapped[list["Device"]] = relationship("Device", back_populates="user", cascade="all, delete-orphan")
