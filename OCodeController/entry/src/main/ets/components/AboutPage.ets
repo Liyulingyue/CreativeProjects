@@ -5,6 +5,7 @@ import router from '@ohos.router';
 interface UserInfo {
   id: string;
   username: string;
+  plan: string;
   created_at: string;
 }
 
@@ -663,23 +664,23 @@ export struct AboutPage {
       }
       .width('100%')
 
-      Column({ space: 0 }) {
-        Row() {
-          Column() {
-            Text('账户服务器')
-              .fontSize(16)
-              .fontColor(this.themeTextPrimary)
-            Text(this.accountServerUrl)
-              .fontSize(12)
-              .fontColor(this.themeTextTertiary)
-              .margin({ top: 2 })
-          }
-          .alignItems(HorizontalAlign.Start)
-          .layoutWeight(1)
-        }
-        .width('100%')
-        .padding({ left: 16, right: 16, top: 14, bottom: 14 })
-      }
+      // Column({ space: 0 }) {
+      //   Row() {
+      //     Column() {
+      //       Text('账户服务器')
+      //         .fontSize(16)
+      //         .fontColor(this.themeTextPrimary)
+      //       Text(this.accountServerUrl)
+      //         .fontSize(12)
+      //         .fontColor(this.themeTextTertiary)
+      //         .margin({ top: 2 })
+      //     }
+      //     .alignItems(HorizontalAlign.Start)
+      //     .layoutWeight(1)
+      //   }
+      //   .width('100%')
+      //   .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+      // }
       .width('100%')
       .backgroundColor(this.themeBgCard)
       .borderRadius(12)
