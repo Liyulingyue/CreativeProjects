@@ -1,5 +1,6 @@
 import { OpenCodeCore, ContainerInfo } from '../core/OpenCodeCore';
 import router from '@ohos.router';
+import promptAction from '@ohos.promptAction';
 
 @Entry
 @Component
@@ -7,9 +8,9 @@ struct ContainerList {
   private core: OpenCodeCore = OpenCodeCore.getInstance();
   @State containers: ContainerInfo[] = [];
   @State loading: boolean = false;
-  @State msg: string = '';
   @StorageLink('themeAccent') themeAccent: string = '#07C160';
   @StorageLink('themeBgPrimary') themeBgPrimary: string = '#F5F5F5';
+  @StorageLink('themeBgSecondary') themeBgSecondary: string = '#EDEDED';
   @StorageLink('themeBgCard') themeBgCard: string = '#FFFFFF';
   @StorageLink('themeTextPrimary') themeTextPrimary: string = '#333333';
   @StorageLink('themeTextSecondary') themeTextSecondary: string = '#888888';
@@ -44,8 +45,7 @@ struct ContainerList {
   private async doConfirmCreateFromDialog(name: string): Promise<void> {
     const trimmed = name.trim();
     if (!trimmed) {
-      this.msg = '请输入名称';
-      setTimeout(() => { this.msg = ''; }, 2000);
+      promptAction.showToast({ message: '请输入名称', duration: 2000 });
       return;
     }
     this.loading = true;
@@ -53,15 +53,12 @@ struct ContainerList {
       const result = await this.core.createContainer(trimmed);
       if (result.success && result.container) {
         this.containers = [...this.containers, result.container as ContainerInfo];
-        this.msg = '创建成功';
-        setTimeout(() => { this.msg = ''; }, 2000);
+        promptAction.showToast({ message: '创建成功', duration: 2000 });
       } else {
-        this.msg = result.error || '创建失败';
-        setTimeout(() => { this.msg = ''; }, 3000);
+        promptAction.showToast({ message: result.error || '创建失败', duration: 3000 });
       }
     } catch (e) {
-      this.msg = '创建失败';
-      setTimeout(() => { this.msg = ''; }, 3000);
+      promptAction.showToast({ message: '创建失败', duration: 3000 });
     } finally {
       this.loading = false;
     }
@@ -71,227 +68,227 @@ struct ContainerList {
     this.loading = true;
     const result = await this.core.listContainers();
     this.loading = false;
-    if (result.success) {
-      this.containers = result.containers;
+    if (!result.success) {
+      promptAction.showToast({ message: result.error || '加载失败', duration: 3000 });
     } else {
-      this.msg = result.error || '加载失败';
-      setTimeout(() => { this.msg = ''; }, 3000);
+      this.containers = result.containers;
     }
   }
 
   private async doStart(id: string): Promise<void> {
-    this.msg = '';
     const result = await this.core.startContainer(id);
     if (result.success) {
       await this.loadContainers();
     } else {
-      this.msg = result.error || '启动失败';
-      setTimeout(() => { this.msg = ''; }, 3000);
+      promptAction.showToast({ message: result.error || '启动失败', duration: 3000 });
     }
   }
 
   private async doStop(id: string): Promise<void> {
-    this.msg = '';
     const result = await this.core.stopContainer(id);
     if (result.success) {
       await this.loadContainers();
     } else {
-      this.msg = result.error || '停止失败';
-      setTimeout(() => { this.msg = ''; }, 3000);
+      promptAction.showToast({ message: result.error || '停止失败', duration: 3000 });
     }
   }
 
   private async doDelete(id: string): Promise<void> {
-    this.msg = '';
     const result = await this.core.deleteContainer(id);
     if (result.success) {
       await this.loadContainers();
     } else {
-      this.msg = result.error || '删除失败';
-      setTimeout(() => { this.msg = ''; }, 3000);
+      promptAction.showToast({ message: result.error || '删除失败', duration: 3000 });
     }
   }
 
   private async doAddAsBackend(c: ContainerInfo): Promise<void> {
     if (c.opencode_url && c.opencode_username) {
       await this.core.addBackendFromContainer(c.opencode_url, c.opencode_username, c.opencode_password || '', c.name);
-      this.msg = '已添加到后端列表';
-      setTimeout(() => { this.msg = ''; }, 3000);
+      promptAction.showToast({ message: '已添加到后端列表', duration: 3000 });
     }
-  }
-
-  @Builder
-  containerItem(c: ContainerInfo) {
-    Column({ space: 0 }) {
-      Row() {
-        Column({ space: 4 }) {
-          Row({ space: 8 }) {
-            Text(c.name)
-              .fontSize(17)
-              .fontColor(this.themeTextPrimary)
-              .fontWeight(FontWeight.Medium)
-            Text(c.status === 'running' ? '● 运行中' : '○ 已停止')
-              .fontSize(12)
-              .fontColor(c.status === 'running' ? '#4CAF50' : this.themeTextTertiary)
-          }
-          .width('100%')
-          .alignItems(VerticalAlign.Center)
-
-          if (c.port) {
-            Text('端口: ' + c.port)
-              .fontSize(12)
-              .fontColor(this.themeTextSecondary)
-          }
-          if (c.opencode_url) {
-            Text('访问: ' + c.opencode_url)
-              .fontSize(12)
-              .fontColor(this.themeConfig)
-          }
-          Text('创建: ' + c.created_at.substring(0, 16).replace('T', ' '))
-            .fontSize(12)
-            .fontColor(this.themeTextTertiary)
-        }
-        .alignItems(HorizontalAlign.Start)
-        .layoutWeight(1)
-      }
-      .width('100%')
-      .padding(16)
-
-      Divider().height(0.5).color(this.themeBorderSecondary).margin({ left: 16 })
-
-      Row({ space: 8 }) {
-        if (c.status === 'stopped' || c.status === 'error') {
-          Button('启动')
-            .height(32)
-            .fontSize(13)
-            .fontColor('#FFFFFF')
-            .backgroundColor(this.themeAccent)
-            .borderRadius(8)
-            .enabled(!this.loading)
-            .layoutWeight(1)
-            .onClick(() => this.doStart(c.id))
-        } else if (c.status === 'running') {
-          Button('停止')
-            .height(32)
-            .fontSize(13)
-            .fontColor('#FFFFFF')
-            .backgroundColor('#FF9800')
-            .borderRadius(8)
-            .enabled(!this.loading)
-            .layoutWeight(1)
-            .onClick(() => this.doStop(c.id))
-        } else {
-          Text('处理中...')
-            .fontSize(13)
-            .fontColor(this.themeTextTertiary)
-            .layoutWeight(1)
-        }
-
-        Button('添加到后端')
-          .height(32)
-          .fontSize(13)
-          .fontColor('#FFFFFF')
-          .backgroundColor(this.themeConfig)
-          .borderRadius(8)
-          .enabled(!this.loading)
-          .layoutWeight(1)
-          .onClick(() => this.doAddAsBackend(c))
-
-        Button('删除')
-          .height(32)
-          .fontSize(13)
-          .fontColor('#FFFFFF')
-          .backgroundColor('#FF3B30')
-          .borderRadius(8)
-          .enabled(!this.loading)
-          .layoutWeight(1)
-          .onClick(() => this.doDelete(c.id))
-      }
-      .width('100%')
-      .padding(12)
-    }
-    .width('100%')
-    .backgroundColor(this.themeBgCard)
-    .borderRadius(12)
-    .margin({ top: 8 })
   }
 
   build() {
     Column() {
-      Column() {
-        Row() {
-          Text('<')
-            .fontSize(22)
-            .fontColor(this.themeAccent)
-            .padding({ left: 4, right: 12 })
-            .onClick(() => router.back())
-          Text('远程环境')
-            .fontSize(18)
-            .fontWeight(FontWeight.Bold)
-            .layoutWeight(1)
-          Button('新建')
-            .height(32)
+      Row() {
+        Text('<')
+          .fontSize(24)
+          .fontColor(this.themeAccent)
+          .padding({ right: 12 })
+          .onClick(() => router.back())
+        Text('远程环境')
+          .fontSize(20)
+          .fontWeight(FontWeight.Bold)
+        Blank()
+        Text('+')
+          .fontSize(28)
+          .fontColor(this.themeAccent)
+          .padding({ left: 16, right: 16 })
+          .onClick(() => this.doCreate())
+      }
+      .width('100%')
+      .padding({ left: 12, right: 4, top: 15, bottom: 15 })
+      .backgroundColor(this.themeBgSecondary)
+
+      if (this.loading) {
+        Column() {
+          LoadingProgress()
+            .width(48)
+            .height(48)
+          Text('加载中...')
             .fontSize(14)
-            .fontColor('#FFFFFF')
+            .fontColor(this.themeTextTertiary)
+            .margin({ top: 12 })
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .alignItems(HorizontalAlign.Center)
+      } else if (this.containers.length === 0) {
+        Column({ space: 16 }) {
+          Stack() {
+            Circle()
+              .width(80)
+              .height(80)
+              .fill(this.themeBgCard)
+            Text('☁')
+              .fontSize(36)
+          }
+          .margin({ bottom: 8 })
+
+          Text('暂无远程环境')
+            .fontSize(18)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.themeTextPrimary)
+
+          Text('点击右上角 + 新建一个')
+            .fontSize(14)
+            .fontColor(this.themeTextTertiary)
+
+          Button('新建', { type: ButtonType.Normal })
+            .width(160)
+            .height(44)
+            .borderRadius(22)
             .backgroundColor(this.themeAccent)
-            .borderRadius(8)
-            .enabled(!this.loading)
+            .fontColor('#FFFFFF')
+            .fontSize(15)
+            .margin({ top: 8 })
             .onClick(() => this.doCreate())
         }
         .width('100%')
-        .padding({ left: 20, right: 20, top: 16, bottom: 12 })
-
-        Divider().height(0.5).color(this.themeBorderPrimary)
-      }
-      .width('100%')
-      .backgroundColor(this.themeBgCard)
-
-      if (this.msg) {
-        Text(this.msg)
-          .fontSize(13)
-          .fontColor(this.msg.includes('已') ? this.themeAccent : '#FF3B30')
-          .width('100%')
-          .padding(12)
-          .textAlign(TextAlign.Center)
-      }
-
-      if (this.loading) {
-        Text('加载中...')
-          .fontSize(14)
-          .fontColor(this.themeTextTertiary)
-          .width('100%')
-          .padding(24)
-          .textAlign(TextAlign.Center)
-      } else if (this.containers.length === 0) {
-        Scroll() {
-          Column({ space: 12 }) {
-            Text('暂无远程环境')
-              .fontSize(16)
-              .fontColor(this.themeTextSecondary)
-            Text('点击右上角"新建"创建一个')
-              .fontSize(13)
-              .fontColor(this.themeTextTertiary)
-          }
-          .width('100%')
-          .padding(24)
-        }
-        .layoutWeight(1)
+        .height('100%')
+        .backgroundColor(this.themeBgCard)
+        .justifyContent(FlexAlign.Center)
+        .alignItems(HorizontalAlign.Center)
       } else {
-        Scroll() {
-          Column({ space: 0 }) {
-            ForEach(this.containers, (c: ContainerInfo) => {
-              this.containerItem(c)
-            })
-          }
-          .width('100%')
-          .padding({ left: 16, right: 16, top: 8, bottom: 32 })
+        List() {
+          ForEach(this.containers, (c: ContainerInfo) => {
+            ListItem() {
+              Column({ space: 0 }) {
+                Row() {
+                  Stack() {
+                    Rect().fill(this.themeAccent).width(48).height(48).borderRadius(8)
+                    Text(c.name.charAt(0).toUpperCase())
+                      .fontSize(20).fontColor('#FFFFFF').fontWeight(FontWeight.Bold)
+                  }
+                  .margin({ right: 12 })
+
+                  Column({ space: 3 }) {
+                    Row({ space: 6 }) {
+                      Text(c.name)
+                        .fontSize(15)
+                        .fontWeight(FontWeight.Medium)
+                        .maxLines(1)
+                      Text(c.status === 'running' ? '● 运行中' : '○ 已停止')
+                        .fontSize(12)
+                        .fontColor(c.status === 'running' ? '#4CAF50' : this.themeTextTertiary)
+                    }
+                    .width('100%')
+
+                    if (c.port) {
+                      Text('端口: ' + c.port)
+                        .fontSize(13)
+                        .fontColor(this.themeTextSecondary)
+                    }
+                    if (c.opencode_url) {
+                      Text(c.opencode_url)
+                        .fontSize(13)
+                        .fontColor(this.themeConfig)
+                        .maxLines(1)
+                    }
+                  }
+                  .layoutWeight(1)
+                  .alignItems(HorizontalAlign.Start)
+                }
+                .width('100%')
+                .padding({ left: 16, right: 16, top: 12, bottom: 8 })
+
+                Row({ space: 8 }) {
+                  if (c.status === 'stopped' || c.status === 'error') {
+                    Button('启动')
+                      .height(32)
+                      .fontSize(13)
+                      .fontColor('#FFFFFF')
+                      .backgroundColor(this.themeAccent)
+                      .borderRadius(8)
+                      .enabled(!this.loading)
+                      .layoutWeight(1)
+                      .onClick(() => this.doStart(c.id))
+                  } else if (c.status === 'running') {
+                    Button('停止')
+                      .height(32)
+                      .fontSize(13)
+                      .fontColor('#FFFFFF')
+                      .backgroundColor('#FF9800')
+                      .borderRadius(8)
+                      .enabled(!this.loading)
+                      .layoutWeight(1)
+                      .onClick(() => this.doStop(c.id))
+                  } else {
+                    Text('处理中...')
+                      .fontSize(13)
+                      .fontColor(this.themeTextTertiary)
+                      .layoutWeight(1)
+                  }
+
+                  Button('添加到后端')
+                    .height(32)
+                    .fontSize(13)
+                    .fontColor('#FFFFFF')
+                    .backgroundColor(this.themeConfig)
+                    .borderRadius(8)
+                    .enabled(!this.loading)
+                    .layoutWeight(1)
+                    .onClick(() => this.doAddAsBackend(c))
+
+                  Button('删除')
+                    .height(32)
+                    .fontSize(13)
+                    .fontColor('#FFFFFF')
+                    .backgroundColor('#FF3B30')
+                    .borderRadius(8)
+                    .enabled(!this.loading)
+                    .layoutWeight(1)
+                    .onClick(() => this.doDelete(c.id))
+                }
+                .width('100%')
+                .padding({ left: 16, right: 16, bottom: 12 })
+              }
+              .width('100%')
+              .backgroundColor(this.themeBgCard)
+            }
+          }, (c: ContainerInfo) => c.id)
         }
+        .divider({ strokeWidth: 0.5, color: this.themeBorderPrimary })
+        .backgroundColor(this.themeBgCard)
+        .width('100%')
         .layoutWeight(1)
       }
     }
     .width('100%')
     .height('100%')
-    .backgroundColor(this.themeBgPrimary)
+    .backgroundColor(this.themeBgSecondary)
   }
 }
 
