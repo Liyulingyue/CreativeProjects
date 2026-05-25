@@ -53,6 +53,11 @@ struct ContainerList {
       const result = await this.core.createContainer(trimmed);
       if (result.success && result.container) {
         this.containers = [...this.containers, result.container as ContainerInfo];
+        const c = result.container as ContainerInfo;
+        if (c.opencode_url && c.opencode_username) {
+          await this.core.addBackendFromContainer(c.opencode_url, c.opencode_username, c.opencode_password || '', c.name);
+        }
+        AppStorage.setOrCreate<string>('needRefreshBackends', 'true');
         promptAction.showToast({ message: '创建成功', duration: 2000 });
       } else {
         promptAction.showToast({ message: result.error || '创建失败', duration: 3000 });
@@ -68,10 +73,10 @@ struct ContainerList {
     this.loading = true;
     const result = await this.core.listContainers();
     this.loading = false;
-    if (!result.success) {
-      promptAction.showToast({ message: result.error || '加载失败', duration: 3000 });
-    } else {
+      if (result.success) {
       this.containers = result.containers;
+    } else {
+      promptAction.showToast({ message: result.error || '加载失败', duration: 3000 });
     }
   }
 

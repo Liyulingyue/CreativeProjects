@@ -42,10 +42,22 @@ export struct BackendList {
   build() {
     Column() {
       Row() {
+        Text('<')
+          .fontSize(24)
+          .fontColor(this.themeAccent)
+          .padding({ right: 12 })
+          .onClick(() => router.back())
         Text('后端管理')
           .fontSize(20)
           .fontWeight(FontWeight.Bold)
         Blank()
+        Text('远')
+          .fontSize(10)
+          .fontColor('#FFFFFF')
+          .backgroundColor(this.themeAccent)
+          .borderRadius(4)
+          .padding({ left: 8, right: 8, top: 4, bottom: 4 })
+          .onClick(() => router.pushUrl({ url: 'pages/ContainerList' }))
         Text('+')
           .fontSize(28)
           .fontColor(this.themeAccent)
@@ -109,10 +121,21 @@ export struct BackendList {
                 .margin({ right: 12 })
 
                 Column() {
-                  Text(backend.notes ? backend.notes : backend.url)
-                    .fontSize(15)
-                    .fontWeight(FontWeight.Medium)
-                    .maxLines(1)
+                  Row({ space: 6 }) {
+                    Text(backend.notes ? backend.notes : backend.url)
+                      .fontSize(15)
+                      .fontWeight(FontWeight.Medium)
+                      .maxLines(1)
+                    if (backend.source === 'container') {
+                      Text('远')
+                        .fontSize(10)
+                        .fontColor('#FFFFFF')
+                        .backgroundColor(this.themeAccent)
+                        .borderRadius(4)
+                        .padding({ left: 5, right: 5, top: 2, bottom: 2 })
+                    }
+                  }
+                  .width('100%')
                   if (backend.notes) {
                     Text(backend.url)
                       .fontSize(13)
