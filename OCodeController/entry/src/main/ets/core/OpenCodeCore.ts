@@ -41,6 +41,7 @@ export interface OpenCodeBackend {
   username: string;
   authToken: string;
   notes: string;
+  source?: string;
 }
 
 export interface SyncBackend {
@@ -710,13 +711,16 @@ export class OpenCodeCore {
     return this.backends;
   }
 
-  public async addBackend(url: string, username: string, authToken: string, notes: string): Promise<void> {
+  public async addBackend(url: string, username: string, authToken: string, notes: string, source?: string): Promise<void> {
+    const exists = this.backends.some(b => b.url === url);
+    if (exists) return;
     this.backends.push({
       id: Date.now().toString(),
       url,
       username,
       authToken,
       notes,
+      source: source,
     });
     await this.saveBackends();
   }
@@ -1529,7 +1533,16 @@ export class OpenCodeCore {
   }
 
   public async addBackendFromContainer(opencodeUrl: string, username: string, password: string, name: string): Promise<void> {
-    await this.addBackend(opencodeUrl, username, password, name);
+    await this.addBackend(opencodeUrl, username, password, name, 'container');
+  }
+
+  public async syncContainersToBackends(containers: ContainerInfo[]): Promise<void> {
+    for (let i = 0; i < containers.length; i++) {
+      const c = containers[i];
+      if (c.opencode_url && c.opencode_username) {
+        await this.addBackend(c.opencode_url, c.opencode_username, c.opencode_password || '', c.name, 'container');
+      }
+    }
   }
 
 }
