@@ -1,6 +1,7 @@
 import { OpenCodeCore } from '../core/OpenCodeCore';
 import http from '@ohos.net.http';
 import router from '@ohos.router';
+import promptAction from '@ohos.promptAction';
 
 interface UserInfo {
   id: string;
@@ -15,6 +16,11 @@ interface TokenData {
 
 interface RegisterErrorBody {
   detail?: string;
+}
+
+interface UpdateTimestampResp {
+  timestamp: string;
+  updated_at: string;
 }
 
 @Component
@@ -64,6 +70,13 @@ export struct AboutPage {
   @State syncMsg: string = '';
   @State redeemCode: string = '';
   @State redeemMsg: string = '';
+  @State showUpdate: boolean = false;
+  @State updateServerUrl: string = '';
+  @State updateCheckLoading: boolean = false;
+  @State updateStatus: string = '';
+  @State updateAvailable: boolean = false;
+  @State localVersion: string = '0.1.0';
+  @State remoteVersion: string = '';
 
   aboutToAppear() {
     this.isImmersiveMode = this.core.getImmersiveMode();
@@ -363,6 +376,8 @@ export struct AboutPage {
             Divider().height(0.5).color(this.themeBorderSecondary).margin({ left: 16 })
             this.ListItem('远程环境', '管理远程后端容器', () => { router.pushUrl({ url: 'pages/ContainerList' }); })
             Divider().height(0.5).color(this.themeBorderSecondary).margin({ left: 16 })
+            this.ListItem('软件更新', '检查并下载最新版本', () => { this.showUpdate = true; })
+            Divider().height(0.5).color(this.themeBorderSecondary).margin({ left: 16 })
             this.ListItem('设置', this.isImmersiveMode ? '当前: 沉浸模式' : '当前: 完整模式', () => { this.showSettings = true; })
           }
           .width('100%')
@@ -386,6 +401,10 @@ export struct AboutPage {
 
       if (this.showAccount) {
         this.buildAccountPanel()
+      }
+
+      if (this.showUpdate) {
+        this.buildUpdatePanel()
       }
     }
     .width('100%')
@@ -1287,6 +1306,57 @@ export struct AboutPage {
     .backgroundColor(this.themeBgPrimary)
   }
 
+  private async doCheckUpdate(): Promise<void> {
+    if (!this.updateServerUrl.trim()) {
+      this.updateStatus = '请输入更新服务器地址';
+      return;
+    }
+    this.updateCheckLoading = true;
+    this.updateStatus = '检查中...';
+    const baseUrl = this.updateServerUrl.replace(/\/+$/, '');
+    const timestampUrl = `${baseUrl}/api/pages/downloads/tags/OCodeController/timestamp`;
+    const req = http.createHttp();
+    req.request(
+      timestampUrl,
+      {
+        method: http.RequestMethod.GET,
+        connectTimeout: 10000,
+        readTimeout: 10000
+      },
+      (err, data) => {
+        req.destroy();
+        this.updateCheckLoading = false;
+        if (err) {
+          this.updateStatus = '网络错误: ' + String(err);
+          return;
+        }
+        if (data.responseCode === 200) {
+          try {
+            const resp = JSON.parse(data.result as string) as UpdateTimestampResp;
+            this.remoteVersion = resp.timestamp;
+            if (this.remoteVersion !== this.localVersion) {
+              this.updateAvailable = true;
+              this.updateStatus = `发现新版本: ${this.remoteVersion}`;
+            } else {
+              this.updateAvailable = false;
+              this.updateStatus = '已是最新版本';
+            }
+          } catch {
+            this.updateStatus = '响应解析失败';
+          }
+        } else {
+          this.updateStatus = `检查失败 (${data.responseCode})`;
+        }
+      }
+    );
+  }
+
+  private getDownloadUrl(): string {
+    if (!this.updateServerUrl.trim() || !this.updateAvailable) return '';
+    const baseUrl = this.updateServerUrl.replace(/\/+$/, '');
+    return `${baseUrl}/api/pages/downloads/tags/OCodeController`;
+  }
+
   private getThemeColor(name: string): string {
     if (name === '极光绿') { return '#07C160'; }
     if (name === '樱花粉') { return '#FF69B4'; }
@@ -1294,6 +1364,142 @@ export struct AboutPage {
     if (name === '日落橙') { return '#FF8C00'; }
     if (name === '薰衣草') { return '#9B59B6'; }
     return '#07C160';
+  }
+
+  @Builder
+  buildUpdatePanel() {
+    Stack() {
+      Column() {
+        Column() {
+          Row() {
+            Text('<')
+              .fontSize(22)
+              .fontColor(this.themeAccent)
+              .padding({ left: 4, right: 12 })
+              .onClick(() => { this.showUpdate = false; })
+            Text('软件更新')
+              .fontSize(18)
+              .fontWeight(FontWeight.Bold)
+              .layoutWeight(1)
+          }
+          .width('100%')
+          .padding({ left: 20, right: 20, top: 16, bottom: 12 })
+
+          Divider().height(0.5).color(this.themeBorderPrimary)
+        }
+        .width('100%')
+        .backgroundColor(this.themeBgCard)
+
+        Scroll() {
+          Column({ space: 16 }) {
+            Column({ space: 8 }) {
+              Stack() {
+                Image($r('app.media.colorfulO288'))
+                  .width(64)
+                  .height(64)
+                  .borderRadius(16)
+              }
+              Text('O-Code Controller')
+                .fontSize(18)
+                .fontWeight(FontWeight.Bold)
+              Text(`当前版本: ${this.localVersion}`)
+                .fontSize(13)
+                .fontColor(this.themeTextTertiary)
+            }
+            .width('100%')
+            .padding({ top: 24, bottom: 16 })
+            .alignItems(HorizontalAlign.Center)
+
+            Column({ space: 12 }) {
+              Text('更新服务器地址')
+                .fontSize(13)
+                .fontColor(this.themeTextTertiary)
+                .fontWeight(FontWeight.Medium)
+                .width('100%')
+                .padding({ left: 4 })
+
+              TextInput({ placeholder: 'http://xx.xx.xx.xx:port', text: this.updateServerUrl })
+                .width('100%')
+                .height(48)
+                .backgroundColor(this.themeBgCard)
+                .borderRadius(12)
+                .padding({ left: 16, right: 16 })
+                .onChange((v: string) => { this.updateServerUrl = v; })
+
+              Button(this.updateCheckLoading ? '检查中...' : '检查更新')
+                .width('100%')
+                .height(44)
+                .fontSize(14)
+                .fontColor('#FFFFFF')
+                .backgroundColor(this.themeAccent)
+                .borderRadius(12)
+                .enabled(!this.updateCheckLoading)
+                .onClick(() => this.doCheckUpdate())
+            }
+            .width('100%')
+
+            if (this.updateStatus) {
+              Column({ space: 8 }) {
+                Text(this.updateStatus)
+                  .fontSize(14)
+                  .fontColor(this.updateAvailable ? this.themeAccent : this.themeTextSecondary)
+                  .width('100%')
+
+                if (this.updateAvailable) {
+                  Column({ space: 8 }) {
+                    Text('下载地址（点击打开）')
+                      .fontSize(12)
+                      .fontColor(this.themeTextTertiary)
+                      .width('100%')
+                    Text(this.getDownloadUrl())
+                      .fontSize(13)
+                      .fontColor(this.themeLink)
+                      .width('100%')
+                      .decoration({ type: TextDecorationType.Underline })
+                      .maxLines(2)
+                      .textOverflow({ overflow: TextOverflow.Ellipsis })
+                      .onClick(() => {
+                        try {
+                          const context = this.core.getContext();
+                          if (context) {
+                            context.startAbility({
+                              action: 'ohos.want.action.viewData',
+                              uri: this.getDownloadUrl()
+                            });
+                          }
+                        } catch (e) {
+                          promptAction.showToast({ message: '请手动复制链接到浏览器', duration: 3000 });
+                        }
+                      })
+                  }
+                  .width('100%')
+                  .padding(12)
+                  .backgroundColor(this.themeBgPrimary)
+                  .borderRadius(8)
+                }
+              }
+              .width('100%')
+              .padding(16)
+              .backgroundColor(this.themeBgCard)
+              .borderRadius(12)
+            }
+
+            Text('提示：输入托管更新包的服务器地址，应用将自动检查版本并提供下载。')
+              .fontSize(12)
+              .fontColor(this.themeTextTertiary)
+              .width('100%')
+          }
+          .width('100%')
+          .padding({ left: 16, right: 16, top: 16, bottom: 32 })
+        }
+        .layoutWeight(1)
+      }
+      .width('100%')
+      .height('100%')
+      .backgroundColor(this.themeBgPrimary)
+    }
+    .width('100%')
+    .height('100%')
   }
 
   @Builder

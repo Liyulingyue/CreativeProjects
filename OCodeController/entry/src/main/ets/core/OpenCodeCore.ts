@@ -180,6 +180,10 @@ export class OpenCodeCore {
     }
   }
 
+  public getContext(): common.UIAbilityContext | null {
+    return this.context;
+  }
+
   // 注册会话变更监听器
   public setSessionsChangedCallback(callback: SessionsChangedCallback | null): void {
     this.sessionsChangedCallback = callback;
