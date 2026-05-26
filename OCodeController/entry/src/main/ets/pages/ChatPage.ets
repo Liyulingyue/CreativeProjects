@@ -58,6 +58,8 @@ struct ChatPage {
   private viewModel: ChatViewModel = new ChatViewModel();
   @State realSessionId: string = '';
   @State preferredModel: string = '';
+  @State lastMsgCursor: string = '';
+  @State lastCachedMsgTime: number = 0;
   @State pendingPermission: PendingPermission | null = null;
   @State isImmersiveMode: boolean = true;
   @State displayUsername: string = 'User';
@@ -100,6 +102,8 @@ struct ChatPage {
       this.preferredModel = project?.preferredModel || '';
       console.info('[ChatPage] preferredModel set to:', this.preferredModel);
     }
+    this.lastMsgCursor = '';
+    this.lastCachedMsgTime = 0;
     this.core.setCurrentProject(this.sessionId);
     this.core.clearLeftFlag();
     if (this.realSessionId) {
@@ -175,6 +179,15 @@ struct ChatPage {
       console.info('[ChatPage] loadHistory got', page.items.length, 'items (latest mode)');
       if (page.items.length > 0) {
         this.messages = page.items;
+        this.lastCachedMsgTime = page.items[page.items.length - 1].timestamp;
+        if (page.cursor.next) {
+          this.lastMsgCursor = this.viewModel.invertCursorForAfter(page.cursor.next);
+        } else {
+          const last = page.items[page.items.length - 1];
+          if (last && last.msgId) {
+            this.lastMsgCursor = this.viewModel.buildAfterCursor(last.msgId, last.timestamp);
+          }
+        }
         this.scrollToBottom();
       }
       if (hasPending) {
@@ -200,6 +213,10 @@ struct ChatPage {
               this.messages = msgs;
             } else {
               this.messages = [...msgs, ...this.messages];
+            }
+            const last = this.messages[this.messages.length - 1];
+            if (last && last.msgId) {
+              this.lastMsgCursor = this.viewModel.buildAfterCursor(last.msgId, last.timestamp);
             }
             this.scrollToBottom();
           }
@@ -587,8 +604,9 @@ struct ChatPage {
       // this.core.startSse(this.sessionId);
     }
 
+    const userMsgId = `user-${Date.now()}`;
     this.messages = [...this.messages, {
-      id: `user-${Date.now()}`,
+      id: userMsgId,
       role: 'user',
       content: text,
       timestamp: Date.now()
@@ -597,6 +615,7 @@ struct ChatPage {
     this.isLoading = true;
     this.scrollToBottom();
 
+    const beforeCursor = this.lastMsgCursor;
     const loadingId = `loading-${Date.now()}`;
     this.messages = [...this.messages, {
       id: loadingId,
@@ -616,7 +635,7 @@ struct ChatPage {
       loadingId,
       text,
       currentPreferredModel,
-      (result) => {
+      async (result) => {
         const response = result.response;
         const error = result.error;
         const respLoadingId = result.loadingId;
@@ -624,27 +643,50 @@ struct ChatPage {
           this.isLoading = false;
         }
 
-        this.messages = this.messages.filter(m => m.id !== respLoadingId);
-
         if (error) {
+          this.messages = this.messages.filter(m => m.id !== respLoadingId);
           this.messages = [...this.messages, {
             id: `error-${Date.now()}`,
             role: 'assistant',
             content: error,
             timestamp: Date.now()
           }];
-        } else if (response) {
-          const content = this.viewModel.formatMessage(response);
-          this.messages = [...this.messages, {
-            id: response.info?.id || `resp-${Date.now()}`,
-            role: 'assistant',
-            content: content || '完成',
-            timestamp: Date.now(),
-            model: this.preferredModel
-          }];
+          this.scrollToBottom();
+          return;
         }
 
-        this.scrollToBottom();
+        if (response) {
+          let newMsgs: DisplayMessage[] = [];
+          if (beforeCursor) {
+            const page = await this.viewModel.loadHistoryPage(
+              this.backendUrl,
+              this.authToken,
+              this.directory,
+              this.realSessionId,
+              beforeCursor,
+              50,
+              'asc',
+              this.username
+            );
+            newMsgs = page.items.filter(m => m.timestamp > this.lastCachedMsgTime);
+            if (page.cursor.next) {
+              this.lastMsgCursor = this.viewModel.invertCursorForAfter(page.cursor.next);
+            }
+          }
+          this.messages = this.messages.filter(m => m.id !== respLoadingId && m.id !== userMsgId);
+          if (newMsgs.length > 0) {
+            this.messages = [...this.messages, ...newMsgs];
+          } else {
+            this.messages = [...this.messages, {
+              id: response.info?.id || `resp-${Date.now()}`,
+              role: 'assistant',
+              content: this.viewModel.formatMessage(response),
+              timestamp: Date.now(),
+              model: this.preferredModel
+            }];
+          }
+          this.scrollToBottom();
+        }
       }
     );
   }
