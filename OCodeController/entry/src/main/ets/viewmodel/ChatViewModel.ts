@@ -1,4 +1,5 @@
 import http from '@ohos.net.http';
+import util from '@ohos.util';
 import { OpenCodeCore } from '../core/OpenCodeCore';
 import { OpenCodeMessage, OpenCodeMessagePart } from '../core/OpenCodeApiClient';
 
@@ -9,6 +10,7 @@ export interface DisplayMessage {
   timestamp: number;
   isLoading?: boolean;
   model?: string;
+  msgId?: string;
 }
 
 export interface MessagePage {
@@ -145,7 +147,47 @@ export class ChatViewModel {
     return parts.join('\n\n');
   }
 
-  private toDisplayMessages(messages: OpenCodeMessage[]): DisplayMessage[] {
+  public buildAfterCursor(msgId: string, timestamp: number): string {
+    const payload = JSON.stringify({ id: msgId, time: timestamp, order: 'asc', direction: 'next' });
+    return this.strToBase64Url(payload);
+  }
+
+  private decodeCursor(cursorStr: string): { id: string; time: number; order: string; direction: string } | null {
+    try {
+      const json = this.base64UrlToStr(cursorStr);
+      return JSON.parse(json) as { id: string; time: number; order: string; direction: string };
+    } catch {
+      return null;
+    }
+  }
+
+  public invertCursorForAfter(cursorStr: string): string {
+    const decoded = this.decodeCursor(cursorStr);
+    if (!decoded) return cursorStr;
+    const inverted = { id: decoded.id, time: decoded.time, order: 'asc', direction: 'next' };
+    return this.strToBase64Url(JSON.stringify(inverted));
+  }
+
+  private strToBase64Url(str: string): string {
+    const chars: number[] = [];
+    for (let i = 0; i < str.length; i++) {
+      chars.push(str.charCodeAt(i));
+    }
+    const input = new Uint8Array(chars);
+    const base64 = new util.Base64Helper().encodeToStringSync(input);
+    return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  private base64UrlToStr(base64Url: string): string {
+    let base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+    const padding = (4 - (base64.length % 4)) % 4;
+    base64 += '='.repeat(padding);
+    const decoded = new util.Base64Helper().decodeSync(base64);
+    const decoder = util.TextDecoder.create('utf-8');
+    return decoder.decodeToString(decoded);
+  }
+
+  public toDisplayMessages(messages: OpenCodeMessage[]): DisplayMessage[] {
     return messages.map((msg, index): DisplayMessage => {
       let model: string | undefined;
       if (msg.info.role === 'assistant' && msg.info.providerID && msg.info.modelID) {
@@ -156,7 +198,8 @@ export class ChatViewModel {
         role: msg.info.role as 'user' | 'assistant',
         content: this.formatMessage(msg),
         timestamp: msg.info.time.created,
-        model: model
+        model: model,
+        msgId: msg.info.id || `msg-${index}`
       };
     });
   }
