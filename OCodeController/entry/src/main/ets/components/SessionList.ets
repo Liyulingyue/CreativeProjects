@@ -11,6 +11,7 @@ interface SessionDisplayItem {
   updatedAtTimestamp: number;
   isWorking: boolean;
   unreadCount: number;
+  hasDraft: boolean;
   session: OpenCodeSession;
 }
 
@@ -70,6 +71,7 @@ export struct SessionList {
       
       this.sessions = localSessions.map((s): SessionDisplayItem => {
         const project = this.core.getProjectById(s.id);
+        const draft = this.core.getDraft(s.id);
         return {
           id: s.id,
           name: s.name,
@@ -80,6 +82,7 @@ export struct SessionList {
           updatedAtTimestamp: s.updatedAtTimestamp,
           isWorking: project?.isWorking ?? false,
           unreadCount: project?.unreadCount ?? 0,
+          hasDraft: !!(draft && draft.trim().length > 0),
           session: {
             id: s.id,
             projectID: '',
@@ -242,10 +245,18 @@ export struct SessionList {
                   .margin({ right: 16 })
 
                   Column() {
-                    Text(item.name)
-                      .fontSize(16)
-                      .fontWeight(FontWeight.Medium)
-                      .maxLines(1)
+                    Row() {
+                      Text(item.name)
+                        .fontSize(16)
+                        .fontWeight(FontWeight.Medium)
+                        .maxLines(1)
+                      if (item.hasDraft) {
+                        Text('[草稿]')
+                          .fontSize(12)
+                          .fontColor('#FF9800')
+                          .margin({ left: 6 })
+                      }
+                    }
                     Row() {
                       Text('后端: ' + (this.backends.find(b => b.id === item.backendId)?.notes || item.backendUrl))
                         .fontSize(11)
