@@ -19,6 +19,7 @@ export interface OpenCodeProject {
   remoteSessionId?: string;
   preferredModel?: string;
   lastAccess: number;
+  draft?: string;
   // hasPendingWork: 由 isWorking || unreadCount 派生，表示有待处理事项
   isWorking: boolean;
   unreadCount: number;
@@ -659,6 +660,23 @@ export class OpenCodeCore {
 
   public getCurrentProject(): OpenCodeProject | undefined {
     return this.projects.find(p => p.id === this.currentProjectId);
+  }
+
+  public getDraft(projectId: string): string {
+    const project = this.projects.find(p => p.id === projectId);
+    return project?.draft ?? '';
+  }
+
+  public saveDraft(projectId: string, draft: string): void {
+    const index = this.projects.findIndex(p => p.id === projectId);
+    if (index !== -1) {
+      this.projects[index].draft = draft;
+      this.saveProjects();
+    }
+  }
+
+  public clearDraft(projectId: string): void {
+    this.saveDraft(projectId, '');
   }
 
   public setCurrentSession(sessionId: string): void {
