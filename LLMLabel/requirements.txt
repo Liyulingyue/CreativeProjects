@@ -1,0 +1,8 @@
+openai
+openaijsonwrapper
+python-dotenv
+transformers
+torch
+datasets
+accelerate
+Pillow
