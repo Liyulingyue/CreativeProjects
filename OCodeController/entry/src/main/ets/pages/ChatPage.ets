@@ -119,10 +119,16 @@ struct ChatPage {
     this.isImmersiveMode = this.core.getImmersiveMode();
     this.displayUsername = this.core.getDisplayUsername() || 'User';
 
+    const draft = this.core.getDraft(this.sessionId);
+    if (draft) {
+      this.inputText = draft;
+    }
+
     this.loadHistory();
   }
 
   aboutToDisappear() {
+    this.core.saveDraft(this.sessionId, this.inputText);
     this.core.markCurrentProjectLeft();
     // TODO: SSE 已禁用
     // this.core.stopSse();
@@ -686,6 +692,7 @@ struct ChatPage {
             }];
           }
           this.scrollToBottom();
+          this.core.clearDraft(this.sessionId);
         }
       }
     );
