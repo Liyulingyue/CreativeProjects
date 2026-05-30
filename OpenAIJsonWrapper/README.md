@@ -97,3 +97,38 @@ result = wrapper.chat(
 - **健壮解析**: 使用正则表达式提取 ` ```json ` 块，具备自动容错（修复末尾逗号等）和回退提取（寻找最后一个合法的 JSON 对象/数组）能力。
 - **灵活配置**: 支持在实例级别或调用级别设置结构、需求和背景，支持多需求合并。
 - **极简设计**: 专注于 LLM 工具调用/结构化数据提取任务。
+- **多模态支持**: 支持 GPT-4V 等 vision 模型，自动处理本地图片路径和 URL，支持结构化图片分析。
+
+### 多模态图片分析（Vision）
+
+```python
+from openai import OpenAI
+from openaijsonwrapper import OpenAIJsonWrapper
+
+client = OpenAI(api_key="sk-...", base_url="...")
+
+target_structure = {
+    "label": "string (图片分类标签)",
+    "reason": "string (简短理由)"
+}
+
+wrapper = OpenAIJsonWrapper(
+    client,
+    model="gpt-4o",
+    target_structure=target_structure
+)
+
+# 支持本地图片路径或网络 URL
+result = wrapper.vision(
+    image_source="path/to/image.jpg",
+    prompt="这张图片属于哪个类别？",
+    requirements=["只能从给定选项中选择"]
+)
+
+if not result["error"]:
+    print(result["data"])
+else:
+    print(result["error"])
+```
+
+`vision()` 方法会自动将本地图片转为 base64 编码，并构造多模态消息格式发送给 vision 模型，返回结构化的 JSON 解析结果。

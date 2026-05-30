@@ -1,5 +1,7 @@
+import base64
 import json
 import re
+from pathlib import Path
 from typing import Any, List, Optional, Tuple, Union, Dict
 
 TOOL_MARKER_START = "```json"
@@ -178,6 +180,94 @@ class OpenAIJsonWrapper:
         
         reasoning, data, error = self._parse_content(content)
         
+        return {
+            "reasoning": reasoning,
+            "data": data,
+            "error": error,
+            "raw_content": content,
+            "response_id": getattr(response, "id", None)
+        }
+
+    def _encode_image(self, image_source: str) -> str:
+        """将图片路径或 URL 转为 base64 data URI 或直接 URL。"""
+        if image_source.startswith("http://") or image_source.startswith("https://"):
+            return image_source
+        path = Path(image_source)
+        if not path.exists():
+            raise FileNotFoundError(f"Image not found: {image_source}")
+        ext = path.suffix.lower()
+        mime_map = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+            ".bmp": "image/bmp",
+        }
+        mime = mime_map.get(ext, "image/jpeg")
+        with open(path, "rb") as f:
+            data = base64.b64encode(f.read()).decode("utf-8")
+        return f"data:{mime};base64,{data}"
+
+    def vision(
+        self,
+        image_source: str,
+        prompt: str = "",
+        target_structure: Optional[Any] = None,
+        requirements: Optional[Union[str, List[str]]] = None,
+        extra_requirements: Optional[Union[str, List[str]]] = None,
+        background: Optional[str] = None,
+        model: Optional[str] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        用多模态模型（如 GPT-4V）处理图片并返回结构化 JSON。
+
+        :param image_source: 图片路径（本地）或 URL（网络可达）
+        :param prompt: 图片相关的文本提问
+        :param target_structure: 希望获取的 JSON 模板定义
+        :param requirements: 特定需求说明 (str 或 list)
+        :param extra_requirements: 额外补充需求，会与 requirements 合并
+        :param background: 背景知识/上下文
+        :param model: 模型名称（若为 None 则使用实例初始化时的值）
+        :return: 包含 'reasoning', 'data', 'error', 'raw_content' 的字典
+        """
+        target = target_structure if target_structure is not None else self.target_structure
+        reqs = requirements if requirements is not None else self.requirements
+        combined = self._to_list(reqs) + self._to_list(extra_requirements)
+        reqs_for_prompt = combined if combined else None
+        bg = background if background is not None else self.background
+        selected_model = model if model is not None else self.model
+
+        if target is None:
+            raise ValueError("target_structure must be provided either in __init__ or in vision()")
+
+        prompt_for_prompt = self._build_system_prompt(target, requirements=reqs_for_prompt, background=bg)
+
+        image_uri = self._encode_image(image_source)
+
+        messages = [
+            {"role": "system", "content": prompt_for_prompt},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"{prompt}\n\n{prompt_for_prompt}" if prompt else prompt_for_prompt},
+                    {"type": "image_url", "image_url": {"url": image_uri}}
+                ]
+            }
+        ]
+
+        response = self.client.chat.completions.create(
+            model=selected_model,
+            messages=messages,
+            **kwargs
+        )
+
+        choice = response.choices[0]
+        content = choice.message.content or ""
+
+        reasoning, data, error = self._parse_content(content)
+
         return {
             "reasoning": reasoning,
             "data": data,
