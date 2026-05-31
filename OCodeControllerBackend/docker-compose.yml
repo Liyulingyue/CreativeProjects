@@ -1,0 +1,15 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ocode-controller-backend
+    ports:
+      - "16081:8111"
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./opencode_harmony.db:/app/opencode_harmony.db
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+    environment:
+      - ENVIRONMENT=docker
