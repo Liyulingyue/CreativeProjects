@@ -646,7 +646,7 @@ export struct AboutPage {
               .width('100%')
               .padding({ left: 4 })
 
-            TextInput({ placeholder: 'http://localhost:4096', text: this.configServerUrl })
+            TextInput({ placeholder: 'https://ocodecontroller.liyulingyue.com', text: this.configServerUrl })
               .width('100%')
               .height(48)
               .backgroundColor(this.themeBgCard)

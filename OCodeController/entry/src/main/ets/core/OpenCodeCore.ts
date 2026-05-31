@@ -148,6 +148,7 @@ export class OpenCodeCore {
   private static readonly KEY_MESSAGE_LOAD_MODE = 'messageLoadMode';
   private static readonly KEY_ACCOUNT_SERVER_URL = 'accountServerUrl';
   private static readonly KEY_ACCOUNT_TOKEN = 'accountToken';
+  private static readonly DEFAULT_ACCOUNT_SERVER_URL = 'https://ocodecontroller.liyulingyue.com';
 
   public static readonly THEME_NAMES: string[] = [
     '极光绿', '樱花粉', '天空蓝', '日落橙', '薰衣草'
@@ -361,11 +362,12 @@ export class OpenCodeCore {
   }
 
   public getAccountServerUrl(): string {
-    if (!this.preferences) return '';
+    if (!this.preferences) return OpenCodeCore.DEFAULT_ACCOUNT_SERVER_URL;
     try {
-      return this.preferences.getSync(OpenCodeCore.KEY_ACCOUNT_SERVER_URL, '') as string;
+      const stored = this.preferences.getSync(OpenCodeCore.KEY_ACCOUNT_SERVER_URL, '') as string;
+      return stored ? stored : OpenCodeCore.DEFAULT_ACCOUNT_SERVER_URL;
     } catch {
-      return '';
+      return OpenCodeCore.DEFAULT_ACCOUNT_SERVER_URL;
     }
   }
 
