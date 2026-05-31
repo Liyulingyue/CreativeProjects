@@ -71,8 +71,9 @@ export struct AboutPage {
   @State redeemCode: string = '';
   @State redeemMsg: string = '';
   @State showUpdate: boolean = false;
-  @State updateServerUrl: string = '';
   @State updateCheckLoading: boolean = false;
+  private updateCheckCompletedCount: number = 0;
+  private updateSuccessUrls: string[] = [];
   @State updateStatus: string = '';
   @State updateAvailable: boolean = false;
   @State localVersion: string = '0.1.0';
@@ -1306,16 +1307,48 @@ export struct AboutPage {
     .backgroundColor(this.themeBgPrimary)
   }
 
-  private async doCheckUpdate(): Promise<void> {
-    if (!this.updateServerUrl.trim()) {
-      this.updateStatus = '请输入更新服务器地址';
-      return;
-    }
+  private doCheckUpdate(): void {
     this.updateCheckLoading = true;
     this.updateStatus = '检查中...';
-    const baseUrl = this.updateServerUrl.replace(/\/+$/, '');
-    const timestampUrl = `${baseUrl}/api/pages/downloads/tags/OCodeController/timestamp`;
+    this.updateAvailable = false;
+    this.updateSuccessUrls = [];
+    this.updateCheckCompletedCount = 0;
+    const totalCount = 2;
+    const servers = ['https://www.liyulingyue.com', 'http://cn.liyulingyue.com'];
+
+    const onSingleComplete = (): void => {
+      this.updateCheckCompletedCount++;
+      if (this.updateCheckCompletedCount >= totalCount) {
+        this.updateCheckLoading = false;
+        if (this.updateSuccessUrls.length === 0) {
+          this.updateStatus = '检查失败，请稍后重试';
+        } else if (!this.updateAvailable) {
+          this.updateStatus = '已是最新版本';
+        } else {
+          const names: string[] = this.updateSuccessUrls.map((url: string): string => {
+            return url.includes('www') ? '国际' : '国内';
+          });
+          this.updateStatus = `发现新版本: ${this.remoteVersion}（${names.join('、')}站可用）`;
+        }
+      }
+    };
+
+    const onSingleSuccess = (baseUrl: string, resp: UpdateTimestampResp): void => {
+      this.updateSuccessUrls.push(baseUrl);
+      this.remoteVersion = resp.timestamp;
+      if (this.remoteVersion !== this.localVersion) {
+        this.updateAvailable = true;
+      }
+      onSingleComplete();
+    };
+
+    this.checkServerCallback(servers[0], onSingleSuccess, onSingleComplete);
+    this.checkServerCallback(servers[1], onSingleSuccess, onSingleComplete);
+  }
+
+  private checkServerCallback(baseUrl: string, onSuccess: (baseUrl: string, resp: UpdateTimestampResp) => void, onComplete: () => void): void {
     const req = http.createHttp();
+    const timestampUrl = `${baseUrl}/api/pages/downloads/tags/OCodeController/timestamp`;
     req.request(
       timestampUrl,
       {
@@ -1325,36 +1358,29 @@ export struct AboutPage {
       },
       (err, data) => {
         req.destroy();
-        this.updateCheckLoading = false;
         if (err) {
-          this.updateStatus = '网络错误: ' + String(err);
+          onComplete();
           return;
         }
         if (data.responseCode === 200) {
           try {
             const resp = JSON.parse(data.result as string) as UpdateTimestampResp;
-            this.remoteVersion = resp.timestamp;
-            if (this.remoteVersion !== this.localVersion) {
-              this.updateAvailable = true;
-              this.updateStatus = `发现新版本: ${this.remoteVersion}`;
-            } else {
-              this.updateAvailable = false;
-              this.updateStatus = '已是最新版本';
-            }
+            onSuccess(baseUrl, resp);
           } catch {
-            this.updateStatus = '响应解析失败';
+            onComplete();
           }
         } else {
-          this.updateStatus = `检查失败 (${data.responseCode})`;
+          onComplete();
         }
       }
     );
   }
 
-  private getDownloadUrl(): string {
-    if (!this.updateServerUrl.trim() || !this.updateAvailable) return '';
-    const baseUrl = this.updateServerUrl.replace(/\/+$/, '');
-    return `${baseUrl}/api/pages/downloads/tags/OCodeController`;
+  private getDownloadUrls(): string[] {
+    if (!this.updateAvailable) return [];
+    return this.updateSuccessUrls.map((url: string): string => {
+      return `${url}/api/pages/downloads/tags/OCodeController`;
+    });
   }
 
   private getThemeColor(name: string): string {
@@ -1411,21 +1437,6 @@ export struct AboutPage {
             .alignItems(HorizontalAlign.Center)
 
             Column({ space: 12 }) {
-              Text('更新服务器地址')
-                .fontSize(13)
-                .fontColor(this.themeTextTertiary)
-                .fontWeight(FontWeight.Medium)
-                .width('100%')
-                .padding({ left: 4 })
-
-              TextInput({ placeholder: 'http://xx.xx.xx.xx:port', text: this.updateServerUrl })
-                .width('100%')
-                .height(48)
-                .backgroundColor(this.themeBgCard)
-                .borderRadius(12)
-                .padding({ left: 16, right: 16 })
-                .onChange((v: string) => { this.updateServerUrl = v; })
-
               Button(this.updateCheckLoading ? '检查中...' : '检查更新')
                 .width('100%')
                 .height(44)
@@ -1446,36 +1457,38 @@ export struct AboutPage {
                   .width('100%')
 
                 if (this.updateAvailable) {
-                  Column({ space: 8 }) {
-                    Text('下载地址（点击打开）')
-                      .fontSize(12)
-                      .fontColor(this.themeTextTertiary)
-                      .width('100%')
-                    Text(this.getDownloadUrl())
-                      .fontSize(13)
-                      .fontColor(this.themeLink)
-                      .width('100%')
-                      .decoration({ type: TextDecorationType.Underline })
-                      .maxLines(2)
-                      .textOverflow({ overflow: TextOverflow.Ellipsis })
-                      .onClick(() => {
-                        try {
-                          const context = this.core.getContext();
-                          if (context) {
-                            context.startAbility({
-                              action: 'ohos.want.action.viewData',
-                              uri: this.getDownloadUrl()
-                            });
+                  ForEach(this.getDownloadUrls(), (url: string) => {
+                    Column({ space: 4 }) {
+                      Text(url.includes('www') ? '国际站下载' : '国内站下载')
+                        .fontSize(12)
+                        .fontColor(this.themeTextTertiary)
+                        .width('100%')
+                      Text(url)
+                        .fontSize(13)
+                        .fontColor(this.themeLink)
+                        .width('100%')
+                        .decoration({ type: TextDecorationType.Underline })
+                        .maxLines(2)
+                        .textOverflow({ overflow: TextOverflow.Ellipsis })
+                        .onClick(() => {
+                          try {
+                            const context = this.core.getContext();
+                            if (context) {
+                              context.startAbility({
+                                action: 'ohos.want.action.viewData',
+                                uri: url
+                              });
+                            }
+                          } catch (e) {
+                            promptAction.showToast({ message: '请手动复制链接到浏览器', duration: 3000 });
                           }
-                        } catch (e) {
-                          promptAction.showToast({ message: '请手动复制链接到浏览器', duration: 3000 });
-                        }
-                      })
-                  }
-                  .width('100%')
-                  .padding(12)
-                  .backgroundColor(this.themeBgPrimary)
-                  .borderRadius(8)
+                        })
+                    }
+                    .width('100%')
+                    .padding(12)
+                    .backgroundColor(this.themeBgPrimary)
+                    .borderRadius(8)
+                  }, (url: string) => url)
                 }
               }
               .width('100%')
@@ -1484,7 +1497,7 @@ export struct AboutPage {
               .borderRadius(12)
             }
 
-            Text('提示：输入托管更新包的服务器地址，应用将自动检查版本并提供下载。')
+            Text('提示：www站点中国区访问可能会较慢，cn站点对中国区访问更友好。两个站点内容一致，请按需选择下载链接。')
               .fontSize(12)
               .fontColor(this.themeTextTertiary)
               .width('100%')
