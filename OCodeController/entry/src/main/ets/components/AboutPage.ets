@@ -50,6 +50,7 @@ export struct AboutPage {
   @StorageLink('themeStatusWorking') themeStatusWorking: string = '#2196F3';
   @StorageLink('themeStatusUnread') themeStatusUnread: string = '#FF3B30';
   @StorageLink('themeBgSecondary') themeBgSecondary: string = '#EDEDED';
+  @StorageLink('enableMarkdownRender') enableMarkdownRender: boolean = true;
 
   @State accountServerUrl: string = '';
   @State accountToken: string = '';
@@ -1052,6 +1053,56 @@ export struct AboutPage {
             .onClick(() => {
               this.isImmersiveMode = false;
               this.core.setImmersiveMode(false);
+            })
+          }
+          .width('100%')
+          .backgroundColor(this.themeBgCard)
+          .borderRadius(12)
+
+          Text('输出框渲染')
+            .fontSize(13)
+            .fontColor(this.themeTextTertiary)
+            .fontWeight(FontWeight.Medium)
+            .width('100%')
+            .padding({ left: 4, top: 16, bottom: 8 })
+
+          Column({ space: 0 }) {
+            Row() {
+              Text('文本')
+                .fontSize(16)
+                .fontColor(this.themeTextPrimary)
+              Blank()
+              if (!this.enableMarkdownRender) {
+                Text('✓')
+                  .fontSize(18)
+                  .fontColor(this.themeAccent)
+              }
+            }
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+            .onClick(() => {
+              this.enableMarkdownRender = false;
+              AppStorage.setOrCreate<boolean>('enableMarkdownRender', false);
+            })
+
+            Divider().height(0.5).color(this.themeBorderSecondary).margin({ left: 16 })
+
+            Row() {
+              Text('Markdown')
+                .fontSize(16)
+                .fontColor(this.themeTextPrimary)
+              Blank()
+              if (this.enableMarkdownRender) {
+                Text('✓')
+                  .fontSize(18)
+                  .fontColor(this.themeAccent)
+              }
+            }
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+            .onClick(() => {
+              this.enableMarkdownRender = true;
+              AppStorage.setOrCreate<boolean>('enableMarkdownRender', true);
             })
           }
           .width('100%')
