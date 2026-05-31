@@ -1,6 +1,6 @@
 ﻿import { OpenCodeCore, OpenCodeMessage, SseEvent } from '../core/OpenCodeCore';
 import { ChatViewModel, DisplayMessage } from '../viewmodel/ChatViewModel';
-import { parseMessageSegments, MessageSegment, MessageSegmentType } from '../utils/MessageParser';
+import { parseMessageSegments, MessageSegment, MessageSegmentType, parseMarkdown, MarkdownSegment, MarkdownType } from '../utils/MessageParser';
 import router from '@ohos.router';
 
 interface MessagePart {
@@ -78,6 +78,7 @@ struct ChatPage {
   @StorageLink('themeChatUserBg') themeChatUserBg: string = '#95EC69';
   @StorageLink('themeBorderSecondary') themeBorderSecondary: string = '#F0F0F0';
   @StorageLink('themeConfig') themeConfig: string = '#1677FF';
+  @StorageLink('enableMarkdownRender') enableMarkdownRender: boolean = true;
 
   aboutToAppear() {
     const params = router.getParams() as Record<string, Object>;
@@ -273,6 +274,40 @@ struct ChatPage {
   }
 
   @Builder
+  renderMarkdownText(content: string) {
+    ForEach(parseMarkdown(content), (segment: MarkdownSegment, index: number) => {
+      if (segment.type === MarkdownType.CODE_BLOCK) {
+        Column() {
+          Text(segment.content)
+            .fontSize(12)
+            .fontColor(this.themeTextPrimary)
+            .width('100%')
+        }
+        .width('100%')
+        .padding(10)
+        .backgroundColor('#F0F0F0')
+        .borderRadius(8)
+        .margin({ top: 4, bottom: 4 })
+      } else {
+        Text() {
+          if (segment.type === MarkdownType.BOLD) {
+            Span(segment.content).fontWeight(FontWeight.Bold).fontSize(15)
+          } else if (segment.type === MarkdownType.CODE) {
+            Span(segment.content)
+              .fontSize(13)
+              .fontColor('#D63384')
+              .backgroundColor('#F5F5F5')
+              .borderRadius(4)
+          } else {
+            Span(segment.content).fontSize(15)
+          }
+        }
+        .width('100%')
+      }
+    }, (segment: MarkdownSegment, index: number) => `${index}_${segment.type}_${segment.content.length}`)
+  }
+
+  @Builder
   buildMessageItem(msg: DisplayMessage) {
     Column() {
       if (!this.isImmersiveMode) {
@@ -356,10 +391,17 @@ struct ChatPage {
                   ForEach(parseMessageSegments(msg.content), (segment: MessageSegment, index: number) => {
                     if (segment.type === MessageSegmentType.TEXT) {
                       if (segment.content.trim().length > 0) {
-                        Text(segment.content)
-                          .copyOption(CopyOptions.LocalDevice)
-                          .fontSize(15)
+                        if (this.enableMarkdownRender) {
+                          Column() {
+                            this.renderMarkdownText(segment.content)
+                          }
                           .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+                        } else {
+                          Text(segment.content)
+                            .copyOption(CopyOptions.LocalDevice)
+                            .fontSize(15)
+                            .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+                        }
                       }
                     } else {
                       Column() {
