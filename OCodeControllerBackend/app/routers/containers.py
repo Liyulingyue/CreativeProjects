@@ -59,6 +59,9 @@ async def create_container(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    if not settings.CREATE_CONTAINERS:
+        raise HTTPException(status_code=403, detail="当前服务器不支持创建远程环境")
+
     max_allowed = PLAN_LIMITS.get(current_user.plan, 0)
     result = await db.execute(
         select(func.count(Container.id)).where(Container.user_id == current_user.id)
@@ -106,6 +109,9 @@ async def start_container_endpoint(
     container = result.scalar_one_or_none()
     if not container:
         raise HTTPException(status_code=404, detail="Container not found")
+
+    if not settings.CREATE_CONTAINERS:
+        raise HTTPException(status_code=403, detail="当前服务器不支持创建远程环境")
 
     if is_running(container.id):
         container.status = "running"
