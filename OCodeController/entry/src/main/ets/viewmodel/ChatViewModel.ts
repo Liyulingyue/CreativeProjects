@@ -19,6 +19,7 @@ export interface MessagePage {
     previous?: string;
     next?: string;
   };
+  rawMessages?: OpenCodeMessage[];
 }
 
 interface ToolState {
@@ -268,14 +269,16 @@ export class ChatViewModel {
         await this.core.cacheMessages(realSessionId, messages);
         return {
           items: this.toDisplayMessages(messages),
-          cursor: cursor
+          cursor: cursor,
+          rawMessages: messages
         };
       } else {
         console.info('[ChatViewModel] Non-200 response:', result.responseCode);
         const cached = await this.core.getCachedMessages(realSessionId);
         return {
           items: this.toDisplayMessages(cached),
-          cursor: {}
+          cursor: {},
+          rawMessages: cached
         };
       }
     } catch (e) {
@@ -284,10 +287,22 @@ export class ChatViewModel {
       console.info('[ChatViewModel] Cached messages count:', cached.length);
       return {
         items: this.toDisplayMessages(cached),
-        cursor: {}
+        cursor: {},
+        rawMessages: cached
       };
     } finally {
       this.cancelRequest();
+    }
+  }
+
+  async appendCachedMessages(sessionId: string, newMessages: OpenCodeMessage[]): Promise<void> {
+    if (!sessionId || newMessages.length === 0) return;
+    try {
+      const cached = await this.core.getCachedMessages(sessionId);
+      const merged = [...cached, ...newMessages];
+      await this.core.cacheMessages(sessionId, merged);
+    } catch (e) {
+      console.error('[ChatViewModel] Failed to append cached messages:', e);
     }
   }
 

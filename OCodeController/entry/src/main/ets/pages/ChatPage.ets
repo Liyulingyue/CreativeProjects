@@ -124,7 +124,27 @@ struct ChatPage {
       this.inputText = draft;
     }
 
+    this.loadCachedMessages();
     this.loadHistory();
+  }
+
+  private async loadCachedMessages() {
+    if (!this.realSessionId) return;
+    try {
+      const cached = await this.core.getCachedMessages(this.realSessionId);
+      if (cached.length > 0) {
+        this.messages = this.viewModel.toDisplayMessages(cached);
+        const last = this.messages[this.messages.length - 1];
+        if (last && last.msgId) {
+          this.lastCachedMsgTime = last.timestamp;
+          this.lastMsgCursor = this.viewModel.buildAfterCursor(last.msgId, last.timestamp);
+        }
+        console.info('[ChatPage] Loaded cached messages:', cached.length);
+        this.scrollToBottom();
+      }
+    } catch (e) {
+      console.error('[ChatPage] Failed to load cached messages:', e);
+    }
   }
 
   aboutToDisappear() {
@@ -193,6 +213,9 @@ struct ChatPage {
           if (last && last.msgId) {
             this.lastMsgCursor = this.viewModel.buildAfterCursor(last.msgId, last.timestamp);
           }
+        }
+        if (page.rawMessages && page.rawMessages.length > 0) {
+          this.core.cacheMessages(this.realSessionId, page.rawMessages);
         }
         this.scrollToBottom();
       }
@@ -663,6 +686,7 @@ struct ChatPage {
 
         if (response) {
           let newMsgs: DisplayMessage[] = [];
+          let newRawMsgs: OpenCodeMessage[] | undefined;
           if (beforeCursor) {
             const page = await this.viewModel.loadHistoryPage(
               this.backendUrl,
@@ -675,6 +699,7 @@ struct ChatPage {
               this.username
             );
             newMsgs = page.items.filter(m => m.timestamp > this.lastCachedMsgTime);
+            newRawMsgs = page.rawMessages?.filter(m => m.info?.time?.created > this.lastCachedMsgTime);
             if (page.cursor.next) {
               this.lastMsgCursor = this.viewModel.invertCursorForAfter(page.cursor.next);
             }
@@ -690,6 +715,9 @@ struct ChatPage {
               timestamp: Date.now(),
               model: this.preferredModel
             }];
+          }
+          if (newRawMsgs && newRawMsgs.length > 0) {
+            this.viewModel.appendCachedMessages(this.realSessionId, newRawMsgs);
           }
           this.scrollToBottom();
           this.core.clearDraft(this.sessionId);
