@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     REDEEM_MEMBER: str = "MEMBER2025"
     REDEEM_VIP: str = "VIP2025"
     DOCKER_SUDO_PASSWORD: str = ""
+    CREATE_CONTAINERS: bool = True
 
     class Config:
         env_file = ".env"
