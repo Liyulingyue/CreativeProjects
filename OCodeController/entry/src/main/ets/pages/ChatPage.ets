@@ -471,72 +471,23 @@ struct ChatPage {
   }
 
   build() {
-    Column() {
-      Row() {
-        Text('<')
-          .fontSize(22)
-          .fontColor(this.themeAccent)
-          .padding({ left: 16, right: 16, top: 12, bottom: 12 })
-          .onClick(() => router.back())
-
-        Column() {
-          Text(this.sessionName)
-            .fontSize(17)
-            .fontWeight(FontWeight.Medium)
-            .maxLines(1)
-          Text(this.directory || '/')
-            .fontSize(11)
-            .fontColor(this.themeTextSecondary)
-            .maxLines(1)
-        }
-        .alignItems(HorizontalAlign.Center)
-        .layoutWeight(1)
-
-        Blank()
-
-        Text('···')
-          .fontSize(22)
-          .padding({ left: 16, right: 16, top: 12, bottom: 12 })
-          .onClick(() => {
-            const project = this.core.getProjectById(this.sessionId);
-            router.pushUrl({
-              url: 'pages/SessionDetail',
-              params: {
-                id: this.sessionId,
-                title: this.sessionName,
-                backendId: project?.backendId || '',
-                backendUrl: this.backendUrl,
-                username: this.username,
-                authToken: this.authToken,
-                directory: this.directory,
-                isEditing: true
-              }
-            });
-          })
-      }
-      .width('100%')
-      .height(56)
-      .padding({ left: 8, right: 8 })
-      .backgroundColor(this.themeBgCard)
-      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP])
-
-      Divider().height(0.5).color(this.themeBorderPrimary)
-
-      Scroll(this.scroller) {
-        Column({ space: 8 }) {
-          ForEach(this.messages, (msg: DisplayMessage) => {
-            this.buildMessageItem(msg)
-          }, (msg: DisplayMessage) => msg.id)
-        }
-        .padding({ top: 12, bottom: 12 })
-        .width('100%')
-      }
-      .layoutWeight(1)
-      .backgroundColor(this.themeBgSecondary)
-      .scrollBar(BarState.Off)
-      .align(Alignment.Top)
-
+    Stack() {
       Column() {
+        Scroll(this.scroller) {
+          Column({ space: 8 }) {
+            ForEach(this.messages, (msg: DisplayMessage) => {
+              this.buildMessageItem(msg)
+            }, (msg: DisplayMessage) => msg.id)
+          }
+          .padding({ top: 12, bottom: 12 })
+          .width('100%')
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .backgroundColor(this.themeBgSecondary)
+        .scrollBar(BarState.Off)
+        .align(Alignment.Top)
+
         Row() {
           TextInput({ placeholder: '发送指令...', text: this.inputText })
             .layoutWeight(1)
@@ -562,13 +513,74 @@ struct ChatPage {
               this.sendMessage();
             })
         }
+        .width('100%')
+        .padding({ left: 8, right: 8, top: 8, bottom: 8 })
+        .backgroundColor(this.themeBgCard)
       }
-      .padding({ left: 8, right: 8, top: 8, bottom: 8 })
-      .backgroundColor(this.themeBgCard)
+      .width('100%')
+      .height('100%')
+
+      Column() {
+        Row() {
+          Text('<')
+            .fontSize(22)
+            .fontColor(this.themeAccent)
+            .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+            .onClick(() => router.back())
+
+          Column() {
+            Text(this.sessionName)
+              .fontSize(17)
+              .fontWeight(FontWeight.Medium)
+              .maxLines(1)
+            Text(this.directory || '/')
+              .fontSize(11)
+              .fontColor(this.themeTextSecondary)
+              .maxLines(1)
+          }
+          .alignItems(HorizontalAlign.Center)
+          .layoutWeight(1)
+
+          Blank()
+
+          Text('···')
+            .fontSize(22)
+            .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+            .onClick(() => {
+              const project = this.core.getProjectById(this.sessionId);
+              router.pushUrl({
+                url: 'pages/SessionDetail',
+                params: {
+                  id: this.sessionId,
+                  title: this.sessionName,
+                  backendId: project?.backendId || '',
+                  backendUrl: this.backendUrl,
+                  username: this.username,
+                  authToken: this.authToken,
+                  directory: this.directory,
+                  isEditing: true
+                }
+              });
+            })
+        }
+        .width('100%')
+        .height(56)
+        .padding({ left: 8, right: 8 })
+        .backgroundColor(this.themeBgCard)
+      }
+      .width('100%')
+      .position({ y: 0 })
+      .zIndex(1)
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP])
+
+      Divider()
+        .width('100%')
+        .position({ y: 56 })
+        .zIndex(1)
     }
     .width('100%')
     .height('100%')
-    .expandSafeArea([SafeAreaType.KEYBOARD], [])
+    .expandSafeArea([SafeAreaType.SYSTEM, SafeAreaType.KEYBOARD], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
     .bindSheet(!!this.pendingPermission, this.buildPermissionSheet, {
       dragBar: true,
       showClose: false,
