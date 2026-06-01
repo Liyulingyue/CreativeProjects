@@ -66,7 +66,8 @@ export struct AboutPage {
   @State registerError: string = '';
   @State activeForm: 'login' | 'register' = 'login';
   @State showServerConfig: boolean = false;
-  @State configServerUrl: string = '';
+  @State configServerType: 'official' | 'china' | 'custom' = 'official';
+  @State configCustomUrl: string = '';
   @State syncLoading: boolean = false;
   @State syncMsg: string = '';
   @State redeemCode: string = '';
@@ -270,8 +271,16 @@ export struct AboutPage {
   }
 
   private async saveServerConfig(): Promise<void> {
-    await this.core.setAccountServerUrl(this.configServerUrl.trim());
-    this.accountServerUrl = this.configServerUrl.trim();
+    let url = '';
+    if (this.configServerType === 'official') {
+      url = 'https://ocodecontroller.liyulingyue.com';
+    } else if (this.configServerType === 'china') {
+      url = 'http://ocodecontroller-cn.liyulingyue.com';
+    } else {
+      url = this.configCustomUrl.trim();
+    }
+    await this.core.setAccountServerUrl(url);
+    this.accountServerUrl = url;
     this.showServerConfig = false;
     this.isLoggedIn = false;
     this.currentUser = null;
@@ -554,7 +563,15 @@ export struct AboutPage {
               .fontColor(this.themeTextSecondary)
               .padding({ left: 12, right: 4 })
               .onClick(() => {
-                this.configServerUrl = this.accountServerUrl;
+                const url = this.accountServerUrl;
+                if (url.includes('ocodecontroller-cn')) {
+                  this.configServerType = 'china';
+                } else if (url === 'https://ocodecontroller.liyulingyue.com') {
+                  this.configServerType = 'official';
+                } else {
+                  this.configServerType = 'custom';
+                  this.configCustomUrl = url;
+                }
                 this.showServerConfig = true;
               })
           }
@@ -647,13 +664,84 @@ export struct AboutPage {
               .width('100%')
               .padding({ left: 4 })
 
-            TextInput({ placeholder: 'https://ocodecontroller.liyulingyue.com', text: this.configServerUrl })
+            Column({ space: 0 }) {
+              Row() {
+                Column() {
+                  Text('官方站（国际）')
+                    .fontSize(16)
+                    .fontColor(this.themeTextPrimary)
+                  Text('https://ocodecontroller.liyulingyue.com')
+                    .fontSize(12)
+                    .fontColor(this.themeTextTertiary)
+                    .margin({ top: 2 })
+                }
+                .alignItems(HorizontalAlign.Start)
+                .layoutWeight(1)
+                if (this.configServerType === 'official') {
+                  Text('✓').fontSize(18).fontColor(this.themeAccent)
+                }
+              }
               .width('100%')
-              .height(48)
-              .backgroundColor(this.themeBgCard)
-              .borderRadius(12)
-              .padding({ left: 16, right: 16 })
-              .onChange((v: string) => { this.configServerUrl = v; })
+              .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+              .onClick(() => { this.configServerType = 'official'; })
+
+              Divider().height(0.5).color(this.themeBorderSecondary).margin({ left: 16 })
+
+              Row() {
+                Column() {
+                  Text('国内站')
+                    .fontSize(16)
+                    .fontColor(this.themeTextPrimary)
+                  Text('http://ocodecontroller-cn.liyulingyue.com')
+                    .fontSize(12)
+                    .fontColor(this.themeTextTertiary)
+                    .margin({ top: 2 })
+                }
+                .alignItems(HorizontalAlign.Start)
+                .layoutWeight(1)
+                if (this.configServerType === 'china') {
+                  Text('✓').fontSize(18).fontColor(this.themeAccent)
+                }
+              }
+              .width('100%')
+              .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+              .onClick(() => { this.configServerType = 'china'; })
+
+              Divider().height(0.5).color(this.themeBorderSecondary).margin({ left: 16 })
+
+              Row() {
+                Column() {
+                  Text('自定义')
+                    .fontSize(16)
+                    .fontColor(this.themeTextPrimary)
+                  Text('手动输入服务器地址')
+                    .fontSize(12)
+                    .fontColor(this.themeTextTertiary)
+                    .margin({ top: 2 })
+                }
+                .alignItems(HorizontalAlign.Start)
+                .layoutWeight(1)
+                if (this.configServerType === 'custom') {
+                  Text('✓').fontSize(18).fontColor(this.themeAccent)
+                }
+              }
+              .width('100%')
+              .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+              .onClick(() => { this.configServerType = 'custom'; })
+            }
+            .width('100%')
+            .backgroundColor(this.themeBgCard)
+            .borderRadius(12)
+
+            if (this.configServerType === 'custom') {
+              TextInput({ placeholder: 'http://your-server:port', text: this.configCustomUrl })
+                .width('100%')
+                .height(48)
+                .backgroundColor(this.themeBgCard)
+                .borderRadius(12)
+                .padding({ left: 16, right: 16 })
+                .onChange((v: string) => { this.configCustomUrl = v; })
+            }
           }
           .width('100%')
           .padding(20)
@@ -1365,7 +1453,7 @@ export struct AboutPage {
     this.updateSuccessUrls = [];
     this.updateCheckCompletedCount = 0;
     const totalCount = 2;
-    const servers = ['https://www.liyulingyue.com', 'http://cn.liyulingyue.com'];
+    const servers = ['http://www.liyulingyue.com', 'https://cf.liyulingyue.com'];
 
     const onSingleComplete = (): void => {
       this.updateCheckCompletedCount++;
@@ -1377,7 +1465,7 @@ export struct AboutPage {
           this.updateStatus = '已是最新版本';
         } else {
           const names: string[] = this.updateSuccessUrls.map((url: string): string => {
-            return url.includes('www') ? '国际' : '国内';
+            return url.includes('www') ? '国内' : '国际';
           });
           this.updateStatus = `发现新版本: ${this.remoteVersion}（${names.join('、')}站可用）`;
         }
@@ -1510,7 +1598,7 @@ export struct AboutPage {
                 if (this.updateAvailable) {
                   ForEach(this.getDownloadUrls(), (url: string) => {
                     Column({ space: 4 }) {
-                      Text(url.includes('www') ? '国际站下载' : '国内站下载')
+                      Text(url.includes('www') ? '国内站下载' : '国际站下载')
                         .fontSize(12)
                         .fontColor(this.themeTextTertiary)
                         .width('100%')
@@ -1548,7 +1636,7 @@ export struct AboutPage {
               .borderRadius(12)
             }
 
-            Text('提示：www站点中国区访问可能会较慢，cn站点对中国区访问更友好。两个站点内容一致，请按需选择下载链接。')
+            Text('提示：www（国内）站点国际访问可能会较慢，cf（国际）站点对中国区访问更友好。两个站点内容一致，请按需选择下载链接。')
               .fontSize(12)
               .fontColor(this.themeTextTertiary)
               .width('100%')
