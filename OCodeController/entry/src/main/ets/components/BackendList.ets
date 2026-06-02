@@ -42,11 +42,6 @@ export struct BackendList {
   build() {
     Column() {
       Row() {
-        Text('<')
-          .fontSize(24)
-          .fontColor(this.themeAccent)
-          .padding({ right: 12 })
-          .onClick(() => router.back())
         Text('后端管理')
           .fontSize(20)
           .fontWeight(FontWeight.Bold)
