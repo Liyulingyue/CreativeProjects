@@ -1,0 +1,22 @@
+<div class="container">
+    <text class="title">{{ $t('strings.title') }}</text>
+
+    <div class="axis-group">
+        <div class="axis-row">
+            <text class="axis-label">{{ $t('strings.x_label') }}</text>
+            <text class="axis-value" style="color: {{ xColor }}">{{ xVal }}</text>
+        </div>
+        <div class="axis-row">
+            <text class="axis-label">{{ $t('strings.y_label') }}</text>
+            <text class="axis-value" style="color: {{ yColor }}">{{ yVal }}</text>
+        </div>
+        <div class="axis-row">
+            <text class="axis-label">{{ $t('strings.z_label') }}</text>
+            <text class="axis-value" style="color: {{ zColor }}">{{ zVal }}</text>
+        </div>
+    </div>
+
+    <text class="err-text" if="{{ errMsg !== '' }}">{{ errMsg }}</text>
+
+    <input type="button" class="btn" value="{{ isActive ? $t('strings.stop') : $t('strings.start') }}" @click="toggleSensor" />
+</div>
