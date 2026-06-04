@@ -1,0 +1,56 @@
+.container {
+    width: 100%;
+    height: 100%;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    background-color: #0a0a1a;
+}
+.title {
+    font-size: 22px;
+    color: #8888aa;
+    text-align: center;
+    margin-bottom: 10px;
+    font-weight: bold;
+}
+.axis-group {
+    width: 100%;
+    flex-direction: column;
+    align-items: center;
+}
+.axis-row {
+    width: 90%;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+    padding: 4px 8px;
+    background-color: #15152a;
+    border-radius: 8px;
+}
+.axis-label {
+    font-size: 18px;
+    color: #aaaacc;
+    width: 50%;
+}
+.axis-value {
+    font-size: 20px;
+    font-weight: bold;
+    width: 50%;
+    text-align: right;
+}
+.err-text {
+    font-size: 14px;
+    color: #ff4444;
+    text-align: center;
+    margin-top: 8px;
+}
+.btn {
+    width: 60%;
+    height: 36px;
+    font-size: 16px;
+    margin-top: 14px;
+    background-color: #3344cc;
+    color: #ffffff;
+    border-radius: 18px;
+}

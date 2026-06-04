@@ -1,0 +1,14 @@
+{
+  "strings": {
+    "title": "Accelerometer",
+    "x": "X",
+    "y": "Y",
+    "z": "Z",
+    "start": "Start",
+    "stop": "Stop",
+    "x_label": "X-Axis",
+    "y_label": "Y-Axis",
+    "z_label": "Z-Axis",
+    "sensor_err": "Sensor unavailable"
+  }
+}
