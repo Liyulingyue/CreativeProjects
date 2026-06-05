@@ -41,3 +41,5 @@ signing.properties
 # Log files
 *.log
 logs/
+
+build-profile.json5.local
