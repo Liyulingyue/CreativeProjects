@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "Accelerometer measurement app for Watch GT 3 Pro"
+    },
+    {
+      "name": "MainAbility_desc",
+      "value": "Acc Meter"
+    },
+    {
+      "name": "MainAbility_label",
+      "value": "Acc Meter"
+    }
+  ]
+}
