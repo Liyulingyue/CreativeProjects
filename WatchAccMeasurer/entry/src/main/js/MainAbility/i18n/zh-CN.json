@@ -1,0 +1,14 @@
+{
+  "strings": {
+    "title": "加速度计",
+    "x": "X",
+    "y": "Y",
+    "z": "Z",
+    "start": "开始",
+    "stop": "停止",
+    "x_label": "X轴",
+    "y_label": "Y轴",
+    "z_label": "Z轴",
+    "sensor_err": "传感器不可用"
+  }
+}
