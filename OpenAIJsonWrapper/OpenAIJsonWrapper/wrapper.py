@@ -118,6 +118,75 @@ class OpenAIJsonWrapper:
 
         return text, None, "No JSON structure found"
 
+    def _encode_image(self, image_source: str) -> str:
+        """将图片路径或 URL 转为 base64 data URI 或直接 URL。"""
+        if image_source.startswith("http://") or image_source.startswith("https://"):
+            return image_source
+        path = Path(image_source)
+        if not path.exists():
+            raise FileNotFoundError(f"Image not found: {image_source}")
+        ext = path.suffix.lower()
+        mime_map = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+            ".bmp": "image/bmp",
+        }
+        mime = mime_map.get(ext, "image/jpeg")
+        with open(path, "rb") as f:
+            data = base64.b64encode(f.read()).decode("utf-8")
+        return f"data:{mime};base64,{data}"
+
+    def _normalize_content_part(self, part: Any) -> Any:
+        """
+        将用户传入的消息 part 标准化为 OpenAI 支持的格式。
+        支持以下自定义类型:
+          - {"type": "image_path", "image_path": "..."} -> {"type": "image_url", "image_url": {"url": ...}}
+          - {"type": "image_url", "image_url": {...}} 原样
+          - {"type": "text", "text": "..."} 原样
+        """
+        if not isinstance(part, dict):
+            return part
+        ptype = part.get("type")
+        if ptype == "image_path":
+            image_path = part.get("image_path") or part.get("path")
+            if not image_path:
+                raise ValueError("image_path part must have 'image_path' or 'path' field")
+            url = self._encode_image(image_path)
+            return {"type": "image_url", "image_url": {"url": url}}
+        if ptype == "image_url":
+            url = part.get("image_url")
+            if isinstance(url, dict) and "url" in url:
+                url_value = url["url"]
+                if not (url_value.startswith("http://") or url_value.startswith("https://") or url_value.startswith("data:")):
+                    url_value = self._encode_image(url_value)
+                return {"type": "image_url", "image_url": {**url, "url": url_value}}
+            if isinstance(url, str):
+                if not (url.startswith("http://") or url.startswith("https://") or url.startswith("data:")):
+                    url = self._encode_image(url)
+                return {"type": "image_url", "image_url": {"url": url}}
+            return part
+        return part
+
+    def _normalize_message(self, message: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        标准化单条消息:
+        - role 不变
+        - 如果 content 是字符串，原样保留
+        - 如果 content 是 list，逐项进行 part 标准化
+        """
+        role = message.get("role")
+        content = message.get("content")
+        if isinstance(content, list):
+            new_content = [self._normalize_content_part(p) for p in content]
+            return {**message, "role": role, "content": new_content}
+        return message
+
+    def _normalize_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [self._normalize_message(m) for m in messages]
+
     def chat(
         self, 
         messages: List[Dict[str, str]], 
@@ -131,7 +200,11 @@ class OpenAIJsonWrapper:
         """
         执行对话并自动解析结果。
         
-        :param messages: 对话上下文
+        :param messages: 对话上下文。content 可以是字符串，也可以是 list（多模态），
+                         list 中的 part 支持:
+                         - {"type": "text", "text": "..."}
+                         - {"type": "image_url", "image_url": {"url": "http(s)://..." | "data:..."} | "path/to/img.jpg"}
+                         - {"type": "image_path", "image_path": "path/to/img.jpg"}  (本地路径或 URL)
         :param target_structure: 希望获取的 JSON 模板/定义（若为 None 则使用实例初始化时的值）
         :param requirements: 特定需求说明 (str 或 list)
         :param extra_requirements: 额外补充需求 (str 或 list)，会与 requirements 合并
@@ -159,10 +232,11 @@ class OpenAIJsonWrapper:
         has_system = False
         for m in messages:
             if m.get("role") == "system":
-                new_messages.append({"role": "system", "content": f"{prompt}\n\n{m['content']}"})
+                sys_content = f"{prompt}\n\n{m['content']}"
+                new_messages.append({"role": "system", "content": sys_content})
                 has_system = True
             else:
-                new_messages.append(m)
+                new_messages.append(self._normalize_message(m))
         
         if not has_system:
             new_messages.insert(0, {"role": "system", "content": prompt})
@@ -180,94 +254,6 @@ class OpenAIJsonWrapper:
         
         reasoning, data, error = self._parse_content(content)
         
-        return {
-            "reasoning": reasoning,
-            "data": data,
-            "error": error,
-            "raw_content": content,
-            "response_id": getattr(response, "id", None)
-        }
-
-    def _encode_image(self, image_source: str) -> str:
-        """将图片路径或 URL 转为 base64 data URI 或直接 URL。"""
-        if image_source.startswith("http://") or image_source.startswith("https://"):
-            return image_source
-        path = Path(image_source)
-        if not path.exists():
-            raise FileNotFoundError(f"Image not found: {image_source}")
-        ext = path.suffix.lower()
-        mime_map = {
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".png": "image/png",
-            ".gif": "image/gif",
-            ".webp": "image/webp",
-            ".bmp": "image/bmp",
-        }
-        mime = mime_map.get(ext, "image/jpeg")
-        with open(path, "rb") as f:
-            data = base64.b64encode(f.read()).decode("utf-8")
-        return f"data:{mime};base64,{data}"
-
-    def vision(
-        self,
-        image_source: str,
-        prompt: str = "",
-        target_structure: Optional[Any] = None,
-        requirements: Optional[Union[str, List[str]]] = None,
-        extra_requirements: Optional[Union[str, List[str]]] = None,
-        background: Optional[str] = None,
-        model: Optional[str] = None,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """
-        用多模态模型（如 GPT-4V）处理图片并返回结构化 JSON。
-
-        :param image_source: 图片路径（本地）或 URL（网络可达）
-        :param prompt: 图片相关的文本提问
-        :param target_structure: 希望获取的 JSON 模板定义
-        :param requirements: 特定需求说明 (str 或 list)
-        :param extra_requirements: 额外补充需求，会与 requirements 合并
-        :param background: 背景知识/上下文
-        :param model: 模型名称（若为 None 则使用实例初始化时的值）
-        :return: 包含 'reasoning', 'data', 'error', 'raw_content' 的字典
-        """
-        target = target_structure if target_structure is not None else self.target_structure
-        reqs = requirements if requirements is not None else self.requirements
-        combined = self._to_list(reqs) + self._to_list(extra_requirements)
-        reqs_for_prompt = combined if combined else None
-        bg = background if background is not None else self.background
-        selected_model = model if model is not None else self.model
-
-        if target is None:
-            raise ValueError("target_structure must be provided either in __init__ or in vision()")
-
-        prompt_for_prompt = self._build_system_prompt(target, requirements=reqs_for_prompt, background=bg)
-
-        image_uri = self._encode_image(image_source)
-
-        messages = [
-            {"role": "system", "content": prompt_for_prompt},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": f"{prompt}\n\n{prompt_for_prompt}" if prompt else prompt_for_prompt},
-                    {"type": "image_url", "image_url": {"url": image_uri}}
-                ]
-            }
-        ]
-
-        response = self.client.chat.completions.create(
-            model=selected_model,
-            messages=messages,
-            **kwargs
-        )
-
-        choice = response.choices[0]
-        content = choice.message.content or ""
-
-        reasoning, data, error = self._parse_content(content)
-
         return {
             "reasoning": reasoning,
             "data": data,
