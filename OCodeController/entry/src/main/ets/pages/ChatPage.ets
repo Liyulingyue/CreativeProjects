@@ -61,6 +61,8 @@ struct ChatPage {
   @State lastMsgCursor: string = '';
   @State lastCachedMsgTime: number = 0;
   @State pendingPermission: PendingPermission | null = null;
+  @State streamingMessageId: string = '';
+  @State streamingContent: string = '';
   @State isImmersiveMode: boolean = true;
   @State displayUsername: string = 'User';
   @StorageLink('themeAccent') themeAccent: string = '#07C160';
@@ -111,11 +113,12 @@ struct ChatPage {
       this.core.setCurrentSession(this.realSessionId);
     }
 
-    // TODO: SSE 已禁用，避免干扰 HTTP 响应
-    // this.core.setSseEventCallback((event: SseEvent) => this.handleSseEvent(event));
-    // if (this.realSessionId) {
-    //   this.core.startSse(this.sessionId);
-    // }
+    if (OpenCodeCore.SSE_ENABLED) {
+      this.core.setSseEventCallback((event: SseEvent) => this.handleSseEvent(event));
+      if (this.realSessionId) {
+        this.core.startSse(this.sessionId);
+      }
+    }
 
     this.isImmersiveMode = this.core.getImmersiveMode();
     this.displayUsername = this.core.getDisplayUsername() || 'User';
@@ -151,26 +154,129 @@ struct ChatPage {
   aboutToDisappear() {
     this.core.saveDraft(this.sessionId, this.inputText);
     this.core.markCurrentProjectLeft();
-    // TODO: SSE 已禁用
-    // this.core.stopSse();
+    if (OpenCodeCore.SSE_ENABLED) {
+      this.core.stopSse();
+    }
     AppStorage.setOrCreate<string>('refreshSessionsNow', Date.now().toString());
   }
 
   private handleSseEvent(event: SseEvent): void {
-    if (event.type === 'permission.asked') {
-      const props = event.properties;
-      if (!props || !props.requestID) return;
-      if (props.sessionID && props.sessionID !== this.realSessionId) return;
-      const tools = props.metadata?.['tools'];
-      const toolStr = Array.isArray(tools) ? (tools as string[]).join(', ') : '';
-      console.info('[ChatPage] permission.asked:', props.permission, 'patterns:', props.patterns, 'tools:', toolStr);
-      this.pendingPermission = {
-        requestID: props.requestID || '',
-        permission: props.permission || '',
-        patterns: props.patterns || [],
-        metadata: props.metadata,
-      } as PendingPermission;
+    const props = event.properties as Record<string, Object>;
+    const sessionID = props?.['sessionID'] as string | undefined;
+
+    if (sessionID && sessionID !== this.realSessionId) {
+      return;
     }
+
+    switch (event.type) {
+      case 'permission.updated':
+        console.info('[ChatPage] permission.updated:', props?.['type']);
+        this.pendingPermission = {
+          requestID: (props?.['id'] as string) || '',
+          permission: (props?.['type'] as string) || '',
+          patterns: Array.isArray(props?.['pattern']) ? props?.['pattern'] as string[] : [],
+          metadata: (props?.['metadata'] as Record<string, Object>) || {},
+        };
+        break;
+
+      case 'session.status':
+        console.info('[ChatPage] session.status:', (props?.['status'] as Record<string, Object>)?.['type']);
+        break;
+
+      case 'message.updated':
+        console.info('[ChatPage] message updated');
+        const info = props?.['info'] as Record<string, Object>;
+        if (info) {
+          const msgId = info?.['id'] as string;
+          if (msgId && this.streamingMessageId !== msgId) {
+            this.streamingMessageId = msgId;
+            this.streamingContent = '';
+          }
+        }
+        break;
+
+      case 'text.delta':
+        console.debug('[ChatPage] text delta:', props?.['delta']);
+        const delta = (props?.['delta'] as string) || '';
+        if (delta) {
+          this.streamingContent += delta;
+          this.updateStreamingMessage();
+        }
+        break;
+
+      case 'message.part.delta':
+        console.debug('[ChatPage] message.part.delta');
+        const part = props?.['part'] as Record<string, Object>;
+        const partDelta = part?.['text'] as string | undefined;
+        if (partDelta) {
+          this.streamingContent += partDelta;
+          this.updateStreamingMessage();
+        }
+        break;
+
+      case 'session.idle':
+        console.info('[ChatPage] session idle');
+        this.finalizeStreamingMessage();
+        break;
+
+      default:
+        console.debug('[ChatPage] unhandled SSE event:', event.type);
+        break;
+    }
+  }
+
+  private updateStreamingMessage(): void {
+    if (!this.streamingMessageId) {
+      return;
+    }
+    const idx = this.messages.findIndex(m => m.id === this.streamingMessageId);
+    if (idx >= 0) {
+      this.messages[idx].content = this.streamingContent;
+      this.messages[idx].isLoading = true;
+      this.messages = [...this.messages];
+      this.scrollToBottom();
+    } else {
+      const loadingIdx = this.messages.findIndex(m => m.isLoading === true && m.role === 'assistant');
+      if (loadingIdx >= 0) {
+        this.messages[loadingIdx] = {
+          id: this.streamingMessageId,
+          role: 'assistant',
+          content: this.streamingContent,
+          timestamp: this.messages[loadingIdx].timestamp,
+          isLoading: true,
+        };
+      } else {
+        this.messages = [...this.messages, {
+          id: this.streamingMessageId,
+          role: 'assistant',
+          content: this.streamingContent,
+          timestamp: Date.now(),
+          isLoading: true,
+        }];
+      }
+      this.messages = [...this.messages];
+      this.scrollToBottom();
+    }
+  }
+
+  private finalizeStreamingMessage(): void {
+    const loadingIdx = this.messages.findIndex(m => m.isLoading === true && m.role === 'assistant' && m.id !== this.streamingMessageId);
+    if (loadingIdx >= 0) {
+      this.messages = this.messages.filter(m => m.id !== this.messages[loadingIdx].id);
+    }
+
+    if (this.streamingMessageId) {
+      const idx = this.messages.findIndex(m => m.id === this.streamingMessageId);
+      if (idx >= 0) {
+        this.messages[idx].content = this.streamingContent;
+        this.messages[idx].isLoading = false;
+        this.messages = [...this.messages];
+      }
+    }
+    this.streamingMessageId = '';
+    this.streamingContent = '';
+    this.isLoading = false;
+    this.scrollToBottom();
   }
 
   private async replyPermission(response: 'once' | 'always' | 'reject'): Promise<void> {
@@ -653,8 +759,9 @@ struct ChatPage {
           this.core.setCurrentSession(resp.id);
           await this.core.updateRemoteSessionId(this.sessionId, resp.id);
           console.info('[ChatPage] Backend session created and linked:', this.realSessionId);
-          // TODO: SSE 已禁用
-          // this.core.startSse(this.sessionId);
+          if (OpenCodeCore.SSE_ENABLED) {
+            this.core.startSse(this.sessionId);
+          }
           this.loadHistory();
         } else {
           throw new Error('Failed to create backend session');
@@ -671,8 +778,14 @@ struct ChatPage {
         return;
       }
     } else {
-      // TODO: SSE 已禁用
-      // this.core.startSse(this.sessionId);
+      if (OpenCodeCore.SSE_ENABLED) {
+        this.core.startSse(this.sessionId);
+      }
+    }
+
+    if (OpenCodeCore.SSE_ENABLED) {
+      this.streamingMessageId = '';
+      this.streamingContent = '';
     }
 
     const userMsgId = `user-${Date.now()}`;
@@ -715,7 +828,9 @@ struct ChatPage {
         }
 
         if (error) {
-          this.messages = this.messages.filter(m => m.id !== respLoadingId);
+          this.messages = this.messages.filter(m => m.id !== respLoadingId && m.id !== this.streamingMessageId);
+          this.streamingMessageId = '';
+          this.streamingContent = '';
           this.messages = [...this.messages, {
             id: `error-${Date.now()}`,
             role: 'assistant',
@@ -747,7 +862,10 @@ struct ChatPage {
             }
           }
           this.messages = this.messages.filter(m => m.id !== respLoadingId && m.id !== userMsgId);
-          if (newMsgs.length > 0) {
+
+          if (OpenCodeCore.SSE_ENABLED && this.streamingMessageId) {
+            console.info('[ChatPage] SSE streaming active, skipping HTTP response message');
+          } else if (newMsgs.length > 0) {
             this.messages = [...this.messages, ...newMsgs];
           } else {
             this.messages = [...this.messages, {
