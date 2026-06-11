@@ -85,27 +85,157 @@ export interface PendingMessage {
 
 export type MessageCallback = (result: { response: OpenCodeMessage | null; error: string | null; loadingId: string }) => void;
 
-export interface SseEvent {
+export interface StreamMessageUpdate {
+  sessionID: string;
+  messageID: string;
+  delta: string;
+  isComplete: boolean;
+  message?: OpenCodeMessage;
+}
+
+export type StreamMessageCallback = (update: StreamMessageUpdate) => void;
+
+export interface SseEventBase {
+  id?: string;
   type: string;
-  properties?: {
-    sessionID?: string;
-    status?: {
-      type: string;
-      attempt?: number;
-      message?: string;
-      next?: number;
-    };
-    error?: Record<string, Object>;
-    part?: OpenCodeMessage;
-    delta?: string;
-    requestID?: string;
-    permission?: string;
-    patterns?: string[];
-    metadata?: Record<string, Object>;
-    always?: string[];
-  };
+  properties: object;
   directory?: string;
 }
+
+export interface ServerConnectedEvent extends SseEventBase {
+  type: 'server.connected';
+}
+
+export interface ServerHeartbeatEvent extends SseEventBase {
+  type: 'server.heartbeat';
+}
+
+export interface ServerInstanceDisposedEvent extends SseEventBase {
+  type: 'server.instance.disposed';
+}
+
+export type SessionStatusType = 'idle' | 'busy' | 'retry';
+
+export interface SessionStatusProperties {
+  sessionID: string;
+  status: {
+    type: SessionStatusType;
+    attempt?: number;
+    message?: string;
+    next?: number;
+  };
+}
+
+export interface SessionStatusEvent extends SseEventBase {
+  type: 'session.status';
+  properties: SessionStatusProperties;
+}
+
+export interface SessionIdleEvent extends SseEventBase {
+  type: 'session.idle';
+  properties: { sessionID: string };
+}
+
+export interface SessionCompactedEvent extends SseEventBase {
+  type: 'session.compacted';
+  properties: { sessionID: string };
+}
+
+export interface PermissionProperties {
+  id: string;
+  type: string;
+  pattern?: string | string[];
+  sessionID: string;
+  messageID: string;
+  callID?: string;
+  title: string;
+  metadata: Record<string, Object>;
+  time: { created: number };
+}
+
+export interface PermissionUpdatedEvent extends SseEventBase {
+  type: 'permission.updated';
+  properties: PermissionProperties;
+}
+
+export interface PermissionRepliedEvent extends SseEventBase {
+  type: 'permission.replied';
+  properties: {
+    sessionID: string;
+    permissionID: string;
+    response: string;
+  };
+}
+
+export interface MessageInfo {
+  id: string;
+  sessionID: string;
+  role: 'user' | 'assistant';
+  parts: Array<{
+    id: string;
+    type: string;
+    text?: string;
+  }>;
+  finish?: string;
+  time?: { start: number; end?: number };
+}
+
+export interface MessageUpdatedEvent extends SseEventBase {
+  type: 'message.updated';
+  properties: {
+    info: MessageInfo;
+  };
+}
+
+export interface MessagePartUpdatedEvent extends SseEventBase {
+  type: 'message.part.updated';
+  properties: {
+    sessionID: string;
+    messageID: string;
+    part: {
+      id: string;
+      type: string;
+      text?: string;
+    };
+  };
+}
+
+export interface TextDeltaEvent extends SseEventBase {
+  type: 'text.delta';
+  properties: {
+    sessionID: string;
+    messageID: string;
+    delta: string;
+  };
+}
+
+export interface MessagePartDeltaEvent extends SseEventBase {
+  type: 'message.part.delta';
+  properties: {
+    sessionID: string;
+    messageID: string;
+    part: {
+      id: string;
+      type: string;
+      text?: string;
+    };
+  };
+}
+
+export type SseEvent =
+  | ServerConnectedEvent
+  | ServerHeartbeatEvent
+  | ServerInstanceDisposedEvent
+  | SessionStatusEvent
+  | SessionIdleEvent
+  | SessionCompactedEvent
+  | PermissionUpdatedEvent
+  | PermissionRepliedEvent
+  | MessageUpdatedEvent
+  | MessagePartUpdatedEvent
+  | MessagePartDeltaEvent
+  | TextDeltaEvent
+  | SseEventBase;
 
 export type SseEventCallback = (event: SseEvent) => void;
 
@@ -153,12 +283,17 @@ export class OpenCodeCore {
   public static readonly THEME_NAMES: string[] = [
     '极光绿', '樱花粉', '天空蓝', '日落橙', '薰衣草'
   ];
+
+  // SSE 流式开关：true 启用 SSE 流式，false 禁用 SSE 回退到 HTTP 轮询
+  public static SSE_ENABLED: boolean = false;
+
   private pendingRequest: http.HttpRequest | null = null;
   private pendingMessage: PendingMessage | null = null;
   private messageCallback: MessageCallback | null = null;
   private sseRequest: http.HttpRequest | null = null;
   private sseBuffer: string = '';
   private sseEventCallback: SseEventCallback | null = null;
+  private streamMessageCallback: StreamMessageCallback | null = null;
   private sessionsChangedCallback: SessionsChangedCallback | null = null;
   private leftCurrentProject: boolean = false;
 
@@ -998,7 +1133,16 @@ export class OpenCodeCore {
     this.sseEventCallback = callback;
   }
 
+  public setStreamMessageCallback(callback: StreamMessageCallback | null): void {
+    this.streamMessageCallback = callback;
+  }
+
   public startSse(projectId: string): void {
+    if (!OpenCodeCore.SSE_ENABLED) {
+      console.info('[OpenCodeCore] startSse: SSE is disabled by configuration');
+      return;
+    }
+
     const project = this.projects.find(p => p.id === projectId);
     if (!project) {
       console.warn('[OpenCodeCore] startSse: project not found:', projectId);
@@ -1071,49 +1215,138 @@ export class OpenCodeCore {
 
   private handleSseChunk(chunk: string): void {
     this.sseBuffer += chunk;
-    const events = this.sseBuffer.split('\n\n');
-    this.sseBuffer = events.pop() ?? '';
-    for (const raw of events) {
-      const lines = raw.split('\n');
+
+    while (true) {
+      const eventEnd = this.sseBuffer.indexOf('\n\n');
+      if (eventEnd === -1) {
+        break;
+      }
+
+      const rawEvent = this.sseBuffer.slice(0, eventEnd);
+      this.sseBuffer = this.sseBuffer.slice(eventEnd + 2);
+
+      const lines = rawEvent.split('\n');
+      let jsonData = '';
+
       for (const line of lines) {
         if (line.startsWith('data: ')) {
-          const json = line.slice(6).trim();
-          if (!json) continue;
-          try {
-            const event = JSON.parse(json) as SseEvent;
-            console.info('[OpenCodeCore][SSE] event:', event.type, 'sessionId:', event.properties?.sessionID);
-
-            // TODO: SSE 调试完成后恢复以下状态更新逻辑
-            // if (event.type === 'message.created' || event.type === 'message.delta' || event.type === 'status') {
-            //   const remoteId = event.properties?.sessionID;
-            //   if (remoteId) {
-            //     const project = this.projects.find(p => p.remoteSessionId === remoteId);
-            //     if (project) {
-            //       if (event.type === 'status') {
-            //         const statusType = event.properties?.status?.type;
-            //         const isWorking = statusType === 'busy' || statusType === 'thinking' || statusType === 'executing';
-            //         if (project.isWorking !== isWorking) {
-            //           project.isWorking = isWorking;
-            //           this.saveProjects();
-            //           this.notifySessionsChanged();
-            //         }
-            //       }
-            //       if (event.type === 'message.created' && this.currentProjectId !== project.id) {
-            //         project.unreadCount = (project.unreadCount || 0) + 1;
-            //         this.saveProjects();
-            //         this.notifySessionsChanged();
-            //       }
-            //     }
-            //   }
-            // }
-
-            this.sseEventCallback?.(event);
-          } catch (e) {
-            console.warn('[OpenCodeCore][SSE] JSON parse error:', e);
-          }
+          jsonData = line.slice(6).trim();
+          break;
         }
       }
+
+      if (!jsonData) {
+        continue;
+      }
+
+      try {
+        const event = JSON.parse(jsonData) as SseEvent;
+        console.info('[OpenCodeCore][SSE] event:', event.type, 'sessionId:', (event.properties as Record<string, Object>)?.['sessionID']);
+        this.dispatchSseEvent(event);
+      } catch (e) {
+        console.warn('[OpenCodeCore][SSE] JSON parse error:', e, 'raw:', jsonData.substring(0, 200));
+      }
     }
+  }
+
+  private dispatchSseEvent(event: SseEvent): void {
+    const props = event.properties as Record<string, Object>;
+    const sessionID = props?.['sessionID'] as string | undefined;
+    const project = sessionID ? this.projects.find(p => p.remoteSessionId === sessionID) : null;
+
+    switch (event.type) {
+      case 'server.connected':
+        console.info('[OpenCodeCore][SSE] server connected');
+        break;
+
+      case 'server.heartbeat':
+        console.debug('[OpenCodeCore][SSE] heartbeat');
+        break;
+
+      case 'session.status':
+        if (project) {
+          const status = (props?.['status'] as Record<string, Object>) || {};
+          const statusType = status?.['type'] as string;
+          const isWorking = statusType === 'busy' || statusType === 'retry';
+          if (project.isWorking !== isWorking) {
+            project.isWorking = isWorking;
+            this.saveProjects();
+            this.notifySessionsChanged();
+          }
+        }
+        break;
+
+      case 'session.idle':
+        if (project) {
+          project.isWorking = false;
+          this.saveProjects();
+          this.notifySessionsChanged();
+        }
+        this.streamMessageCallback?.({
+          sessionID: sessionID || '',
+          messageID: '',
+          delta: '',
+          isComplete: true,
+        });
+        break;
+
+      case 'session.compacted':
+        console.info('[OpenCodeCore][SSE] session compacted:', sessionID);
+        break;
+
+      case 'message.updated':
+        console.info('[OpenCodeCore][SSE] message updated:', sessionID);
+        this.streamMessageCallback?.({
+          sessionID: sessionID || '',
+          messageID: (props?.['info'] as Record<string, Object>)?.['id'] as string || '',
+          delta: '',
+          isComplete: false,
+          message: props?.['info'] as unknown as OpenCodeMessage,
+        });
+        break;
+
+      case 'message.part.updated':
+        console.debug('[OpenCodeCore][SSE] message part updated:', sessionID);
+        break;
+
+      case 'message.part.delta':
+        console.debug('[OpenCodeCore][SSE] message part delta:', sessionID);
+        const part = (props as Record<string, Object>)?.['part'] as Record<string, Object>;
+        const delta = part?.['text'] as string | undefined;
+        if (delta) {
+          this.streamMessageCallback?.({
+            sessionID: sessionID || '',
+            messageID: (props as Record<string, Object>)?.['messageID'] as string || '',
+            delta: delta,
+            isComplete: false,
+          });
+        }
+        break;
+
+      case 'text.delta':
+        console.debug('[OpenCodeCore][SSE] text delta:', sessionID);
+        this.streamMessageCallback?.({
+          sessionID: sessionID || '',
+          messageID: (props as Record<string, Object>)?.['messageID'] as string || '',
+          delta: (props as Record<string, Object>)?.['delta'] as string || '',
+          isComplete: false,
+        });
+        break;
+
+      case 'permission.updated':
+        console.info('[OpenCodeCore][SSE] permission requested:', (props as Record<string, Object>)?.['type']);
+        break;
+
+      case 'permission.replied':
+        console.info('[OpenCodeCore][SSE] permission replied');
+        break;
+
+      default:
+        console.debug('[OpenCodeCore][SSE] unhandled event type:', event.type);
+        break;
+    }
+
+    this.sseEventCallback?.(event);
   }
 
   public async replyPermission(sessionId: string, requestID: string, response: 'once' | 'always' | 'reject'): Promise<boolean> {
