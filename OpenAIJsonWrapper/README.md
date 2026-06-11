@@ -99,7 +99,35 @@ result = wrapper.chat(
 - **极简设计**: 专注于 LLM 工具调用/结构化数据提取任务。
 - **多模态支持**: 支持 GPT-4V 等 vision 模型，自动处理本地图片路径和 URL，支持结构化图片分析。
 
-### 多模态图片分析（Vision）
+### 在 `chat()` 中直接传入图片
+
+`chat()` 兼容 OpenAI 风格的多模态消息 `content`（list 形式），可在单轮/多轮对话中混合文本与图片。
+
+支持的 part 类型：
+
+- `{"type": "text", "text": "..."}` —— 文本片段
+- `{"type": "image_url", "image_url": {"url": "http(s)://..." | "data:..."}}` —— 原生 OpenAI 格式
+- `{"type": "image_url", "image_url": "path/to/local.jpg"}` —— 字符串形式的本地路径，会被自动 base64 编码
+- `{"type": "image_path", "image_path": "path/to/local.jpg"}` —— 便捷写法，传入本地路径（也可以传 URL）
+
+```python
+messages = [
+    {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "请用 JSON 描述这张图片"},
+            {"type": "image_path", "image_path": "cat.jpg"},
+            {"type": "image_url", "image_url": "https://example.com/dog.png"},
+        ],
+    }
+]
+
+result = wrapper.chat(messages)
+```
+
+### 多模态图片分析
+
+通过 `chat()` + 多模态 `content` 即可让 vision 模型返回结构化 JSON。
 
 ```python
 from openai import OpenAI
@@ -118,11 +146,28 @@ wrapper = OpenAIJsonWrapper(
     target_structure=target_structure
 )
 
-# 支持本地图片路径或网络 URL
-result = wrapper.vision(
-    image_source="path/to/image.jpg",
-    prompt="这张图片属于哪个类别？",
-    requirements=["只能从给定选项中选择"]
+# 本地图片路径（自动 base64 编码）
+result = wrapper.chat([
+    {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "这张图片属于哪个类别？"},
+            {"type": "image_path", "image_path": "path/to/image.jpg"},
+        ],
+    }
+])
+
+# 或使用远程 URL
+result = wrapper.chat([
+    {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "这张图片属于哪个类别？"},
+            {"type": "image_url", "image_url": {"url": "https://example.com/image.jpg"}},
+        ],
+    }
+],
+    requirements=["只能从给定选项中选择"],
 )
 
 if not result["error"]:
@@ -130,5 +175,3 @@ if not result["error"]:
 else:
     print(result["error"])
 ```
-
-`vision()` 方法会自动将本地图片转为 base64 编码，并构造多模态消息格式发送给 vision 模型，返回结构化的 JSON 解析结果。
