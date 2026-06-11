@@ -1,5 +1,7 @@
+import base64
 import json
 import re
+from pathlib import Path
 from typing import Any, List, Optional, Tuple, Union, Dict
 
 TOOL_MARKER_START = "```json"
@@ -116,6 +118,75 @@ class OpenAIJsonWrapper:
 
         return text, None, "No JSON structure found"
 
+    def _encode_image(self, image_source: str) -> str:
+        """将图片路径或 URL 转为 base64 data URI 或直接 URL。"""
+        if image_source.startswith("http://") or image_source.startswith("https://"):
+            return image_source
+        path = Path(image_source)
+        if not path.exists():
+            raise FileNotFoundError(f"Image not found: {image_source}")
+        ext = path.suffix.lower()
+        mime_map = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+            ".bmp": "image/bmp",
+        }
+        mime = mime_map.get(ext, "image/jpeg")
+        with open(path, "rb") as f:
+            data = base64.b64encode(f.read()).decode("utf-8")
+        return f"data:{mime};base64,{data}"
+
+    def _normalize_content_part(self, part: Any) -> Any:
+        """
+        将用户传入的消息 part 标准化为 OpenAI 支持的格式。
+        支持以下自定义类型:
+          - {"type": "image_path", "image_path": "..."} -> {"type": "image_url", "image_url": {"url": ...}}
+          - {"type": "image_url", "image_url": {...}} 原样
+          - {"type": "text", "text": "..."} 原样
+        """
+        if not isinstance(part, dict):
+            return part
+        ptype = part.get("type")
+        if ptype == "image_path":
+            image_path = part.get("image_path") or part.get("path")
+            if not image_path:
+                raise ValueError("image_path part must have 'image_path' or 'path' field")
+            url = self._encode_image(image_path)
+            return {"type": "image_url", "image_url": {"url": url}}
+        if ptype == "image_url":
+            url = part.get("image_url")
+            if isinstance(url, dict) and "url" in url:
+                url_value = url["url"]
+                if not (url_value.startswith("http://") or url_value.startswith("https://") or url_value.startswith("data:")):
+                    url_value = self._encode_image(url_value)
+                return {"type": "image_url", "image_url": {**url, "url": url_value}}
+            if isinstance(url, str):
+                if not (url.startswith("http://") or url.startswith("https://") or url.startswith("data:")):
+                    url = self._encode_image(url)
+                return {"type": "image_url", "image_url": {"url": url}}
+            return part
+        return part
+
+    def _normalize_message(self, message: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        标准化单条消息:
+        - role 不变
+        - 如果 content 是字符串，原样保留
+        - 如果 content 是 list，逐项进行 part 标准化
+        """
+        role = message.get("role")
+        content = message.get("content")
+        if isinstance(content, list):
+            new_content = [self._normalize_content_part(p) for p in content]
+            return {**message, "role": role, "content": new_content}
+        return message
+
+    def _normalize_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [self._normalize_message(m) for m in messages]
+
     def chat(
         self, 
         messages: List[Dict[str, str]], 
@@ -129,7 +200,11 @@ class OpenAIJsonWrapper:
         """
         执行对话并自动解析结果。
         
-        :param messages: 对话上下文
+        :param messages: 对话上下文。content 可以是字符串，也可以是 list（多模态），
+                         list 中的 part 支持:
+                         - {"type": "text", "text": "..."}
+                         - {"type": "image_url", "image_url": {"url": "http(s)://..." | "data:..."} | "path/to/img.jpg"}
+                         - {"type": "image_path", "image_path": "path/to/img.jpg"}  (本地路径或 URL)
         :param target_structure: 希望获取的 JSON 模板/定义（若为 None 则使用实例初始化时的值）
         :param requirements: 特定需求说明 (str 或 list)
         :param extra_requirements: 额外补充需求 (str 或 list)，会与 requirements 合并
@@ -157,10 +232,11 @@ class OpenAIJsonWrapper:
         has_system = False
         for m in messages:
             if m.get("role") == "system":
-                new_messages.append({"role": "system", "content": f"{prompt}\n\n{m['content']}"})
+                sys_content = f"{prompt}\n\n{m['content']}"
+                new_messages.append({"role": "system", "content": sys_content})
                 has_system = True
             else:
-                new_messages.append(m)
+                new_messages.append(self._normalize_message(m))
         
         if not has_system:
             new_messages.insert(0, {"role": "system", "content": prompt})
