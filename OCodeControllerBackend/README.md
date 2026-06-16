@@ -1,4 +1,5 @@
 # OpenCodeHarmonyBackend
+> 当前转移到 https://github.com/Liyulingyue/OCodeController 继续开发
 
 基于 FastAPI 的后端服务，为 OpenCodeHarmony App 提供配置和会话同步功能。
 
