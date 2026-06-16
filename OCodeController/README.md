@@ -1,4 +1,5 @@
 ﻿# OCodeController
+> 当前转移到 https://github.com/Liyulingyue/OCodeController 继续开发
 
 OCodeController 是一个基于 OpenHarmony/HarmonyOS 开发的项目，旨在将 [OpenCode](https://github.com/anomalyco/opencode.git) 的 Web 页面功能封装为真正的原生手机 App 体验。
 
