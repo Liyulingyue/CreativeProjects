@@ -1,8 +1,10 @@
 import os
 import sys
 import json
+import time
 from pathlib import Path
 from typing import Optional, Callable
+from PIL import Image
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -24,6 +26,20 @@ def save_checkpoint(checkpoint_path: Path, completed: set[str]):
 def append_result_jsonl(result: AnalysisResult, jsonl_path: Path):
     with open(jsonl_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(result.to_dict(), ensure_ascii=False) + "\n")
+
+
+def resize_image_half(image_path: Path) -> tuple[Path, bool]:
+    try:
+        img = Image.open(image_path)
+        new_size = (img.size[0] // 2, img.size[1] // 2)
+        if new_size[0] < 100 or new_size[1] < 100:
+            return image_path, False
+        img = img.resize(new_size, Image.LANCZOS)
+        temp_path = image_path.with_suffix(f'.half{image_path.suffix}')
+        img.save(temp_path, quality=85, optimize=True)
+        return temp_path, True
+    except Exception:
+        return image_path, False
 
 
 def print_progress(current: int, total: int, filename: str, success: bool, error: Optional[str] = None):
@@ -58,6 +74,29 @@ def interactive_analyze():
     delay_input = input("⏱️  请求间隔秒数（直接回车默认1.0）: ").strip()
     delay = float(delay_input) if delay_input else 1.0
 
+    jsonl_path = Path(output_name + ".jsonl")
+    checkpoint_path = Path(output_name + ".checkpoint.json")
+
+    if enable_resume and jsonl_path.exists():
+        existing_results = {}
+        with open(jsonl_path, "r", encoding="utf-8") as f:
+            for line in f:
+                obj = json.loads(line.strip())
+                existing_results[obj["file_path"]] = obj
+
+        failed_count = sum(1 for obj in existing_results.values() if not obj.get("success"))
+        if failed_count > 0:
+            clean_input = input(f"⚠️  发现 {len(existing_results)} 条记录，其中 {failed_count} 条失败。是否清理失败项? (y/N): ").strip().lower()
+            if clean_input == "y":
+                success_results = [obj for obj in existing_results.values() if obj.get("success")]
+                with open(jsonl_path, "w", encoding="utf-8") as f:
+                    for obj in success_results:
+                        f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+                checkpoint = set(r["file_path"] for r in success_results)
+                with open(checkpoint_path, "w", encoding="utf-8") as f:
+                    json.dump(list(checkpoint), f, ensure_ascii=False)
+                print(f"   已清理 {failed_count} 条失败记录，保留 {len(success_results)} 条成功记录\n")
+
     print()
     print("-" * 50)
     print(f"文件夹: {folder_path}")
@@ -80,8 +119,6 @@ def interactive_analyze():
     total = len(image_files)
     print(f"\n找到 {total} 张图片，开始分析...\n")
 
-    jsonl_path = Path(output_name + ".jsonl")
-    checkpoint_path = Path(output_name + ".checkpoint.json")
     results = []
     completed_paths = load_checkpoint(checkpoint_path) if enable_resume else set()
 
@@ -98,6 +135,13 @@ def interactive_analyze():
             continue
 
         result = analyzer.analyze_image(img_path)
+
+        if not result.success and result.error and "exceeds size" in result.error.lower():
+            temp_path, was_resized = resize_image_half(img_path)
+            if was_resized:
+                result = analyzer.analyze_image(temp_path)
+                temp_path.unlink()
+
         results.append(result)
 
         append_result_jsonl(result, jsonl_path)
@@ -121,5 +165,4 @@ def interactive_analyze():
 
 
 if __name__ == "__main__":
-    import time
     interactive_analyze()

@@ -1,3 +1,5 @@
 openaijsonwrapper
 openai
 python-dotenv
+imagehash
+Pillow
