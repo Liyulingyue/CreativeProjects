@@ -140,6 +140,8 @@ def interactive_analyze():
             temp_path, was_resized = resize_image_half(img_path)
             if was_resized:
                 result = analyzer.analyze_image(temp_path)
+                result.file_path = str(img_path.absolute())
+                result.file_name = img_path.name
                 temp_path.unlink()
 
         results.append(result)
