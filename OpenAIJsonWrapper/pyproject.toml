@@ -10,5 +10,6 @@ requires-python = ">=3.8"
 requires = ["setuptools>=42","wheel"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-py-modules = ["openaijsonwrapper"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["openaijsonwrapper*"]
