@@ -1,7 +1,7 @@
 import csv
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 from .analyzer import AnalysisResult
 
 
@@ -73,3 +73,55 @@ def print_summary(results: list[AnalysisResult]) -> None:
         for r in results:
             if not r.success:
                 print(f"  - {r.file_name}: {r.error}")
+
+
+def load_results_from_jsonl(jsonl_path: str | Path) -> list[dict]:
+    jsonl_path = Path(jsonl_path)
+    results = []
+    if not jsonl_path.exists():
+        return results
+    with open(jsonl_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                results.append(json.loads(line))
+    return results
+
+
+def convert_jsonl_to_json(jsonl_path: str | Path, output_path: Optional[str | Path] = None) -> str:
+    jsonl_path = Path(jsonl_path)
+    if output_path is None:
+        output_path = jsonl_path.with_suffix(".json")
+    else:
+        output_path = Path(output_path)
+
+    results = load_results_from_jsonl(jsonl_path)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2, ensure_ascii=False)
+    return str(output_path)
+
+
+def convert_jsonl_to_csv(jsonl_path: str | Path, output_path: Optional[str | Path] = None) -> str:
+    jsonl_path = Path(jsonl_path)
+    if output_path is None:
+        output_path = jsonl_path.with_suffix(".csv")
+    else:
+        output_path = Path(output_path)
+
+    results = load_results_from_jsonl(jsonl_path)
+    if not results:
+        return str(output_path)
+
+    fieldnames = ["file_path", "file_name", "success", "error",
+                  "score", "style", "caption", "main_objects", "blurry", "comments", "recommendations"]
+
+    with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for r in results:
+            row = {k: r.get(k, "") for k in fieldnames}
+            if isinstance(row.get("main_objects"), list):
+                row["main_objects"] = "; ".join(str(v) for v in row["main_objects"])
+            writer.writerow(row)
+
+    return str(output_path)
