@@ -1,0 +1,3 @@
+openaijsonwrapper
+openai
+python-dotenv

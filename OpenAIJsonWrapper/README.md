@@ -143,7 +143,8 @@ target_structure = {
 wrapper = OpenAIJsonWrapper(
     client,
     model="gpt-4o",
-    target_structure=target_structure
+    target_structure=target_structure,
+    requirements=["只能从给定选项中选择"]
 )
 
 # 本地图片路径（自动 base64 编码）
@@ -166,9 +167,7 @@ result = wrapper.chat([
             {"type": "image_url", "image_url": {"url": "https://example.com/image.jpg"}},
         ],
     }
-],
-    requirements=["只能从给定选项中选择"],
-)
+])
 
 if not result["error"]:
     print(result["data"])
