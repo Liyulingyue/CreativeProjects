@@ -120,6 +120,10 @@ def convert_jsonl_to_csv(jsonl_path: str | Path, output_path: Optional[str | Pat
         writer.writeheader()
         for r in results:
             row = {k: r.get(k, "") for k in fieldnames}
+            if r.get("data"):
+                for k in ["score", "style", "caption", "main_objects", "blurry", "comments", "recommendations"]:
+                    if k in r["data"]:
+                        row[k] = r["data"][k]
             if isinstance(row.get("main_objects"), list):
                 row["main_objects"] = "; ".join(str(v) for v in row["main_objects"])
             writer.writerow(row)
