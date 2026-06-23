@@ -5,7 +5,7 @@ from .config import (
     is_image_file, get_image_files, ensure_dir,
 )
 from .analyzer import PhotoAnalyzer, BatchPhotoAnalyzer, AnalysisResult
-from .exporter import export_to_json, export_to_csv, print_summary
+from .exporter import export_to_json, export_to_csv, print_summary, convert_jsonl_to_json, convert_jsonl_to_csv
 
 __all__ = [
     "API_KEY", "BASE_URL", "MODEL_NAME",
@@ -14,4 +14,5 @@ __all__ = [
     "is_image_file", "get_image_files", "ensure_dir",
     "PhotoAnalyzer", "BatchPhotoAnalyzer", "AnalysisResult",
     "export_to_json", "export_to_csv", "print_summary",
+    "convert_jsonl_to_json", "convert_jsonl_to_csv",
 ]
