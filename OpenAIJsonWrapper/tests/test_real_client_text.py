@@ -5,13 +5,13 @@ import json
 # 让脚本可直接 `python tests/test_real_client_text.py` 运行：
 # 当 editable install 没有把仓库里的 OpenAIJsonWrapper/ 目录暴露为
 # `openaijsonwrapper` 这个可导入名时，把包目录加进 sys.path。
-_PKG_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "OpenAIJsonWrapper"))
+_PKG_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "openaijsonwrapper"))
 if _PKG_DIR not in sys.path:
     sys.path.insert(0, _PKG_DIR)
 try:
     from openaijsonwrapper import OpenAIJsonWrapper
 except ImportError:
-    from OpenAIJsonWrapper import OpenAIJsonWrapper  # type: ignore
+    from openaijsonwrapper import OpenAIJsonWrapper  # type: ignore
 
 from openai import OpenAI
 
