@@ -67,6 +67,22 @@ export function Settings({ config, onUpdate, onClearCache }: Props) {
           <div className="card-header-icon">💾</div>
           <span>数据管理</span>
         </div>
+
+        <div className="form-group">
+          <label className="form-label">本地缓存图片数量</label>
+          <input
+            type="number"
+            className="form-input"
+            value={config.maxCacheCount}
+            min={1}
+            max={50}
+            onChange={(e) =>
+              onUpdate({ maxCacheCount: parseInt(e.target.value) || 10 })
+            }
+          />
+          <div className="form-hint">重启后自动恢复最近 N 张图片</div>
+        </div>
+
         <button
           className="btn btn-secondary"
           onClick={() => {

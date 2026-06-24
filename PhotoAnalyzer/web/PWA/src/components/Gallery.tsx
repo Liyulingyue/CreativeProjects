@@ -58,6 +58,8 @@ export function Gallery({ files, onAdd, onRemove, onClear, disabled }: Props) {
     dropZoneRef.current?.classList.remove("dragover");
   }, []);
 
+  const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+
   return (
     <div className="card">
       <div className="card-header">
@@ -65,20 +67,30 @@ export function Gallery({ files, onAdd, onRemove, onClear, disabled }: Props) {
         <span>选择待分析的照片</span>
       </div>
 
-      <div
-        ref={dropZoneRef}
-        className="drop-zone"
-        onClick={() => fileInputRef.current?.click()}
-        onDrop={handleDrop}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-      >
-        <div className="drop-zone-content">
-          <span className="drop-zone-icon">🖼️</span>
-          <div className="drop-zone-text">点击或拖拽图片到此处</div>
-          <div className="drop-zone-hint">支持 JPG · PNG · WebP · GIF</div>
+      {isTouchDevice ? (
+        <button
+          className="add-photo-btn"
+          onClick={() => fileInputRef.current?.click()}
+        >
+          <span>📷</span>
+          <span>添加照片</span>
+        </button>
+      ) : (
+        <div
+          ref={dropZoneRef}
+          className="drop-zone"
+          onClick={() => fileInputRef.current?.click()}
+          onDrop={handleDrop}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+        >
+          <div className="drop-zone-content">
+            <span className="drop-zone-icon">🖼️</span>
+            <div className="drop-zone-text">点击或拖拽图片到此处</div>
+            <div className="drop-zone-hint">支持 JPG · PNG · WebP · GIF</div>
+          </div>
         </div>
-      </div>
+      )}
 
       <input
         ref={fileInputRef}
