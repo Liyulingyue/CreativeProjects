@@ -6,12 +6,29 @@ interface Props {
   onAdd: (entries: FileEntry[]) => void;
   onRemove: (id: string) => void;
   onClear: () => void;
+  onAnalyze: () => void;
+  isAnalyzing: boolean;
+  hasResults: boolean;
+  progress: { current: number; total: number };
   disabled?: boolean;
 }
 
-export function Gallery({ files, onAdd, onRemove, onClear, disabled }: Props) {
+export function Gallery({
+  files,
+  onAdd,
+  onRemove,
+  onClear,
+  onAnalyze,
+  isAnalyzing,
+  hasResults,
+  progress,
+  disabled,
+}: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
+
+  const showProgress = isAnalyzing && progress.total > 0;
+  const percent = progress.total > 0 ? (progress.current / progress.total) * 100 : 0;
 
   const processFiles = useCallback(
     (fileList: FileList | null) => {
@@ -26,16 +43,21 @@ export function Gallery({ files, onAdd, onRemove, onClear, disabled }: Props) {
         file: f,
       }));
 
-      newEntries.forEach((entry) => {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          const thumb = e.target?.result as string;
-          entry.thumb = thumb;
-        };
-        reader.readAsDataURL(entry.file);
-      });
+      const thumbPromises = newEntries.map(
+        (entry) =>
+          new Promise<void>((resolve) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+              entry.thumb = e.target?.result as string;
+              resolve();
+            };
+            reader.readAsDataURL(entry.file);
+          })
+      );
 
-      onAdd(newEntries);
+      Promise.all(thumbPromises).then(() => {
+        onAdd(newEntries);
+      });
     },
     [onAdd]
   );
@@ -138,6 +160,27 @@ export function Gallery({ files, onAdd, onRemove, onClear, disabled }: Props) {
             ))}
           </div>
         </>
+      )}
+
+      {showProgress && (
+        <div className="gallery-progress">
+          <div className="progress-bar">
+            <div className="progress-fill" style={{ width: `${percent}%` }} />
+          </div>
+          <div className="progress-text">
+            正在分析 {progress.current} / {progress.total} · {Math.round(percent)}%
+          </div>
+        </div>
+      )}
+
+      {files.length > 0 && !showProgress && (
+        <button
+          className="btn btn-primary analyze-btn-inline"
+          onClick={onAnalyze}
+          disabled={disabled || isAnalyzing}
+        >
+          ✨ {hasResults ? "重新分析" : "开始分析"}
+        </button>
       )}
     </div>
   );

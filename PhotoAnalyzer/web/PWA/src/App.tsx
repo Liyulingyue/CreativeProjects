@@ -18,7 +18,6 @@ import { Gallery } from "./components/Gallery";
 import { ResultsList } from "./components/ResultsList";
 import { ImageDetail } from "./components/ImageDetail";
 import { Settings } from "./components/Settings";
-import { AnalyzeBar } from "./components/AnalyzeBar";
 import type { TabType, FileEntry } from "./types";
 
 const DEFAULT_CONFIG: AnalyzerConfig = {
@@ -197,6 +196,10 @@ export default function App() {
             onAdd={addFiles}
             onRemove={removeFile}
             onClear={clearFiles}
+            onAnalyze={handleAnalyze}
+            isAnalyzing={isAnalyzing}
+            hasResults={results.length > 0}
+            progress={progress}
             disabled={isAnalyzing}
           />
         )}
@@ -219,16 +222,6 @@ export default function App() {
           />
         )}
       </main>
-
-      {activeTab !== "settings" && (
-        <AnalyzeBar
-          isAnalyzing={isAnalyzing}
-          hasFiles={files.length > 0}
-          hasResults={results.length > 0}
-          progress={progress}
-          onAnalyze={handleAnalyze}
-        />
-      )}
 
       <BottomNav
         active={activeTab}
