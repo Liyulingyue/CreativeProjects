@@ -132,17 +132,17 @@ export class OpenAIJsonWrapper {
     }
   }
 
-  private normalizeContentPart(part: ContentPart): ContentPart {
+  private async normalizeContentPart(part: ContentPart): Promise<ContentPart> {
     if (part.type === "image_path" && part.image_path) {
-      const url = this.encodeImage(part.image_path);
+      const url = await this.encodeImage(part.image_path);
       return { type: "image_url", image_url: { url } };
     }
     return part;
   }
 
-  private normalizeMessage(message: Message): Message {
+  private async normalizeMessage(message: Message): Promise<Message> {
     if (Array.isArray(message.content)) {
-      const newContent = message.content.map(p => this.normalizeContentPart(p as ContentPart));
+      const newContent = await Promise.all(message.content.map(p => this.normalizeContentPart(p as ContentPart)));
       return { ...message, content: newContent };
     }
     return message;
@@ -182,7 +182,7 @@ export class OpenAIJsonWrapper {
         });
         hasSystem = true;
       } else {
-        newMessages.push(this.normalizeMessage(m));
+        newMessages.push(await this.normalizeMessage(m));
       }
     }
 
