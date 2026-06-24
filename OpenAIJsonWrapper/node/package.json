@@ -1,0 +1,40 @@
+{
+  "name": "openaijsonwrapper",
+  "version": "0.2.1",
+  "description": "JSON wrapper for OpenAI-style multi-modal API with structured output",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "example:text": "node examples/text_analysis.js",
+    "example:image:url": "node examples/image_analysis_url.js",
+    "example:image:path": "node examples/image_analysis_path.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "openai",
+    "json",
+    "wrapper",
+    "multimodal",
+    "vision"
+  ],
+  "author": "",
+  "license": "MIT",
+  "peerDependencies": {
+    "openai": ">=1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0"
+  }
+}
