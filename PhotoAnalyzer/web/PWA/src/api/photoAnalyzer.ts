@@ -23,6 +23,7 @@ export interface AnalyzerConfig {
   baseUrl: string;
   model: string;
   delay: number;
+  maxCacheCount: number;
 }
 
 const TARGET_STRUCTURE = {

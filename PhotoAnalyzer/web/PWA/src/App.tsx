@@ -6,6 +6,13 @@ import {
   type AnalysisResult,
   type AnalyzerConfig,
 } from "./api/photoAnalyzer";
+import {
+  savePhotos,
+  loadPhotos,
+  saveResults,
+  loadResults,
+  clearAllData,
+} from "./api/storage";
 import { BottomNav } from "./components/BottomNav";
 import { Gallery } from "./components/Gallery";
 import { ResultsList } from "./components/ResultsList";
@@ -19,6 +26,7 @@ const DEFAULT_CONFIG: AnalyzerConfig = {
   baseUrl: "https://api.minimaxi.com/v1",
   model: "MiniMax-M3",
   delay: 1000,
+  maxCacheCount: 10,
 };
 
 export default function App() {
@@ -54,6 +62,24 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const loadCachedData = async () => {
+      try {
+        const cachedPhotos = await loadPhotos();
+        if (cachedPhotos.length > 0) {
+          setFiles(cachedPhotos);
+        }
+        const cachedResults = await loadResults();
+        if (cachedResults.length > 0) {
+          setResults(cachedResults);
+        }
+      } catch (e) {
+        console.warn("Failed to load cached data:", e);
+      }
+    };
+    loadCachedData();
+  }, []);
+
   const showToast = (msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(""), 2400);
@@ -65,19 +91,29 @@ export default function App() {
     localStorage.setItem("photo-analyzer-config", JSON.stringify(newConfig));
   };
 
-  const addFiles = (entries: FileEntry[]) => {
-    setFiles((prev) => [...prev, ...entries]);
+  const addFiles = async (entries: FileEntry[]) => {
+    setFiles((prev) => {
+      const updated = [...prev, ...entries];
+      savePhotos(updated, config.maxCacheCount).catch(console.warn);
+      return updated;
+    });
     showToast(`已添加 ${entries.length} 张图片`);
   };
 
   const removeFile = (id: string) => {
-    setFiles((prev) => prev.filter((e) => e.id !== id));
+    setFiles((prev) => {
+      const updated = prev.filter((e) => e.id !== id);
+      savePhotos(updated, config.maxCacheCount).catch(console.warn);
+      return updated;
+    });
   };
 
   const clearFiles = () => {
     setFiles([]);
     setResults([]);
     setProgress({ current: 0, total: 0 });
+    savePhotos([], config.maxCacheCount).catch(console.warn);
+    saveResults([], config.maxCacheCount).catch(console.warn);
     showToast("已清空");
   };
 
@@ -107,6 +143,7 @@ export default function App() {
     const success = analysisResults.filter((r) => r.success).length;
     showToast(`分析完成！${success}/${analysisResults.length} 成功`);
     setActiveTab("results");
+    saveResults(analysisResults, config.maxCacheCount).catch(console.warn);
   };
 
   const handleExportJson = () => {
@@ -121,8 +158,9 @@ export default function App() {
     showToast("已导出 CSV");
   };
 
-  const handleClearAll = () => {
+  const handleClearAll = async () => {
     localStorage.clear();
+    await clearAllData();
     setConfig(DEFAULT_CONFIG);
     setFiles([]);
     setResults([]);
