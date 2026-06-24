@@ -1,4 +1,5 @@
-import type { FileEntry, AnalysisResult } from "../types";
+import type { FileEntry } from "../types";
+import type { AnalysisResult } from "./photoAnalyzer";
 
 const DB_NAME = "photo-analyzer-db";
 const DB_VERSION = 1;
@@ -85,16 +86,16 @@ export async function savePhotos(
     store.put(record);
   }
 
-  const countIndex = store.index("addedAt");
-  const countRequest = countIndex.getAll();
-
   await new Promise<void>((resolve, reject) => {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
 
+  const tx2 = db.transaction(PHOTOS_STORE, "readonly");
+  const store2 = tx2.objectStore(PHOTOS_STORE);
+
   const allRecords: PhotoRecord[] = await new Promise((resolve, reject) => {
-    const req = store.getAll();
+    const req = store2.getAll();
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
@@ -103,15 +104,15 @@ export async function savePhotos(
     const sorted = allRecords.sort((a, b) => a.addedAt - b.addedAt);
     const toRemove = sorted.slice(0, sorted.length - maxCount);
 
-    const tx2 = db.transaction(PHOTOS_STORE, "readwrite");
-    const store2 = tx2.objectStore(PHOTOS_STORE);
+    const tx3 = db.transaction(PHOTOS_STORE, "readwrite");
+    const store3 = tx3.objectStore(PHOTOS_STORE);
     for (const record of toRemove) {
-      store2.delete(record.id);
+      store3.delete(record.id);
     }
 
     await new Promise<void>((resolve, reject) => {
-      tx2.oncomplete = () => resolve();
-      tx2.onerror = () => reject(tx2.error);
+      tx3.oncomplete = () => resolve();
+      tx3.onerror = () => reject(tx3.error);
     });
   }
 
