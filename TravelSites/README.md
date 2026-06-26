@@ -222,4 +222,45 @@ v3.0 (全自动文旅宣发生态) ───────────────
 
 ---
 
+## 十一、数据来源与致谢
+
+本项目站在以下开源服务的肩膀上，谨此致谢：
+
+### 📍 中国行政区划数据
+
+**[`airyland/china-area-data`](https://github.com/airyland/china-area-data)**
+- 提供 34 省 / 374 市 / 3116 县 的完整层级数据
+- 数据源：国家统计局《行政区划代码》(GB/T 2260)
+- 许可：MIT License
+- 用途：城市名 → 行政区划层级查询（如"老君山在河南省洛阳市栾川县"）
+- 感谢 [@airyland](https://github.com/airyland) 8 年持续维护
+
+### 🌤️ 天气数据
+
+**[Open-Meteo](https://open-meteo.com/)**
+- 全球 16 天天气预报 + 历史归档
+- 免费、无需 API key、CC BY 4.0 许可
+- 用途：行程期间的天气、温度、降水概率
+
+### 🌍 地理编码（兜底）
+
+**[OpenStreetMap Nominatim](https://nominatim.openstreetmap.org/)**
+- 全球城市/地名 → 坐标查询
+- 免费、按 ODbL 许可，需遵守 1 req/s 限流
+- 用途：未在本地字典中时回退查询
+
+**[Open-Meteo Geocoding API](https://geocoding-api.open-meteo.com/)**
+- Open-Meteo 自带的城市名 → 坐标服务
+- 与天气 API 同源、协同好、中文支持较好
+- 用途：Nominatim 限流/失败时的主备选
+
+### 🤖 LLM 提供方
+
+当前使用 MiniMax-M3（通过兼容 OpenAI 协议的 endpoint），代码层完全无锁定，可平替为：
+- DeepSeek（中文最强 + 便宜）
+- OpenAI GPT-4o-mini
+- 阿里通义 / 智谱 GLM / 月之暗面 等国产模型
+
+---
+
 *"不要让用户做选择。让 AI 在用户做选择之前，已经把选项穷举好了。"*

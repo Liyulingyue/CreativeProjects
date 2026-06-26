@@ -73,8 +73,8 @@ def _lookup_openmeteo(city: str) -> Optional[tuple[float, float]]:
 
 STRATEGY_CHAIN: list[tuple[str, Callable[[str], Optional[tuple[float, float]]]]] = [
     ("local", _lookup_local),
-    ("nominatim", _lookup_nominatim),
     ("openmeteo", _lookup_openmeteo),
+    ("nominatim", _lookup_nominatim),
 ]
 
 
