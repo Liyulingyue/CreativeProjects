@@ -9,7 +9,10 @@ from .exporter import (
     print_matrix, export_matrix_to_csv, export_matrix_to_json,
 )
 from .weather import fetch_weather, is_extreme_weather, is_rainy, DailyWeather
-from .cities import lookup_city, CITY_COORDS
+from .cities import (
+    lookup_city, CITY_COORDS, LEARNED_COORDS,
+    save_learned_to_json, learned_count, get_strategies,
+)
 
 __all__ = [
     "API_KEY", "BASE_URL", "MODEL_NAME",
@@ -19,5 +22,6 @@ __all__ = [
     "export_to_json", "print_summary",
     "print_matrix", "export_matrix_to_csv", "export_matrix_to_json",
     "fetch_weather", "is_extreme_weather", "is_rainy", "DailyWeather",
-    "lookup_city", "CITY_COORDS",
+    "lookup_city", "CITY_COORDS", "LEARNED_COORDS",
+    "save_learned_to_json", "learned_count", "get_strategies",
 ]

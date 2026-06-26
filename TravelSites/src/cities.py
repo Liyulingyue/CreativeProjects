@@ -1,5 +1,20 @@
+"""
+城市查找 + 运行时学习。
+
+策略链: learned -> local -> openmeteo -> nominatim
+学习机制: openmeteo 返回 country_code=CN 时, 自动写入 LEARNED_COORDS
+持久化: 调用 save_learned_to_json() 写到 data/learned_cities.json
+启动加载: import 时自动从 JSON 加载
+"""
+import json
+from pathlib import Path
 from typing import Optional, Callable
 import httpx
+
+
+ROOT = Path(__file__).resolve().parent.parent
+DATA_DIR = ROOT / "data"
+LEARNED_FILE = DATA_DIR / "learned_cities.json"
 
 
 CITY_COORDS: dict[str, tuple[float, float]] = {
@@ -30,30 +45,39 @@ CITY_COORDS: dict[str, tuple[float, float]] = {
 }
 
 
-def _lookup_local(city: str) -> Optional[tuple[float, float]]:
-    if city in CITY_COORDS:
-        return CITY_COORDS[city]
-    return None
+LEARNED_COORDS: dict[str, tuple[float, float]] = {}
 
 
-def _lookup_nominatim(city: str) -> Optional[tuple[float, float]]:
+def _load_learned_from_disk() -> None:
+    if not LEARNED_FILE.exists():
+        return
     try:
-        with httpx.Client(timeout=10.0) as client:
-            resp = client.get(
-                "https://nominatim.openstreetmap.org/search",
-                params={"q": city, "format": "json", "limit": 1},
-                headers={"User-Agent": "TravelSites/0.1 (https://github.com/anomalyco/opencode)"},
-            )
-            resp.raise_for_status()
-            results = resp.json()
-            if results:
-                return float(results[0]["lat"]), float(results[0]["lon"])
+        data = json.loads(LEARNED_FILE.read_text(encoding="utf-8"))
+        for city, coords in data.items():
+            if isinstance(coords, list) and len(coords) == 2:
+                LEARNED_COORDS[city] = (float(coords[0]), float(coords[1]))
     except Exception:
-        return None
+        pass
+
+
+_load_learned_from_disk()
+
+
+def _lookup_learned(city: str) -> Optional[tuple[float, float, str]]:
+    if city in LEARNED_COORDS:
+        lat, lon = LEARNED_COORDS[city]
+        return (lat, lon, "CN")
     return None
 
 
-def _lookup_openmeteo(city: str) -> Optional[tuple[float, float]]:
+def _lookup_local(city: str) -> Optional[tuple[float, float, str]]:
+    if city in CITY_COORDS:
+        lat, lon = CITY_COORDS[city]
+        return (lat, lon, "CN")
+    return None
+
+
+def _lookup_openmeteo(city: str) -> Optional[tuple[float, float, str]]:
     try:
         with httpx.Client(timeout=10.0) as client:
             resp = client.get(
@@ -65,26 +89,53 @@ def _lookup_openmeteo(city: str) -> Optional[tuple[float, float]]:
             results = data.get("results", [])
             if results:
                 hit = results[0]
-                return float(hit["latitude"]), float(hit["longitude"])
+                lat = float(hit["latitude"])
+                lon = float(hit["longitude"])
+                country = hit.get("country_code", "")
+                if country == "CN":
+                    LEARNED_COORDS[city] = (lat, lon)
+                return (lat, lon, country)
     except Exception:
         return None
     return None
 
 
-STRATEGY_CHAIN: list[tuple[str, Callable[[str], Optional[tuple[float, float]]]]] = [
+def _lookup_nominatim(city: str) -> Optional[tuple[float, float, str]]:
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(
+                "https://nominatim.openstreetmap.org/search",
+                params={"q": city, "format": "json", "limit": 1, "countrycodes": "cn"},
+                headers={"User-Agent": "TravelSites/0.1 (https://github.com/anomalyco/opencode)"},
+            )
+            resp.raise_for_status()
+            results = resp.json()
+            if results:
+                hit = results[0]
+                lat = float(hit["lat"])
+                lon = float(hit["lon"])
+                return (lat, lon, "CN")
+    except Exception:
+        return None
+    return None
+
+
+STRATEGY_CHAIN: list[tuple[str, Callable[[str], Optional[tuple[float, float, str]]]]] = [
+    ("learned", _lookup_learned),
     ("local", _lookup_local),
     ("openmeteo", _lookup_openmeteo),
     ("nominatim", _lookup_nominatim),
 ]
 
 
-def lookup_city(city: str, verbose: bool = False) -> Optional[tuple[float, float]]:
+def lookup_city(city: str, learn: bool = True, verbose: bool = False) -> Optional[tuple[float, float]]:
     for name, strategy in STRATEGY_CHAIN:
         result = strategy(city)
         if result is not None:
+            lat, lon, country = result
             if verbose:
-                print(f"  [geocode] {city} -> {result} via {name}")
-            return result
+                print(f"  [geocode] {city} -> ({lat:.4f}, {lon:.4f}) via {name} [{country}]")
+            return (lat, lon)
     if verbose:
         print(f"  [geocode] {city} -> NOT FOUND in any strategy")
     return None
@@ -92,3 +143,20 @@ def lookup_city(city: str, verbose: bool = False) -> Optional[tuple[float, float
 
 def get_strategies() -> list[str]:
     return [name for name, _ in STRATEGY_CHAIN]
+
+
+def save_learned_to_json(path: Optional[Path] = None) -> int:
+    target = path or LEARNED_FILE
+    if not LEARNED_COORDS:
+        return 0
+    payload = {city: [lat, lon] for city, (lat, lon) in LEARNED_COORDS.items()}
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return len(payload)
+
+
+def learned_count() -> int:
+    return len(LEARNED_COORDS)

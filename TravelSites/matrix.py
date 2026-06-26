@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from src.matrix import plan_matrix
 from src.exporter import print_matrix, export_matrix_to_csv, export_matrix_to_json
+from src.cities import save_learned_to_json, learned_count
 
 
 def main():
@@ -96,6 +97,10 @@ def main():
             json_path = prefix.with_suffix(".json")
             export_matrix_to_json(results, json_path)
             print(f"已导出 JSON: {json_path}")
+
+    saved = save_learned_to_json()
+    if saved:
+        print(f"[learned] 已保存 {saved} 个城市坐标到 data/learned_cities.json (累计 {learned_count()})")
 
 
 if __name__ == "__main__":
