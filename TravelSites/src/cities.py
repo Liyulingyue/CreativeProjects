@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Callable
 import httpx
 
 
@@ -30,9 +30,13 @@ CITY_COORDS: dict[str, tuple[float, float]] = {
 }
 
 
-def lookup_city(city: str) -> Optional[tuple[float, float]]:
+def _lookup_local(city: str) -> Optional[tuple[float, float]]:
     if city in CITY_COORDS:
         return CITY_COORDS[city]
+    return None
+
+
+def _lookup_nominatim(city: str) -> Optional[tuple[float, float]]:
     try:
         with httpx.Client(timeout=10.0) as client:
             resp = client.get(
@@ -47,3 +51,44 @@ def lookup_city(city: str) -> Optional[tuple[float, float]]:
     except Exception:
         return None
     return None
+
+
+def _lookup_openmeteo(city: str) -> Optional[tuple[float, float]]:
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(
+                "https://geocoding-api.open-meteo.com/v1/search",
+                params={"name": city, "count": 1, "language": "zh"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            results = data.get("results", [])
+            if results:
+                hit = results[0]
+                return float(hit["latitude"]), float(hit["longitude"])
+    except Exception:
+        return None
+    return None
+
+
+STRATEGY_CHAIN: list[tuple[str, Callable[[str], Optional[tuple[float, float]]]]] = [
+    ("local", _lookup_local),
+    ("nominatim", _lookup_nominatim),
+    ("openmeteo", _lookup_openmeteo),
+]
+
+
+def lookup_city(city: str, verbose: bool = False) -> Optional[tuple[float, float]]:
+    for name, strategy in STRATEGY_CHAIN:
+        result = strategy(city)
+        if result is not None:
+            if verbose:
+                print(f"  [geocode] {city} -> {result} via {name}")
+            return result
+    if verbose:
+        print(f"  [geocode] {city} -> NOT FOUND in any strategy")
+    return None
+
+
+def get_strategies() -> list[str]:
+    return [name for name, _ in STRATEGY_CHAIN]
