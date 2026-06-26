@@ -12,7 +12,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from src import TripPlanner, export_to_json, print_summary
+from src import TripPlanner, export_to_json, print_summary, save_learned_to_json, learned_count
 
 
 DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -77,6 +77,10 @@ def main():
             json_path = output_dir / f"trip_{safe_city}_{start_date}_{end_date}.json"
         export_to_json(result, json_path)
         print(f"\n已导出 JSON: {json_path}")
+
+    saved = save_learned_to_json()
+    if saved:
+        print(f"[learned] 已保存 {saved} 个城市坐标到 data/learned_cities.json (累计 {learned_count()})")
 
 
 if __name__ == "__main__":

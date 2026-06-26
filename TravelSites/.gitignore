@@ -6,4 +6,5 @@ __pycache__/
 .venv/
 venv/
 output/
+data/learned_cities.json
 *.log
