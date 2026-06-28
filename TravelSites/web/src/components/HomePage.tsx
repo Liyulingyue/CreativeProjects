@@ -17,7 +17,7 @@ export function HomePage({ onSearch }: Props) {
   const [endDate, setEndDate] = useState(format(addDays(today, 3)));
 
   const quickCities = [
-    { name: '济南', emoji: '⛩️', desc: '泉城' },
+    { name: '济南', emoji: '💧', desc: '泉城' },
     { name: '大同', emoji: '🏯', desc: '古都' },
   ];
 
@@ -35,19 +35,24 @@ export function HomePage({ onSearch }: Props) {
   return (
     <div className="home-page">
       <div className="hero-section">
+        <img
+          src="/assets/logo.png"
+          alt="TravelSites"
+          className="hero-logo"
+          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+        />
         <h1 className="hero-title">TravelSites</h1>
-        <p className="hero-subtitle">时空驱动的旅游目的地发现平台</p>
-        <p className="hero-desc">输入日期，AI 帮你穷举最适合的旅行目的地</p>
+        <p className="hero-subtitle">时空驱动的旅游发现平台</p>
+        <p className="hero-desc">AI 穷举所有时空可行的目的地，按评分排序</p>
       </div>
 
-      <div className="date-picker-card card">
+      <div className="date-picker-card">
         <div className="date-picker-row">
           <input
             type="date"
             value={startDate}
             onChange={(e) => setStartDate(e.target.value)}
             min={format(today)}
-            className="date-input-native"
           />
           <span className="date-sep">至</span>
           <input
@@ -55,16 +60,15 @@ export function HomePage({ onSearch }: Props) {
             value={endDate}
             onChange={(e) => setEndDate(e.target.value)}
             min={startDate}
-            className="date-input-native"
           />
         </div>
-        <button className="btn btn-primary explore-btn" onClick={handleExplore}>
+        <button className="explore-btn" onClick={handleExplore}>
           🔍 开始探索
         </button>
       </div>
 
       <div className="section">
-        <h2 className="section-title">探索目的地</h2>
+        <h2 className="section-title">🏙️ 探索目的地</h2>
         <div className="city-grid">
           {quickCities.map((city) => (
             <button
@@ -85,7 +89,7 @@ export function HomePage({ onSearch }: Props) {
       </div>
 
       <div className="section">
-        <h2 className="section-title">热门主题</h2>
+        <h2 className="section-title">🏷️ 热门主题</h2>
         <div className="theme-grid">
           {themes.map((theme) => (
             <button

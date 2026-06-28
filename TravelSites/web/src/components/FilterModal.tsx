@@ -8,11 +8,11 @@ interface FilterData {
 }
 
 interface Props {
-  onClose: () => void;
   onApply: (filters: FilterData) => void;
+  onClose: () => void;
 }
 
-export function FilterModal({ onClose, onApply }: Props) {
+export function FilterModal({ onApply, onClose }: Props) {
   const today = new Date();
   const [startDate, setStartDate] = useState(format(addDays(today, 1)));
   const [endDate, setEndDate] = useState(format(addDays(today, 3)));
@@ -28,7 +28,6 @@ export function FilterModal({ onClose, onApply }: Props) {
 
   const handleApply = () => {
     onApply({ startDate, endDate, preference });
-    onClose();
   };
 
   return (
@@ -81,12 +80,12 @@ export function FilterModal({ onClose, onApply }: Props) {
             <h3>一句话描述你的偏好</h3>
             <textarea
               className="preference-input"
-              placeholder="例如：带孩子看自然风光、美食之旅、登山探险..."
+              placeholder="例如：带孩子看自然风光、美食之旅..."
               value={preference}
               onChange={(e) => setPreference(e.target.value)}
               rows={2}
             />
-            <p className="preference-hint">输入你的旅行偏好，系统会优先推荐匹配的行程</p>
+            <p className="preference-hint">输入旅行偏好，系统会优先推荐匹配的行程</p>
           </div>
 
           <div className="filter-section">
