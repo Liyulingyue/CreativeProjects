@@ -11,17 +11,17 @@ interface Region {
 
 interface Props {
   onClose: () => void;
-  onConfirm: (county: string) => void;
-  current: string;
+  onConfirm: (picked: { province: string; city: string; county: string }) => void;
+  current: { province: string; city: string; county: string };
 }
 
 export function LocationPicker({ onClose, onConfirm, current }: Props) {
   const regions = regionsData as Region[];
 
-  const initialMatch = regions.find((r) => r.county === current);
-  const [province, setProvince] = useState(initialMatch?.province || '北京市');
-  const [city, setCity] = useState(initialMatch?.city || '北京市');
-  const [county, setCounty] = useState(current);
+  const initialMatch = regions.find((r) => r.county === current.county);
+  const [province, setProvince] = useState(current.province || initialMatch?.province || '北京市');
+  const [city, setCity] = useState(current.city || initialMatch?.city || '北京市');
+  const [county, setCounty] = useState(current.county);
 
   const provinces = useMemo(
     () => Array.from(new Set(regions.map((r) => r.province))).sort(),
@@ -71,7 +71,7 @@ export function LocationPicker({ onClose, onConfirm, current }: Props) {
   };
 
   const handleConfirm = () => {
-    onConfirm(county);
+    onConfirm({ province, city, county });
     onClose();
   };
 
