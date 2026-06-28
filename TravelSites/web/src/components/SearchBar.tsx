@@ -2,10 +2,10 @@ import { useState } from 'react';
 import { format, addDays, formatShort } from '../utils/date';
 
 interface Props {
-  onSearch: (startDate: string, endDate: string, origin: string) => void;
+  onSearch: (startDate: string, endDate: string, origin: { province: string; city: string; county: string }) => void;
   onExpand: () => void;
   onOpenPicker: () => void;
-  origin: string;
+  origin: { province: string; city: string; county: string };
   loading: boolean;
 }
 
@@ -30,7 +30,7 @@ export function SearchBar({ onSearch, onExpand, onOpenPicker, origin, loading }:
         className="origin-display"
         onClick={onOpenPicker}
       >
-        {origin}
+        {origin.county}
       </button>
 
       <div className="date-sep-v" />

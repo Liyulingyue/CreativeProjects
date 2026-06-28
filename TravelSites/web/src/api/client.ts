@@ -39,7 +39,7 @@ export async function searchTravelPlans(
   startDate: string,
   endDate: string,
   preference: string = '',
-  origin: string = '北京'
+  origin: { province: string; city: string; county: string } = { province: '北京市', city: '北京市', county: '朝阳区' }
 ): Promise<SearchResult> {
   return request<SearchResult>('/search', {
     method: 'POST',
@@ -48,7 +48,9 @@ export async function searchTravelPlans(
       start_date: startDate,
       end_date: endDate,
       preference,
-      origin,
+      origin_province: origin.province,
+      origin_city: origin.city,
+      origin_county: origin.county,
     }),
   });
 }

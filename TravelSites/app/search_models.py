@@ -9,7 +9,9 @@ class SearchRequest(BaseModel):
     start_date: str = Field(..., description="出发日期 YYYY-MM-DD")
     end_date: str = Field(..., description="返回日期 YYYY-MM-DD")
     preference: Optional[str] = Field(default="", description="用户偏好描述，如'爬山、看海、带孩子'")
-    origin: Optional[str] = Field(default="北京", description="出发地城市，默认北京")
+    origin_province: Optional[str] = Field(default="北京市", description="出发地省")
+    origin_city: Optional[str] = Field(default="北京市", description="出发地市")
+    origin_county: Optional[str] = Field(default="朝阳区", description="出发地县/区")
 
 
 class SearchResultItem(BaseModel):

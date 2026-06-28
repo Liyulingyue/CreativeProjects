@@ -34,8 +34,9 @@ export default function App() {
   const [selectedItem, setSelectedItem] = useState<SearchResultItem | null>(null);
   const [showFilter, setShowFilter] = useState(false);
   const [showInterstitial, setShowInterstitial] = useState(true);
-  const [origin, setOrigin] = useState('朝阳区');
+  const [origin, setOrigin] = useState({ province: '北京市', city: '北京市', county: '朝阳区' });
   const [showLocationPicker, setShowLocationPicker] = useState(false);
+  const [lastSearchParams, setLastSearchParams] = useState<{ startDate: string; endDate: string; preference: string } | null>(null);
 
   const [toast, setToast] = useState('');
 
@@ -55,9 +56,10 @@ export default function App() {
     setTimeout(() => setToast(''), 2400);
   };
 
-  const doSearch = async (startDate: string, endDate: string, preference: string = '', origin: string = '北京') => {
+  const doSearch = async (startDate: string, endDate: string, preference: string = '', origin: { province: string; city: string; county: string } = { province: '北京市', city: '北京市', county: '朝阳区' }) => {
     setSearchLoading(true);
     setSearchError('');
+    setLastSearchParams({ startDate, endDate, preference });
 
     try {
       const results = await searchTravelPlans(startDate, endDate, preference, origin);
@@ -73,13 +75,26 @@ export default function App() {
     }
   };
 
-  const handleSearch = async (startDate: string, endDate: string, origin: string) => {
+  const handleOriginPicked = (picked: { province: string; city: string; county: string }) => {
+    setOrigin(picked);
+    if (lastSearchParams) {
+      doSearch(
+        lastSearchParams.startDate,
+        lastSearchParams.endDate,
+        lastSearchParams.preference,
+        picked
+      );
+      showToast(`出发地已更新为 ${picked.county}`);
+    }
+  };
+
+  const handleSearch = async (startDate: string, endDate: string, origin: { province: string; city: string; county: string }) => {
     await doSearch(startDate, endDate, '', origin);
     setActiveTab('search');
   };
 
   const handleFilterApply = async (filters: FilterData) => {
-    await doSearch(filters.startDate, filters.endDate, filters.preference);
+    await doSearch(filters.startDate, filters.endDate, filters.preference, origin);
     setActiveTab('search');
   };
 
@@ -181,7 +196,7 @@ export default function App() {
       {showLocationPicker && (
         <LocationPicker
           onClose={() => setShowLocationPicker(false)}
-          onConfirm={(c) => setOrigin(c)}
+          onConfirm={handleOriginPicked}
           current={origin}
         />
       )}
