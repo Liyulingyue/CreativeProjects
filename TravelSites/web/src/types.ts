@@ -78,6 +78,9 @@ export interface SearchResultItem {
   };
   daily_plan: DailyPlan[];
   preference_score?: number;
+  distance_km?: number;
+  transport_mode?: string;
+  transit_hours?: number;
 }
 
 export interface DailyPlan {

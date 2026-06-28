@@ -15,3 +15,8 @@ export function formatDisplayDate(dateStr: string): string {
   const d = new Date(dateStr);
   return `${d.getMonth() + 1}月${d.getDate()}日`;
 }
+
+export function formatShort(dateStr: string): string {
+  const d = new Date(dateStr);
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
