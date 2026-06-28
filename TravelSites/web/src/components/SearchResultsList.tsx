@@ -18,7 +18,7 @@ export function SearchResultsList({ results, onItemClick }: Props) {
     return (
       <div className="empty-state">
         <img
-          src="/assets/empty-state.png"
+          src="/assets/empty2.png"
           alt="无结果"
           className="empty-illustration"
           onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
