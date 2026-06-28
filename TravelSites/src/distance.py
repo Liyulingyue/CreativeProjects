@@ -89,7 +89,7 @@ def transport_score(distance_km: float, duration_days: int) -> int:
     return score
 
 
-# 常用出发地坐标库
+# 常用出发地坐标库（fallback 字典）
 ORIGIN_COORDS: dict[str, Tuple[float, float]] = {
     "北京": (39.9042, 116.4074),
     "上海": (31.2304, 121.4737),
@@ -97,14 +97,56 @@ ORIGIN_COORDS: dict[str, Tuple[float, float]] = {
     "深圳": (22.5431, 114.0579),
     "杭州": (30.2741, 120.1551),
     "成都": (30.5728, 104.0668),
+    "南京": (32.0603, 118.7969),
+    "武汉": (30.5928, 114.3055),
+    "西安": (34.3416, 108.9398),
+    "苏州": (31.2989, 120.5853),
+    "青岛": (36.0671, 120.3826),
+    "厦门": (24.4798, 118.0894),
+    "济南": (36.6512, 117.1201),
+    "青岛": (36.0671, 120.3826),
+    "重庆": (29.5630, 106.5516),
+    "长沙": (28.2282, 112.9388),
+    "大连": (38.9140, 121.6147),
+    "宁波": (29.8683, 121.5440),
+    "福州": (26.0745, 119.2965),
+    "合肥": (31.8206, 117.2272),
+    "昆明": (25.0389, 102.7183),
+    "哈尔滨": (45.8038, 126.5350),
+    "沈阳": (41.8057, 123.4315),
+    "天津": (39.3434, 117.3616),
+    "南昌": (28.6820, 115.8579),
+    "南宁": (22.8170, 108.3669),
+    "太原": (37.8706, 112.5489),
+    "石家庄": (38.0428, 114.5149),
+    "贵阳": (26.6470, 106.6302),
+    "兰州": (36.0611, 103.8343),
+    "银川": (38.4872, 106.2309),
+    "西宁": (36.6232, 101.7804),
+    "乌鲁木齐": (43.8256, 87.6168),
+    "拉萨": (29.6500, 91.1700),
+    "呼和浩特": (40.8425, 111.7491),
+    "三亚": (18.2528, 109.5119),
+    "海口": (20.0444, 110.1992),
+    "丽江": (26.8721, 100.2330),
+    "大理": (25.6065, 100.2675),
+    "桂林": (25.2736, 110.2907),
+    "张家界": (29.1170, 110.4791),
+    "黄山": (29.7148, 118.3375),
+    "敦煌": (40.1421, 94.6612),
+    "九寨沟": (33.2604, 104.2368),
+    "呼伦贝尔": (49.2120, 119.7570),
+    "洛阳": (34.6197, 112.4539),
+    "大同": (40.0768, 113.3001),
 }
 
 
 def lookup_origin_from_json(province: str, city: str, county: str) -> Optional[Tuple[float, float]]:
     """
-    从 china_regions_enriched.json 查找出发地坐标（精确到县/区）。
-    县无独立坐标时 fallback 到城市中心。
-    TODO: 接入更精确的县级坐标库（如高德/百度行政区划 API）
+    查找出发地坐标：
+    1. 先查 china_regions_enriched.json
+    2. 缺失时 fallback 到内置 ORIGIN_COORDS 字典
+    TODO: 接入更精确的县级坐标库
     """
     import json
     from pathlib import Path
@@ -113,19 +155,20 @@ def lookup_origin_from_json(province: str, city: str, county: str) -> Optional[T
     try:
         with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
+        prov = data.get(province)
+        if prov:
+            cities = prov.get("cities", {})
+            city_data = cities.get(city)
+            if city_data:
+                lat = city_data.get("latitude")
+                lon = city_data.get("longitude")
+                if lat and lon:
+                    return (lat, lon)
     except Exception:
-        return None
+        pass
 
-    prov = data.get(province)
-    if not prov:
-        return lookup_origin(province) or lookup_origin(city) or lookup_origin(county)
-
-    cities = prov.get("cities", {})
-    city_data = cities.get(city)
-    if not city_data:
-        return lookup_origin(city) or lookup_origin(province)
-
-    return (city_data.get("latitude", 0), city_data.get("longitude", 0))
+    # Fallback: 内置坐标字典
+    return (ORIGIN_COORDS.get(city) or ORIGIN_COORDS.get(province) or ORIGIN_COORDS.get(county))
 
 
 def lookup_origin(name: str) -> Optional[Tuple[float, float]]:
