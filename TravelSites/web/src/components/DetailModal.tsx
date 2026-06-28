@@ -80,6 +80,19 @@ export function DetailModal({ item, onClose }: Props) {
               <span className="detail-label">天数</span>
               <span className="detail-value">{item.duration_days} 天</span>
             </div>
+            {item.distance_km != null && item.distance_km > 0 && (
+              <div className="detail-row">
+                <span className="detail-label">距出发地</span>
+                <span className="detail-value">
+                  {Math.round(item.distance_km)} km
+                  {item.transit_hours != null && item.transit_hours > 0 && (
+                    <span style={{ color: 'var(--text-muted)', fontWeight: 400, marginLeft: 6 }}>
+                      · 预估 {item.transit_hours}h
+                    </span>
+                  )}
+                </span>
+              </div>
+            )}
             <div className="detail-row">
               <span className="detail-label">推荐</span>
               <span className="detail-value" style={{ color: getScoreColor(item.score) }}>

@@ -11,6 +11,7 @@ import { DetailModal } from './components/DetailModal';
 import { Settings } from './components/Settings';
 import { FilterModal } from './components/FilterModal';
 import { Interstitial } from './components/Interstitial';
+import { LocationPicker } from './components/LocationPicker';
 
 type TabType = 'home' | 'search' | 'settings';
 
@@ -33,6 +34,8 @@ export default function App() {
   const [selectedItem, setSelectedItem] = useState<SearchResultItem | null>(null);
   const [showFilter, setShowFilter] = useState(false);
   const [showInterstitial, setShowInterstitial] = useState(true);
+  const [origin, setOrigin] = useState('朝阳区');
+  const [showLocationPicker, setShowLocationPicker] = useState(false);
 
   const [toast, setToast] = useState('');
 
@@ -52,12 +55,12 @@ export default function App() {
     setTimeout(() => setToast(''), 2400);
   };
 
-  const doSearch = async (startDate: string, endDate: string, preference: string = '') => {
+  const doSearch = async (startDate: string, endDate: string, preference: string = '', origin: string = '北京') => {
     setSearchLoading(true);
     setSearchError('');
 
     try {
-      const results = await searchTravelPlans(startDate, endDate, preference);
+      const results = await searchTravelPlans(startDate, endDate, preference, origin);
       setSearchResults(results);
       if (results.total === 0) {
         showToast('未找到匹配的方案');
@@ -70,8 +73,8 @@ export default function App() {
     }
   };
 
-  const handleSearch = async (startDate: string, endDate: string) => {
-    await doSearch(startDate, endDate, '');
+  const handleSearch = async (startDate: string, endDate: string, origin: string) => {
+    await doSearch(startDate, endDate, '', origin);
     setActiveTab('search');
   };
 
@@ -102,6 +105,8 @@ export default function App() {
             <SearchBar
               onSearch={handleSearch}
               onExpand={() => setShowFilter(true)}
+              onOpenPicker={() => setShowLocationPicker(true)}
+              origin={origin}
               loading={searchLoading}
             />
           </div>
@@ -170,6 +175,14 @@ export default function App() {
         <FilterModal
           onClose={() => setShowFilter(false)}
           onApply={handleFilterApply}
+        />
+      )}
+
+      {showLocationPicker && (
+        <LocationPicker
+          onClose={() => setShowLocationPicker(false)}
+          onConfirm={(c) => setOrigin(c)}
+          current={origin}
         />
       )}
 

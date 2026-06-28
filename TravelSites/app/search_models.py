@@ -9,6 +9,7 @@ class SearchRequest(BaseModel):
     start_date: str = Field(..., description="出发日期 YYYY-MM-DD")
     end_date: str = Field(..., description="返回日期 YYYY-MM-DD")
     preference: Optional[str] = Field(default="", description="用户偏好描述，如'爬山、看海、带孩子'")
+    origin: Optional[str] = Field(default="北京", description="出发地城市，默认北京")
 
 
 class SearchResultItem(BaseModel):
@@ -25,6 +26,9 @@ class SearchResultItem(BaseModel):
     score_breakdown: dict
     daily_plan: list[dict] = Field(default_factory=list)
     preference_score: Optional[float] = Field(default=0, description="偏好匹配分 0-1")
+    distance_km: Optional[float] = Field(default=0, description="距出发地直线距离 km")
+    transport_mode: Optional[str] = Field(default="", description="推荐交通方式")
+    transit_hours: Optional[float] = Field(default=0, description="单程耗时")
 
 
 class SearchResponse(BaseModel):

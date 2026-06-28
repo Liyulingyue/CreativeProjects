@@ -38,7 +38,8 @@ export async function triggerRefresh(): Promise<{ message: string; cities: strin
 export async function searchTravelPlans(
   startDate: string,
   endDate: string,
-  preference: string = ''
+  preference: string = '',
+  origin: string = '北京'
 ): Promise<SearchResult> {
   return request<SearchResult>('/search', {
     method: 'POST',
@@ -47,6 +48,7 @@ export async function searchTravelPlans(
       start_date: startDate,
       end_date: endDate,
       preference,
+      origin,
     }),
   });
 }

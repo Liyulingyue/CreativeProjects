@@ -2,6 +2,9 @@ from datetime import datetime, date
 from fastapi import APIRouter, HTTPException
 from typing import Optional
 
+from src.distance import haversine_km, estimate_travel_time, transport_score, lookup_origin
+from src.cities import lookup_city
+
 from .models import (
     CityListResponse, CityMatrixResponse, MatrixCellResponse,
     HealthResponse, RefreshStatusResponse
@@ -124,19 +127,48 @@ async def search_travel_plans(req: SearchRequest):
                 else:
                     top_attractions = raw_attractions[:5]
 
+                # 真实距离 + 重新计算 transport 维度分数
+                origin_coord = lookup_origin(req.origin) or lookup_origin("北京")
+                city_coord = lookup_city(city)
+                if origin_coord and city_coord:
+                    distance = haversine_km(origin_coord, city_coord)
+                    transit_info = estimate_travel_time(distance)
+                    new_transport_score = transport_score(distance, cell["duration"])
+                    # 替换原有 breakdown.transport
+                    breakdown = dict(plan_data.get("score_breakdown") or {})
+                    breakdown["transport"] = new_transport_score
+                else:
+                    distance = 0
+                    transit_info = {"recommended_mode": "", "transit_hours": 0}
+                    breakdown = plan_data.get("score_breakdown") or {}
+
+                # 重新综合 score（保持 40/25/25/10 权重）
+                base_score = plan_data.get("score") or cell.get("score") or 0
+                # 如果有完整 breakdown，重算
+                if breakdown and all(k in breakdown for k in ["days_match", "weather", "attraction_density", "transport"]):
+                    base_score = int(
+                        breakdown["days_match"] * 0.40
+                        + breakdown["transport"] * 0.25
+                        + breakdown["weather"] * 0.25
+                        + breakdown["attraction_density"] * 0.10
+                    )
+
                 results.append(SearchResultItem(
                     city=city,
                     start_date=cell["start_date"],
                     end_date=cell["end_date"],
                     duration_days=cell["duration"],
-                    score=plan_data.get("score") or cell.get("score") or 0,
+                    score=base_score,
                     recommendation=plan_data.get("recommendation") or cell.get("recommendation") or "",
                     weather_summary=cell.get("weather_summary") or "",
                     weather_desc=weather_desc,
                     top_attractions=top_attractions,
                     key_highlights=plan_data.get("key_highlights") or plan_data.get("city_intro", "")[:100],
-                    score_breakdown=plan_data.get("score_breakdown") or {},
+                    score_breakdown=breakdown,
                     daily_plan=plan_data.get("daily_plan") or [],
+                    distance_km=distance,
+                    transport_mode=transit_info.get("recommended_mode", ""),
+                    transit_hours=transit_info.get("transit_hours", 0),
                 ))
                 plan_data_map[city] = plan_data
 
