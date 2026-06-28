@@ -1,5 +1,5 @@
 from datetime import datetime, date
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException
 from typing import Optional
 
 from .models import (
@@ -11,6 +11,62 @@ from .refresh import (
     load_matrix_from_cache, refresh_all_cities,
     get_refresh_state, SEED_CITIES, REFRESH_ENABLED
 )
+
+
+PREFERENCE_KEYWORDS = {
+    "自然": ["自然", "风光", "山", "水", "森林", "草原", "湖泊", "海边", "海", "沙滩"],
+    "人文": ["历史", "文化", "古迹", "博物馆", "寺庙", "古镇", "古城", "文物"],
+    "美食": ["美食", "小吃", "夜市", "特色", "当地"],
+    "户外": ["登山", "徒步", "骑行", "露营", "滑雪", "漂流"],
+    "亲子": ["孩子", "亲子", "儿童", "乐园", "动物园", "海洋馆"],
+    "放松": ["温泉", "SPA", "度假", "休闲", "慢生活"],
+}
+
+
+def calc_preference_score(preference: str, plan_data: dict, city_tags: list[str]) -> float:
+    """
+    TODO: 当前为简单字符匹配，未来可升级为：
+    1. Embedding 向量相似度匹配（使用 sentence-transformers 等本地模型）
+    2. LLM 理解用户意图后匹配
+    3. 预计算的 city/plan embedding 存储，查询时直接用余弦相似度
+    """
+    if not preference or not preference.strip():
+        return 0.0
+
+    pref_lower = preference.lower()
+    score = 0.0
+    matched = 0
+
+    for category, keywords in PREFERENCE_KEYWORDS.items():
+        for kw in keywords:
+            if kw in pref_lower:
+                matched += 1
+                break
+
+    if matched > 0:
+        score = min(matched / 3.0, 1.0)
+
+    return score
+
+
+def rank_by_preference(results: list[SearchResultItem], preference: str, plan_data_map: dict) -> list[SearchResultItem]:
+    """根据偏好重新排序"""
+    if not preference or not preference.strip():
+        return results
+
+    for item in results:
+        plan_data = plan_data_map.get(item.city, {})
+        item.preference_score = calc_preference_score(
+            preference,
+            plan_data,
+            plan_data.get("city_tags", [])
+        )
+
+    def sort_key(x: SearchResultItem) -> tuple:
+        pref_boost = x.preference_score * 20
+        return (x.score + pref_boost, x.preference_score)
+
+    return sorted(results, key=sort_key, reverse=True)
 
 
 router = APIRouter()
@@ -41,12 +97,8 @@ async def search_travel_plans(req: SearchRequest):
     if end < start:
         raise HTTPException(status_code=400, detail="返回日期不能早于出发日期")
 
-    duration = (end - start).days + 1
-    today = date.today()
-    start_offset = (start.date() - today).days
-    end_offset = (end.date() - today).days
-
     results: list[SearchResultItem] = []
+    plan_data_map: dict = {}
 
     for city in SEED_CITIES:
         cached = load_matrix_from_cache(city)
@@ -86,8 +138,10 @@ async def search_travel_plans(req: SearchRequest):
                     score_breakdown=plan_data.get("score_breakdown") or {},
                     daily_plan=plan_data.get("daily_plan") or [],
                 ))
+                plan_data_map[city] = plan_data
 
-    results.sort(key=lambda x: x.score, reverse=True)
+    results = rank_by_preference(results, req.preference or "", plan_data_map)
+    results.sort(key=lambda x: x.score + (x.preference_score or 0) * 20, reverse=True)
 
     return SearchResponse(
         items=results,

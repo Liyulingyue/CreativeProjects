@@ -3,10 +3,11 @@ import { format, addDays } from '../utils/date';
 
 interface Props {
   onSearch: (startDate: string, endDate: string) => void;
+  onExpand: () => void;
   loading: boolean;
 }
 
-export function SearchBar({ onSearch, loading }: Props) {
+export function SearchBar({ onSearch, onExpand, loading }: Props) {
   const today = new Date();
   const defaultStart = format(addDays(today, 1));
   const defaultEnd = format(addDays(today, 3));
@@ -21,34 +22,27 @@ export function SearchBar({ onSearch, loading }: Props) {
   };
 
   return (
-    <form className="search-bar card" onSubmit={handleSubmit}>
-      <div className="search-row">
-        <div className="search-field">
-          <label>出发</label>
-          <input
-            type="date"
-            value={startDate}
-            onChange={(e) => setStartDate(e.target.value)}
-            min={format(today)}
-          />
-        </div>
-        <div className="search-arrow">→</div>
-        <div className="search-field">
-          <label>返回</label>
-          <input
-            type="date"
-            value={endDate}
-            onChange={(e) => setEndDate(e.target.value)}
-            min={startDate}
-          />
-        </div>
-      </div>
-      <button
-        type="submit"
-        className="btn btn-primary search-btn"
-        disabled={loading || !startDate || !endDate}
-      >
-        {loading ? '搜索中...' : '🔍 搜索目的地'}
+    <form className="search-bar-compact" onSubmit={handleSubmit}>
+      <input
+        type="date"
+        value={startDate}
+        onChange={(e) => setStartDate(e.target.value)}
+        min={format(today)}
+        className="date-input-native"
+      />
+      <span className="date-sep">-</span>
+      <input
+        type="date"
+        value={endDate}
+        onChange={(e) => setEndDate(e.target.value)}
+        min={startDate}
+        className="date-input-native"
+      />
+      <button type="submit" className="btn-search" disabled={loading}>
+        {loading ? '...' : '🔍'}
+      </button>
+      <button type="button" className="btn-expand" onClick={onExpand}>
+        ⚙️
       </button>
     </form>
   );

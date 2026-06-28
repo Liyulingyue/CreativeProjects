@@ -5,11 +5,19 @@ import {
 } from './api/client';
 import type { Health, SearchResult, SearchResultItem } from './types';
 import { SearchBar } from './components/SearchBar';
+import { HomePage } from './components/HomePage';
 import { SearchResultsList } from './components/SearchResultsList';
 import { DetailModal } from './components/DetailModal';
 import { Settings } from './components/Settings';
+import { FilterModal } from './components/FilterModal';
 
-type TabType = 'home' | 'settings';
+type TabType = 'home' | 'search' | 'settings';
+
+interface FilterData {
+  startDate: string;
+  endDate: string;
+  preference: string;
+}
 
 export default function App() {
   const [health, setHealth] = useState<Health | null>(null);
@@ -22,6 +30,7 @@ export default function App() {
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState('');
   const [selectedItem, setSelectedItem] = useState<SearchResultItem | null>(null);
+  const [showFilter, setShowFilter] = useState(false);
 
   const [toast, setToast] = useState('');
 
@@ -41,13 +50,12 @@ export default function App() {
     setTimeout(() => setToast(''), 2400);
   };
 
-  const handleSearch = async (startDate: string, endDate: string) => {
+  const doSearch = async (startDate: string, endDate: string, preference: string = '') => {
     setSearchLoading(true);
     setSearchError('');
-    setSearchResults(null);
 
     try {
-      const results = await searchTravelPlans(startDate, endDate);
+      const results = await searchTravelPlans(startDate, endDate, preference);
       setSearchResults(results);
       if (results.total === 0) {
         showToast('未找到匹配的方案');
@@ -58,6 +66,16 @@ export default function App() {
     } finally {
       setSearchLoading(false);
     }
+  };
+
+  const handleSearch = async (startDate: string, endDate: string) => {
+    await doSearch(startDate, endDate, '');
+    setActiveTab('search');
+  };
+
+  const handleFilterApply = async (filters: FilterData) => {
+    await doSearch(filters.startDate, filters.endDate, filters.preference);
+    setActiveTab('search');
   };
 
   return (
@@ -72,11 +90,20 @@ export default function App() {
         </button>
       </header>
 
-      <main className="app-content">
-        {activeTab === 'home' && (
-          <>
-            <SearchBar onSearch={handleSearch} loading={searchLoading} />
+      {activeTab === 'home' && (
+        <HomePage onSearch={handleFilterApply} />
+      )}
 
+      {activeTab === 'search' && (
+        <>
+          <div className="search-bar-wrapper">
+            <SearchBar
+              onSearch={handleSearch}
+              onExpand={() => setShowFilter(true)}
+              loading={searchLoading}
+            />
+          </div>
+          <main className="app-content">
             {searchLoading && (
               <div className="loading">
                 <div className="spinner" />
@@ -96,26 +123,27 @@ export default function App() {
                 onItemClick={setSelectedItem}
               />
             )}
+          </main>
+        </>
+      )}
 
-            {!searchResults && !searchLoading && !searchError && (
-              <div className="card" style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '40px 20px' }}>
-                <p style={{ fontSize: 48, marginBottom: 16 }}>🌍</p>
-                <p>输入出发和返回日期</p>
-                <p>开始探索你的下一次旅行</p>
-              </div>
-            )}
-          </>
-        )}
-
-        {activeTab === 'settings' && (
+      {activeTab === 'settings' && (
+        <main className="app-content">
           <Settings health={health} />
-        )}
-      </main>
+        </main>
+      )}
 
       <nav className="bottom-nav">
         <button
           className={`bottom-nav-item ${activeTab === 'home' ? 'active' : ''}`}
           onClick={() => setActiveTab('home')}
+        >
+          <span className="icon">🏠</span>
+          <span>首页</span>
+        </button>
+        <button
+          className={`bottom-nav-item ${activeTab === 'search' ? 'active' : ''}`}
+          onClick={() => setActiveTab('search')}
         >
           <span className="icon">🔍</span>
           <span>搜索</span>
@@ -133,6 +161,13 @@ export default function App() {
         <DetailModal
           item={selectedItem}
           onClose={() => setSelectedItem(null)}
+        />
+      )}
+
+      {showFilter && (
+        <FilterModal
+          onClose={() => setShowFilter(false)}
+          onApply={handleFilterApply}
         />
       )}
 

@@ -77,6 +77,7 @@ export interface SearchResultItem {
     transport: number;
   };
   daily_plan: DailyPlan[];
+  preference_score?: number;
 }
 
 export interface DailyPlan {
