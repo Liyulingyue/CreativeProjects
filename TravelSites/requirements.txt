@@ -1,3 +1,6 @@
 openaijsonwrapper
 openai
 python-dotenv
+fastapi
+uvicorn[standard]
+pydantic

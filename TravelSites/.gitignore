@@ -7,4 +7,10 @@ __pycache__/
 venv/
 output/
 data/learned_cities.json
+data/matrix_cache/*.json
+!data/matrix_cache/.gitkeep
 *.log
+node_modules/
+dist/
+web/dist/
+web/node_modules/
