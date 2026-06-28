@@ -1197,3 +1197,95 @@ body {
   font-size: 14px;
   color: var(--text-secondary);
 }
+
+/* Interstitial */
+.interstitial {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(15, 23, 42, 0.95);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.interstitial-close {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.5);
+  color: white;
+  font-size: 22px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+.interstitial-content {
+  width: 100%;
+  max-width: 320px;
+  margin: 20px;
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6);
+}
+
+.interstitial-image {
+  width: 100%;
+  height: auto;
+  display: block;
+  animation: fadeSlide 0.3s ease;
+}
+
+@keyframes fadeSlide {
+  from { opacity: 0.5; transform: scale(0.98); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.interstitial-info {
+  padding: 20px;
+  background: var(--card-bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.interstitial-title {
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.interstitial-btn {
+  width: 100%;
+  padding: 14px 24px;
+  font-size: 16px;
+  font-weight: 700;
+  border: none;
+  border-radius: 20px;
+  background: linear-gradient(135deg, #0891B2 0%, #06B6D4 100%);
+  color: white;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(8, 145, 178, 0.4);
+}
+
+.interstitial-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
