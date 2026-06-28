@@ -7,41 +7,38 @@ interface Props {
 }
 
 function getScoreColor(score: number): string {
-  if (score >= 85) return '#52c41a';
-  if (score >= 70) return '#4A90E2';
-  if (score >= 50) return '#faad14';
-  return '#f5222d';
-}
-
-function getRecBadgeColor(rec: string): string {
-  if (rec === '强烈推荐') return '#52c41a';
-  if (rec === '推荐') return '#4A90E2';
-  if (rec === '勉强可行') return '#faad14';
-  if (rec === '建议改期') return '#f5222d';
-  return '#999';
+  if (score >= 85) return '#10B981';
+  if (score >= 70) return '#0D9488';
+  if (score >= 50) return '#F59E0B';
+  return '#EF4444';
 }
 
 export function SearchResultsList({ results, onItemClick }: Props) {
   if (results.total === 0) {
     return (
-      <div className="card" style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 40 }}>
-        <p style={{ fontSize: 40, marginBottom: 12 }}>😢</p>
-        <p>暂未找到匹配的方案</p>
-        <p style={{ fontSize: 13, marginTop: 8 }}>试试调整日期范围</p>
+      <div className="empty-state">
+        <img
+          src="/assets/empty-state.png"
+          alt="无结果"
+          className="empty-illustration"
+          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+        />
+        <h3 className="empty-title">暂无匹配的行程</h3>
+        <p className="empty-desc">试试调整日期范围或筛选条件</p>
       </div>
     );
   }
 
   return (
-    <div className="results-list">
+    <div>
       <div className="results-header">
-        <span>找到 <strong>{results.total}</strong> 个推荐目的地</span>
+        找到 <strong>{results.total}</strong> 个推荐目的地
       </div>
 
       {results.items.map((item) => (
         <div
           key={`${item.city}-${item.start_date}-${item.end_date}`}
-          className="result-card card"
+          className="result-card"
           onClick={() => onItemClick(item)}
         >
           <div className="result-card-row">
@@ -56,15 +53,20 @@ export function SearchResultsList({ results, onItemClick }: Props) {
                 </span>
                 <span
                   className="rec-badge"
-                  style={{ background: getRecBadgeColor(item.recommendation) }}
+                  style={{ background: getScoreColor(item.score) }}
                 >
                   {item.recommendation}
                 </span>
               </div>
-              <p className="result-highlights">{item.key_highlights}</p>
+              {item.key_highlights && (
+                <p className="result-highlights">{item.key_highlights}</p>
+              )}
             </div>
-            <div className="result-score" style={{ color: getScoreColor(item.score) }}>
-              <span className="score-num">{item.score}</span>
+            <div className="result-score">
+              <span className="score-num" style={{ color: getScoreColor(item.score) }}>
+                {item.score}
+              </span>
+              <span className="score-label">分</span>
             </div>
           </div>
         </div>
