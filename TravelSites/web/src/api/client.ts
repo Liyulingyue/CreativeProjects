@@ -37,11 +37,16 @@ export async function triggerRefresh(): Promise<{ message: string; cities: strin
 
 export async function searchTravelPlans(
   startDate: string,
-  endDate: string
+  endDate: string,
+  preference: string = ''
 ): Promise<SearchResult> {
   return request<SearchResult>('/search', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ start_date: startDate, end_date: endDate }),
+    body: JSON.stringify({
+      start_date: startDate,
+      end_date: endDate,
+      preference,
+    }),
   });
 }
