@@ -10,6 +10,7 @@ import { SearchResultsList } from './components/SearchResultsList';
 import { DetailModal } from './components/DetailModal';
 import { Settings } from './components/Settings';
 import { FilterModal } from './components/FilterModal';
+import { Interstitial } from './components/Interstitial';
 
 type TabType = 'home' | 'search' | 'settings';
 
@@ -31,6 +32,7 @@ export default function App() {
   const [searchError, setSearchError] = useState('');
   const [selectedItem, setSelectedItem] = useState<SearchResultItem | null>(null);
   const [showFilter, setShowFilter] = useState(false);
+  const [showInterstitial, setShowInterstitial] = useState(true);
 
   const [toast, setToast] = useState('');
 
@@ -168,6 +170,16 @@ export default function App() {
         <FilterModal
           onClose={() => setShowFilter(false)}
           onApply={handleFilterApply}
+        />
+      )}
+
+      {showInterstitial && (
+        <Interstitial
+          onClose={() => setShowInterstitial(false)}
+          onEnter={() => {
+            setShowInterstitial(false);
+            setActiveTab('search');
+          }}
         />
       )}
 
