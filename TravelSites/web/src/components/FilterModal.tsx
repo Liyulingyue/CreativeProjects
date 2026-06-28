@@ -12,11 +12,17 @@ interface Props {
   onClose: () => void;
 }
 
+const QUICK_PREFERENCES = [
+  '自然风光', '人文历史', '美食',
+  '亲子', '户外探险', '网红打卡',
+];
+
 export function FilterModal({ onApply, onClose }: Props) {
   const today = new Date();
   const [startDate, setStartDate] = useState(format(addDays(today, 1)));
   const [endDate, setEndDate] = useState(format(addDays(today, 3)));
   const [preference, setPreference] = useState('');
+  const [selectedChips, setSelectedChips] = useState<string[]>([]);
 
   const quickRanges = [
     { label: '明天', days: 1 },
@@ -26,8 +32,15 @@ export function FilterModal({ onApply, onClose }: Props) {
     { label: '下周', days: 7 },
   ];
 
+  const toggleChip = (chip: string) => {
+    setSelectedChips((prev) =>
+      prev.includes(chip) ? prev.filter((c) => c !== chip) : [...prev, chip]
+    );
+  };
+
   const handleApply = () => {
-    onApply({ startDate, endDate, preference });
+    const combined = [...selectedChips, preference].filter(Boolean).join('，');
+    onApply({ startDate, endDate, preference: combined });
   };
 
   return (
@@ -77,15 +90,30 @@ export function FilterModal({ onApply, onClose }: Props) {
           </div>
 
           <div className="filter-section">
-            <h3>一句话描述你的偏好</h3>
+            <h3>偏好标签</h3>
+            <div className="chip-group">
+              {QUICK_PREFERENCES.map((chip) => (
+                <button
+                  key={chip}
+                  className={`chip ${selectedChips.includes(chip) ? 'active' : ''}`}
+                  onClick={() => toggleChip(chip)}
+                >
+                  {chip}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="filter-section">
+            <h3>一句话补充偏好</h3>
             <textarea
               className="preference-input"
-              placeholder="例如：带孩子看自然风光、美食之旅..."
+              placeholder="例如：住宿要求离地铁近、避开网红店..."
               value={preference}
               onChange={(e) => setPreference(e.target.value)}
               rows={2}
             />
-            <p className="preference-hint">输入旅行偏好，系统会优先推荐匹配的行程</p>
+            <p className="preference-hint">在标签基础上补充描述，与标签合并参与匹配</p>
           </div>
 
           <div className="filter-section">
