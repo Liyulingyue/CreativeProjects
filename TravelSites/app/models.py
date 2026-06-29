@@ -33,6 +33,9 @@ class HealthResponse(BaseModel):
     status: str
     refresh_enabled: bool
     seed_cities: list[str]
+    cached_cities: int = 0
+    cells_total: int = 0
+    cache_hit_rate: float = 0
 
 
 class RefreshStatusResponse(BaseModel):

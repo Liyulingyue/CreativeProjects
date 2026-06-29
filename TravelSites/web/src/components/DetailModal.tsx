@@ -1,8 +1,26 @@
+import { useEffect, useState } from 'react';
 import type { SearchResultItem } from '../types';
 
 interface Props {
   item: SearchResultItem;
   onClose: () => void;
+}
+
+interface AttractionDetail {
+  name: string;
+  category: string | null;
+  rating: number | null;
+  suggested_hours: number | null;
+  address: string | null;
+  tags: string[];
+}
+
+interface HolidayInsight {
+  crowd_level: string;
+  activity_level: string;
+  price_multiplier: number;
+  tips: string[];
+  holidays: Array<{ date: string; name: string; type: string }>;
 }
 
 function getScoreColor(score: number): string {
@@ -17,49 +35,72 @@ function formatDate(dateStr: string): string {
   return `${d.getMonth() + 1}月${d.getDate()}日`;
 }
 
-function ScoreCircle({ score }: { score: number }) {
-  const radius = 42;
-  const circumference = 2 * Math.PI * radius;
-  const offset = circumference - (score / 100) * circumference;
-  const color = getScoreColor(score);
-
-  return (
-    <div className="score-display">
-      <div className="score-circle">
-        <svg width="100" height="100" viewBox="0 0 100 100">
-          <circle
-            className="score-circle-bg"
-            cx="50" cy="50" r={radius}
-          />
-          <circle
-            className="score-circle-fill"
-            cx="50" cy="50" r={radius}
-            stroke={color}
-            strokeDasharray={circumference}
-            strokeDashoffset={offset}
-          />
-        </svg>
-        <div className="score-circle-text">
-          <span className="score-circle-num" style={{ color }}>{score}</span>
-        </div>
-      </div>
-    </div>
-  );
+function crowdEmoji(level: string): string {
+  if (level === 'extreme') return '🔥';
+  if (level === 'high') return '👥';
+  if (level === 'medium') return '🚶';
+  return '🌿';
 }
 
-function TimeSlotIcon({ slot }: { slot: string }) {
-  const icons: Record<string, string> = {
-    '上午': '🌅',
-    '中午': '☀️',
-    '下午': '🌤️',
-    '晚上': '🌙',
-  };
-  return <span>{icons[slot] || '📍'}</span>;
+function crowdLabel(level: string): string {
+  if (level === 'extreme') return '人流极旺';
+  if (level === 'high') return '人流较高';
+  if (level === 'medium') return '人流适中';
+  return '人流较少';
 }
 
 export function DetailModal({ item, onClose }: Props) {
   const breakdown = item.score_breakdown as Record<string, number>;
   const hasDailyPlan = item.daily_plan && item.daily_plan.length > 0;
+
+  const [attractionDetails, setAttractionDetails] = useState<Record<string, AttractionDetail>>({});
+  const [holidayInsight, setHolidayInsight] = useState<HolidayInsight | null>(null);
+
+  useEffect(() => {
+    // 拉取景点详情
+    if (item.top_attractions && item.top_attractions.length > 0) {
+      Promise.all(
+        item.top_attractions.map(async (name) => {
+          const url = `/api/attractions/search?q=${encodeURIComponent(name)}&city=${encodeURIComponent(item.city)}&limit=1`;
+          try {
+            const res = await fetch(url);
+            const data = await res.json();
+            if (data.results && data.results.length > 0) {
+              // 再查详情拿 rating
+              const detailRes = await fetch(`/api/attractions?city=${encodeURIComponent(item.city)}&limit=20`);
+              const detailData = await detailRes.json();
+              const full = detailData.items?.find((a: any) => a.name === name);
+              return [name, full || data.results[0]];
+            }
+            return [name, null];
+          } catch {
+            return [name, null];
+          }
+        })
+      ).then((pairs) => {
+        const map: Record<string, AttractionDetail> = {};
+        pairs.forEach(([name, detail]: any) => {
+          if (detail) {
+            map[name] = {
+              name: detail.name,
+              category: detail.category,
+              rating: detail.rating,
+              suggested_hours: detail.suggested_hours,
+              address: detail.address,
+              tags: detail.tags || [],
+            };
+          }
+        });
+        setAttractionDetails(map);
+      });
+    }
+
+    // 拉取节假日洞察
+    fetch(`/api/holidays?start_date=${item.start_date}&end_date=${item.end_date}`)
+      .then((res) => res.json())
+      .then((data) => setHolidayInsight(data))
+      .catch(() => {});
+  }, [item.city, item.start_date, item.end_date]);
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -103,6 +144,34 @@ export function DetailModal({ item, onClose }: Props) {
 
           <ScoreCircle score={item.score} />
 
+          {holidayInsight && holidayInsight.holidays && holidayInsight.holidays.length > 0 && (
+            <div className="detail-section">
+              <h3>节假日出行</h3>
+              <div className="holiday-tags">
+                <span className="holiday-tag">
+                  {crowdEmoji(holidayInsight.crowd_level)} {crowdLabel(holidayInsight.crowd_level)}
+                </span>
+                {holidayInsight.price_multiplier > 1.0 && (
+                  <span className="holiday-tag warning">
+                    💰 价格 ×{holidayInsight.price_multiplier.toFixed(2)}
+                  </span>
+                )}
+                {holidayInsight.holidays.map((h, i) => (
+                  <span key={i} className="holiday-tag info">
+                    🎉 {formatDate(h.date)} {h.name}
+                  </span>
+                ))}
+              </div>
+              {holidayInsight.tips.length > 0 && (
+                <div className="holiday-tips">
+                  {holidayInsight.tips.map((t, i) => (
+                    <div key={i} className="holiday-tip">💡 {t}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {breakdown && Object.keys(breakdown).length > 0 && (
             <div className="detail-section">
               <h3>评分明细</h3>
@@ -120,7 +189,10 @@ export function DetailModal({ item, onClose }: Props) {
                   <div className="score-bar">
                     <div
                       className="score-bar-fill"
-                      style={{ width: `${item.value}%`, background: getScoreColor(item.value) }}
+                      style={{
+                        width: `${item.value}%`,
+                        background: getScoreColor(item.value)
+                      }}
                     />
                   </div>
                 </div>
@@ -141,12 +213,35 @@ export function DetailModal({ item, onClose }: Props) {
             <div className="detail-section">
               <h3>推荐景点</h3>
               <div className="attraction-list">
-                {item.top_attractions.map((a, i) => (
-                  <div key={i} className="attraction-item">
-                    <span className="attraction-num">{i + 1}</span>
-                    <span>{a}</span>
-                  </div>
-                ))}
+                {item.top_attractions.map((name, i) => {
+                  const detail = attractionDetails[name];
+                  return (
+                    <div key={i} className="attraction-item">
+                      <span className="attraction-num">{i + 1}</span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                          <span style={{ fontWeight: 600 }}>{name}</span>
+                          {detail?.category && (
+                            <span className="attraction-cat-tag">{detail.category}</span>
+                          )}
+                          {detail?.rating != null && (
+                            <span className="attraction-rating">⭐ {detail.rating.toFixed(1)}</span>
+                          )}
+                          {detail?.suggested_hours != null && (
+                            <span className="attraction-hours">⏱️ {detail.suggested_hours}h</span>
+                          )}
+                        </div>
+                        {detail?.tags && detail.tags.length > 0 && (
+                          <div className="attraction-mini-tags">
+                            {detail.tags.map((t) => (
+                              <span key={t} className="attraction-mini-tag">{t}</span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -181,7 +276,15 @@ export function DetailModal({ item, onClose }: Props) {
                               <TimeSlotIcon slot={act.time_slot} />
                             </div>
                             <div className="activity-content">
-                              <span className="activity-name">{act.attraction}</span>
+                              <span className="activity-name">
+                                {act.attraction}
+                                {act.verified === true && (
+                                  <span className="verified-badge" title="数据库验证">✓</span>
+                                )}
+                                {act.verified === false && (
+                                  <span className="unverified-badge" title="AI 推荐">~</span>
+                                )}
+                              </span>
                               <span className="activity-meta">{act.time_slot} · {act.hours}h</span>
                               {act.notes && <p className="activity-notes">{act.notes}</p>}
                             </div>
@@ -198,4 +301,44 @@ export function DetailModal({ item, onClose }: Props) {
       </div>
     </div>
   );
+}
+
+function ScoreCircle({ score }: { score: number }) {
+  const radius = 42;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference - (score / 100) * circumference;
+  const color = getScoreColor(score);
+
+  return (
+    <div className="score-display">
+      <div className="score-circle">
+        <svg width="100" height="100" viewBox="0 0 100 100">
+          <circle
+            className="score-circle-bg"
+            cx="50" cy="50" r={radius}
+          />
+          <circle
+            className="score-circle-fill"
+            cx="50" cy="50" r={radius}
+            stroke={color}
+            strokeDasharray={circumference}
+            strokeDashoffset={offset}
+          />
+        </svg>
+        <div className="score-circle-text">
+          <span className="score-circle-num" style={{ color }}>{score}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TimeSlotIcon({ slot }: { slot: string }) {
+  const icons: Record<string, string> = {
+    '上午': '🌅',
+    '中午': '☀️',
+    '下午': '🌤️',
+    '晚上': '🌙',
+  };
+  return <span>{icons[slot] || '📍'}</span>;
 }

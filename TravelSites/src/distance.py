@@ -144,30 +144,19 @@ ORIGIN_COORDS: dict[str, Tuple[float, float]] = {
 def lookup_origin_from_json(province: str, city: str, county: str) -> Optional[Tuple[float, float]]:
     """
     查找出发地坐标：
-    1. 先查 china_regions_enriched.json
+    1. 先查 SQLite 数据库（精确到县）
     2. 缺失时 fallback 到内置 ORIGIN_COORDS 字典
-    TODO: 接入更精确的县级坐标库
-    """
-    import json
-    from pathlib import Path
 
-    json_path = Path(__file__).resolve().parent.parent / "data" / "china_regions_enriched.json"
+    TODO: 接入更精确的县级坐标库（如高德/百度 POI）
+    """
     try:
-        with open(json_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        prov = data.get(province)
-        if prov:
-            cities = prov.get("cities", {})
-            city_data = cities.get(city)
-            if city_data:
-                lat = city_data.get("latitude")
-                lon = city_data.get("longitude")
-                if lat and lon:
-                    return (lat, lon)
+        from .db import lookup_origin_county
+        coord = lookup_origin_county(province, city, county)
+        if coord:
+            return coord
     except Exception:
         pass
 
-    # Fallback: 内置坐标字典
     return (ORIGIN_COORDS.get(city) or ORIGIN_COORDS.get(province) or ORIGIN_COORDS.get(county))
 
 

@@ -6,11 +6,30 @@ __pycache__/
 .venv/
 venv/
 output/
+
+# Runtime data
 data/learned_cities.json
-data/matrix_cache/*.json
+data/travelsites.db
+data/travelsites.db-journal
+
+# Matrix cache directory（用于 LLM 长任务的断点续跑，临时文件）
+data/matrix_cache/*
 !data/matrix_cache/.gitkeep
+
+# Logs
 *.log
+
+# Frontend
 node_modules/
 dist/
 web/dist/
 web/node_modules/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
