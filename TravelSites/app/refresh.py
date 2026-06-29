@@ -9,7 +9,8 @@ import threading
 
 from .config import (
     SEED_CITIES, MATRIX_MAX_OFFSET, MATRIX_MAX_DURATION,
-    MATRIX_CONCURRENCY, MATRIX_CACHE_DIR, REFRESH_ENABLED
+    MATRIX_CONCURRENCY, MATRIX_CACHE_DIR, REFRESH_ENABLED,
+    get_config_value
 )
 from .matrix import plan_matrix, MatrixCell
 
@@ -45,43 +46,68 @@ def get_cache_path(city: str) -> Path:
 
 
 def save_matrix_to_cache(city: str, cells: list[MatrixCell]) -> None:
-    """保存 matrix 到 SQLite（同时备份 JSON 防止迁移期数据丢失）。"""
+    """保存 matrix 到 SQLite。
+
+    行为：
+    - 新生成/重生成的 cell 用 INSERT OR REPLACE 覆盖
+    - skipped cell（input_metadata 命中）保留 DB 旧值（不写）
+    """
     import sqlite3
 
     generated_at = datetime.now().isoformat()
-    rows = []
+    write_rows = []
+    skip_keys = set()
     for c in cells:
+        if getattr(c, "skipped", False):
+            skip_keys.add((c.start_date, c.duration))
+            continue
         full_json = json.dumps(c.full_result, ensure_ascii=False) if c.full_result else None
-        rows.append((
+        meta_json = json.dumps(c.input_metadata, ensure_ascii=False) if c.input_metadata else None
+        write_rows.append((
             city,
-            c.start_offset,
-            c.duration,
             c.start_date,
+            c.duration,
             c.end_date,
             c.score,
             c.recommendation,
             c.weather_summary,
             full_json,
+            meta_json,
             generated_at,
         ))
 
-    # 写入 SQLite（唯一数据源）
     try:
         from src.db import get_conn
         conn = get_conn()
         cur = conn.cursor()
+
+        if write_rows:
+            cur.executemany(
+                """INSERT OR REPLACE INTO trip_matrix_cache
+                   (city, start_date, duration, end_date,
+                    score, recommendation, weather_summary, full_result, input_metadata, generated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                write_rows,
+            )
+
+        # 清理"既不在新写集合、也不在 skip 集合"的孤儿 cell
+        keep_keys = {(c.start_date, c.duration) for c in cells}
         cur.execute(
-            "DELETE FROM trip_matrix_cache WHERE city=?",
+            "SELECT start_date, duration FROM trip_matrix_cache WHERE city=?",
             (city,),
         )
-        cur.executemany(
-            """INSERT OR REPLACE INTO trip_matrix_cache
-               (city, start_offset, duration, start_date, end_date,
-                score, recommendation, weather_summary, full_result, generated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            rows,
-        )
+        to_delete = [
+            (city, sd, d) for sd, d in cur.fetchall() if (sd, d) not in keep_keys
+        ]
+        if to_delete:
+            cur.executemany(
+                "DELETE FROM trip_matrix_cache WHERE city=? AND start_date=? AND duration=?",
+                to_delete,
+            )
+
         conn.commit()
+        if skip_keys:
+            print(f"[refresh] {city} 命中缓存跳过 {len(skip_keys)} 格，节省 LLM 调用")
     except Exception as e:
         print(f"[refresh] DB write failed for {city}: {e}")
 
@@ -89,23 +115,29 @@ def save_matrix_to_cache(city: str, cells: list[MatrixCell]) -> None:
 def load_matrix_from_cache(city: str) -> Optional[dict]:
     """从 SQLite 读取 matrix cache（唯一数据源）。"""
     import sqlite3
+    from datetime import datetime
     from src.db import get_conn
     conn = get_conn()
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
-        """SELECT start_offset, duration, start_date, end_date, score,
+        """SELECT start_date, duration, end_date, score,
                   recommendation, weather_summary, full_result, generated_at
-           FROM trip_matrix_cache WHERE city=? ORDER BY start_offset, duration""",
+           FROM trip_matrix_cache WHERE city=? ORDER BY start_date, duration""",
         (city,),
     ).fetchall()
 
     if not rows:
         return None
 
+    generated_at = rows[0]["generated_at"]
+    generated_date = datetime.fromisoformat(generated_at).date()
+
     cells = []
     for r in rows:
+        start_date = datetime.strptime(r["start_date"], "%Y-%m-%d").date()
+        start_offset = (start_date - generated_date).days
         cells.append({
-            "start_offset": r["start_offset"],
+            "start_offset": start_offset,
             "duration": r["duration"],
             "start_date": r["start_date"],
             "end_date": r["end_date"],
@@ -117,7 +149,7 @@ def load_matrix_from_cache(city: str) -> Optional[dict]:
         })
     return {
         "city": city,
-        "generated_at": rows[0]["generated_at"],
+        "generated_at": generated_at,
         "cells": cells,
     }
 
@@ -172,6 +204,16 @@ async def refresh_city(city: str, progress_callback=None) -> dict:
 
 
 async def refresh_all_cities(progress_callback=None) -> list[dict]:
+    # 每次定期刷新前清理过期数据
+    try:
+        from src.db import cleanup_old_logs, cleanup_old_cache
+        deleted_logs = cleanup_old_logs(90)
+        deleted_cache = cleanup_old_cache(30)
+        if deleted_logs or deleted_cache:
+            print(f"[refresh] 清理完成：logs {deleted_logs} 条, cache {deleted_cache} 条")
+    except Exception as e:
+        print(f"[refresh] WARN: cleanup failed: {e}")
+
     results = []
     cities = _get_seed_cities()
     with _state_lock:
@@ -222,9 +264,55 @@ async def start_background_refresh(interval_seconds: int = 3600) -> None:
     if _background_task is not None and not _background_task.done():
         return
 
-    async def loop():
+    from .config import get_config_value
+    mode = get_config_value("refresh_mode") or "interval"
+    daily_hour = get_config_value("daily_run_hour") or 3
+
+    async def loop_interval():
         while True:
             await refresh_all_cities()
             await asyncio.sleep(interval_seconds)
 
-    _background_task = asyncio.create_task(loop())
+    async def loop_daily():
+        from datetime import datetime, timedelta
+        while True:
+            now = datetime.now()
+            target = now.replace(hour=daily_hour, minute=0, second=0, microsecond=0)
+            if target <= now:
+                target += timedelta(days=1)
+            wait_seconds = (target - now).total_seconds()
+            print(f"[refresh] 下次每日刷新：{target.isoformat()}")
+            await asyncio.sleep(wait_seconds)
+            await refresh_all_cities()
+
+    if mode == "daily":
+        _background_task = asyncio.create_task(loop_daily())
+    else:
+        _background_task = asyncio.create_task(loop_interval())
+
+
+async def restart_background_refresh() -> None:
+    """重启后台刷新任务（取消旧任务，按最新配置启动新任务）。"""
+    global _background_task
+    from .config import get_runtime_config
+
+    if _background_task is not None and not _background_task.done():
+        _background_task.cancel()
+        try:
+            await _background_task
+        except asyncio.CancelledError:
+            pass
+    _background_task = None
+
+    conf = get_runtime_config()
+    if conf.get("refresh_enabled"):
+        mode = conf.get("refresh_mode", "interval")
+        if mode == "daily":
+            await start_background_refresh()
+            print(f"[refresh] 已按新配置重启：每日 {conf.get('daily_run_hour', 3)} 点")
+        else:
+            interval = conf.get("refresh_interval_seconds", 3600)
+            await start_background_refresh(interval)
+            print(f"[refresh] 已按新配置重启，间隔 {interval}s")
+    else:
+        print("[refresh] 刷新已在新配置下禁用")

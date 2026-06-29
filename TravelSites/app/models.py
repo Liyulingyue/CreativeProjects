@@ -36,6 +36,7 @@ class HealthResponse(BaseModel):
     cached_cities: int = 0
     cells_total: int = 0
     cache_hit_rate: float = 0
+    date_range: Optional[tuple[str, str]] = None  # (min_date, max_date)
 
 
 class RefreshStatusResponse(BaseModel):

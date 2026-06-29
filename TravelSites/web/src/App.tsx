@@ -18,6 +18,8 @@ import { FilterModal } from './components/FilterModal';
 import { Interstitial } from './components/Interstitial';
 import { LocationPicker } from './components/LocationPicker';
 import { LoginModal } from './components/LoginModal';
+import { CityManagerModal } from './components/CityManagerModal';
+import { AdminSettingsModal } from './components/AdminSettingsModal';
 
 type TabType = 'home' | 'search' | 'profile';
 
@@ -48,6 +50,9 @@ export default function App() {
   const [, setTokenState] = useState<string | null>(() => getToken());
   const [user, setUserState] = useState<any>(() => getUser());
   const [showLogin, setShowLogin] = useState(false);
+  const [showCityManager, setShowCityManager] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [seedCities, setSeedCities] = useState<string[]>([]);
 
   const handleAuth = (newToken: string, newUser: any) => {
     saveToken(newToken);
@@ -82,6 +87,17 @@ export default function App() {
       .then(setHealth)
       .catch(console.warn);
   }, []);
+
+  useEffect(() => {
+    if (activeTab === 'profile' && user?.role === 'admin') {
+      fetch('/api/admin/cities', {
+        headers: { Authorization: `Bearer ${localStorage.getItem('travelsites_token')}` },
+      })
+        .then((r) => r.json())
+        .then((d) => setSeedCities(d.cities || []))
+        .catch(() => {});
+    }
+  }, [activeTab, user]);
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -202,6 +218,10 @@ export default function App() {
           <ProfilePage
             health={health}
             user={user}
+            seedCities={seedCities}
+            onSeedCitiesChange={setSeedCities}
+            onOpenCityManager={() => setShowCityManager(true)}
+            onOpenSettings={() => setShowSettings(true)}
             onLoginClick={() => setShowLogin(true)}
             onLogout={handleLogout}
           />
@@ -269,6 +289,21 @@ export default function App() {
             setActiveTab('search');
           }}
         />
+      )}
+
+      {showCityManager && (
+        <CityManagerModal
+          cities={seedCities}
+          onSave={(updated) => {
+            setSeedCities(updated);
+            setShowCityManager(false);
+          }}
+          onClose={() => setShowCityManager(false)}
+        />
+      )}
+
+      {showSettings && (
+        <AdminSettingsModal onClose={() => setShowSettings(false)} />
       )}
 
       {toast && <div className="toast">{toast}</div>}

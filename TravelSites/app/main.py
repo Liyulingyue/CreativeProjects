@@ -19,9 +19,11 @@ web_dist = Path(__file__).resolve().parent.parent / "web" / "dist"
 async def lifespan(app: FastAPI):
     # 初始化 SQLite 事实数据库（省/市/县坐标）
     try:
-        from src.db import init_db, init_seed_cities
+        from src.db import init_db, init_seed_cities, migrate_matrix_schema, migrate_add_input_metadata
         init_db()
         init_seed_cities()
+        migrate_matrix_schema()
+        migrate_add_input_metadata()
         print("[startup] SQLite 事实数据库已就绪")
     except Exception as e:
         print(f"[startup] WARN: DB init failed: {e}")
@@ -46,6 +48,14 @@ async def lifespan(app: FastAPI):
         ensure_admin_user()
     except Exception as e:
         print(f"[startup] WARN: ensure_admin_user failed: {e}")
+
+    # 清理过期数据
+    try:
+        from src.db import cleanup_old_logs, cleanup_old_cache
+        cleanup_old_logs(90)
+        cleanup_old_cache(30)
+    except Exception as e:
+        print(f"[startup] WARN: cleanup failed: {e}")
 
     await initial_load()
 
