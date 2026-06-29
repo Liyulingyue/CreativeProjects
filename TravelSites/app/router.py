@@ -2,8 +2,7 @@ from datetime import datetime, date, timedelta
 from fastapi import APIRouter, HTTPException, Query, Depends, Header, Request
 from typing import Optional
 
-from src.distance import haversine_km, estimate_travel_time, transport_score, lookup_origin, lookup_origin_from_json
-from src.cities import lookup_city
+from src.distance import calc_distance, transport_score
 from src.holidays import get_holiday_impact, list_holidays_in_range, calculate_holiday_insights
 from src.auth import (
     create_user, authenticate, create_session, verify_session,
@@ -184,15 +183,9 @@ async def search_travel_plans(req: SearchRequest, request: Request):
                     top_attractions = verified
 
                 # 真实距离 + 重新计算 transport 维度分数
-                origin_coord = lookup_origin_from_json(
-                    req.origin_province or "",
-                    req.origin_city or "",
-                    req.origin_county or "",
-                ) or lookup_origin(req.origin_city or "") or lookup_origin("北京")
-                city_coord = lookup_city(city)
-                if origin_coord and city_coord:
-                    distance = haversine_km(origin_coord, city_coord)
-                    transit_info = estimate_travel_time(distance)
+                # 统一基于 city 中心点（不依赖 county / 硬编码字典）
+                distance, transit_info = calc_distance(req.origin_city or "", city)
+                if distance > 0 and transit_info:
                     new_transport_score = transport_score(distance, cell["duration"])
                     # 替换原有 breakdown.transport
                     breakdown = dict(plan_data.get("score_breakdown") or {})

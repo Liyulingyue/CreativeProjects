@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { format, addDays } from '../utils/date';
+import { dailyShuffle } from '../utils/random';
 
 interface FilterData {
   startDate: string;
@@ -9,31 +10,45 @@ interface FilterData {
 
 interface Props {
   onSearch: (filters: FilterData) => void;
+  seedCities: string[];
 }
 
-const CITIES = [
-  { name: '济南', image: 'jinan', tag: '泉城', desc: '72 名泉汇聚' },
-  { name: '大同', image: 'datong', tag: '古都', desc: '云冈石窟' },
-  { name: '青岛', image: 'ocean', tag: '海岛', desc: '红瓦绿树' },
-  { name: '杭州', image: 'culture', tag: '江南', desc: '西湖十景' },
-];
-
 const THEMES = [
-  { name: '自然', emoji: '🏔️', color: '#06B6D4' },
-  { name: '人文', emoji: '🏛️', color: '#8B5CF6' },
-  { name: '美食', emoji: '🍜', color: '#F97316' },
-  { name: '户外', emoji: '🥾', color: '#10B981' },
+  { name: '自然风光', color: '#06B6D4', image: 'mountain' },
+  { name: '人文历史', color: '#8B5CF6', image: 'culture' },
+  { name: '美食', color: '#F97316', image: 'food' },
+  { name: '亲子', color: '#EC4899', image: 'forest' },
+  { name: '户外探险', color: '#10B981', image: 'hiking' },
+  { name: '网红打卡', color: '#EF4444', image: 'sunset' },
+  { name: '海岛', color: '#0EA5E9', image: 'beach' },
+  { name: '古镇', color: '#A16207', image: 'culture' },
+  { name: '沙漠', color: '#D97706', image: 'sunset' },
+  { name: '雪山', color: '#64748B', image: 'snow' },
+  { name: '温泉', color: '#E11D48', image: 'forest' },
+  { name: '夜景', color: '#1E40AF', image: 'nightcity' },
 ];
 
-// TODO 列表：未来需要扩展更多城市时，在这个数组里追加即可
-
-export function HomePage({ onSearch }: Props) {
+export function HomePage({ onSearch, seedCities }: Props) {
   const today = new Date();
   const [startDate, setStartDate] = useState(format(addDays(today, 1)));
   const [endDate, setEndDate] = useState(format(addDays(today, 3)));
 
-  const handleExplore = (preference: string = '') => {
-    onSearch({ startDate, endDate, preference });
+  // 6 个城市 + 6 个主题的组合
+  const cards = useMemo(() => {
+    const cities = dailyShuffle(seedCities, Math.min(6, seedCities.length));
+    const themes = dailyShuffle(THEMES, Math.min(6, cities.length || 6));
+    return cities.map((city, i) => ({
+      city,
+      theme: themes[i % themes.length],
+    }));
+  }, [seedCities]);
+
+  const handleExplore = (city: string, themeName: string) => {
+    onSearch({
+      startDate,
+      endDate,
+      preference: [city, themeName].filter(Boolean).join('，'),
+    });
   };
 
   return (
@@ -75,63 +90,37 @@ export function HomePage({ onSearch }: Props) {
             />
           </div>
         </div>
-        <button className="explore-btn" onClick={() => handleExplore('')}>
+        <button className="explore-btn" onClick={() => handleExplore('', '')}>
           立即探索 →
         </button>
       </div>
 
       <div className="section">
         <div className="section-header">
-          <h2 className="section-title">覆盖目的地</h2>
-          <span className="section-more">查看全部 ›</span>
+          <h2 className="section-title">今日推荐</h2>
+          <span className="section-hint">点击直达搜索</span>
         </div>
-        <div className="city-grid">
-          {CITIES.map((city) => (
+        <div className="combo-grid">
+          {cards.map(({ city, theme }) => (
             <div
-              key={city.name}
-              className="city-card-large"
-              onClick={() => handleExplore(city.name)}
-              style={{ backgroundImage: `url(/assets/${city.image}.png)` }}
+              key={city}
+              className="combo-card"
+              onClick={() => handleExplore(city, theme.name)}
+              title={`${city} · ${theme.name}`}
             >
-              <div className="city-card-overlay" />
-              <div className="city-card-info">
-                <span className="city-tag">{city.tag}</span>
-                <span className="city-name">{city.name}</span>
-                <span className="city-desc">{city.desc}</span>
+              <div
+                className="combo-image"
+                style={{ backgroundImage: `url(/assets/${theme.image}.png)` }}
+              >
+                <div className="combo-image-overlay" />
+                <div className="combo-caption">
+                  <div className="combo-theme-tag" style={{ background: theme.color }}>
+                    {theme.name}
+                  </div>
+                </div>
               </div>
             </div>
           ))}
-        </div>
-      </div>
-
-      <div className="section">
-        <div className="section-header">
-          <h2 className="section-title">筛选维度</h2>
-        </div>
-        <div className="theme-grid">
-          {THEMES.map((theme) => (
-            <div
-              key={theme.name}
-              className="theme-pill"
-              onClick={() => handleExplore(theme.name)}
-              style={{ '--theme-color': theme.color } as React.CSSProperties}
-            >
-              <span className="theme-emoji">{theme.emoji}</span>
-              <span className="theme-name">{theme.name}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="section">
-        <div className="cta-banner">
-          <div className="cta-banner-content">
-            <h3 className="cta-title">按日期检索行程</h3>
-            <p className="cta-desc">预设目的地 × 真实天气 × 多日方案</p>
-          </div>
-          <button className="cta-btn" onClick={() => handleExplore('')}>
-            开始 →
-          </button>
         </div>
       </div>
     </div>
