@@ -84,16 +84,16 @@ CREATE INDEX IF NOT EXISTS idx_holiday_region ON holiday_calendar(region_code);
 -- Matrix 缓存（替代 JSON 文件，未来扩展）
 CREATE TABLE IF NOT EXISTS trip_matrix_cache (
     city TEXT NOT NULL,
-    start_offset INTEGER NOT NULL,
-    duration INTEGER NOT NULL,
     start_date TEXT NOT NULL,
+    duration INTEGER NOT NULL,
     end_date TEXT NOT NULL,
     score INTEGER,
     recommendation TEXT,
     weather_summary TEXT,
     full_result TEXT,  -- JSON
+    input_metadata TEXT,  -- JSON：{start_date, duration, model, lite, weather_hash}，用于 cache 命中判断
     generated_at TEXT,
-    PRIMARY KEY (city, start_offset, duration)
+    PRIMARY KEY (city, start_date, duration)
 );
 CREATE INDEX IF NOT EXISTS idx_matrix_date ON trip_matrix_cache(start_date, end_date);
 
@@ -263,6 +263,125 @@ def init_db():
 
     conn.commit()
     print(f"[db] Loaded {len(provinces)} provinces, {len(cities)} cities, {len(counties)} counties")
+
+
+def migrate_matrix_schema():
+    """如果 trip_matrix_cache 表还在用旧 schema（start_offset 列），则迁移到新 schema。"""
+    import json
+    from datetime import datetime, timedelta
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # 检测旧表是否有 start_offset 列
+    try:
+        cur.execute("SELECT start_offset FROM trip_matrix_cache LIMIT 1")
+    except Exception:
+        return  # 新表，无 start_offset 列，无需迁移
+
+    print("[db] 检测到旧版 trip_matrix_cache schema，开始迁移…")
+
+    # 读取所有旧数据
+    rows = cur.execute(
+        """SELECT city, start_offset, duration, start_date, end_date,
+                  score, recommendation, weather_summary, full_result, generated_at
+           FROM trip_matrix_cache"""
+    ).fetchall()
+
+    if not rows:
+        print("[db] 旧表无数据，直接重建")
+        cur.execute("DROP TABLE IF EXISTS trip_matrix_cache_tmp")
+        cur.execute(
+            """CREATE TABLE trip_matrix_cache_tmp AS
+               SELECT city, start_date, duration, end_date,
+                      score, recommendation, weather_summary, full_result, generated_at
+               FROM trip_matrix_cache LIMIT 0"""
+        )
+        cur.execute("DROP TABLE trip_matrix_cache")
+        cur.execute("ALTER TABLE trip_matrix_cache_tmp RENAME TO trip_matrix_cache")
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_matrix_pk ON trip_matrix_cache(city, start_date, duration)")
+        conn.commit()
+        print("[db] 迁移完成（新表无数据）")
+        return
+
+    # 写入新表
+    cur.execute("DROP TABLE IF EXISTS trip_matrix_cache_new")
+    cur.execute(
+        """CREATE TABLE trip_matrix_cache_new (
+            city TEXT NOT NULL,
+            start_date TEXT NOT NULL,
+            duration INTEGER NOT NULL,
+            end_date TEXT NOT NULL,
+            score INTEGER,
+            recommendation TEXT,
+            weather_summary TEXT,
+            full_result TEXT,
+            generated_at TEXT,
+            PRIMARY KEY (city, start_date, duration)
+        )"""
+    )
+
+    migrated = 0
+    for r in rows:
+        start_offset = r[1]
+        generated_at = r[9]
+        if generated_at and start_offset is not None:
+            try:
+                gen_date = datetime.fromisoformat(generated_at).date()
+                sd = datetime.strptime(r[3], "%Y-%m-%d").date()
+                computed_offset = (sd - gen_date).days
+            except Exception:
+                computed_offset = start_offset
+        else:
+            computed_offset = start_offset
+
+        cur.execute(
+            """INSERT OR REPLACE INTO trip_matrix_cache_new
+               (city, start_date, duration, end_date, score, recommendation,
+                weather_summary, full_result, generated_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (r[0], r[3], r[2], r[4], r[5], r[6], r[7], r[8], r[9]),
+        )
+        migrated += 1
+
+    cur.execute("DROP TABLE trip_matrix_cache")
+    cur.execute("ALTER TABLE trip_matrix_cache_new RENAME TO trip_matrix_cache")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_matrix_date ON trip_matrix_cache(start_date, end_date)")
+    conn.commit()
+    print(f"[db] 迁移完成，共 {migrated} 条数据")
+
+
+def migrate_add_input_metadata():
+    """为 trip_matrix_cache 表加 input_metadata 列（如不存在），并清理旧的 input_fingerprint。"""
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # 检查是否已有 input_metadata
+    try:
+        cur.execute("SELECT input_metadata FROM trip_matrix_cache LIMIT 1")
+        return  # 已有
+    except Exception:
+        pass
+
+    # 检查是否还有旧列 input_fingerprint
+    has_legacy = False
+    try:
+        cur.execute("SELECT input_fingerprint FROM trip_matrix_cache LIMIT 1")
+        has_legacy = True
+    except Exception:
+        pass
+
+    cur.execute("ALTER TABLE trip_matrix_cache ADD COLUMN input_metadata TEXT")
+    conn.commit()
+
+    if has_legacy:
+        # 旧列存在但语义不同（是 hash，不是 JSON metadata），直接清空
+        # 让旧 cell 走一次重生成，沉淀出正确的 JSON metadata
+        cur.execute("UPDATE trip_matrix_cache SET input_metadata=NULL WHERE input_metadata IS NULL")
+        conn.commit()
+        print("[db] 已添加 input_metadata 列（旧 input_fingerprint 留空，待重生成覆盖）")
+    else:
+        print("[db] 已为 trip_matrix_cache 添加 input_metadata 列")
 
 
 def seed_attractions():
@@ -547,6 +666,36 @@ def log_generation(city: str, started_at: str, finished_at: str,
     )
     conn.commit()
     return cur.lastrowid
+
+
+def cleanup_old_logs(days: int = 90) -> int:
+    """删除 N 天前的 generation_log 记录。返回删除数量。"""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "DELETE FROM generation_log WHERE started_at < datetime('now', ?)",
+        (f"-{days} days",),
+    )
+    conn.commit()
+    deleted = cur.rowcount
+    if deleted > 0:
+        print(f"[db] 清理了 {deleted} 条 {days} 天前的 generation_log")
+    return deleted
+
+
+def cleanup_old_cache(days: int = 30) -> int:
+    """删除行程已结束超过 N 天的 matrix 缓存。返回删除数量。"""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "DELETE FROM trip_matrix_cache WHERE end_date < date('now', ?)",
+        (f"-{days} days",),
+    )
+    conn.commit()
+    deleted = cur.rowcount
+    if deleted > 0:
+        print(f"[db] 清理了 {deleted} 条 {days} 天前的 matrix 缓存")
+    return deleted
 
 
 def get_recent_generations(limit: int = 20) -> list[dict]:

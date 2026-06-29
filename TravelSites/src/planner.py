@@ -96,7 +96,7 @@ class TripPlanner:
             requirements=self.requirements,
         )
 
-    def plan(self, city: str, start_date: str, end_date: str) -> TripPlanResult:
+    def plan(self, city: str, start_date: str, end_date: str, preset_weather: Optional[list] = None) -> TripPlanResult:
         from datetime import datetime
         start = datetime.strptime(start_date, "%Y-%m-%d")
         end = datetime.strptime(end_date, "%Y-%m-%d")
@@ -115,11 +115,14 @@ class TripPlanner:
             return result
         lat, lon = coords
 
-        try:
-            weather = fetch_weather(lat, lon, start_date, end_date)
-        except Exception as e:
-            result.error = f"天气查询失败: {e}"
-            return result
+        if preset_weather is not None:
+            weather = preset_weather
+        else:
+            try:
+                weather = fetch_weather(lat, lon, start_date, end_date)
+            except Exception as e:
+                result.error = f"天气查询失败: {e}"
+                return result
 
         result.weather_forecast = [
             {

@@ -12,21 +12,23 @@ interface User {
 interface Props {
   health: Health | null;
   user: User | null;
+  seedCities: string[];
+  onSeedCitiesChange: (cities: string[]) => void;
+  onOpenCityManager: () => void;
+  onOpenSettings: () => void;
   onLoginClick: () => void;
   onLogout: () => void;
 }
 
-export function ProfilePage({ health, user, onLoginClick, onLogout }: Props) {
+export function ProfilePage({ health, user, seedCities, onSeedCitiesChange, onOpenCityManager, onOpenSettings, onLoginClick, onLogout }: Props) {
   const [overview, setOverview] = useState<any>(null);
   const [logs, setLogs] = useState<any[]>([]);
-  const [cities, setCities] = useState<string[]>([]);
   const [poiStatus, setPoiStatus] = useState<{ enabled: boolean; message: string } | null>(null);
 
   const isAdmin = user?.role === 'admin';
 
   useEffect(() => {
     if (!user) return;
-    // 普通用户：拉概览
     if (!isAdmin) {
       fetch('/api/admin/overview', {
         headers: { Authorization: `Bearer ${localStorage.getItem('travelsites_token')}` },
@@ -35,17 +37,14 @@ export function ProfilePage({ health, user, onLoginClick, onLogout }: Props) {
         .then((d) => d && setOverview(d))
         .catch(() => {});
     } else {
-      // admin：拉所有管理数据
       const token = localStorage.getItem('travelsites_token');
       const headers = { Authorization: `Bearer ${token}` };
       Promise.all([
         fetch('/api/admin/overview', { headers }).then((r) => r.json()),
-        fetch('/api/admin/cities', { headers }).then((r) => r.json()),
         fetch('/api/admin/logs?limit=10', { headers }).then((r) => r.json()),
         fetch('/api/admin/poi/status', { headers }).then((r) => r.json()),
-      ]).then(([ov, cs, lgs, poi]) => {
+      ]).then(([ov, lgs, poi]) => {
         setOverview(ov);
-        setCities(cs.cities || []);
         setLogs(lgs.logs || []);
         setPoiStatus(poi);
       }).catch(() => {});
@@ -66,18 +65,17 @@ export function ProfilePage({ health, user, onLoginClick, onLogout }: Props) {
         </div>
 
         <div className="profile-section">
-          <h3>系统状态</h3>
-          <div className="info-row">
-            <span className="info-label">服务</span>
-            <span className="info-value" style={{ color: 'var(--success)' }}>● 正常</span>
-          </div>
           <div className="info-row">
             <span className="info-label">覆盖城市</span>
-            <span className="info-value">{health?.seed_cities?.length || 0} 个</span>
+            <span className="info-value">{health?.cached_cities || 0} 个</span>
           </div>
           <div className="info-row">
-            <span className="info-label">定时刷新</span>
-            <span className="info-value">{health?.refresh_enabled ? '已启用' : '已关闭'}</span>
+            <span className="info-label">数据区间</span>
+            <span className="info-value">
+              {health?.date_range
+                ? `${health.date_range[0]} ~ ${health.date_range[1]}`
+                : '暂无数据'}
+            </span>
           </div>
         </div>
 
@@ -109,8 +107,8 @@ export function ProfilePage({ health, user, onLoginClick, onLogout }: Props) {
         </button>
       </div>
 
-      {/* 系统总览（普通用户和管理员都看） */}
-      {overview && (
+      {/* 系统总览（仅管理员） */}
+      {isAdmin && overview && (
         <div className="profile-section">
           <h3>系统总览</h3>
           <div className="stats-grid">
@@ -134,24 +132,28 @@ export function ProfilePage({ health, user, onLoginClick, onLogout }: Props) {
         </div>
       )}
 
+      {/* 管理员管理入口 */}
+      {isAdmin && (
+        <div className="profile-section">
+          <div className="info-row">
+            <span className="info-label">目标城市</span>
+            <button className="manage-btn" onClick={onOpenCityManager}>
+              <span className="manage-count">{seedCities.length}</span>
+              管理
+            </button>
+          </div>
+          <div className="info-row">
+            <span className="info-label">系统设置</span>
+            <button className="manage-btn" onClick={onOpenSettings}>
+              ⚙️ 配置
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* 管理员专属 */}
       {isAdmin && (
         <>
-          <div className="profile-section">
-            <h3>种子城市管理</h3>
-            <p className="profile-helper">
-              管理 <strong>{cities.length}</strong> 个城市的 seed 列表
-            </p>
-            <details className="admin-details">
-              <summary>查看城市列表</summary>
-              <div className="city-chip-list">
-                {cities.map((c) => (
-                  <span key={c} className="admin-chip">{c}</span>
-                ))}
-              </div>
-            </details>
-          </div>
-
           <div className="profile-section">
             <h3>POI 数据源</h3>
             <div className="info-row">

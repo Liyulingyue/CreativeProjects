@@ -8,7 +8,7 @@
   - cells: [{start_offset, duration, start_date, end_date, score, recommendation, weather_summary, full_result}, ...]
 
 - DB 表: trip_matrix_cache
-  - city, start_offset, duration, start_date, end_date,
+  - city, start_date, duration, end_date,
     score, recommendation, weather_summary,
     full_result (JSON 字符串),
     generated_at
@@ -44,14 +44,13 @@ def migrate():
                 full = json.dumps(cell.get("full_result"), ensure_ascii=False)
                 cur.execute(
                     """INSERT OR REPLACE INTO trip_matrix_cache
-                       (city, start_offset, duration, start_date, end_date,
+                       (city, start_date, duration, end_date,
                         score, recommendation, weather_summary, full_result, generated_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
                     (
                         city,
-                        cell.get("start_offset"),
-                        cell.get("duration"),
                         cell.get("start_date"),
+                        cell.get("duration"),
                         cell.get("end_date"),
                         cell.get("score"),
                         cell.get("recommendation"),
@@ -77,7 +76,7 @@ def query_city_matrix(city: str) -> list[dict]:
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
-        """SELECT * FROM trip_matrix_cache WHERE city=? ORDER BY start_offset, duration""",
+        """SELECT * FROM trip_matrix_cache WHERE city=? ORDER BY start_date, duration""",
         (city,),
     ).fetchall()
     return [dict(r) for r in rows]

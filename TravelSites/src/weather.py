@@ -1,3 +1,4 @@
+import hashlib
 import httpx
 from datetime import date as _date, datetime
 from dataclasses import dataclass
@@ -107,3 +108,13 @@ def fetch_weather(
             precipitation_probability=int(prob[i]) if i < len(prob) and prob[i] is not None else None,
         ))
     return result
+
+
+def compute_weather_hash(weather_list: list[DailyWeather]) -> str:
+    """基于天气字段计算稳定 hash。"""
+    payload = "|".join(
+        f"{w.date}:{w.weather_code}:{w.temp_max:.1f}:{w.temp_min:.1f}:"
+        f"{w.precipitation_mm:.2f}:{w.precipitation_probability or 0}"
+        for w in weather_list
+    )
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]

@@ -87,7 +87,15 @@ router = APIRouter()
 async def health():
     """健康检查 + 系统概览。"""
     from src.db import get_overview_stats
+    from src.db import get_conn
     stats = get_overview_stats()
+
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT MIN(start_date), MAX(start_date) FROM trip_matrix_cache"
+    ).fetchone()
+    date_range = (row[0], row[1]) if row[0] else None
+
     return HealthResponse(
         status="ok",
         refresh_enabled=REFRESH_ENABLED,
@@ -95,12 +103,19 @@ async def health():
         cached_cities=stats["cached_cities"],
         cells_total=stats["cells_total"],
         cache_hit_rate=stats["cache_hit_rate"],
+        date_range=date_range,
     )
 
 
 @router.get("/cities", response_model=CityListResponse)
 async def list_cities():
     return CityListResponse(cities=db_get_seed_cities(), count=len(db_get_seed_cities()))
+
+
+@router.get("/geo/cities")
+async def list_all_geo_cities():
+    from src.db import get_all_cities
+    return {"cities": get_all_cities()}
 
 
 @router.post("/search", response_model=SearchResponse)
@@ -517,3 +532,36 @@ async def admin_poi_import(payload: dict, _: dict = Depends(require_admin)):
         "type": poi_type,
         "inserted": inserted,
     }
+
+
+@router.get("/admin/config")
+async def admin_get_config(_: dict = Depends(require_admin)):
+    """获取运行时配置（敏感字段已掩码）。"""
+    from .config import get_runtime_config
+    return get_runtime_config()
+
+
+@router.put("/admin/config")
+async def admin_update_config(payload: dict, _: dict = Depends(require_admin)):
+    """更新运行时配置。"""
+    from .config import update_runtime_config
+    from .refresh import restart_background_refresh
+
+    allowed = {
+        "refresh_enabled", "refresh_interval_seconds",
+        "matrix_max_offset", "matrix_max_duration", "matrix_concurrency",
+        "api_key", "base_url", "model_name",
+    }
+    updates = {k: v for k, v in payload.items() if k in allowed}
+    if not updates:
+        raise HTTPException(400, "无可更新的字段")
+
+    updated = update_runtime_config(updates)
+
+    if "refresh_enabled" in updates or "refresh_interval_seconds" in updates:
+        try:
+            restart_background_refresh()
+        except Exception as e:
+            print(f"[config] 重启刷新任务失败: {e}")
+
+    return {"message": "配置已更新", "config": updated}
