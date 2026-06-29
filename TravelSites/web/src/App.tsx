@@ -175,7 +175,7 @@ export default function App() {
       </header>
 
       {activeTab === 'home' && (
-        <HomePage onSearch={handleFilterApply} />
+        <HomePage onSearch={handleFilterApply} seedCities={seedCities} />
       )}
 
       {activeTab === 'search' && (

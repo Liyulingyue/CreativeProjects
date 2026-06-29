@@ -485,6 +485,84 @@ body {
   -webkit-overflow-scrolling: touch;
 }
 
+/* Combo Card (City + Theme) */
+.section-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.combo-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.combo-card {
+  position: relative;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  cursor: pointer;
+  transition: all 0.25s;
+  aspect-ratio: 3 / 4;
+}
+
+.combo-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.18);
+}
+
+.combo-card:active {
+  transform: translateY(0);
+}
+
+.combo-image {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+}
+
+.combo-image-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(0,0,0,0) 40%, rgba(0,0,0,0.7) 100%);
+  transition: background 0.25s;
+}
+
+.combo-card:hover .combo-image-overlay {
+  background: linear-gradient(180deg, rgba(0,0,0,0.1) 30%, rgba(0,0,0,0.8) 100%);
+}
+
+.combo-caption {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 16px 14px;
+  display: flex;
+  justify-content: flex-start;
+  color: white;
+  z-index: 1;
+}
+
+.combo-theme-tag {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 14px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: white;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+@media (min-width: 640px) {
+  .combo-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
 .theme-grid::-webkit-scrollbar {
   display: none;
 }
