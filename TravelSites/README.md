@@ -2,265 +2,260 @@
 
 > 你不再需要先决定"去哪"，AI 替你穷举出"在你假期长度内、车程可承受、游玩体量匹配"的所有目的地。
 
----
+## 快速开始
 
-## 一、愿景
+### 1. 安装依赖
 
-传统旅游助手的最大假设是"你已经知道要去哪"——你必须先输入"我要去北京"，它才会帮你生成攻略。但对绝大多数人来说，最痛苦的阶段恰恰是：
+```bash
+# Python 3.12+
+source .venv/bin/activate  # 或创建: python -m venv .venv
+pip install -r requirements.txt
 
-> "我周末有 3 天假。我不想坐太久的车。我不想去一个 1 天就能逛完的地方白白浪费假期。**我到底能去哪？**"
-
-**TravelSites 把这个漏斗倒过来。** 用户只输入时空约束（出发地 + 出发时间 + 离开时间），AI 反向推导出"时空可行 + 体量匹配"的全景目的地候选 List。
-
----
-
-## 二、核心创新：决策漏斗的反转
-
-```
-┌─────────────────────────────────────────────────────┐
-│  传统 AI 旅游助手                                    │
-│  用户：我要去北京                                    │
-│       ↓                                             │
-│  AI：好的，这是 3 天攻略…                            │
-│  (假设你已选好目的地)                                │
-└─────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────┐
-│  TravelSites                                        │
-│  用户：我在上海，7.10 出发，7.13 离开，3 天          │
-│       ↓                                             │
-│  AI：(穷举 + 精算)                                  │
-│  [1] 杭州  车程 1h  Tags[古镇/美食]   Score 92      │
-│  [2] 青岛  车程 4h  Tags[海滩/啤酒]   Score 88      │
-│  [3] 黄山  车程 3h  Tags[登山/云海]   Score 81      │
-│  [4] 北京  车程 5h  Tags[古迹/硬核]   Score 64      │
-│  [5] 苏州  车程 0.5h Tags[园林/水乡]  Score 58      │
-│  ...                                                │
-└─────────────────────────────────────────────────────┘
+# Node 18+（前端构建）
+cd web && npm install && npm run build
 ```
 
----
+### 2. 配置环境变量
 
-## 三、目标用户场景
+复制 `.env.example` 为 `.env` 并填入：
 
-**小李，27 岁，上海程序员。** 周五下班时突发奇想："下周请 2 天假，凑个 5 天小长假，能去哪？"
+```bash
+cp .env.example .env
+# 编辑 .env，至少配置 OPENAI_API_KEY
+```
 
-1. 打开 TravelSites
-2. 输入：出发地"上海"、出发时间"下周五"、返回时间"下下周二"
-3. 滑动手机，看到 List 已按 Score 降序排列
-4. 点开"黄山"——看到 3 套候选行程（每套行程含每天的多种路线 + tags）
-5. 选中"宏村+光明顶日出"路线，查看详细攻略
+### 3. 启动服务
 
-**整个过程不需要他自己查攻略、做对比、算车程。**
+```bash
+python run.py
+# 访问 http://localhost:8000
+```
 
----
+首次启动会自动：
+- 初始化 SQLite 事实数据库（`data/travelsites.db`）
+- 从 `.env` 读取种子城市并写入 DB
+- 创建默认管理员账户（`admin / admin123`）
 
-## 四、架构愿景：分布式边缘 + 中心聚合
+## 架构
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                  各景区的 Spark 节点                       │
-│  ┌────────┐  ┌────────┐  ┌────────┐  ┌────────┐          │
-│  │ 黄山Spark│  │ 青岛Spark│  │ 杭州Spark│  │ 西安Spark│       │
-│  │ 私有数据 │  │ 实时天气 │  │ 票务库存 │  │ 县志典故 │       │
-│  └────┬───┘  └────┬───┘  └────┬───┘  └────┬───┘          │
-│       │ ReAct穷举 + 多模态创作  │            │             │
-│       └────────────┬───────────┴────────────┘             │
-└────────────────────┼─────────────────────────────────────┘
-                     │ 异步上传"盲盒资产包"
+┌─────────────────────────────────────────────────────────┐
+│  Frontend (React + Vite + PWA)                          │
+│  - 首页/搜索/详情/管理后台                                │
+│  - LocalStorage 存 token                                  │
+└────────────────────┬────────────────────────────────────┘
+                     │ HTTP + Bearer token
+┌────────────────────┴────────────────────────────────────┐
+│  Backend (FastAPI)                                     │
+│  /api/search      公开 — 出行搜索                          │
+│  /api/auth/*      公开 — 注册/登录/登出/me              │
+│  /api/cities      公开 — 城市列表                         │
+│  /api/holidays    公开 — 节假日洞察                       │
+│  /api/admin/*     需 admin — 城市管理、刷新触发            │
+└────────────────────┬────────────────────────────────────┘
+                     │
+┌────────────────────┴────────────────────────────────────┐
+│  SQLite (data/travelsites.db)                           │
+│  - geo_provinces / geo_cities / geo_counties             │
+│  - holiday_calendar（节假日 + 扩展字段 region/demographic）│
+│  - trip_matrix_cache（预生成方案）                        │
+│  - seed_config（可运行时改的城市列表）                   │
+│  - users / user_sessions（用户与认证）                   │
+│  - generation_log（生成历史与统计）                     │
+└─────────────────────────────────────────────────────────┘
+                     │
+                     ↓（定时/手动触发）
+┌─────────────────────────────────────────────────────────┐
+│  SQLite (data/travelsites.db)                           │
+│  - geo_provinces / geo_cities / geo_counties             │
+│  - holiday_calendar（节假日 + 扩展字段 region/demographic）│
+│  - attractions（真实景点库，35 城市 134 景点）            │
+│  - trip_matrix_cache（预生成方案）                        │
+│  - seed_config（可运行时改的城市列表）                   │
+│  - users / user_sessions（用户与认证）                   │
+│  - generation_log（生成历史与统计）                     │
+└─────────────────────────────────────────────────────────┘
+                     │
+                     ↓（定时/手动触发）
+┌─────────────────────────────────────────────────────────┐
+│  Matrix Generation (LLM)                                 │
+│  src/planner.py — ReAct 生成完整行程                       │
+│  src/matrix.py  — 多 cell 并发（MATRIX_CONCURRENCY）       │
+│  生成结果写回 SQLite + JSON 备份                          │
+└─────────────────────────────────────────────────────────┘
                      ↓
-            ┌────────────────────┐
-            │     Hub Site       │
-            │  (轻量级聚合 + 排序) │
-            └─────────┬──────────┘
-                      ↓
-            ┌────────────────────┐
-            │   手机端 List 视图   │
-            └────────────────────┘
+              search 时优先用 attractions 表覆盖 LLM 幻觉
 ```
 
-### 4.1 边缘节点（每个景区 / 文旅局 / 城市的本地 Spark）
-- **常驻运行**：每 2 小时自动醒来一次，穷举该城市未来 14 天 × 1-7 天数的所有时空组合
-- **ReAct 生成**：调用 LLM，结合本地私有数据（独家资料、实时天气、票务）生成多日多路线方案
-- **多模态创作**：本地渲染路线图、合成预览音视频
-- **异步推送**：将"盲盒资产包"上传到 Hub
+## 核心概念
 
-### 4.2 中心 Hub
-- **零算力负担**：不做穷举，只做轻量级聚合 + 排序
-- **实时刷新**：被动接收各 Spark 的推送
-- **用户交互**：手机端 List 浏览、按 Score 降序
+### Matrix（预生成矩阵）
 
-### 4.3 为什么是分布式？
-- **景区有强烈动机自备算力**：持续曝光 = 获客生命线
-- **私有数据价值**：本地 Spark 能吃掉"全网唯一"的一手数据（实时车位、突发天气、未公开典故）
-- **算力即投资**：一台 Spark = 24 小时不停工的"超级文旅宣发总监"
-- **去中心化抗压**：高负载分散到各边缘节点，Hub 永远轻量
+每个城市 × 多个 (出发日偏移, 出行天数) 组合预生成行程方案：
+- 例：济南 + (offset=1, duration=2) = 济南 "明天出发、玩 2 天" 的方案
+- 全量生成：35 城市 × 2 cells = 70 次 LLM 调用（lite=False）
+- 写入 `trip_matrix_cache` 表
 
----
+### Search（运行时检索）
 
-## 五、核心数据流（单次循环）
+用户查询时：
+1. 按日期范围从 DB 查出匹配的 cell
+2. 用 Haversine + 交通估算重新算 `transport_score`
+3. 综合 4 维评分：天数 40% + 车程 25% + 天气 25% + 景点 10%
+4. 按 score 排序返回
 
-### Step 1：城市级数据注入
-本地 Spark 抓取该城市的：
-- 未来 14 天天气（Open-Meteo 等）
-- 景点库（基础数据 + 网络攻略）
-- 私有数据（v1 暂未启用：实时票务、本地交通、独家资料）
+### Holidays（节假日洞察）
 
-### Step 2：穷举时空组合
-- 起止日：未来 14 天中任意一天出发
-- 游玩天数：1 / 2 / 3 / 4 / 5 / 6 / 7
-- 单城市组合数 = 14 × 7 = **98 组**
+节假日不调整推荐分数（用户已选日期），只输出：
+- `crowd_level` 人流密度
+- `activity_level` 活动丰富度
+- `price_multiplier` 价格上浮
+- `tips` 出行提示文案
 
-### Step 3：ReAct 生成（每组一次 LLM 调用）
-- **输入**：城市 profile + 天气窗口 + 起止约束
-- **ReAct 循环**（agent 自治，无人工干预）：
-  - 调 `search_attractions` 拉取候选景点
-  - 调 `fetch_weather_detail` 校验每天天气
-  - 调 `query_route` 估算交通耗时
-  - 若某条 route 内部自检不通过 → **自然反馈触发重生成**
-- **输出**：结构化多日多路线方案
+未来可扩展：
+- 地区差异（HK/MO/TIB）
+- 人群差异（学生/上班族）
 
-### Step 4：多模态资产创作（v1 简化版）
-- 路线图：matplotlib / Pillow 渲染
-- 预览音：TTS 合成
-- 打包为"盲盒资产包"
+## 配置项（.env）
 
-### Step 5：聚合到 Hub List
-- 各城市 Spark 异步推送资产包到 Hub
-- Hub 按 `Score` 降序排列
-- 手机端用户滑动浏览
-
----
-
-## 六、Score 精算逻辑
-
-每个 `(城市, 出发日, 天数)` 组合的 Score 由以下维度决定：
-
-| 维度 | 权重 | 扣分逻辑 |
-|------|------|---------|
-| **天数匹配度** | 40% | `100 - \|实际天数 - 城市最佳游玩天数\| × 15` |
-| **车程占比** | 25% | `100 - (往返车程 / 总时间) × 100` |
-| **天气友好度** | 25% | `100 - 雨天数 × 20 - 极端天气 × 30` |
-| **Tags 多样性** | 10% | 候选 route 中独立 tags 数量 |
-
-最终 Score 范围 0-100，降序排列时用户能直观看到"这个假期最该去哪儿"。
-
----
-
-## 七、Demo (MVP) 范围
-
-### ✅ Demo 包含
-- 静态城市库（8 个种子城市 JSON）
-- Open-Meteo 真实天气抓取
-- Haversine 公式粗算车程（高铁 250km/h 假设速度）
-- 简化 Score 公式
-- 原生 tool-calling ReAct 循环（手写 ~50 行）
-- 8 城市 × 98 组合 = **784 次 LLM 调用穷举**
-- 多模态微缩创作（matplotlib 路线图 + edge-tts 音频）
-- FastAPI Hub 服务
-- 移动端 HTML List 浏览页
-
-### ❌ Demo 暂不包含
-- 实时票务库存
-- 本地交通拥堵指数
-- 景区私有独家资料
-- 沙盒验证机制（天气/车程自动校验）
-- 多 Spark 分布式部署（demo 单进程模拟）
-- 真正的多模态视频生成
-- 用户账号、历史记录、个性化推荐
-
----
-
-## 八、技术选型
-
-| 模块 | 选型 | 理由 |
+| 变量 | 说明 | 默认 |
 |------|------|------|
-| LLM | `deepseek-chat` | 便宜、中文稳、支持 function calling |
-| Agent | 原生 tool-calling loop | 透明、可调、token 流向清楚 |
-| 天气 | Open-Meteo | 免费、无需 key、全球覆盖 |
-| Hub | FastAPI | 轻量、异步、快 |
-| 图像 | matplotlib / Pillow | 零依赖、能跑就行 |
-| 音频 | edge-tts | 免费、中文 TTS、无需 key |
-| 前端 | 单文件 HTML | 移动端响应式即可 |
+| `OPENAI_API_KEY` | LLM API key | — |
+| `OPENAI_BASE_URL` | LLM 端点 | minimaxi |
+| `OPENAI_VISION_MODEL_NAME` | 模型名 | MiniMax-M3 |
+| `REFRESH_ENABLED` | 是否启用定时刷新 | false |
+| `REFRESH_INTERVAL_SECONDS` | 刷新间隔 | 3600 |
+| `MATRIX_MAX_OFFSET` | 未来出发日天数 | 1 |
+| `MATRIX_MAX_DURATION` | 出行天数 | 2 |
+| `MATRIX_CONCURRENCY` | LLM 并发数 | 3 |
+| `SEED_CITIES` | 种子城市（逗号分隔）| 35 城 |
+| `ADMIN_USERNAME` | 默认管理员账号 | admin |
+| `ADMIN_PASSWORD` | 默认管理员密码 | admin123 |
+| `SESSION_DAYS` | Session 有效期 | 30 |
 
----
+## API 文档
 
-## 九、未来路线图
+### 公开接口
 
 ```
-v0.1 (Demo) ─────────────────────────────────────── 当前
-  单进程模拟分布式，主链路跑通
-  ↓
-v0.5 (本地 Spark 单机版) ──────────────────────────── 3 个月内
-  真实 LLM 穷举 + 多模态创作
-  ↓
-v1.0 (Hub 平台上线) ───────────────────────────────── 6 个月内
-  聚合多个本地 Spark 的资产包
-  手机端 List 浏览 + 详情页
-  ↓
-v2.0 (分布式联盟) ─────────────────────────────────── 12 个月内
-  各景区自备 Spark 加入 Hub
-  私有数据 / 实时库存 / 独家资料
-  ↓
-v3.0 (全自动文旅宣发生态) ─────────────────────────── 未来
-  Agent 自主创作短视频 / 3D 地图 / 营销文案
-  景区获客 → AI 创作 → Hub 分发 闭环
+POST /api/search
+  body: {start_date, end_date, preference?, origin_province, origin_city, origin_county}
+  resp: {items: [{city, score, distance_km, transport_mode, ...}], total}
+
+GET  /api/cities
+GET  /api/cities/{city}         → 该城市 matrix
+GET  /api/holidays?start_date=&end_date=
+POST /api/refresh              → 触发全量刷新（生产慎用）
+GET  /api/refresh/status
+GET  /api/health                → 系统概览
 ```
 
----
+### 认证接口
 
-## 十、为什么这个 Idea 有前景
+```
+POST /api/auth/register   body: {username, password, email?, display_name?}
+POST /api/auth/login      body: {username, password} → {token, expires_at, user}
+POST /api/auth/logout     (需 Bearer token)
+GET  /api/auth/me          (需 Bearer token)
+```
 
-1. **击中最真实的痛点**：选择瘫痪（"我该去哪？"）远比攻略生成（"北京怎么玩？"）高频
-2. **数据壁垒天然形成**：私有数据 + 实时数据 = 公开 LLM 永远无法替代
-3. **多方共赢的商业模型**：
-   - 用户：省去决策成本
-   - 景区：自备算力 = 24h 宣发总监
-   - 平台：轻量 Hub = 流量入口
-4. **去中心化架构抗压**：边缘计算 + 中心聚合，符合云计算演进方向
-5. **多模态创作的天然场景**：每个时空组合都是"内容创作单元"，Agent 自演进
+### 管理员接口（需 admin role）
 
----
+```
+GET  /api/admin/overview             系统统计
+GET  /api/admin/cities               当前 seed cities
+PUT  /api/admin/cities               body: {cities: [...]}
+POST /api/admin/cities/{city}/refresh  触发某城市重新生成
+GET  /api/admin/logs?limit=20         最近生成日志
+```
 
-## 十一、数据来源与致谢
+## 常用命令
 
-本项目站在以下开源服务的肩膀上，谨此致谢：
+```bash
+# 初始化数据库（首次启动自动）
+python -c "from src.db import init_db, init_seed_cities; init_db(); init_seed_cities()"
 
-### 📍 中国行政区划数据
+# 从 JSON 迁移 matrix cache 到 DB
+python src/db_migrate_matrix.py
 
-**[`airyland/china-area-data`](https://github.com/airyland/china-area-data)**
-- 提供 34 省 / 374 市 / 3116 县 的完整层级数据
-- 数据源：国家统计局《行政区划代码》(GB/T 2260)
-- 许可：MIT License
-- 用途：城市名 → 行政区划层级查询（如"老君山在河南省洛阳市栾川县"）
-- 感谢 [@airyland](https://github.com/airyland) 8 年持续维护
+# 修复城市坐标
+python src/db_fix_coords.py
 
-### 🌤️ 天气数据
+# 填充节假日数据
+python src/holidays.py
 
-**[Open-Meteo](https://open-meteo.com/)**
-- 全球 16 天天气预报 + 历史归档
-- 免费、无需 API key、CC BY 4.0 许可
-- 用途：行程期间的天气、温度、降水概率
+# 填充景点种子数据（35 城市 134 景点）
+python src/db_seed_attractions.py
 
-### 🌍 地理编码（兜底）
+# 手动触发某城市重新生成
+curl -X POST http://localhost:8000/api/admin/cities/济南/refresh \
+  -H "Authorization: Bearer <admin_token>"
 
-**[OpenStreetMap Nominatim](https://nominatim.openstreetmap.org/)**
-- 全球城市/地名 → 坐标查询
-- 免费、按 ODbL 许可，需遵守 1 req/s 限流
-- 用途：未在本地字典中时回退查询
+# 查看系统健康
+curl http://localhost:8000/api/health
 
-**[Open-Meteo Geocoding API](https://geocoding-api.open-meteo.com/)**
-- Open-Meteo 自带的城市名 → 坐标服务
-- 与天气 API 同源、协同好、中文支持较好
-- 用途：Nominatim 限流/失败时的主备选
+# 查询某城市景点
+curl "http://localhost:8000/api/attractions?city=杭州"
+```
 
-### 🤖 LLM 提供方
+## 目录结构
 
-当前使用 MiniMax-M3（通过兼容 OpenAI 协议的 endpoint），代码层完全无锁定，可平替为：
-- DeepSeek（中文最强 + 便宜）
-- OpenAI GPT-4o-mini
-- 阿里通义 / 智谱 GLM / 月之暗面 等国产模型
+```
+TravelSites/
+├── app/                       FastAPI 后端
+│   ├── main.py               应用入口 + lifespan
+│   ├── config.py             配置加载
+│   ├── deps.py               认证依赖注入
+│   ├── router.py             所有 API 路由
+│   ├── refresh.py            定时/手动刷新逻辑
+│   ├── matrix.py             matrix 生成（备份于 src/matrix.py）
+│   ├── search_models.py      Pydantic 模型
+│   └── models.py             通用响应模型
+├── src/                       核心库
+│   ├── db.py                 SQLite schema + 查询 API
+│   ├── db_fix_coords.py      坐标补全脚本
+│   ├── db_migrate_matrix.py  JSON → SQLite 迁移
+│   ├── auth.py               认证（bcrypt + token）
+│   ├── holidays.py           节假日数据 + 洞察
+│   ├── distance.py           Haversine + transport_score
+│   ├── cities.py             城市查找（运行时学习）
+│   ├── weather.py            Open-Meteo 集成
+│   ├── planner.py            LLM ReAct 生成器
+│   ├── matrix.py             matrix 生成核心
+│   └── config.py             prompt / 模型配置
+├── web/                       React PWA 前端
+│   ├── src/
+│   │   ├── components/      LoginModal / SearchBar / ...
+│   │   ├── api/client.ts     fetch 封装 + token 持久化
+│   │   ├── App.tsx           主路由
+│   │   └── ...
+│   └── public/regions.json    3116 条县区数据
+├── data/
+│   ├── travelsites.db        SQLite 数据库
+│   ├── china_regions_enriched.json  行政区划源数据
+│   └── matrix_cache/         JSON 备份（deprecated）
+├── .env / .env.example        配置
+├── run.py                     入口（uvicorn app.main:app）
+└── requirements.txt
+```
 
----
+## 可扩展性设计
 
-*"不要让用户做选择。让 AI 在用户做选择之前，已经把选项穷举好了。"*
+| 维度 | 设计 | 未来扩展点 |
+|------|------|-----------|
+| 节假日 | 国家级 + 扩展字段 (region/demographic) | 地区差异、人群差异 |
+| 城市 | SQLite geo_* 三级表 | 加景点库 POI |
+| 评分 | 4 维可调权重 | 加节假日、调休、用户偏好 |
+| 用户 | role 字段 (user/admin) | 加 editor、vip 等 RBAC |
+| Token | UUID 存 DB（可撤销） | 换 JWT、多设备 |
+
+## License
+
+MIT
+
+## 致谢
+
+- Open-Meteo（天气）
+- 高德/百度 POI（未来景点数据来源）
+- 国务院办公厅（节假日发布）
+- 行政区划数据来源 [airyland/china-area-data](https://github.com/airyland/china-area-data)

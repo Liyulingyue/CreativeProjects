@@ -12,21 +12,29 @@ MODEL_NAME: str = os.getenv("OPENAI_VISION_MODEL_NAME", "MiniMax-M3")
 REFRESH_ENABLED: bool = os.getenv("REFRESH_ENABLED", "false").lower() in ("true", "1", "yes")
 REFRESH_INTERVAL_SECONDS: int = int(os.getenv("REFRESH_INTERVAL_SECONDS", "3600"))
 
+# 种子城市列表（fallback，DB 里的 seed_config 优先）
 SEED_CITIES: list[str] = [
-    "济南", "大同", "青岛", "烟台", "威海",
-    "杭州", "苏州", "南京", "宁波", "绍兴",
-    "厦门", "福州", "泉州", "霞浦",
-    "西安", "成都", "重庆", "昆明", "大理", "丽江",
-    "桂林", "北海", "涠洲岛",
-    "三亚", "海口", "万宁",
-    "黄山", "宏村", "婺源", "千岛湖",
-    "敦煌", "张掖", "嘉峪关",
-    "拉萨", "林芝",
+    c.strip() for c in os.getenv(
+        "SEED_CITIES",
+        "济南,大同,青岛,烟台,威海,杭州,苏州,南京,宁波,绍兴,"
+        "厦门,福州,泉州,霞浦,西安,成都,重庆,昆明,大理,丽江,"
+        "桂林,北海,涠洲岛,三亚,海口,万宁,黄山,宏村,婺源,千岛湖,"
+        "敦煌,张掖,嘉峪关,拉萨,林芝"
+    ).split(",") if c.strip()
 ]
 
 MATRIX_MAX_OFFSET: int = int(os.getenv("MATRIX_MAX_OFFSET", "1"))
 MATRIX_MAX_DURATION: int = int(os.getenv("MATRIX_MAX_DURATION", "2"))
 MATRIX_CONCURRENCY: int = int(os.getenv("MATRIX_CONCURRENCY", "3"))
+
+# Admin 账户（启动时自动创建）
+ADMIN_USERNAME: str = os.getenv("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD: str = os.getenv("ADMIN_PASSWORD", "admin123")
+ADMIN_EMAIL: str = os.getenv("ADMIN_EMAIL", "admin@travelsites.local")
+ADMIN_DISPLAY_NAME: str = os.getenv("ADMIN_DISPLAY_NAME", "系统管理员")
+
+# Auth
+SESSION_DAYS: int = int(os.getenv("SESSION_DAYS", "30"))
 
 DATA_DIR: Path = Path(__file__).resolve().parent.parent / "data"
 MATRIX_CACHE_DIR: Path = DATA_DIR / "matrix_cache"

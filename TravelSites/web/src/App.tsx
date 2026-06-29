@@ -2,18 +2,24 @@ import { useState, useEffect } from 'react';
 import {
   fetchHealth,
   searchTravelPlans,
+  getToken,
+  setToken as saveToken,
+  getUser,
+  setUser as saveUser,
+  logout as apiLogout,
 } from './api/client';
 import type { Health, SearchResult, SearchResultItem } from './types';
 import { SearchBar } from './components/SearchBar';
 import { HomePage } from './components/HomePage';
 import { SearchResultsList } from './components/SearchResultsList';
 import { DetailModal } from './components/DetailModal';
-import { Settings } from './components/Settings';
+import { ProfilePage } from './components/ProfilePage';
 import { FilterModal } from './components/FilterModal';
 import { Interstitial } from './components/Interstitial';
 import { LocationPicker } from './components/LocationPicker';
+import { LoginModal } from './components/LoginModal';
 
-type TabType = 'home' | 'search' | 'settings';
+type TabType = 'home' | 'search' | 'profile';
 
 interface FilterData {
   startDate: string;
@@ -37,6 +43,32 @@ export default function App() {
   const [origin, setOrigin] = useState({ province: '北京市', city: '北京市', county: '朝阳区' });
   const [showLocationPicker, setShowLocationPicker] = useState(false);
   const [lastSearchParams, setLastSearchParams] = useState<{ startDate: string; endDate: string; preference: string } | null>(null);
+
+  // 用户态
+  const [, setTokenState] = useState<string | null>(() => getToken());
+  const [user, setUserState] = useState<any>(() => getUser());
+  const [showLogin, setShowLogin] = useState(false);
+
+  const handleAuth = (newToken: string, newUser: any) => {
+    saveToken(newToken);
+    saveUser(newUser);
+    setTokenState(newToken);
+    setUserState(newUser);
+    showToast(`欢迎，${newUser.display_name || newUser.username}！`);
+  };
+
+  const handleLogout = async () => {
+    try {
+      await apiLogout();
+    } catch (e) {
+      // ignore
+    }
+    saveToken(null);
+    saveUser(null);
+    setTokenState(null);
+    setUserState(null);
+    showToast('已退出登录');
+  };
 
   const [toast, setToast] = useState('');
 
@@ -102,12 +134,28 @@ export default function App() {
     <div className="app">
       <header className="app-header">
         <h1>TravelSites</h1>
-        <button
-          className="theme-toggle"
-          onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
-        >
-          {theme === 'light' ? '🌙' : '☀️'}
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {user ? (
+            <>
+              <span style={{ fontSize: 13, color: 'rgba(255,255,255,0.8)' }}>
+                {user.username}{user.role === 'admin' && ' 👑'}
+              </span>
+              <button className="user-button" onClick={handleLogout}>
+                退出
+              </button>
+            </>
+          ) : (
+            <button className="user-button" onClick={() => setShowLogin(true)}>
+              👤 登录
+            </button>
+          )}
+          <button
+            className="theme-toggle"
+            onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+          >
+            {theme === 'light' ? '🌙' : '☀️'}
+          </button>
+        </div>
       </header>
 
       {activeTab === 'home' && (
@@ -149,9 +197,14 @@ export default function App() {
         </>
       )}
 
-      {activeTab === 'settings' && (
+      {activeTab === 'profile' && (
         <main className="app-content">
-          <Settings health={health} />
+          <ProfilePage
+            health={health}
+            user={user}
+            onLoginClick={() => setShowLogin(true)}
+            onLogout={handleLogout}
+          />
         </main>
       )}
 
@@ -171,11 +224,11 @@ export default function App() {
           <span>搜索</span>
         </button>
         <button
-          className={`bottom-nav-item ${activeTab === 'settings' ? 'active' : ''}`}
-          onClick={() => setActiveTab('settings')}
+          className={`bottom-nav-item ${activeTab === 'profile' ? 'active' : ''}`}
+          onClick={() => setActiveTab('profile')}
         >
-          <span className="icon">⚙️</span>
-          <span>设置</span>
+          <span className="icon">👤</span>
+          <span>我的</span>
         </button>
       </nav>
 
@@ -190,6 +243,13 @@ export default function App() {
         <FilterModal
           onClose={() => setShowFilter(false)}
           onApply={handleFilterApply}
+        />
+      )}
+
+      {showLogin && (
+        <LoginModal
+          onClose={() => setShowLogin(false)}
+          onAuth={handleAuth}
         />
       )}
 

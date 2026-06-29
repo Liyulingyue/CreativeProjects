@@ -4,3 +4,4 @@ python-dotenv
 fastapi
 uvicorn[standard]
 pydantic
+bcrypt
