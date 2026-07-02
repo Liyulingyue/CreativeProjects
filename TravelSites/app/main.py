@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
-from .config import REFRESH_ENABLED, REFRESH_INTERVAL_SECONDS
+from .config import REFRESH_ENABLED, REFRESH_INTERVAL_SECONDS, WEATHER_REFRESH_ON_STARTUP
 from .router import router
 from .refresh import initial_load, start_background_refresh, get_refresh_state
 from .errors import setup_exception_handlers, logger
@@ -56,6 +56,18 @@ async def lifespan(app: FastAPI):
         cleanup_old_cache(30)
     except Exception as e:
         print(f"[startup] WARN: cleanup failed: {e}")
+
+    # 天气预报缓存（启动时拉一次，保证 DB 有数据）
+    try:
+        from src.weather_cache import refresh_all, cleanup_old
+        cleanup_old(30)
+        if WEATHER_REFRESH_ON_STARTUP:
+            refresh_all()
+            print(f"[startup] 天气预报已缓存")
+        else:
+            print(f"[startup] 天气预报未拉取（WEATHER_REFRESH_ON_STARTUP=false）")
+    except Exception as e:
+        print(f"[startup] WARN: weather cache failed: {e}")
 
     await initial_load()
 

@@ -33,3 +33,7 @@ web/node_modules/
 # OS
 .DS_Store
 Thumbs.db
+# Runtime progress files
+data/*_progress.json
+data/geo_backfill_failed.json
+data/county_backfill_failed.json

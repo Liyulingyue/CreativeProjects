@@ -38,6 +38,8 @@ CATEGORY_MAP = {
     "ruins": "古迹",
     "park": "公园",
     "garden": "园林",
+    "aquarium": "公园",
+    "information": "其他",
 }
 
 # 排除明显不是"代表性景点"的：游乐场、KTV、酒店等
@@ -51,22 +53,60 @@ EXCLUDE_TAGS = {
 }
 
 
+def overpass_query_bbox(city_name: str, lat: float, lon: float, radius_km: float = 30) -> list[dict]:
+    """用 bbox 查城市周边 tourism POI。
+
+    只查 node（way 查询慢 5x+），限制 200 条避免 504 超时。
+    """
+    exclude_tourism = "|".join(EXCLUDE_TAGS["tourism"])
+    delta = radius_km / 111.0
+    bbox = f"{lat-delta:.4f},{lon-delta:.4f},{lat+delta:.4f},{lon+delta:.4f}"
+    # 只查 node + 限制 200 条；Way 留给 way-aware 工具（如 Nominatim/Overpass turbo 手动）
+    query = f"""
+[out:json][timeout:60];
+node["tourism"~"attraction|museum|viewpoint|zoo|theme_park|artwork|monument|memorial|castle|ruins|garden|park|aquarium|information"]["tourism"!~"{exclude_tourism}"]({bbox});
+out tags 200;
+"""
+    last_err = None
+    for url in OVERPASS_URLS:
+        try:
+            with httpx.Client(timeout=90.0) as client:
+                resp = client.get(
+                    f"{url}?data={urllib.parse.quote(query)}",
+                    headers={"User-Agent": "TravelSites/0.1 (backfill)"},
+                )
+                if resp.status_code == 429:
+                    last_err = "rate limited"
+                    time.sleep(5)
+                    continue
+                if resp.status_code != 200:
+                    last_err = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                    continue
+                data = resp.json()
+                return data.get("elements", [])
+        except Exception as e:
+            last_err = str(e)
+            time.sleep(3)
+    print(f"    [overpass] {city_name} 失败: {last_err}")
+    return []
+
+
 def overpass_query(city_name: str) -> list[dict]:
-    """查城市的所有 tourism POI。"""
+    """兼容旧调用：fallback 到 area 查询。"""
     exclude_tourism = "|".join(EXCLUDE_TAGS["tourism"])
     query = f"""
-[out:json][timeout:90];
+[out:json][timeout:60];
 area["name:en"="{city_name}"]->.a;
 (
-  node["tourism"~"attraction|museum|viewpoint|zoo|theme_park|artwork|monument|memorial|castle|ruins|garden"]["tourism"!~"{exclude_tourism}"](area.a);
-  way["tourism"~"attraction|museum|artwork|monument|memorial|castle|ruins"]["tourism"!~"{exclude_tourism}"](area.a);
+  node["tourism"~"attraction|museum|viewpoint|zoo|theme_park|artwork|monument|memorial|castle|ruins|garden|park|aquarium|information"]["tourism"!~"{exclude_tourism}"](area.a);
+  way["tourism"~"attraction|museum|artwork|monument|memorial|castle|ruins|garden|park|aquarium"]["tourism"!~"{exclude_tourism}"](area.a);
 );
 out tags center 200;
 """
     last_err = None
     for url in OVERPASS_URLS:
         try:
-            with httpx.Client(timeout=120.0) as client:
+            with httpx.Client(timeout=90.0) as client:
                 resp = client.get(
                     f"{url}?data={urllib.parse.quote(query)}",
                     headers={"User-Agent": "TravelSites/0.1 (backfill)"},
@@ -94,8 +134,9 @@ def is_chinese_city(name: str) -> bool:
     return True  # area 查询会精确匹配到 name:en，所以基本不会错
 
 
-def process_city(city: str, dry_run: bool) -> int:
-    elements = overpass_query(city)
+def process_city(city: str, lat: float, lon: float, dry_run: bool) -> int:
+    """用 bbox 查询（快），不 fallback area（慢且易超时）。"""
+    elements = overpass_query_bbox(city, lat, lon, radius_km=30)
     if not elements:
         return 0
 
@@ -139,15 +180,15 @@ def process_city(city: str, dry_run: bool) -> int:
     return inserted
 
 
-def get_target_cities(limit: int = 0) -> list[str]:
+def get_target_cities(limit: int = 0) -> list[tuple]:
     conn = sqlite3.connect(str(DB_PATH))
-    cities = [r[0] for r in conn.execute(
-        "SELECT name FROM geo_cities WHERE lat IS NOT NULL ORDER BY name"
-    ).fetchall()]
+    rows = conn.execute(
+        "SELECT name, lat, lon FROM geo_cities WHERE lat IS NOT NULL ORDER BY name"
+    ).fetchall()
     conn.close()
     if limit:
-        cities = cities[:limit]
-    return cities
+        rows = rows[:limit]
+    return rows
 
 
 def main(dry_run: bool = False, limit: int = 0) -> None:
@@ -155,11 +196,11 @@ def main(dry_run: bool = False, limit: int = 0) -> None:
     print(f"待处理城市: {len(cities)}")
 
     total = 0
-    for i, city in enumerate(cities):
-        n = process_city(city, dry_run)
+    for i, (city, lat, lon) in enumerate(cities):
+        n = process_city(city, lat, lon, dry_run)
         total += n
-        print(f"  [{i+1}/{len(cities)}] {city}: {n} 个景点")
-        time.sleep(2)  # Overpass 礼貌限流
+        print(f"  [{i+1}/{len(cities)}] {city}: {n} 个景点", flush=True)
+        time.sleep(1.5)  # Overpass 礼貌限流
 
     print()
     print(f"完成: 总共 {total} 个景点新增到 {len(cities)} 个城市")

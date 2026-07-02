@@ -171,6 +171,20 @@ CREATE TABLE IF NOT EXISTS attraction_aliases (
     PRIMARY KEY (alias),
     FOREIGN KEY (attraction_id) REFERENCES attractions(id) ON DELETE CASCADE
 );
+
+-- 天气预报缓存
+CREATE TABLE IF NOT EXISTS weather_cache (
+    city TEXT NOT NULL,
+    date TEXT NOT NULL,
+    weather_code INTEGER,
+    weather_desc TEXT,
+    temp_max REAL,
+    temp_min REAL,
+    precipitation_mm REAL,
+    precipitation_probability INTEGER,
+    fetched_at TEXT,
+    PRIMARY KEY (city, date)
+);
 """
 
 
