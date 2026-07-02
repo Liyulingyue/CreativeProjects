@@ -41,6 +41,14 @@ DATA_DIR: Path = Path(__file__).resolve().parent.parent / "data"
 MATRIX_CACHE_DIR: Path = DATA_DIR / "matrix_cache"
 MATRIX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+# 天气预报缓存
+# 启动时自动拉取所有城市的未来 14 天预报
+# 拉取的天气数据用于搜索时的天气评分（不需要额外 LLM 调用）
+# Open-Meteo 免费 API，0 成本，10,000 次/天额度，这里 374 城 × 1 次 = 374 次/天
+WEATHER_FORECAST_DAYS: int = int(os.getenv("WEATHER_FORECAST_DAYS", "14"))
+WEATHER_HISTORY_DAYS: int = int(os.getenv("WEATHER_HISTORY_DAYS", "30"))
+WEATHER_REFRESH_ON_STARTUP: bool = os.getenv("WEATHER_REFRESH_ON_STARTUP", "true").lower() in ("true", "1", "yes")
+
 # ---------- 运行时配置（可由 admin UI 动态修改） ----------
 _config_lock = RLock()
 _runtime_config: dict = {
@@ -54,6 +62,8 @@ _runtime_config: dict = {
     "api_key": API_KEY,
     "base_url": BASE_URL,
     "model_name": MODEL_NAME,
+    "weather_forecast_days": WEATHER_FORECAST_DAYS,
+    "weather_history_days": WEATHER_HISTORY_DAYS,
 }
 
 
@@ -73,6 +83,7 @@ def update_runtime_config(updates: dict) -> dict:
             "refresh_mode", "daily_run_hour",
             "matrix_max_offset", "matrix_max_duration", "matrix_concurrency",
             "api_key", "base_url", "model_name",
+            "weather_forecast_days", "weather_history_days",
         ):
             if key in updates:
                 _runtime_config[key] = updates[key]
