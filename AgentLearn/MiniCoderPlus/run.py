@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 """main.py — Unified entry point for MiniCoder Plus."""
-# Load environment variables
+
+from dotenv import load_dotenv
+load_dotenv()
 
 import sys
 import argparse

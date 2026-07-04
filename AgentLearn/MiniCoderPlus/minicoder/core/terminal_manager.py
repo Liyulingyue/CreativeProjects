@@ -24,12 +24,31 @@ class TerminalSession:
         self._loop = None
         self.last_activity = time.time()
 
+    def _check_bridge_installation(self) -> tuple[bool, str]:
+        """Check if pty_bridge dependencies are installed."""
+        bridge_dir = Path(__file__).parent / "pty_bridge"
+        node_modules = bridge_dir / "node_modules"
+        
+        if not node_modules.exists():
+            return False, f"pty_bridge dependencies not installed. Run: cd {bridge_dir} && npm install"
+        
+        try:
+            subprocess.run(["node", "--version"], capture_output=True, check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return False, "Node.js is not installed or not in PATH"
+        
+        return True, ""
+    
     def start(self):
         """Start the Node.js PTY Bridge process."""
         if self.is_running:
             return
 
         bridge_path = Path(__file__).parent / "pty_bridge" / "index.js"
+        
+        ready, msg = self._check_bridge_installation()
+        if not ready:
+            print(f"[Warning] {msg}")
         
         # Ensure we have the main loop reference for thread-safe operations
         try:
