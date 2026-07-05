@@ -4,6 +4,8 @@ from typing import Optional
 
 from src.distance import calc_distance, transport_score
 from src.holidays import get_holiday_impact, list_holidays_in_range, calculate_holiday_insights
+from src.weather import fetch_weather, is_extreme_weather, is_rainy
+from src.cities import lookup_city
 from src.auth import (
     create_user, authenticate, create_session, verify_session,
     delete_session, get_user_by_id,
@@ -13,7 +15,7 @@ from .models import (
     CityListResponse, CityMatrixResponse, MatrixCellResponse,
     HealthResponse, RefreshStatusResponse
 )
-from .search_models import SearchRequest, SearchResponse, SearchResultItem
+from .search_models import SearchRequest, SearchResponse, SearchResultItem, PlanRecommendRequest, PlanRecommendResponse
 from .refresh import (
     load_matrix_from_cache, refresh_all_cities,
     get_refresh_state, REFRESH_ENABLED
@@ -59,26 +61,6 @@ def calc_preference_score(preference: str, plan_data: dict, city_tags: list[str]
     return score
 
 
-def rank_by_preference(results: list[SearchResultItem], preference: str, plan_data_map: dict) -> list[SearchResultItem]:
-    """根据偏好重新排序"""
-    if not preference or not preference.strip():
-        return results
-
-    for item in results:
-        plan_data = plan_data_map.get(item.city, {})
-        item.preference_score = calc_preference_score(
-            preference,
-            plan_data,
-            plan_data.get("city_tags", [])
-        )
-
-    def sort_key(x: SearchResultItem) -> tuple:
-        pref_boost = x.preference_score * 20
-        return (x.score + pref_boost, x.preference_score)
-
-    return sorted(results, key=sort_key, reverse=True)
-
-
 def _calc_pref_match(preference: str, tags: list[str], blurb: str) -> float:
     """简易偏好匹配（guide 搜索用）。keyword match against tags + blurb。"""
     if not preference or not preference.strip():
@@ -93,6 +75,22 @@ def _calc_pref_match(preference: str, tags: list[str], blurb: str) -> float:
         if len(word) > 1 and word in blurb.lower():
             matched += 0.1
     return min(matched, 1.0)
+
+
+def _weather_score(weather_list: list) -> float:
+    """根据天气预报列表计算 0~1 的天气评分。雨/雷暴越少分越高。"""
+    if not weather_list:
+        return 0.5
+    score = 0.0
+    for w in weather_list:
+        code = w.get("weather_code", 0)
+        if is_extreme_weather(code):
+            score += 0.0
+        elif is_rainy(code):
+            score += 0.4
+        else:
+            score += 1.0
+    return score / len(weather_list)
 
 
 router = APIRouter()
@@ -149,230 +147,186 @@ async def search_travel_plans(req: SearchRequest, request: Request):
 
     generated_at = datetime.now().isoformat()
 
-    # ── 无日期模式：走 city_guides 静态攻略 ──
-    if not req.start_date or not req.end_date:
-        duration = req.duration or 3
-        style = req.style or "standard"
+    # ── 统一走 city_guides 静态攻略,叠加天气评分 + 偏好排序 ──
+    duration = req.duration or 3
+    style = req.style or "standard"
 
-        conn = get_conn()
-        rows = conn.execute("""
-            SELECT g.city, g.duration, g.style, g.guide_json,
-                   f.blurb, f.tags, f.trip_capacity
-            FROM city_guides g
-            LEFT JOIN city_features f ON g.city = f.city
-            WHERE g.duration = ? AND g.style = ?
-            ORDER BY g.city
-        """, (duration, style)).fetchall()
-        conn.commit()
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT g.city, g.duration, g.style, g.guide_json,
+               f.blurb, f.tags, f.trip_capacity
+        FROM city_guides g
+        LEFT JOIN city_features f ON g.city = f.city
+        WHERE g.duration = ? AND g.style = ?
+        ORDER BY g.city
+    """, (duration, style)).fetchall()
+    conn.commit()
 
-        items: list[SearchResultItem] = []
-        for r in rows:
-            try:
-                import json as _json
-                data = _json.loads(r[3]) if isinstance(r[3], str) else r[3]
-            except Exception:
-                data = {}
+    items: list[SearchResultItem] = []
+    weather_scores: dict[str, float] = {}
+
+    # 如果提供了日期,为所有城市预取天气预报
+    weather_map: dict[str, list] = {}
+    if req.start_date and req.end_date:
+        try:
+            start_dt = datetime.strptime(req.start_date, "%Y-%m-%d")
+            end_dt = datetime.strptime(req.end_date, "%Y-%m-%d")
+            if end_dt >= start_dt:
+                for r in rows:
+                    city = r[0]
+                    coords = lookup_city(city)
+                    if coords:
+                        lat, lon = coords
+                        try:
+                            w_list = fetch_weather(lat, lon, req.start_date, req.end_date)
+                            weather_map[city] = [
+                                {
+                                    "date": w.date,
+                                    "weather_code": w.weather_code,
+                                    "weather_desc": w.weather_desc,
+                                    "temp_max": w.temp_max,
+                                    "temp_min": w.temp_min,
+                                    "precipitation_mm": w.precipitation_mm,
+                                    "precipitation_probability": w.precipitation_probability,
+                                }
+                                for w in w_list
+                            ]
+                        except Exception:
+                            pass
+                # 预计算天气评分
+                for city, w_list in weather_map.items():
+                    if w_list:
+                        score = _weather_score(w_list)
+                        weather_scores[city] = score
+        except Exception:
+            pass
+
+    for r in rows:
+        try:
+            import json as _json
+            data = _json.loads(r[3]) if isinstance(r[3], str) else r[3]
+        except Exception:
+            data = {}
+        tags = []
+        try:
+            tags = _json.loads(r[5]) if r[5] and isinstance(r[5], str) else (r[5] or [])
+        except Exception:
             tags = []
-            try:
-                tags = _json.loads(r[5]) if r[5] and isinstance(r[5], str) else (r[5] or [])
-            except Exception:
-                tags = []
 
-            highlights = data.get("highlights", [])
-            budget = data.get("budget", {})
-            tips = data.get("tips", [])
+        highlights = data.get("highlights", [])
+        w_score = weather_scores.get(r[0], 0.5)  # 无天气数据默认 0.5
+        base_score = int(85 * 0.5 + w_score * 15)  # 基础85,天气占权重50%
 
-            items.append(SearchResultItem(
-                source="guide",
-                city=r[0],
-                duration_days=r[1],
-                score=85,
-                recommendation="推荐",
-                key_highlights=(
-                    (r[4] or "")[:100]
-                ),
-                top_attractions=(highlights or [])[:5],
-                blurb=(r[4] or "")[:200],
-                tags=tags,
-            ))
+        weather_summary = ""
+        if weather_map.get(r[0]):
+            weather_summary = " | ".join(
+                f"{w['date']} {w['weather_desc']}" for w in weather_map[r[0]]
+            )
 
-        # 排序（按 preferences 匹配）
-        if req.preference:
-            for item in items:
-                pref_score = _calc_pref_match(req.preference, item.tags, item.blurb or "")
-                item.preference_score = pref_score
-            items.sort(key=lambda x: -(x.preference_score or 0))
-
-        return SearchResponse(
+        items.append(SearchResultItem(
             source="guide",
-            items=items,
-            total=len(items),
-            generated_at=generated_at,
-        )
+            city=r[0],
+            start_date=req.start_date or "",
+            end_date=req.end_date or "",
+            duration_days=r[1],
+            score=base_score,
+            recommendation="推荐",
+            key_highlights=(r[4] or "")[:100],
+            top_attractions=(highlights or [])[:5],
+            blurb=(r[4] or "")[:200],
+            tags=tags,
+            weather_summary=weather_summary,
+        ))
 
-    # ── 有日期模式：走 matrix_cache 实时方案 ──
+    # 叠加偏好排序
+    if req.preference:
+        for item in items:
+            pref_score = _calc_pref_match(req.preference, item.tags, item.blurb or "")
+            item.preference_score = pref_score
+        items.sort(key=lambda x: -(x.score + (x.preference_score or 0) * 20))
+    else:
+        items.sort(key=lambda x: -x.score)
+
+    return SearchResponse(
+        source="guide",
+        items=items,
+        total=len(items),
+        generated_at=generated_at,
+    )
+
+
+@router.post("/plan/recommend")
+async def plan_recommend(req: PlanRecommendRequest):
+    """为指定城市生成专项旅行方案,支持偏好标签和自由文本。"""
+    from src.planner import TripPlanner
+
+    if not req.city:
+        raise HTTPException(status_code=400, detail="城市名不能为空")
+
+    start_date = req.start_date or ""
+    end_date = req.end_date or ""
+
+    # 至少要有日期才能生成
+    if not start_date or not end_date:
+        raise HTTPException(status_code=400, detail="生成专项方案需要提供出发和返回日期")
+
     try:
-        start = datetime.strptime(req.start_date, "%Y-%m-%d")
-        end = datetime.strptime(req.end_date, "%Y-%m-%d")
+        datetime.strptime(start_date, "%Y-%m-%d")
+        datetime.strptime(end_date, "%Y-%m-%d")
     except ValueError:
         raise HTTPException(status_code=400, detail="日期格式错误，请使用 YYYY-MM-DD")
 
-    if end < start:
-        raise HTTPException(status_code=400, detail="返回日期不能早于出发日期")
-
-    start_str = req.start_date
-    end_str = req.end_date
-    duration_days = (end - start).days + 1
-
-    from app.matrix import generate_single_cell, MatrixCell
-
-    def _cell_to_result_item(city: str, cell: dict | MatrixCell, is_on_demand: bool = False) -> tuple[SearchResultItem, dict] | None:
-        if isinstance(cell, MatrixCell):
-            if not cell.success:
-                return None
-            cell_d = cell.to_dict()
-        else:
-            cell_d = cell
-            if not cell_d.get("success"):
-                return None
-
-        full = (cell_d.get("full_result") or {}) if isinstance(cell_d.get("full_result"), dict) else {}
-        plan_data = full.get("data") or {}
-
-        weather_parts = (cell_d.get("weather_summary") or "").split("|")
-        weather_desc = weather_parts[0].strip() if weather_parts else ""
-
-        raw_attractions = plan_data.get("top_attractions") or plan_data.get("attractions") or []
-        if raw_attractions and isinstance(raw_attractions[0], dict):
-            top_attractions = [a.get("name", "") for a in raw_attractions[:5]]
-        else:
-            top_attractions = raw_attractions[:5]
-
-        if top_attractions:
-            verified = []
-            for name in top_attractions:
-                att = get_attraction_by_name(name, city)
-                if att:
-                    verified.append(att["name"])
-            if not verified:
-                from src.db import get_city_attractions
-                db_atts = get_city_attractions(city, limit=5)
-                verified = [a["name"] for a in db_atts]
-            top_attractions = verified
-
-        distance, transit_info = calc_distance(req.origin_city or "", city)
-        if distance > 0 and transit_info:
-            new_transport_score = transport_score(distance, cell_d.get("duration", duration_days))
-            breakdown = dict(plan_data.get("score_breakdown") or {})
-            breakdown["transport"] = new_transport_score
-        else:
-            distance = 0
-            transit_info = {"recommended_mode": "", "transit_hours": 0}
-            breakdown = plan_data.get("score_breakdown") or {}
-
-        base_score = plan_data.get("score") or cell_d.get("score") or 0
-        if breakdown and all(k in breakdown for k in ["days_match", "weather", "attraction_density", "transport"]):
-            base_score = int(
-                breakdown["days_match"] * 0.40
-                + breakdown["transport"] * 0.25
-                + breakdown["weather"] * 0.25
-                + breakdown["attraction_density"] * 0.10
-            )
-        else:
-            base_score = plan_data.get("score") or cell_d.get("score") or 0
-
-        daily_plan = plan_data.get("daily_plan") or []
-        for day in daily_plan:
-            for route in day.get("routes", []):
-                for act in route.get("activities", []):
-                    att_name = act.get("attraction", "")
-                    if att_name:
-                        att = get_attraction_by_name(att_name, city)
-                        act["verified"] = att is not None
-                        if att:
-                            act["attraction_id"] = att["id"]
-
-        item = SearchResultItem(
-            source="matrix",
-            city=city,
-            start_date=cell_d.get("start_date", start_str),
-            end_date=cell_d.get("end_date", end_str),
-            duration_days=cell_d.get("duration", duration_days),
-            score=base_score,
-            recommendation=plan_data.get("recommendation") or cell_d.get("recommendation") or "",
-            weather_summary=cell_d.get("weather_summary") or "",
-            weather_desc=weather_desc,
-            top_attractions=top_attractions,
-            key_highlights=plan_data.get("key_highlights") or plan_data.get("city_intro", "")[:100],
-            score_breakdown=breakdown,
-            daily_plan=daily_plan,
-            distance_km=distance,
-            transport_mode=transit_info.get("recommended_mode", ""),
-            transit_hours=transit_info.get("transit_hours", 0),
-        )
-        return item, plan_data
-
-    # ── 获取候选城市（有 POI 的城市）──
-    candidate_cities = get_all_cities_with_pois(min_pois=3)
-
-    # ── 第一步：查缓存 ──
-    results: list[SearchResultItem] = []
-    plan_data_map: dict = {}
-    cache_miss_cities: list[str] = []
-
-    for city in candidate_cities:
-        cached = load_matrix_from_cache(city)
-        if not cached:
-            cache_miss_cities.append(city)
-            continue
-
-        matched = None
-        for cell in cached.get("cells", []):
-            if cell.get("start_date") == start_str and cell.get("end_date") == end_str:
-                matched = cell
-                break
-
-        if matched:
-            r = _cell_to_result_item(city, matched)
-            if r:
-                item, pd = r
-                results.append(item)
-                plan_data_map[city] = pd
-        else:
-            cache_miss_cities.append(city)
-
-    # ── 第二步：对缓存缺失的城市 on-demand 生成（最多 3 个）──
-    if cache_miss_cities:
-        import asyncio as _asyncio
-        ondemand_limit = min(len(cache_miss_cities), 3)
-        ondemand_tasks = []
-        for city in cache_miss_cities[:ondemand_limit]:
-            task = _asyncio.ensure_future(
-                generate_single_cell(city, start_str, end_str)
-            )
-            ondemand_tasks.append((city, task))
-
-        for city, task in ondemand_tasks:
-            try:
-                cell = await task
-                r = _cell_to_result_item(city, cell, is_on_demand=True)
-                if r:
-                    item, pd = r
-                    results.append(item)
-                    plan_data_map[city] = pd
-                    print(f"[search] on-demand generated: {city} {start_str}~{end_str}")
-            except Exception as e:
-                print(f"[search] on-demand failed for {city}: {e}")
-
-    results = rank_by_preference(results, req.preference or "", plan_data_map)
-    results.sort(key=lambda x: x.score + (x.preference_score or 0) * 20, reverse=True)
-
-    return SearchResponse(
-        source="matrix",
-        items=results,
-        total=len(results),
-        generated_at=datetime.now().isoformat(),
+    planner = TripPlanner(lite=True)
+    result = planner.plan(
+        city=req.city,
+        start_date=start_date,
+        end_date=end_date,
+        preference_tags=req.preference_tags or None,
+        preference_text=req.preference_text or None,
     )
+
+    weather_parts = (result.weather_forecast or [{}])[:1]
+    weather_desc = weather_parts[0].get("weather_desc", "") if weather_parts else ""
+
+    if result.success and result.data:
+        data = result.data
+        return PlanRecommendResponse(
+            city=req.city,
+            start_date=start_date,
+            end_date=end_date,
+            duration_days=result.duration_days,
+            score=data.get("score", 0),
+            recommendation=data.get("recommendation", ""),
+            weather_summary=" | ".join(
+                f"{w['date']} {w['weather_desc']}" for w in (result.weather_forecast or [])
+            ),
+            weather_desc=weather_desc,
+            top_attractions=data.get("top_attractions", []),
+            key_highlights=data.get("city_intro", "")[:100],
+            score_breakdown=data.get("score_breakdown", {}),
+            daily_plan=data.get("daily_plan", []),
+            success=True,
+            error=None,
+            generated_at=datetime.now().isoformat(),
+        )
+    else:
+        return PlanRecommendResponse(
+            city=req.city,
+            start_date=start_date,
+            end_date=end_date,
+            duration_days=result.duration_days,
+            score=0,
+            recommendation="生成失败",
+            weather_summary="",
+            weather_desc="",
+            top_attractions=[],
+            key_highlights="",
+            score_breakdown={},
+            daily_plan=[],
+            success=False,
+            error=result.error or "未知错误",
+            generated_at=datetime.now().isoformat(),
+        )
 
 
 @router.get("/holidays")

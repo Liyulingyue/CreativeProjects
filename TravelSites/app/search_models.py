@@ -44,3 +44,29 @@ class SearchResponse(BaseModel):
     items: list[SearchResultItem]
     total: int
     generated_at: str
+
+
+class PlanRecommendRequest(BaseModel):
+    city: str = Field(..., description="城市名")
+    start_date: Optional[str] = Field(default=None, description="出发日期 YYYY-MM-DD")
+    end_date: Optional[str] = Field(default=None, description="返回日期 YYYY-MM-DD")
+    preference_tags: Optional[list[str]] = Field(default_factory=list, description="偏好标签列表: 亲子/美食/户外/人文/自然/放松")
+    preference_text: Optional[str] = Field(default=None, description="用户自由文本描述需求")
+
+
+class PlanRecommendResponse(BaseModel):
+    city: str
+    start_date: str
+    end_date: str
+    duration_days: int
+    score: int
+    recommendation: str
+    weather_summary: str
+    weather_desc: str
+    top_attractions: list[str]
+    key_highlights: str
+    score_breakdown: dict
+    daily_plan: list[dict]
+    success: bool
+    error: Optional[str] = None
+    generated_at: str

@@ -112,3 +112,25 @@ export interface Activity {
   hours: number;
   notes: string;
 }
+
+export interface PreferenceInput {
+  preference_tags: string[];
+  preference_text: string;
+}
+
+export interface PlanCellPayload {
+  city: string;
+  start_date: string;
+  end_date: string;
+  score: number;
+  recommendation: string;
+  weather_summary: string;
+  weather_desc: string;
+  top_attractions: string[];
+  key_highlights: string;
+  score_breakdown: Record<string, number>;
+  daily_plan: DailyPlan[];
+  success: boolean;
+  error?: string;
+  generated_at: string;
+}

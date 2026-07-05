@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import type { SearchResultItem } from '../types';
+import type { SearchResultItem, PlanCellPayload } from '../types';
+import { PlanGenerateModal } from './PlanGenerateModal';
 
 interface Props {
   item: SearchResultItem;
@@ -51,11 +52,27 @@ function crowdLabel(level: string): string {
 }
 
 export function DetailModal({ item, onClose }: Props) {
-  const breakdown = item.score_breakdown as Record<string, number>;
-  const hasDailyPlan = item.daily_plan && item.daily_plan.length > 0;
-
   const [attractionDetails, setAttractionDetails] = useState<Record<string, AttractionDetail>>({});
   const [holidayInsight, setHolidayInsight] = useState<HolidayInsight | null>(null);
+  const [showPlanModal, setShowPlanModal] = useState(false);
+  const [generatedPlan, setGeneratedPlan] = useState<PlanCellPayload | null>(null);
+
+  const activeItem = (() => {
+    if (!generatedPlan || !generatedPlan.success) return item;
+    return {
+      ...item,
+      score: generatedPlan.score,
+      recommendation: generatedPlan.recommendation,
+      weather_summary: generatedPlan.weather_summary,
+      daily_plan: generatedPlan.daily_plan,
+      top_attractions: generatedPlan.top_attractions,
+      key_highlights: generatedPlan.key_highlights,
+      score_breakdown: generatedPlan.score_breakdown,
+    };
+  })();
+
+  const breakdown = (activeItem.score_breakdown || {}) as Record<string, number>;
+  const hasDailyPlan = activeItem.daily_plan && activeItem.daily_plan.length > 0;
 
   useEffect(() => {
     // 拉取景点详情
@@ -97,18 +114,27 @@ export function DetailModal({ item, onClose }: Props) {
     }
 
     // 拉取节假日洞察
-    fetch(`/api/holidays?start_date=${item.start_date}&end_date=${item.end_date}`)
+    fetch(`/api/holidays?start_date=${activeItem.start_date}&end_date=${activeItem.end_date}`)
       .then((res) => res.json())
       .then((data) => setHolidayInsight(data))
       .catch(() => {});
-  }, [item.city, item.start_date, item.end_date]);
+  }, [activeItem.city, activeItem.start_date, activeItem.end_date]);
 
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h2>{item.city}</h2>
-          <button className="modal-close" onClick={onClose}>×</button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              className="btn-outline"
+              style={{ fontSize: 13, padding: '4px 12px', height: 32 }}
+              onClick={() => setShowPlanModal(true)}
+            >
+              生成我的方案
+            </button>
+            <button className="modal-close" onClick={onClose}>×</button>
+          </div>
         </div>
 
         <div className="modal-body">
@@ -300,6 +326,17 @@ export function DetailModal({ item, onClose }: Props) {
           )}
         </div>
       </div>
+      {showPlanModal && (
+        <PlanGenerateModal
+          city={item.city}
+          initialStartDate={item.start_date || undefined}
+          initialEndDate={item.end_date || undefined}
+          onGenerated={(result) => {
+            setGeneratedPlan(result);
+          }}
+          onClose={() => setShowPlanModal(false)}
+        />
+      )}
     </div>
   );
 }
