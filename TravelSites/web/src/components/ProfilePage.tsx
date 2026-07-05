@@ -13,14 +13,13 @@ interface Props {
   health: Health | null;
   user: User | null;
   seedCities: string[];
-  onSeedCitiesChange: (cities: string[]) => void;
   onOpenCityManager: () => void;
   onOpenSettings: () => void;
   onLoginClick: () => void;
   onLogout: () => void;
 }
 
-export function ProfilePage({ health, user, seedCities, onSeedCitiesChange, onOpenCityManager, onOpenSettings, onLoginClick, onLogout }: Props) {
+export function ProfilePage({ health, user, seedCities, onOpenCityManager, onOpenSettings, onLoginClick, onLogout }: Props) {
   const [overview, setOverview] = useState<any>(null);
   const [logs, setLogs] = useState<any[]>([]);
   const [poiStatus, setPoiStatus] = useState<{ enabled: boolean; message: string } | null>(null);

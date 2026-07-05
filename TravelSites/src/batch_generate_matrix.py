@@ -36,16 +36,13 @@ SLEEP_ON_LIMIT_RETRY = 60  # 1 分钟
 
 
 def get_seed_cities() -> list[str]:
+    """获取用于 matrix 生成的城市（所有有坐标的 geo_cities）。"""
     conn = sqlite3.connect(str(DB_PATH))
-    row = conn.execute("SELECT value FROM seed_config WHERE key='cities'").fetchone()
+    rows = conn.execute(
+        "SELECT name FROM geo_cities WHERE lat IS NOT NULL ORDER BY name"
+    ).fetchall()
     conn.close()
-    if row:
-        try:
-            return json.loads(row[0])
-        except Exception:
-            pass
-    # fallback
-    return []
+    return [r[0] for r in rows]
 
 
 def load_progress() -> dict:

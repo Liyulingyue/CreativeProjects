@@ -105,23 +105,34 @@ HOLIDAYS = {
 
 
 def fill_holidays():
-    """把节假日数据写入 SQLite（可重复执行）。"""
+    """把节假日数据写入 SQLite（幂等，仅补缺失）。"""
     conn = sqlite3.connect(str(DB_PATH))
     cur = conn.cursor()
 
-    cur.execute("DELETE FROM holiday_calendar WHERE region_code IS NULL")
-
-    cur.executemany(
-        """INSERT OR IGNORE INTO holiday_calendar
-           (date, name, type, impact_level, region_code, demographic, source)
-           VALUES (?,?,?,?,NULL,NULL,'state_council')""",
-        [(d, *info) for d, info in HOLIDAYS.items()],
-    )
+    inserted = 0
+    for d, info in HOLIDAYS.items():
+        exists = cur.execute(
+            "SELECT 1 FROM holiday_calendar WHERE date=? AND region_code IS NULL AND demographic IS NULL",
+            (d,),
+        ).fetchone()
+        if not exists:
+            cur.execute(
+                """INSERT INTO holiday_calendar
+                   (date, name, type, impact_level, region_code, demographic, source)
+                   VALUES (?,?,?,?,NULL,NULL,'state_council')""",
+                (d, *info),
+            )
+            inserted += 1
+        else:
+            cur.execute(
+                """UPDATE holiday_calendar SET name=?, type=?, impact_level=?
+                   WHERE date=? AND region_code IS NULL AND demographic IS NULL""",
+                (*info, d),
+            )
 
     conn.commit()
-
     total = cur.execute("SELECT COUNT(*) FROM holiday_calendar").fetchone()[0]
-    print(f"[holidays] {total} 条记录已写入")
+    print(f"[holidays] {inserted} 条新增，{total} 条总计")
 
 
 def get_holiday_impact(date_str: str) -> tuple[str, int]:

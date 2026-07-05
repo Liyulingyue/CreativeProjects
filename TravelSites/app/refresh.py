@@ -1,30 +1,24 @@
 import asyncio
 import json
 import time
-from datetime import datetime
+from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, asdict
 import threading
 
 from .config import (
-    SEED_CITIES, MATRIX_MAX_OFFSET, MATRIX_MAX_DURATION,
+    MATRIX_MAX_OFFSET, MATRIX_MAX_DURATION,
     MATRIX_CONCURRENCY, MATRIX_CACHE_DIR, REFRESH_ENABLED,
     get_config_value
 )
 from .matrix import plan_matrix, MatrixCell
 
 
-def _get_seed_cities() -> list[str]:
-    """从 DB 读最新 seed cities，fallback 到 config。"""
-    try:
-        from src.db import get_seed_cities as db_get
-        cities = db_get()
-        if cities:
-            return cities
-    except Exception:
-        pass
-    return SEED_CITIES
+def _get_matrix_cities() -> list[str]:
+    """获取用于 matrix 生成的城市列表（所有有坐标的 geo_cities）。"""
+    from src.db import get_all_cities
+    return get_all_cities()
 
 
 @dataclass
@@ -130,7 +124,10 @@ def load_matrix_from_cache(city: str) -> Optional[dict]:
         return None
 
     generated_at = rows[0]["generated_at"]
-    generated_date = datetime.fromisoformat(generated_at).date()
+    if generated_at:
+        generated_date = datetime.fromisoformat(generated_at).date()
+    else:
+        generated_date = date.today()
 
     cells = []
     for r in rows:
@@ -215,7 +212,7 @@ async def refresh_all_cities(progress_callback=None) -> list[dict]:
         print(f"[refresh] WARN: cleanup failed: {e}")
 
     results = []
-    cities = _get_seed_cities()
+    cities = _get_matrix_cities()
     with _state_lock:
         _state.is_running = True
         _state.cities_total = len(cities)
@@ -233,7 +230,7 @@ async def refresh_all_cities(progress_callback=None) -> list[dict]:
     with _state_lock:
         _state.is_running = False
         _state.last_run = datetime.now().isoformat()
-        _state.cities_completed = len(SEED_CITIES)
+        _state.cities_completed = len(cities)
 
     return results
 
@@ -250,7 +247,7 @@ def get_refresh_state() -> RefreshState:
 
 async def initial_load() -> None:
     """Load cached data for all cities on startup"""
-    for city in SEED_CITIES:
+    for city in _get_matrix_cities():
         cached = load_matrix_from_cache(city)
         if cached:
             print(f"[refresh] 已加载缓存: {city}")

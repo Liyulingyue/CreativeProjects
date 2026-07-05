@@ -61,18 +61,8 @@ def ensure_table():
 
 
 def get_all_cities_with_pois(min_pois: int = 3) -> list[str]:
-    conn = sqlite3.connect(str(DB_PATH))
-    rows = conn.execute("""
-        SELECT g.name, COUNT(a.id) as n
-        FROM geo_cities g
-        JOIN attractions a ON a.city = g.name
-        WHERE g.lat IS NOT NULL
-        GROUP BY g.name
-        HAVING n >= ?
-        ORDER BY n DESC, g.name
-    """, (min_pois,)).fetchall()
-    conn.close()
-    return [r[0] for r in rows]
+    from src.db import get_all_cities_with_pois as _from_db
+    return _from_db(min_pois)
 
 
 def get_pois(city: str, limit: int = 20) -> list[tuple]:

@@ -30,7 +30,8 @@ function getScoreColor(score: number): string {
   return '#EF4444';
 }
 
-function formatDate(dateStr: string): string {
+function formatDate(dateStr?: string | null): string {
+  if (!dateStr) return '待定';
   const d = new Date(dateStr);
   return `${d.getMonth() + 1}月${d.getDate()}日`;
 }
@@ -246,7 +247,7 @@ export function DetailModal({ item, onClose }: Props) {
             </div>
           )}
 
-          {hasDailyPlan && (
+          {hasDailyPlan && item.daily_plan && (
             <div className="detail-section">
               <h3>每日行程</h3>
               {item.daily_plan.map((day: any) => (

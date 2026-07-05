@@ -23,12 +23,6 @@ import { AdminSettingsModal } from './components/AdminSettingsModal';
 
 type TabType = 'home' | 'search' | 'profile';
 
-interface FilterData {
-  startDate: string;
-  endDate: string;
-  preference: string;
-}
-
 export default function App() {
   const [health, setHealth] = useState<Health | null>(null);
   const [activeTab, setActiveTab] = useState<TabType>('home');
@@ -222,7 +216,6 @@ export default function App() {
             health={health}
             user={user}
             seedCities={seedCities}
-            onSeedCitiesChange={setSeedCities}
             onOpenCityManager={() => setShowCityManager(true)}
             onOpenSettings={() => setShowSettings(true)}
             onLoginClick={() => setShowLogin(true)}
