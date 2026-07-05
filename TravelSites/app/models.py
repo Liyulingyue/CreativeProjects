@@ -32,11 +32,11 @@ class CityListResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     refresh_enabled: bool
-    seed_cities: list[str]
+    total_cities: int = 0
     cached_cities: int = 0
     cells_total: int = 0
     cache_hit_rate: float = 0
-    date_range: Optional[tuple[str, str]] = None  # (min_date, max_date)
+    date_range: Optional[tuple[str, str]] = None
 
 
 class RefreshStatusResponse(BaseModel):

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { format, addDays } from '../utils/date';
+import { format, addDays, formatShort } from '../utils/date';
 import { dailyShuffle } from '../utils/random';
 
 interface SearchInput {
@@ -38,12 +38,19 @@ const STYLES = [
   { key: 'budget', label: '穷游' },
 ];
 
+function calcDurationDays(start: string, end: string): number {
+  const s = new Date(start);
+  const e = new Date(end);
+  const diff = Math.ceil((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24));
+  return Math.max(1, diff);
+}
+
 export function HomePage({ onSearch, seedCities }: Props) {
   const today = new Date();
-  const [withDate, setWithDate] = useState(true);
+  const [showDatePicker, setShowDatePicker] = useState(false);
   const [startDate, setStartDate] = useState(format(addDays(today, 1)));
   const [endDate, setEndDate] = useState(format(addDays(today, 3)));
-  const [duration, setDuration] = useState(3);
+  const [duration, setDuration] = useState(2);
   const [style, setStyle] = useState('standard');
 
   const cards = useMemo(() => {
@@ -55,21 +62,47 @@ export function HomePage({ onSearch, seedCities }: Props) {
     }));
   }, [seedCities]);
 
-  const handleExplore = (city: string, themeName: string) => {
-    const base = { preference: [city, themeName].filter(Boolean).join('，') };
-    if (withDate) {
-      onSearch({ startDate, endDate, ...base });
-    } else {
-      onSearch({ duration, style, ...base });
+  const dateChipText = showDatePicker
+    ? `${formatShort(startDate)} - ${formatShort(endDate)}`
+    : '近期出发';
+
+  const handleStartDateChange = (value: string) => {
+    setStartDate(value);
+    const newEnd = format(addDays(new Date(value), duration));
+    if (newEnd >= value) {
+      setEndDate(newEnd);
     }
   };
 
-  const handleSearch = () => {
-    if (withDate) {
-      onSearch({ startDate, endDate, preference: '' });
-    } else {
-      onSearch({ duration, style, preference: '' });
+  const handleEndDateChange = (value: string) => {
+    setEndDate(value);
+    if (value >= startDate) {
+      setDuration(calcDurationDays(startDate, value));
     }
+  };
+
+  const handleDurationChange = (d: number) => {
+    setDuration(d);
+    if (showDatePicker) {
+      setEndDate(format(addDays(new Date(startDate), d)));
+    }
+  };
+
+  const buildSearchInput = (preference: string): SearchInput => {
+    const base = { duration, style, preference };
+    if (showDatePicker) {
+      return { startDate, endDate, ...base };
+    }
+    return base;
+  };
+
+  const handleExplore = (city: string, themeName: string) => {
+    const preference = [city, themeName].filter(Boolean).join('，');
+    onSearch(buildSearchInput(preference));
+  };
+
+  const handleSearch = () => {
+    onSearch(buildSearchInput(''));
   };
 
   return (
@@ -90,14 +123,47 @@ export function HomePage({ onSearch, seedCities }: Props) {
       </div>
 
       <div className="date-picker-card">
-        {withDate ? (
+        <div className="quick-filters-row">
+          <div className="seg-group">
+            {DURATIONS.map((d) => (
+              <button
+                key={d}
+                type="button"
+                className={`seg-btn ${duration === d ? 'active' : ''}`}
+                onClick={() => handleDurationChange(d)}
+              >{d}天</button>
+            ))}
+          </div>
+          <div className="seg-group" style={{ marginLeft: 8 }}>
+            {STYLES.map((s) => (
+              <button
+                key={s.key}
+                type="button"
+                className={`seg-btn ${style === s.key ? 'active' : ''}`}
+                onClick={() => setStyle(s.key)}
+              >{s.label}</button>
+            ))}
+          </div>
+        </div>
+
+        <button
+          type="button"
+          className={`date-chip ${showDatePicker ? 'active' : ''}`}
+          onClick={() => setShowDatePicker((v) => !v)}
+        >
+          <span className="date-chip-icon">📅</span>
+          <span className="date-chip-text">{dateChipText}</span>
+          <span className="date-chip-hint">{showDatePicker ? '收起' : '选择日期'}</span>
+        </button>
+
+        {showDatePicker && (
           <div className="date-picker-row">
             <div className="date-field">
               <span className="date-label">出发</span>
               <input
                 type="date"
                 value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
+                onChange={(e) => handleStartDateChange(e.target.value)}
                 min={format(today)}
               />
             </div>
@@ -107,49 +173,16 @@ export function HomePage({ onSearch, seedCities }: Props) {
               <input
                 type="date"
                 value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
+                onChange={(e) => handleEndDateChange(e.target.value)}
                 min={startDate}
               />
             </div>
           </div>
-        ) : (
-          <div className="duration-style-row">
-            <div className="seg-group">
-              {DURATIONS.map((d) => (
-                <button
-                  key={d}
-                  type="button"
-                  className={`seg-btn ${duration === d ? 'active' : ''}`}
-                  onClick={() => setDuration(d)}
-                >{d}天</button>
-              ))}
-            </div>
-            <div className="seg-group" style={{ marginLeft: 8 }}>
-              {STYLES.map((s) => (
-                <button
-                  key={s.key}
-                  type="button"
-                  className={`seg-btn ${style === s.key ? 'active' : ''}`}
-                  onClick={() => setStyle(s.key)}
-                >{s.label}</button>
-              ))}
-            </div>
-          </div>
         )}
-        <div className="date-bar-bottom">
-          <label className="toggle-label" style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-            <input
-              type="checkbox"
-              checked={withDate}
-              onChange={(e) => setWithDate(e.target.checked)}
-              style={{ marginRight: 6 }}
-            />
-            指定日期
-          </label>
-          <button className="explore-btn" onClick={handleSearch}>
-            探索 →
-          </button>
-        </div>
+
+        <button className="explore-btn" onClick={handleSearch}>
+          探索 →
+        </button>
       </div>
 
       <div className="section">

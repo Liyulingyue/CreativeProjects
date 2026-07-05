@@ -19,9 +19,8 @@ web_dist = Path(__file__).resolve().parent.parent / "web" / "dist"
 async def lifespan(app: FastAPI):
     # 初始化 SQLite 事实数据库（省/市/县坐标）
     try:
-        from src.db import init_db, init_seed_cities, migrate_matrix_schema, migrate_add_input_metadata
+        from src.db import init_db, migrate_matrix_schema, migrate_add_input_metadata
         init_db()
-        init_seed_cities()
         migrate_matrix_schema()
         migrate_add_input_metadata()
         print("[startup] SQLite 事实数据库已就绪")

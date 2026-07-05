@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS holiday_calendar (
 );
 CREATE INDEX IF NOT EXISTS idx_holiday_date ON holiday_calendar(date);
 CREATE INDEX IF NOT EXISTS idx_holiday_region ON holiday_calendar(region_code);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_holiday_date_national ON holiday_calendar(date) WHERE region_code IS NULL AND demographic IS NULL;
 
 -- Matrix 缓存（替代 JSON 文件，未来扩展）
 CREATE TABLE IF NOT EXISTS trip_matrix_cache (
@@ -96,12 +97,6 @@ CREATE TABLE IF NOT EXISTS trip_matrix_cache (
     PRIMARY KEY (city, start_date, duration)
 );
 CREATE INDEX IF NOT EXISTS idx_matrix_date ON trip_matrix_cache(start_date, end_date);
-
--- 种子城市配置（管理员可动态修改）
-CREATE TABLE IF NOT EXISTS seed_config (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
 
 -- 系统统计（token 用量、生成历史）
 CREATE TABLE IF NOT EXISTS generation_log (
@@ -194,16 +189,31 @@ _lock = RLock()
 _conn: Optional[sqlite3.Connection] = None
 
 
+def _open_conn() -> sqlite3.Connection:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.executescript(SCHEMA)
+    conn.commit()
+    return conn
+
+
+def _is_conn_alive(conn: Optional[sqlite3.Connection]) -> bool:
+    if conn is None:
+        return False
+    try:
+        conn.execute("SELECT 1")
+        return True
+    except sqlite3.ProgrammingError:
+        return False
+
+
 def get_conn() -> sqlite3.Connection:
     global _conn
     with _lock:
-        if _conn is None:
-            DATA_DIR.mkdir(parents=True, exist_ok=True)
-            _conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
-            _conn.row_factory = sqlite3.Row
-            _conn.execute("PRAGMA foreign_keys = ON")
-            _conn.executescript(SCHEMA)
-            _conn.commit()
+        if not _is_conn_alive(_conn):
+            _conn = _open_conn()
         return _conn
 
 
@@ -496,7 +506,7 @@ def lookup_origin_county(province: str, city: str, county: str) -> Optional[tupl
 
 
 def get_all_cities() -> list[str]:
-    """获取所有有坐标的城市名（用于 SEED_CITIES 列表）。"""
+    """获取所有有坐标的城市名（用于生成/搜索）。"""
     rows = get_conn().execute(
         "SELECT DISTINCT name FROM geo_cities WHERE lat IS NOT NULL AND lon IS NOT NULL ORDER BY name"
     ).fetchall()
@@ -514,92 +524,18 @@ def get_holiday_score(date_str: str) -> tuple[str, int]:
     return ("", 0)
 
 
-# ---------- 种子城市配置 ----------
-
-DEFAULT_SEED_CITIES = [
-    "济南", "大同", "青岛", "烟台", "威海",
-    "杭州", "苏州", "南京", "宁波", "绍兴",
-    "厦门", "福州", "泉州", "霞浦",
-    "西安", "成都", "重庆", "昆明", "大理", "丽江",
-    "桂林", "北海", "涠洲岛",
-    "三亚", "海口", "万宁",
-    "黄山", "宏村", "婺源", "千岛湖",
-    "敦煌", "张掖", "嘉峪关",
-    "拉萨", "林芝",
-]
-
-
-def init_seed_cities():
-    """
-    初始化种子城市列表到 DB。
-
-    同步策略（按环境变量 SEED_CITIES_SYNC 决定）：
-    - "true"：DB 强制与 .env 同步（管理员修改会被覆盖）
-    - "false"（默认）：DB 已有值则保留
-    - DB 为空：始终用 .env 初始化
-    """
-    import os
-    from app.config import SEED_CITIES as ENV_CITIES
-
-    sync = os.getenv("SEED_CITIES_SYNC", "false").lower() in ("true", "1", "yes")
-
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT value FROM seed_config WHERE key='cities'")
-    row = cur.fetchone()
-
-    if row is None:
-        cities = ENV_CITIES or DEFAULT_SEED_CITIES
-        cur.execute(
-            "INSERT INTO seed_config (key, value) VALUES (?, ?)",
-            ("cities", json.dumps(cities, ensure_ascii=False)),
-        )
-        conn.commit()
-        print(f"[seed] 初始化 {len(cities)} 城市（来源：.env）")
-    elif sync and ENV_CITIES and set(ENV_CITIES) != set(json.loads(row["value"])):
-        db_cities = json.loads(row["value"])
-        only_env = set(ENV_CITIES) - set(db_cities)
-        only_db = set(db_cities) - set(ENV_CITIES)
-        cur.execute(
-            "UPDATE seed_config SET value=? WHERE key='cities'",
-            (json.dumps(ENV_CITIES, ensure_ascii=False),),
-        )
-        conn.commit()
-        print(f"[seed] 强制同步 {len(ENV_CITIES)} 城市（来源：.env）")
-        if only_env:
-            print(f"   新增: {sorted(only_env)}")
-        if only_db:
-            print(f"   移除: {sorted(only_db)}")
-    elif ENV_CITIES and set(ENV_CITIES) != set(json.loads(row["value"])):
-        db_cities = json.loads(row["value"])
-        only_env = set(ENV_CITIES) - set(db_cities)
-        only_db = set(db_cities) - set(ENV_CITIES)
-        print(f"[seed] ⚠️  .env 与 DB 不一致（DB 优先）:")
-        if only_env:
-            print(f"   .env 独有: {sorted(only_env)}")
-        if only_db:
-            print(f"   DB 独有:   {sorted(only_db)}")
-        print(f"   同步方法: 设置 SEED_CITIES_SYNC=true 强制覆盖")
-    else:
-        print(f"[seed] 已是最新（{len(ENV_CITIES)} 城市，DB 与 .env 一致）")
-
-def get_seed_cities() -> list[str]:
-    """从 DB 读取当前生效的种子城市列表。"""
-    conn = get_conn()
-    row = conn.execute("SELECT value FROM seed_config WHERE key='cities'").fetchone()
-    if row:
-        return json.loads(row["value"])
-    return DEFAULT_SEED_CITIES
-
-
-def set_seed_cities(cities: list[str]) -> None:
-    """更新种子城市列表（管理员操作）。"""
-    conn = get_conn()
-    conn.execute(
-        "INSERT OR REPLACE INTO seed_config (key, value) VALUES (?, ?)",
-        ("cities", json.dumps(cities, ensure_ascii=False)),
-    )
-    conn.commit()
+def get_all_cities_with_pois(min_pois: int = 3) -> list[str]:
+    """获取所有有至少 N 个 POI 的城市（用于生成/搜索）。"""
+    rows = get_conn().execute("""
+        SELECT g.name, COUNT(a.id) as n
+        FROM geo_cities g
+        JOIN attractions a ON a.city = g.name
+        WHERE g.lat IS NOT NULL
+        GROUP BY g.name
+        HAVING n >= ?
+        ORDER BY n DESC, g.name
+    """, (min_pois,)).fetchall()
+    return [r["name"] for r in rows]
 
 
 def get_city_attractions(city: str, limit: int = 20) -> list[dict]:
@@ -739,7 +675,7 @@ def get_overview_stats() -> dict:
     ).fetchone()[0]
 
     return {
-        "seed_cities": len(get_seed_cities()),
+        "seed_cities": len(get_all_cities()),
         "cached_cities": cities_count,
         "cells_total": cells_total,
         "cells_success": cells_success,

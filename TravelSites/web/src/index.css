@@ -308,7 +308,19 @@ body {
   display: flex;
   align-items: flex-end;
   gap: 8px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
+  animation: slideDown 0.2s ease-out;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .date-field {
@@ -2014,8 +2026,8 @@ body {
   margin-left: 8px;
 }
 
-/* Duration/Style row on HomePage */
-.duration-style-row {
+/* HomePage quick filters */
+.quick-filters-row {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2023,13 +2035,48 @@ body {
   padding: 10px 0;
 }
 
-.date-bar-bottom {
+.date-chip {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 8px 0 0;
-  border-top: 1px solid var(--border);
-  margin-top: 8px;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  margin: 12px 0;
+  padding: 12px 16px;
+  border: 1.5px dashed var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg);
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.date-chip.active {
+  border-color: var(--primary);
+  border-style: solid;
+  background: rgba(8, 145, 178, 0.08);
+  color: var(--primary);
+}
+
+.date-chip-icon {
+  font-size: 16px;
+}
+
+.date-chip-text {
+  flex: 1;
+  text-align: left;
+}
+
+.date-chip-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.date-chip.active .date-chip-hint {
+  color: var(--primary-light);
 }
 
 /* SearchBar inline duration/style */

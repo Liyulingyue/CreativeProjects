@@ -16,9 +16,9 @@ from .models import (
 from .search_models import SearchRequest, SearchResponse, SearchResultItem
 from .refresh import (
     load_matrix_from_cache, refresh_all_cities,
-    get_refresh_state, SEED_CITIES, REFRESH_ENABLED
+    get_refresh_state, REFRESH_ENABLED
 )
-from src.db import get_seed_cities as db_get_seed_cities
+from src.db import get_all_cities, get_all_cities_with_pois
 from src.db import get_attraction_by_name, get_conn
 from .deps import get_current_user, require_user, require_admin
 
@@ -114,7 +114,7 @@ async def health():
     return HealthResponse(
         status="ok",
         refresh_enabled=REFRESH_ENABLED,
-        seed_cities=db_get_seed_cities(),
+        total_cities=len(get_all_cities()),
         cached_cities=stats["cached_cities"],
         cells_total=stats["cells_total"],
         cache_hit_rate=stats["cache_hit_rate"],
@@ -124,7 +124,8 @@ async def health():
 
 @router.get("/cities", response_model=CityListResponse)
 async def list_cities():
-    return CityListResponse(cities=db_get_seed_cities(), count=len(db_get_seed_cities()))
+    cities = get_all_cities()
+    return CityListResponse(cities=cities, count=len(cities))
 
 
 @router.get("/geo/cities")
@@ -162,7 +163,7 @@ async def search_travel_plans(req: SearchRequest, request: Request):
             WHERE g.duration = ? AND g.style = ?
             ORDER BY g.city
         """, (duration, style)).fetchall()
-        conn.close()
+        conn.commit()
 
         items: list[SearchResultItem] = []
         for r in rows:
@@ -311,9 +312,8 @@ async def search_travel_plans(req: SearchRequest, request: Request):
         )
         return item, plan_data
 
-    # ── 获取候选城市 ──
-    from src.db import get_seed_cities as db_get_seed
-    candidate_cities = db_get_seed()
+    # ── 获取候选城市（有 POI 的城市）──
+    candidate_cities = get_all_cities_with_pois(min_pois=3)
 
     # ── 第一步：查缓存 ──
     results: list[SearchResultItem] = []
@@ -400,8 +400,8 @@ async def get_holidays(
 
 @router.get("/cities/{city}", response_model=CityMatrixResponse)
 async def get_city_matrix(city: str):
-    if city not in db_get_seed_cities():
-        raise HTTPException(status_code=404, detail=f"城市 {city} 不在种子列表中")
+    if city not in get_all_cities():
+        raise HTTPException(status_code=404, detail=f"城市 {city} 不在数据库中")
 
     cached = load_matrix_from_cache(city)
     if cached:
@@ -424,7 +424,7 @@ async def trigger_refresh():
 
     import asyncio
     asyncio.create_task(refresh_all_cities())
-    return {"message": "刷新任务已启动", "cities": db_get_seed_cities()}
+    return {"message": "刷新任务已启动", "cities": get_all_cities()}
 
 
 @router.get("/refresh/status", response_model=RefreshStatusResponse)
@@ -566,7 +566,7 @@ async def me(user: dict = Depends(require_user)):
 
 # =================== Admin API ===================
 import os as _os
-from src.db import set_seed_cities, get_overview_stats, get_recent_generations
+from src.db import get_overview_stats, get_recent_generations
 
 
 @router.get("/admin/overview")
@@ -577,27 +577,15 @@ async def admin_overview(_: dict = Depends(require_admin)):
 
 @router.get("/admin/cities")
 async def admin_list_cities(_: dict = Depends(require_admin)):
-    """当前生效的 seed cities 列表。"""
-    from src.db import get_seed_cities
-    return {"cities": get_seed_cities()}
-
-
-@router.put("/admin/cities")
-async def admin_update_cities(payload: dict, _: dict = Depends(require_admin)):
-    """替换 seed cities 列表。body: {"cities": ["北京", "上海", ...]}"""
-    cities = payload.get("cities", [])
-    if not isinstance(cities, list) or not all(isinstance(c, str) for c in cities):
-        raise HTTPException(400, "cities 必须是非空字符串数组")
-    set_seed_cities(cities)
-    return {"message": "已更新", "count": len(cities), "cities": cities}
+    """所有有坐标的城市列表。"""
+    return {"cities": get_all_cities()}
 
 
 @router.post("/admin/cities/{city}/refresh")
 async def admin_refresh_city(city: str, _: dict = Depends(require_admin)):
     """手动触发某城市重新生成。"""
-    from src.db import get_seed_cities
-    if city not in get_seed_cities():
-        raise HTTPException(404, f"城市 {city} 不在 seed 列表中")
+    if city not in get_all_cities():
+        raise HTTPException(404, f"城市 {city} 不在数据库中")
 
     from .refresh import refresh_city
     result = await refresh_city(city)

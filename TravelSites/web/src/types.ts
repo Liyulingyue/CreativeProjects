@@ -27,7 +27,11 @@ export interface CityList {
 export interface Health {
   status: string;
   refresh_enabled: boolean;
-  seed_cities: string[];
+  total_cities?: number;
+  cached_cities?: number;
+  cells_total?: number;
+  cache_hit_rate?: number;
+  date_range?: [string, string];
 }
 
 export interface RefreshStatus {
