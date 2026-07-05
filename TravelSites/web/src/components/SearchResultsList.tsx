@@ -29,15 +29,19 @@ export function SearchResultsList({ results, onItemClick }: Props) {
     );
   }
 
+  const isGuide = results.source === 'guide';
+
   return (
     <div>
       <div className="results-header">
         找到 <strong>{results.total}</strong> 个推荐目的地
+        {isGuide && <span className="source-badge">攻略</span>}
+        {!isGuide && <span className="source-badge source-matrix">实时</span>}
       </div>
 
       {results.items.map((item) => (
         <div
-          key={`${item.city}-${item.start_date}-${item.end_date}`}
+          key={`${item.city}-${item.start_date || ''}-${item.duration_days}`}
           className="result-card"
           onClick={() => onItemClick(item)}
         >
@@ -48,19 +52,29 @@ export function SearchResultsList({ results, onItemClick }: Props) {
                 <span className="result-duration">{item.duration_days}天</span>
               </div>
               <div className="result-meta">
-                <span className="date-range">
-                  {formatDisplayDate(item.start_date)} - {formatDisplayDate(item.end_date)}
-                </span>
-                <span
-                  className="rec-badge"
-                  style={{ background: getScoreColor(item.score) }}
-                >
-                  {item.recommendation}
-                </span>
+                {item.start_date ? (
+                  <span className="date-range">
+                    {formatDisplayDate(item.start_date)} - {formatDisplayDate(item.end_date || '')}
+                  </span>
+                ) : (
+                  <span className="date-range">{item.duration_days}天</span>
+                )}
+                {item.tags && item.tags.length > 0 && (
+                  <span className="city-tags">
+                    {item.tags.slice(0, 3).map((t) => `${t} `)}
+                  </span>
+                )}
+                {item.recommendation && (
+                  <span className="rec-badge" style={{ background: getScoreColor(item.score) }}>
+                    {item.recommendation}
+                  </span>
+                )}
               </div>
-              {item.key_highlights && (
+              {item.blurb ? (
+                <p className="result-highlights">{item.blurb}</p>
+              ) : item.key_highlights ? (
                 <p className="result-highlights">{item.key_highlights}</p>
-              )}
+              ) : null}
             </div>
             <div className="result-score">
               <span className="score-num" style={{ color: getScoreColor(item.score) }}>
