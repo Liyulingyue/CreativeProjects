@@ -96,7 +96,15 @@ class TripPlanner:
             requirements=self.requirements,
         )
 
-    def plan(self, city: str, start_date: str, end_date: str, preset_weather: Optional[list] = None) -> TripPlanResult:
+    def plan(
+        self,
+        city: str,
+        start_date: str,
+        end_date: str,
+        preset_weather: Optional[list] = None,
+        preference_tags: Optional[list[str]] = None,
+        preference_text: Optional[str] = None,
+    ) -> TripPlanResult:
         from datetime import datetime
         start = datetime.strptime(start_date, "%Y-%m-%d")
         end = datetime.strptime(end_date, "%Y-%m-%d")
@@ -139,17 +147,27 @@ class TripPlanner:
 
         weather_section = _format_weather_for_prompt(weather)
 
+        preference_section = ""
+        if preference_tags or preference_text:
+            parts = []
+            if preference_tags:
+                parts.append(f"偏好主题: {', '.join(preference_tags)}")
+            if preference_text:
+                parts.append(f"用户需求: {preference_text}")
+            preference_section = "【用户偏好】\n" + "\n".join(parts) + "\n\n"
+
         if self.lite:
             user_prompt = (
                 f"请为【{start_date}】到【{end_date}】（共 {duration_days} 天）的"
                 f"【{city}】之行做一个简洁的旅行评估。\n\n"
                 f"{weather_section}\n\n"
+                f"{preference_section}"
                 f"【要求】\n"
                 f"1. 给出整体推荐度评分 score (0-100) 和 recommendation\n"
                 f"2. 多日雷暴 → score<50, '建议改期'\n"
                 f"3. 雨天 → score 50-70, '勉强可行' 或 '推荐'\n"
                 f"4. 天气良好 → score 85+, '强烈推荐'\n"
-                f"5. top_attractions 必须包含至少 2 个近郊/周边县城景点\n"
+                f"5. top_attractions 必须包含至少 2 个近郊/周边县城景点，且优先体现用户偏好主题\n"
                 f"6. 输出严格符合指定的 JSON 结构"
             )
         else:
@@ -157,8 +175,9 @@ class TripPlanner:
                 f"请为我在【{start_date}】到【{end_date}】（共 {duration_days} 天）的"
                 f"【{city}】之行规划一份详尽的旅行方案。\n\n"
                 f"{weather_section}\n\n"
+                f"{preference_section}"
                 f"【规划要求】\n"
-                f"1. 景点必须包含 {city} 市中心经典景点与至少 3 个近郊/周边县城的景点\n"
+                f"1. 景点必须包含 {city} 市中心经典景点与至少 3 个近郊/周边县城的景点，且优先体现用户偏好主题\n"
                 f"2. 每天至少给出 2 条主题不同的候选路线\n"
                 f"3. **必须严格根据上面真实天气调整行程**：\n"
                 f"   - 雨天优先安排室内/文化/美食类活动\n"
