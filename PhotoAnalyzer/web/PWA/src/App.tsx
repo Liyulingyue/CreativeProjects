@@ -3,7 +3,6 @@ import {
   analyzeImages,
   exportToJson,
   exportToCsv,
-  type AnalysisResult,
   type AnalyzerConfig,
 } from "./api/photoAnalyzer";
 import {
@@ -102,6 +101,10 @@ export default function App() {
           fileType: file.type,
           data: buffer,
           thumb: dataUrl,
+          addedAt: Date.now(),
+          result: null,
+          analyzedAt: null,
+          failedAt: null,
         };
       })
     );

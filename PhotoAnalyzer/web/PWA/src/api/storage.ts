@@ -17,11 +17,6 @@ export interface RecordEntry {
   failedAt: number | null;
 }
 
-interface SettingsRecord {
-  key: string;
-  value: any;
-}
-
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
@@ -135,6 +130,12 @@ export async function saveRecords(
             ? Date.now()
             : null
           : existing?.analyzedAt || null,
+      failedAt:
+        record.result !== undefined
+          ? record.result
+            ? null
+            : Date.now()
+          : existing?.failedAt || null,
     };
 
     store.put(finalRecord);
