@@ -155,18 +155,6 @@ body {
   position: relative;
 }
 
-.card::before {
-  content: '';
-  position: absolute;
-  top: -6px;
-  left: 20px;
-  right: 20px;
-  height: 12px;
-  background: linear-gradient(135deg, rgba(168, 212, 196, 0.6), rgba(244, 164, 184, 0.6));
-  border-radius: 4px;
-  opacity: 0.7;
-}
-
 .card:nth-child(2) { animation-delay: 0.05s; }
 .card:nth-child(3) { animation-delay: 0.1s; }
 .card:nth-child(4) { animation-delay: 0.15s; }
@@ -1372,6 +1360,135 @@ body {
 .image-detail-nav-btn:disabled {
   opacity: 0.3;
   cursor: not-allowed;
+}
+
+/* History List */
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  background: var(--bg);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-light);
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.history-item:hover {
+  background: var(--border-light);
+}
+
+.history-item:active {
+  transform: scale(0.99);
+}
+
+.history-item.has-error {
+  opacity: 0.85;
+}
+
+.history-thumb {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--border);
+}
+
+.history-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.history-filename {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 4px;
+}
+
+.history-caption {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-score {
+  font-size: 20px;
+  font-weight: 700;
+  background: var(--gradient-primary);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  flex-shrink: 0;
+}
+
+.history-error-badge {
+  font-size: 11px;
+  padding: 3px 10px;
+  background: var(--error);
+  color: white;
+  border-radius: 10px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+/* Analysis Log */
+.log-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.log-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--bg);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+
+.log-success {
+  border-left: 3px solid var(--success);
+}
+
+.log-failed {
+  border-left: 3px solid var(--error);
+}
+
+.log-icon {
+  flex-shrink: 0;
+}
+
+.log-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+
+.log-detail {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 /* About */

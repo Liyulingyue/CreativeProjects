@@ -1,0 +1,9 @@
+services:
+  pwa:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: photo-analyzer-pwa
+    ports:
+      - "16082:80"
+    restart: unless-stopped
