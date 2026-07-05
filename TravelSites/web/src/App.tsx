@@ -104,13 +104,21 @@ export default function App() {
     setTimeout(() => setToast(''), 2400);
   };
 
-  const doSearch = async (startDate: string, endDate: string, preference: string = '', origin: { province: string; city: string; county: string } = { province: '北京市', city: '北京市', county: '朝阳区' }) => {
+  const doSearch = async (input: { startDate?: string; endDate?: string; duration?: number; style?: string; sortBy?: string; preference?: string }, origin?: { province: string; city: string; county: string }) => {
     setSearchLoading(true);
     setSearchError('');
-    setLastSearchParams({ startDate, endDate, preference });
+    if (input.startDate) setLastSearchParams({ startDate: input.startDate, endDate: input.endDate || '', preference: input.preference || '' });
 
     try {
-      const results = await searchTravelPlans(startDate, endDate, preference, origin);
+      const results = await searchTravelPlans({
+        startDate: input.startDate,
+        endDate: input.endDate,
+        duration: input.duration,
+        style: input.style as any,
+        sortBy: input.sortBy,
+        preference: input.preference,
+        origin,
+      });
       setSearchResults(results);
       if (results.total === 0) {
         showToast('未找到匹配的方案');
@@ -126,23 +134,18 @@ export default function App() {
   const handleOriginPicked = (picked: { province: string; city: string; county: string }) => {
     setOrigin(picked);
     if (lastSearchParams) {
-      doSearch(
-        lastSearchParams.startDate,
-        lastSearchParams.endDate,
-        lastSearchParams.preference,
-        picked
-      );
+      doSearch(lastSearchParams, picked);
       showToast(`出发地已更新为 ${picked.county}`);
     }
   };
 
-  const handleSearch = async (startDate: string, endDate: string, origin: { province: string; city: string; county: string }) => {
-    await doSearch(startDate, endDate, '', origin);
+  const handleSearch = async (input: { startDate?: string; endDate?: string; duration?: number; style?: string; sortBy?: string; preference: string }, origin: { province: string; city: string; county: string }) => {
+    await doSearch(input, origin);
     setActiveTab('search');
   };
 
-  const handleFilterApply = async (filters: FilterData) => {
-    await doSearch(filters.startDate, filters.endDate, filters.preference, origin);
+  const handleFilterApply = async (input: { startDate?: string; endDate?: string; duration?: number; style?: string; sortBy?: string; preference: string }) => {
+    await doSearch(input, origin);
     setActiveTab('search');
   };
 
@@ -175,7 +178,7 @@ export default function App() {
       </header>
 
       {activeTab === 'home' && (
-        <HomePage onSearch={handleFilterApply} seedCities={seedCities} />
+        <HomePage onSearch={(input) => handleFilterApply(input)} seedCities={seedCities} />
       )}
 
       {activeTab === 'search' && (

@@ -96,22 +96,32 @@ export async function triggerRefresh(): Promise<{ message: string; cities: strin
   return res.json();
 }
 
-export async function searchTravelPlans(
-  startDate: string,
-  endDate: string,
-  preference: string = '',
-  origin: { province: string; city: string; county: string } = { province: '北京市', city: '北京市', county: '朝阳区' }
-): Promise<SearchResult> {
+interface SearchParams {
+  startDate?: string;
+  endDate?: string;
+  duration?: number;
+  style?: 'standard' | 'family' | 'budget';
+  sortBy?: string;
+  preference?: string;
+  origin?: { province: string; city: string; county: string };
+}
+
+export async function searchTravelPlans(params: SearchParams): Promise<SearchResult> {
+  const body: any = {};
+  if (params.startDate) body.start_date = params.startDate;
+  if (params.endDate) body.end_date = params.endDate;
+  if (params.duration) body.duration = params.duration;
+  if (params.style) body.style = params.style;
+  if (params.sortBy) body.sort_by = params.sortBy;
+  if (params.preference) body.preference = params.preference;
+  const origin = params.origin || { province: '北京市', city: '北京市', county: '朝阳区' };
+  body.origin_province = origin.province;
+  body.origin_city = origin.city;
+  body.origin_county = origin.county;
+
   return request<SearchResult>('/search', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      start_date: startDate,
-      end_date: endDate,
-      preference,
-      origin_province: origin.province,
-      origin_city: origin.city,
-      origin_county: origin.county,
-    }),
+    body: JSON.stringify(body),
   });
 }

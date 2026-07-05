@@ -1991,6 +1991,69 @@ body {
   display: block;
 }
 
+/* Source badges */
+.source-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 10px;
+  margin-left: 8px;
+  vertical-align: middle;
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+}
+.source-badge.source-matrix {
+  background: var(--primary);
+  color: white;
+}
+
+/* City tags in results */
+.city-tags {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-left: 8px;
+}
+
+/* Duration/Style row on HomePage */
+.duration-style-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 0;
+}
+
+.date-bar-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0 0;
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
+}
+
+/* SearchBar inline duration/style */
+.duration-style-row-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  overflow-x: auto;
+}
+
+.duration-style-row-inline .seg-group {
+  flex-shrink: 0;
+}
+
+.date-toggle-btn {
+  background: none;
+  border: none;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 8px;
+  flex-shrink: 0;
+}
+
 /* Loading */
 .loading {
   display: flex;

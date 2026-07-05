@@ -1,15 +1,18 @@
 """
 一次性脚本：用 LLM 批量生成 city_guides（静态攻略表）。
 
-策略：
-  - 每个种子城市 × 1-5 天 × 3 风格 (standard/family/budget)
-  - 输入: 城市特征 + 主要景点
-  - 输出: 详细行程 (餐/交通/预算/无日期)
+自适应并发策略：
+  - 起步并发 1，最大 5
+  - 连续成功 5 次 → 并发 +1
+  - 连续失败 2 次 → 并发 -1
+  - 调用失败 → 指数退避重试（2s → 4s → 8s → 16s → 64s 封顶）
+  - 最大重试 5 次
 
 用法:
   python src/batch_backfill_city_guides.py [--limit N] [--skip N] [--only-style standard]
 """
 import argparse
+import asyncio
 import json
 import sqlite3
 import sys
@@ -18,11 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from openai import RateLimitError, APIStatusError
-from src.config import API_KEY, BASE_URL, MODEL_NAME
-from openai import OpenAI
 from openaijsonwrapper import OpenAIJsonWrapper
-
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 DB_PATH = DATA_DIR / "travelsites.db"
@@ -32,8 +31,16 @@ MIN_POIS_PER_CITY = 3
 DURATIONS = [1, 2, 3, 4, 5]
 STYLES = ["standard", "family", "budget"]
 
-SLEEP_BETWEEN_REQUESTS = 2.0
-SLEEP_ON_LIMIT_RETRY = 60  # 1 分钟（重试 3 次）
+INITIAL_CONCURRENCY = 1
+MAX_CONCURRENCY = 5
+MIN_CONCURRENCY = 1
+
+SUCCESS_STREAK_UP = 5
+FAIL_STREAK_DOWN = 2
+
+INITIAL_BACKOFF = 2.0
+MAX_BACKOFF = 64.0
+MAX_RETRIES = 5
 
 
 def ensure_table():
@@ -53,43 +60,19 @@ def ensure_table():
     conn.close()
 
 
-def get_seed_cities() -> list[str]:
-    """从 seed_config 读取种子城市（标准化为完整地级市名）。"""
+def get_all_cities_with_pois(min_pois: int = 3) -> list[str]:
     conn = sqlite3.connect(str(DB_PATH))
-    rows = conn.execute(
-        "SELECT value FROM seed_config WHERE key='cities'"
-    ).fetchone()
+    rows = conn.execute("""
+        SELECT g.name, COUNT(a.id) as n
+        FROM geo_cities g
+        JOIN attractions a ON a.city = g.name
+        WHERE g.lat IS NOT NULL
+        GROUP BY g.name
+        HAVING n >= ?
+        ORDER BY n DESC, g.name
+    """, (min_pois,)).fetchall()
     conn.close()
-    cities = []
-    if rows:
-        try:
-            cities = json.loads(rows[0])
-        except Exception:
-            cities = []
-
-    # 标准化：seed_config 里可能是 "济南" (无后缀)，
-    # 需匹配 geo_cities 里的 "济南市" (有后缀)。
-    # 策略：先原名匹配，再尝试加后缀。
-    geo_names = {r[0] for r in sqlite3.connect(str(DB_PATH)).execute(
-        "SELECT name FROM geo_cities"
-    )}
-    SUFFIXES = ['市', '自治州', '白族自治州', '地区', '盟']
-
-    normalized = []
-    for c2 in cities:
-        if c2 in geo_names:
-            normalized.append(c2)
-            continue
-        # 尝试加后缀
-        matched = None
-        for s in SUFFIXES:
-            candidate = c2 + s
-            if candidate in geo_names:
-                matched = candidate
-                break
-        if matched:
-            normalized.append(matched)
-    return normalized
+    return [r[0] for r in rows]
 
 
 def get_pois(city: str, limit: int = 20) -> list[tuple]:
@@ -196,7 +179,6 @@ def build_prompt(city: str, duration: int, style: str, features: dict, pois: lis
 
 
 def parse_guide(llm_data: dict) -> dict | None:
-    """校验 LLM 返回的 JSON 格式。"""
     if not isinstance(llm_data, dict):
         return None
     if not isinstance(llm_data.get("daily_plan"), list):
@@ -221,10 +203,16 @@ def write_guide(city: str, duration: int, style: str, guide_data: dict):
     conn.close()
 
 
+MAX_CITY_FAILURES = 3
+
+
 def load_progress() -> dict:
     if PROGRESS_PATH.exists():
-        return json.loads(PROGRESS_PATH.read_text())
-    return {"completed": [], "rate_limit_pauses": 0}
+        p = json.loads(PROGRESS_PATH.read_text())
+        if "city_failures" not in p:
+            p["city_failures"] = {}
+        return p
+    return {"completed": [], "consecutive_ok": 0, "consecutive_fail": 0, "city_failures": {}}
 
 
 def save_progress(p: dict):
@@ -233,17 +221,196 @@ def save_progress(p: dict):
     tmp.replace(PROGRESS_PATH)
 
 
+async def _call_llm(wrapper, prompt: str) -> dict:
+    """带指数退避重试的 LLM 调用。"""
+    for attempt in range(MAX_RETRIES):
+        try:
+            loop = asyncio.get_event_loop()
+            resp = await loop.run_in_executor(None, wrapper.chat, [{"role": "user", "content": prompt}])
+            if not resp.get("error"):
+                return resp
+            msg = str(resp["error"])
+            is_limit = any(k in msg.lower() for k in ["429", "rate limit", "rate_limit", "token", "quota"])
+            if is_limit and attempt < MAX_RETRIES - 1:
+                backoff = min(INITIAL_BACKOFF * (2 ** attempt), MAX_BACKOFF)
+                print(f"  ⚠ rate limit 等 {backoff:.0f}s (attempt {attempt+1}/{MAX_RETRIES})", flush=True)
+                await asyncio.sleep(backoff)
+                continue
+            return resp
+        except Exception as e:
+            if attempt < MAX_RETRIES - 1:
+                backoff = min(INITIAL_BACKOFF * (2 ** attempt), MAX_BACKOFF)
+                print(f"  ⚠ {type(e).__name__} 等 {backoff:.0f}s (attempt {attempt+1}/{MAX_RETRIES})", flush=True)
+                await asyncio.sleep(backoff)
+                continue
+            return {"error": str(e)}
+    return {"error": f"max retries ({MAX_RETRIES}) exceeded"}
+
+
+async def process_task(wrapper, city: str, duration: int, style: str, progress: dict) -> bool:
+    """处理单个任务，返回是否成功。"""
+    features = get_features(city)
+    pois = get_pois(city, limit=20)
+    if len(pois) < MIN_POIS_PER_CITY:
+        return True
+
+    prompt = build_prompt(city, duration, style, features, pois)
+    resp = await _call_llm(wrapper, prompt)
+
+    if resp.get("error"):
+        print(f"✗ {resp['error'][:60]}", flush=True)
+        return False
+
+    data = parse_guide(resp.get("data") or {})
+    if data is None:
+        print(f"✗ parse fail", flush=True)
+        return False
+
+    write_guide(city, duration, style, data)
+    return True
+
+
+class AdaptiveConcurrency:
+    def __init__(self, initial: int = INITIAL_CONCURRENCY, max_c: int = MAX_CONCURRENCY):
+        self.current = initial
+        self.max_c = max_c
+        self.success_streak = 0
+        self.fail_streak = 0
+        self._lock = asyncio.Lock()
+        self._cond = asyncio.Condition(self._lock)
+        self._running = 0
+
+    def record(self, ok: bool):
+        if ok:
+            self.success_streak += 1
+            self.fail_streak = 0
+            if self.success_streak >= SUCCESS_STREAK_UP and self.current < self.max_c:
+                self.current = min(self.current + 1, self.max_c)
+                self.success_streak = 0
+                print(f"\n🚀 并发升到 {self.current}（连续成功 {SUCCESS_STREAK_UP} 次）", flush=True)
+        else:
+            self.fail_streak += 1
+            self.success_streak = 0
+            if self.fail_streak >= FAIL_STREAK_DOWN and self.current > MIN_CONCURRENCY:
+                self.current = max(self.current - 1, MIN_CONCURRENCY)
+                self.fail_streak = 0
+                print(f"\n📉 并发降到 {self.current}（连续失败 {FAIL_STREAK_DOWN} 次）", flush=True)
+
+    async def acquire(self):
+        async with self._cond:
+            while self._running >= self.current:
+                await self._cond.wait()
+            self._running += 1
+
+    async def release(self):
+        async with self._cond:
+            self._running -= 1
+            self._cond.notify_all()
+
+
+async def run_tasks(tasks: list, wrapper, concurrency: AdaptiveConcurrency, progress: dict):
+    completed = set(progress.get("completed", []))
+    total = len(tasks)
+    done = 0
+    success = 0
+    failed = 0
+    t0 = time.time()
+
+    queue = asyncio.Queue()
+    city_failures = progress.get("city_failures", {})
+    for task in tasks:
+        if city_failures.get(task[0], 0) >= MAX_CITY_FAILURES:
+            continue
+        await queue.put(task)
+
+    num_workers = concurrency.max_c
+
+    async def worker(wid: int):
+        nonlocal done, success, failed
+        while True:
+            await concurrency.acquire()
+            task = None
+            try:
+                try:
+                    task = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    await concurrency.release()
+                    break
+            except Exception as e:
+                await concurrency.release()
+                raise
+
+            if task is None:
+                await concurrency.release()
+                continue
+
+            city, duration, style = task
+            key = f"{city}|{duration}|{style}"
+
+            if key in completed:
+                await concurrency.release()
+                continue
+
+            city_failures = progress.get("city_failures", {})
+            if city_failures.get(city, 0) >= MAX_CITY_FAILURES:
+                await concurrency.release()
+                print(f"🚫 {city} 失败{MAX_CITY_FAILURES}次，跳过", flush=True)
+                continue
+
+            print(f"[W{wid}] {city} {duration}d {style}...", end=" ", flush=True)
+            ok = await process_task(wrapper, city, duration, style, progress)
+
+            if ok:
+                concurrency.record(True)
+                completed.add(key)
+                progress["completed"] = list(completed)
+                if city in progress.get("city_failures", {}):
+                    progress["city_failures"][city] = 0
+                save_progress(progress)
+                print("✓", flush=True)
+                success += 1
+            else:
+                concurrency.record(False)
+                city_failures = progress.get("city_failures", {})
+                city_failures[city] = city_failures.get(city, 0) + 1
+                progress["city_failures"] = city_failures
+                if city_failures[city] >= MAX_CITY_FAILURES:
+                    print(f"🚫 {city} 失败{city_failures[city]}次，跳过", flush=True)
+                save_progress(progress)
+                print("✗", flush=True)
+                failed += 1
+
+            await concurrency.release()
+            done += 1
+            if done % 20 == 0:
+                elapsed = time.time() - t0
+                rate = done / elapsed * 3600
+                print(f"\n📊 {done}/{total} ({done*100/total:.0f}%) | 成:{success} 败:{failed} | {rate:.0f}/h | 并发:{concurrency.current}", flush=True)
+
+    workers = [asyncio.create_task(worker(i)) for i in range(num_workers)]
+    await asyncio.gather(*workers)
+
+    elapsed = time.time() - t0
+    print(f"\n=== 完成 ===")
+    print(f"  成功: {success}, 失败: {failed}")
+    print(f"  用时: {elapsed/60:.1f} 分钟")
+    print(f"  速度: {success / elapsed * 3600:.0f} 条/小时")
+    return progress
+
+
 def main(limit: int = 0, skip: int = 0, only_style: str = ""):
+    from src.config import API_KEY, BASE_URL, MODEL_NAME
+    from openai import OpenAI
+
     ensure_table()
-    cities = get_seed_cities()
+    cities = get_all_cities_with_pois(min_pois=3)
     if not cities:
-        print("❌ 没找到种子城市")
+        print("❌ 没找到有 POI 的城市")
         return
 
-    print(f"种子城市: {len(cities)}")
+    print(f"城市: {len(cities)}")
     print(f"每城 × {len(DURATIONS)} 天 × {len(STYLES)} 风格 = {len(cities)*len(DURATIONS)*len(STYLES)} 条")
 
-    # 构建任务列表
     tasks = []
     for city in cities:
         for d in DURATIONS:
@@ -260,7 +427,7 @@ def main(limit: int = 0, skip: int = 0, only_style: str = ""):
     print(f"本次跑: {len(tasks)} 条")
 
     progress = load_progress()
-    completed = set(progress.get("completed", []))
+    print(f"已跳过 {len(progress.get('completed', []))} 条历史完成任务")
 
     client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
     wrapper = OpenAIJsonWrapper(
@@ -285,105 +452,8 @@ def main(limit: int = 0, skip: int = 0, only_style: str = ""):
         requirements=["严格 JSON 输出", "无日期/天气"],
     )
 
-    success = 0
-    failed = 0
-    consecutive_errors = 0
-    t0 = time.time()
-
-    for i, (city, duration, style) in enumerate(tasks):
-        key = f"{city}|{duration}|{style}"
-        if key in completed:
-            continue
-
-        print(f"  [{i+1}/{len(tasks)}] {city} {duration}d {style}...", end=" ", flush=True)
-        try:
-            features = get_features(city)
-            pois = get_pois(city, limit=20)
-            if len(pois) < MIN_POIS_PER_CITY:
-                print("⊘ 跳过 (景点少)")
-                completed.add(key)
-                progress["completed"] = list(completed)
-                save_progress(progress)
-                continue
-
-            prompt = build_prompt(city, duration, style, features, pois)
-            # 限速重试：最多 3 次，指数退避
-            for attempt in range(3):
-                resp = wrapper.chat(messages=[{"role": "user", "content": prompt}])
-                if not resp.get("error"):
-                    break
-                msg = resp["error"]
-                is_limit = "429" in msg or "rate limit" in msg.lower() or "token" in msg.lower()
-                if is_limit and attempt < 2:
-                    wait = SLEEP_ON_LIMIT_RETRY * (2 ** attempt)  # 300, 600, 1200
-                    print(f"⚠ 限速 (第{attempt+1}次)，等 {wait//60}min")
-                    time.sleep(wait)
-                    continue
-                else:
-                    print(f"✗ wrapper: {msg[:50]}")
-                    failed += 1
-                    time.sleep(SLEEP_BETWEEN_REQUESTS)
-                    break
-            else:
-                print(f"✗ 3 次限速都失败，skip")
-                failed += 1
-                time.sleep(SLEEP_BETWEEN_REQUESTS)
-                continue
-
-            if resp.get("error"):
-                continue  # 已经 fail + sleep 过了
-
-            data = parse_guide(resp.get("data") or {})
-            if data is None:
-                print("✗ parse fail")
-                failed += 1
-                time.sleep(SLEEP_BETWEEN_REQUESTS)
-                continue
-
-            write_guide(city, duration, style, data)
-            completed.add(key)
-            progress["completed"] = list(completed)
-            save_progress(progress)
-            print("✓")
-            success += 1
-            consecutive_errors = 0
-
-        except RateLimitError:
-            # 限速 5h 后才重置。重试 3 次后永久跳过
-            count = progress.get("rate_limit_pauses", 0) + 1
-            progress["rate_limit_pauses"] = count
-            progress["last_rate_limit_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-            save_progress(progress)
-
-            # wrapper 内 3 次重试已用完
-            # 5h 重置: 每 30 分钟 wakeup 一次，看是否好了
-            print(f"⚠ 限速 #{count} (task: {city} {duration}d {style})，5h 重置，跳过此任务")
-            print(f"  累计限速 {count} 次；当前 task 标记失败")
-            failed += 1
-            # 不重试，直接跳过
-            time.sleep(SLEEP_BETWEEN_REQUESTS)
-            continue
-        except Exception as e:
-            consecutive_errors += 1
-            print(f"✗ ({type(e).__name__})")
-            failed += 1
-            if consecutive_errors >= 3:
-                print(f"  ⚠ 连续错误，sleep 30s")
-                time.sleep(30)
-                consecutive_errors = 0
-        time.sleep(SLEEP_BETWEEN_REQUESTS)
-
-        if (i + 1) % 20 == 0:
-            print(f"  --- 休息 15s ---")
-            time.sleep(15)
-
-    elapsed = time.time() - t0
-    print()
-    print(f"=== 完成 ===")
-    print(f"  成功: {success}, 失败: {failed}")
-    print(f"  用时: {elapsed/60:.1f} 分钟")
-    if progress.get("rate_limit_pauses"):
-        print(f"  限速暂停: {progress['rate_limit_pauses']} 次")
+    conc = AdaptiveConcurrency(initial=INITIAL_CONCURRENCY, max_c=MAX_CONCURRENCY)
+    asyncio.run(run_tasks(tasks, wrapper, conc, progress))
 
 
 if __name__ == "__main__":

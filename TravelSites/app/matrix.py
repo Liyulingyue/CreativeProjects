@@ -1,6 +1,6 @@
 import asyncio
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Optional
@@ -79,6 +79,62 @@ def _load_checkpoint(path: Path) -> list[MatrixCell]:
         return [MatrixCell(**d) for d in data]
     except Exception:
         return []
+
+
+_ondemand_lock = asyncio.Lock()
+
+
+async def generate_single_cell(
+    city: str,
+    start_date_str: str,
+    end_date_str: str,
+) -> MatrixCell:
+    """为指定城市+日期范围生成单个 matrix cell (on-demand 用在搜索端点)。结果自动写入 SQLite cache。"""
+    from src.planner import TripPlanner
+    planner = TripPlanner(lite=True)
+    loop = asyncio.get_event_loop()
+
+    result = await loop.run_in_executor(None, planner.plan, city, start_date_str, end_date_str)
+
+    import json as _json
+    cell = MatrixCell(
+        start_offset=0,
+        duration=result.duration_days,
+        start_date=start_date_str,
+        end_date=end_date_str,
+        success=result.success,
+        error=result.error,
+    )
+    if result.success and result.data:
+        cell.score = result.data.get("score")
+        cell.recommendation = result.data.get("recommendation")
+        if result.weather_forecast:
+            cell.weather_summary = " | ".join(
+                f"{w['date']} {w['weather_desc']}" for w in result.weather_forecast
+            )
+        cell.full_result = result.to_dict()
+
+    # 回写 SQLite cache
+    async with _ondemand_lock:
+        try:
+            from src.db import get_conn
+            conn = get_conn()
+            full_json = _json.dumps(cell.full_result, ensure_ascii=False) if cell.full_result else None
+            generated_at = datetime.now().isoformat()
+            conn.execute(
+                """INSERT OR REPLACE INTO trip_matrix_cache
+                   (city, start_date, duration, end_date,
+                    score, recommendation, weather_summary, full_result, input_metadata, generated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (city, cell.start_date, cell.duration, cell.end_date,
+                 cell.score, cell.recommendation, cell.weather_summary,
+                 full_json, None, generated_at),
+            )
+            conn.commit()
+        except Exception as e:
+            print(f"[matrix] on-demand cache write failed for {city}: {e}")
+
+    return cell
 
 
 async def plan_matrix(

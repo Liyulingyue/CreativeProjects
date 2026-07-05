@@ -54,33 +54,37 @@ export interface TripPlan {
 }
 
 export interface SearchResult {
+  source: string;        // 'matrix' | 'guide'
   items: SearchResultItem[];
   total: number;
   generated_at: string;
 }
 
 export interface SearchResultItem {
+  source: string;        // 'matrix' | 'guide'
   city: string;
-  start_date: string;
-  end_date: string;
+  start_date?: string;
+  end_date?: string;
   duration_days: number;
   score: number;
   recommendation: string;
-  weather_summary: string;
-  weather_desc: string;
+  weather_summary?: string;
+  weather_desc?: string;
   top_attractions: string[];
   key_highlights: string;
-  score_breakdown: {
+  score_breakdown?: {
     days_match: number;
     weather: number;
     attraction_density: number;
     transport: number;
   };
-  daily_plan: DailyPlan[];
+  daily_plan?: DailyPlan[];
   preference_score?: number;
   distance_km?: number;
   transport_mode?: string;
   transit_hours?: number;
+  blurb?: string;         // guide 用
+  tags?: string[];         // guide 用
 }
 
 export interface DailyPlan {

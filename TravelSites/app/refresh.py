@@ -62,7 +62,7 @@ def save_matrix_to_cache(city: str, cells: list[MatrixCell]) -> None:
             skip_keys.add((c.start_date, c.duration))
             continue
         full_json = json.dumps(c.full_result, ensure_ascii=False) if c.full_result else None
-        meta_json = json.dumps(c.input_metadata, ensure_ascii=False) if c.input_metadata else None
+        meta_json = json.dumps(getattr(c, 'input_metadata', None), ensure_ascii=False) if getattr(c, 'input_metadata', None) else None
         write_rows.append((
             city,
             c.start_date,
