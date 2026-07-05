@@ -1,26 +1,25 @@
-import type { FileEntry } from "../types";
 import type { AnalysisResult } from "./photoAnalyzer";
 
 const DB_NAME = "photo-analyzer-db";
-const DB_VERSION = 1;
-const PHOTOS_STORE = "photos";
-const RESULTS_STORE = "results";
+const DB_VERSION = 2;
+const RECORDS_STORE = "records";
 const SETTINGS_STORE = "settings";
 
-interface PhotoRecord {
+export interface RecordEntry {
   id: string;
-  name: string;
-  type: string;
+  fileName: string;
+  fileType: string;
   data: ArrayBuffer;
   thumb: string;
   addedAt: number;
+  result: AnalysisResult | null;
+  analyzedAt: number | null;
+  failedAt: number | null;
 }
 
-interface ResultRecord {
-  id: string;
-  photoFile: string;
-  result: AnalysisResult;
-  analyzedAt: number;
+interface SettingsRecord {
+  key: string;
+  value: any;
 }
 
 function openDB(): Promise<IDBDatabase> {
@@ -33,117 +32,173 @@ function openDB(): Promise<IDBDatabase> {
     request.onupgradeneeded = (event) => {
       const db = (event.target as IDBOpenDBRequest).result;
 
-      if (!db.objectStoreNames.contains(PHOTOS_STORE)) {
-        const photosStore = db.createObjectStore(PHOTOS_STORE, { keyPath: "id" });
-        photosStore.createIndex("addedAt", "addedAt", { unique: false });
-      }
-
-      if (!db.objectStoreNames.contains(RESULTS_STORE)) {
-        const resultsStore = db.createObjectStore(RESULTS_STORE, { keyPath: "id" });
-        resultsStore.createIndex("photoFile", "photoFile", { unique: false });
-        resultsStore.createIndex("analyzedAt", "analyzedAt", { unique: false });
+      if (!db.objectStoreNames.contains(RECORDS_STORE)) {
+        const store = db.createObjectStore(RECORDS_STORE, { keyPath: "id" });
+        store.createIndex("addedAt", "addedAt", { unique: false });
+        store.createIndex("analyzedAt", "analyzedAt", { unique: false });
       }
 
       if (!db.objectStoreNames.contains(SETTINGS_STORE)) {
         db.createObjectStore(SETTINGS_STORE, { keyPath: "key" });
       }
+
+      if (event.oldVersion < 2) {
+        const stores = Array.from(db.objectStoreNames);
+        if (stores.includes("photos")) db.deleteObjectStore("photos");
+        if (stores.includes("results")) db.deleteObjectStore("results");
+      }
     };
   });
 }
 
-export async function savePhotos(
-  entries: FileEntry[],
-  maxCount: number
+export async function saveRecord(
+  record: Omit<RecordEntry, "addedAt" | "analyzedAt" | "result"> & {
+    result?: AnalysisResult | null;
+  }
 ): Promise<void> {
   const db = await openDB();
+  const tx = db.transaction(RECORDS_STORE, "readwrite");
+  const store = tx.objectStore(RECORDS_STORE);
 
-  const tx = db.transaction(PHOTOS_STORE, "readwrite");
-  const store = tx.objectStore(PHOTOS_STORE);
-
-  const allKeys = await new Promise<string[]>((resolve, reject) => {
-    const request = store.getAllKeys();
-    request.onsuccess = () => resolve(request.result as string[]);
-    request.onerror = () => reject(request.error);
+  const existing = await new Promise<RecordEntry | null>((resolve) => {
+    const req = store.get(record.id);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => resolve(null);
   });
 
-  const existingIds = new Set(entries.map((e) => e.id));
-  const toDelete = allKeys.filter((id) => !existingIds.has(id));
+  const finalRecord: RecordEntry = {
+    id: record.id,
+    fileName: record.fileName,
+    fileType: record.fileType,
+    data: record.data,
+    thumb: record.thumb,
+    addedAt: existing?.addedAt || Date.now(),
+    result: record.result !== undefined ? record.result : existing?.result || null,
+    analyzedAt:
+      record.result !== undefined
+        ? record.result?.success
+          ? Date.now()
+          : null
+        : existing?.analyzedAt || null,
+    failedAt:
+      record.result !== undefined
+        ? record.result?.success
+          ? null
+          : Date.now()
+        : existing?.failedAt || null,
+  };
 
-  for (const id of toDelete) {
-    store.delete(id);
-  }
-
-  for (const entry of entries) {
-    const buffer = await entry.file.arrayBuffer();
-    const record: PhotoRecord = {
-      id: entry.id,
-      name: entry.file.name,
-      type: entry.file.type,
-      data: buffer,
-      thumb: entry.thumb || "",
-      addedAt: Date.now(),
-    };
-    store.put(record);
-  }
+  store.put(finalRecord);
 
   await new Promise<void>((resolve, reject) => {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
 
-  const tx2 = db.transaction(PHOTOS_STORE, "readonly");
-  const store2 = tx2.objectStore(PHOTOS_STORE);
+  db.close();
+}
 
-  const allRecords: PhotoRecord[] = await new Promise((resolve, reject) => {
-    const req = store2.getAll();
+export async function saveRecords(
+  records: Array<{
+    id: string;
+    fileName: string;
+    fileType: string;
+    data: ArrayBuffer;
+    thumb: string;
+    result?: AnalysisResult | null;
+  }>,
+  maxCount: number
+): Promise<void> {
+  const db = await openDB();
+
+  for (const record of records) {
+    const tx = db.transaction(RECORDS_STORE, "readwrite");
+    const store = tx.objectStore(RECORDS_STORE);
+
+    const existing = await new Promise<RecordEntry | null>((resolve) => {
+      const req = store.get(record.id);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    });
+
+    const finalRecord: RecordEntry = {
+      id: record.id,
+      fileName: record.fileName,
+      fileType: record.fileType,
+      data: record.data,
+      thumb: record.thumb,
+      addedAt: existing?.addedAt || Date.now(),
+      result: record.result !== undefined ? record.result : existing?.result || null,
+      analyzedAt:
+        record.result !== undefined
+          ? record.result
+            ? Date.now()
+            : null
+          : existing?.analyzedAt || null,
+    };
+
+    store.put(finalRecord);
+
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  await trimRecords(db, maxCount);
+
+  db.close();
+}
+
+async function trimRecords(db: IDBDatabase, maxCount: number): Promise<void> {
+  const tx = db.transaction(RECORDS_STORE, "readonly");
+  const store = tx.objectStore(RECORDS_STORE);
+
+  const allRecords: RecordEntry[] = await new Promise((resolve, reject) => {
+    const req = store.getAll();
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
 
-  if (allRecords.length > maxCount) {
-    const sorted = allRecords.sort((a, b) => a.addedAt - b.addedAt);
-    const toRemove = sorted.slice(0, sorted.length - maxCount);
+  const analyzed = allRecords.filter((r) => r.analyzedAt);
 
-    const tx3 = db.transaction(PHOTOS_STORE, "readwrite");
-    const store3 = tx3.objectStore(PHOTOS_STORE);
+  if (analyzed.length > maxCount) {
+    const sorted = analyzed.sort((a, b) => (a.analyzedAt || 0) - (b.analyzedAt || 0));
+    const toRemove = sorted.slice(0, analyzed.length - maxCount);
+
+    const tx2 = db.transaction(RECORDS_STORE, "readwrite");
+    const store2 = tx2.objectStore(RECORDS_STORE);
     for (const record of toRemove) {
-      store3.delete(record.id);
+      store2.delete(record.id);
     }
 
     await new Promise<void>((resolve, reject) => {
-      tx3.oncomplete = () => resolve();
-      tx3.onerror = () => reject(tx3.error);
+      tx2.oncomplete = () => resolve();
+      tx2.onerror = () => reject(tx2.error);
     });
   }
-
-  db.close();
 }
 
-export async function loadPhotos(): Promise<FileEntry[]> {
+export async function loadRecords(maxCount: number = 100): Promise<RecordEntry[]> {
   const db = await openDB();
 
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(PHOTOS_STORE, "readonly");
-    const store = tx.objectStore(PHOTOS_STORE);
+    const tx = db.transaction(RECORDS_STORE, "readonly");
+    const store = tx.objectStore(RECORDS_STORE);
     const request = store.getAll();
 
-    request.onsuccess = async () => {
-      const records: PhotoRecord[] = request.result;
-
-      const entries: FileEntry[] = [];
-
-      for (const record of records) {
-        const blob = new Blob([record.data], { type: record.type });
-        const file = new File([blob], record.name, { type: record.type });
-        entries.push({
-          id: record.id,
-          file,
-          thumb: record.thumb,
-        });
-      }
-
+    request.onsuccess = () => {
+      const records: RecordEntry[] = request.result;
+      const sorted = records
+        .sort((a, b) => {
+          if (a.analyzedAt && b.analyzedAt) return b.analyzedAt - a.analyzedAt;
+          if (a.analyzedAt) return -1;
+          if (b.analyzedAt) return 1;
+          return b.addedAt - a.addedAt;
+        })
+        .slice(0, maxCount);
       db.close();
-      resolve(entries);
+      resolve(sorted);
     };
 
     request.onerror = () => {
@@ -153,28 +208,38 @@ export async function loadPhotos(): Promise<FileEntry[]> {
   });
 }
 
-export async function saveResults(
-  results: AnalysisResult[],
-  maxCount: number
-): Promise<void> {
+export async function deleteRecord(id: string): Promise<void> {
   const db = await openDB();
-  const tx = db.transaction(RESULTS_STORE, "readwrite");
-  const store = tx.objectStore(RESULTS_STORE);
+  const tx = db.transaction(RECORDS_STORE, "readwrite");
+  const store = tx.objectStore(RECORDS_STORE);
+  store.delete(id);
 
   await new Promise<void>((resolve, reject) => {
-    const req = store.clear();
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
   });
 
-  for (const result of results.slice(0, maxCount)) {
-    const record: ResultRecord = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-      photoFile: result.file || "",
-      result,
-      analyzedAt: Date.now(),
-    };
-    store.put(record);
+  db.close();
+}
+
+export async function updateRecordResult(
+  id: string,
+  result: AnalysisResult
+): Promise<void> {
+  const db = await openDB();
+  const tx = db.transaction(RECORDS_STORE, "readwrite");
+  const store = tx.objectStore(RECORDS_STORE);
+
+  const existing = await new Promise<RecordEntry | null>((resolve) => {
+    const req = store.get(id);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => resolve(null);
+  });
+
+  if (existing) {
+    existing.result = result;
+    existing.analyzedAt = Date.now();
+    store.put(existing);
   }
 
   await new Promise<void>((resolve, reject) => {
@@ -185,35 +250,48 @@ export async function saveResults(
   db.close();
 }
 
-export async function loadResults(): Promise<AnalysisResult[]> {
+export async function clearAllRecords(): Promise<void> {
   const db = await openDB();
+  const tx = db.transaction(RECORDS_STORE, "readwrite");
+  const store = tx.objectStore(RECORDS_STORE);
+  store.clear();
 
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(RESULTS_STORE, "readonly");
-    const store = tx.objectStore(RESULTS_STORE);
-    const request = store.getAll();
-
-    request.onsuccess = () => {
-      const records: ResultRecord[] = request.result;
-      const results = records
-        .sort((a, b) => b.analyzedAt - a.analyzedAt)
-        .map((r) => r.result);
-      db.close();
-      resolve(results);
-    };
-
-    request.onerror = () => {
-      db.close();
-      reject(request.error);
-    };
+  await new Promise<void>((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
   });
+
+  db.close();
+}
+
+export async function clearAnalyzedRecords(): Promise<void> {
+  const db = await openDB();
+  const tx = db.transaction(RECORDS_STORE, "readwrite");
+  const store = tx.objectStore(RECORDS_STORE);
+
+  const allRecords: RecordEntry[] = await new Promise((resolve, reject) => {
+    const req = store.getAll();
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+
+  for (const record of allRecords) {
+    if (record.analyzedAt) {
+      store.delete(record.id);
+    }
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+
+  db.close();
 }
 
 export async function clearAllData(): Promise<void> {
   const db = await openDB();
-
-  const stores = [PHOTOS_STORE, RESULTS_STORE, SETTINGS_STORE];
-
+  const stores = [RECORDS_STORE, SETTINGS_STORE];
   for (const storeName of stores) {
     const tx = db.transaction(storeName, "readwrite");
     const store = tx.objectStore(storeName);
@@ -223,47 +301,5 @@ export async function clearAllData(): Promise<void> {
       tx.onerror = () => reject(tx.error);
     });
   }
-
   db.close();
-}
-
-export async function getMaxCacheCount(): Promise<number> {
-  const db = await openDB();
-
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(SETTINGS_STORE, "readonly");
-    const store = tx.objectStore(SETTINGS_STORE);
-    const request = store.get("maxCacheCount");
-
-    request.onsuccess = () => {
-      const value = request.result;
-      db.close();
-      resolve(value ? value.value : 10);
-    };
-
-    request.onerror = () => {
-      db.close();
-      reject(request.error);
-    };
-  });
-}
-
-export async function setMaxCacheCount(count: number): Promise<void> {
-  const db = await openDB();
-
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(SETTINGS_STORE, "readwrite");
-    const store = tx.objectStore(SETTINGS_STORE);
-    store.put({ key: "maxCacheCount", value: count });
-
-    tx.oncomplete = () => {
-      db.close();
-      resolve();
-    };
-
-    tx.onerror = () => {
-      db.close();
-      reject(tx.error);
-    };
-  });
 }

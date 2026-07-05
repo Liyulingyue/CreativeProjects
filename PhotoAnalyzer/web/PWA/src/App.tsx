@@ -7,18 +7,19 @@ import {
   type AnalyzerConfig,
 } from "./api/photoAnalyzer";
 import {
-  savePhotos,
-  loadPhotos,
-  saveResults,
-  loadResults,
+  saveRecords,
+  loadRecords,
   clearAllData,
+  clearAnalyzedRecords,
+  deleteRecord,
+  type RecordEntry,
 } from "./api/storage";
 import { BottomNav } from "./components/BottomNav";
 import { Gallery } from "./components/Gallery";
 import { ResultsList } from "./components/ResultsList";
 import { ImageDetail } from "./components/ImageDetail";
 import { Settings } from "./components/Settings";
-import type { TabType, FileEntry } from "./types";
+import type { TabType, AnalysisLog } from "./types";
 
 const DEFAULT_CONFIG: AnalyzerConfig = {
   apiKey: "",
@@ -33,10 +34,10 @@ export default function App() {
     const saved = localStorage.getItem("photo-analyzer-config");
     return saved ? { ...DEFAULT_CONFIG, ...JSON.parse(saved) } : DEFAULT_CONFIG;
   });
-  const [files, setFiles] = useState<FileEntry[]>([]);
-  const [results, setResults] = useState<AnalysisResult[]>([]);
+  const [records, setRecords] = useState<RecordEntry[]>([]);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisLog, setAnalysisLog] = useState<AnalysisLog[]>([]);
   const [activeTab, setActiveTab] = useState<TabType>("images");
   const [detailIndex, setDetailIndex] = useState<number | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">(() => {
@@ -64,13 +65,9 @@ export default function App() {
   useEffect(() => {
     const loadCachedData = async () => {
       try {
-        const cachedPhotos = await loadPhotos();
-        if (cachedPhotos.length > 0) {
-          setFiles(cachedPhotos);
-        }
-        const cachedResults = await loadResults();
-        if (cachedResults.length > 0) {
-          setResults(cachedResults);
+        const cached = await loadRecords(config.maxCacheCount);
+        if (cached.length > 0) {
+          setRecords(cached);
         }
       } catch (e) {
         console.warn("Failed to load cached data:", e);
@@ -90,69 +87,150 @@ export default function App() {
     localStorage.setItem("photo-analyzer-config", JSON.stringify(newConfig));
   };
 
-  const addFiles = async (entries: FileEntry[]) => {
-    setFiles((prev) => {
-      const updated = [...prev, ...entries];
-      savePhotos(updated, config.maxCacheCount).catch(console.warn);
+  const addFiles = async (files: File[]) => {
+    const newRecords = await Promise.all(
+      files.map(async (file) => {
+        const buffer = await file.arrayBuffer();
+        const dataUrl = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (e) => resolve(e.target?.result as string);
+          reader.readAsDataURL(file);
+        });
+        return {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+          fileName: file.name,
+          fileType: file.type,
+          data: buffer,
+          thumb: dataUrl,
+        };
+      })
+    );
+
+    setRecords((prev) => {
+      const updated = [...prev, ...newRecords];
+      saveRecords(newRecords, config.maxCacheCount).catch(console.warn);
       return updated;
     });
-    showToast(`已添加 ${entries.length} 张图片`);
+    showToast(`已添加 ${files.length} 张图片`);
   };
 
   const removeFile = (id: string) => {
-    setFiles((prev) => {
-      const updated = prev.filter((e) => e.id !== id);
-      savePhotos(updated, config.maxCacheCount).catch(console.warn);
-      return updated;
-    });
+    setRecords((prev) => prev.filter((r) => r.id !== id));
+    deleteRecord(id).catch(console.warn);
   };
 
   const clearFiles = () => {
-    setFiles([]);
-    setResults([]);
-    setProgress({ current: 0, total: 0 });
-    savePhotos([], config.maxCacheCount).catch(console.warn);
-    saveResults([], config.maxCacheCount).catch(console.warn);
-    showToast("已清空");
+    setRecords((prev) => {
+      const remaining = prev.filter(
+        (r) => r.analyzedAt || r.failedAt
+      );
+      const removed = prev.filter((r) => !r.analyzedAt && !r.failedAt);
+      removed.forEach((r) => deleteRecord(r.id).catch(console.warn));
+      return remaining;
+    });
+    showToast("已清空待分析");
+  };
+
+  const clearResults = () => {
+    if (!confirm("确定要清空所有分析历史吗？")) return;
+    setRecords((prev) => prev.filter((r) => !r.analyzedAt));
+    clearAnalyzedRecords().catch(console.warn);
+    showToast("已清空分析历史");
   };
 
   const handleAnalyze = async () => {
     if (!config.apiKey) {
-      showToast("请先在「设置」中填写 API Key");
+      showToast("请先在「关于」中填写 API Key");
       setActiveTab("settings");
       return;
     }
-    if (files.length === 0) {
+
+    const pending = records.filter((r) => !r.analyzedAt);
+    if (pending.length === 0) {
       showToast("请先添加图片");
       return;
     }
 
     setIsAnalyzing(true);
-    setResults([]);
-    setProgress({ current: 0, total: files.length });
+    setProgress({ current: 0, total: pending.length });
+    setAnalysisLog([]);
 
-    const analysisResults = await analyzeImages(
-      files.map((f) => f.file),
-      config,
-      (current, total) => setProgress({ current, total })
-    );
+    let successCount = 0;
+    const log: AnalysisLog[] = [];
 
-    setResults(analysisResults);
+    for (let i = 0; i < pending.length; i++) {
+      const record = pending[i];
+      const blob = new Blob([record.data], { type: record.fileType });
+      const file = new File([blob], record.fileName, { type: record.fileType });
+
+      const result = await analyzeImages([file], config);
+      const r = result[0];
+
+      setProgress({ current: i + 1, total: pending.length });
+
+      if (r.success) {
+        successCount++;
+        log.push({
+          fileName: record.fileName,
+          status: "success",
+          score: r.data?.score,
+        });
+      } else {
+        log.push({
+          fileName: record.fileName,
+          status: "failed",
+          error: r.error || "未知错误",
+        });
+        showToast(`❌ ${record.fileName}: ${r.error || "分析失败"}`);
+      }
+
+      const updated = {
+        ...record,
+        result: r,
+        analyzedAt: r.success ? Date.now() : null,
+        failedAt: r.success ? null : Date.now(),
+      };
+
+      setAnalysisLog([...log]);
+
+      setRecords((prev) => {
+        const next = prev.map((rec) => (rec.id === record.id ? updated : rec));
+        const analyzed = next.filter((r) => r.analyzedAt);
+        if (analyzed.length > config.maxCacheCount) {
+          const sorted = analyzed.sort(
+            (a, b) => (a.analyzedAt || 0) - (b.analyzedAt || 0)
+          );
+          const toRemove = sorted
+            .slice(0, analyzed.length - config.maxCacheCount)
+            .map((r) => r.id);
+          return next.filter((r) => !toRemove.includes(r.id));
+        }
+        return next;
+      });
+      saveRecords([updated], config.maxCacheCount).catch(console.warn);
+
+      if (i < pending.length - 1 && config.delay > 0) {
+        await new Promise((res) => setTimeout(res, config.delay));
+      }
+    }
+
     setIsAnalyzing(false);
-    const success = analysisResults.filter((r) => r.success).length;
-    showToast(`分析完成！${success}/${analysisResults.length} 成功`);
+    showToast(`分析完成！${successCount}/${pending.length} 成功`);
     setActiveTab("results");
-    saveResults(analysisResults, config.maxCacheCount).catch(console.warn);
   };
 
   const handleExportJson = () => {
-    if (results.length === 0) return;
+    const analyzed = records.filter((r) => r.result);
+    if (analyzed.length === 0) return;
+    const results = analyzed.map((r) => r.result!);
     exportToJson(results);
     showToast("已导出 JSON");
   };
 
   const handleExportCsv = () => {
-    if (results.length === 0) return;
+    const analyzed = records.filter((r) => r.result);
+    if (analyzed.length === 0) return;
+    const results = analyzed.map((r) => r.result!);
     exportToCsv(results);
     showToast("已导出 CSV");
   };
@@ -161,13 +239,15 @@ export default function App() {
     localStorage.clear();
     await clearAllData();
     setConfig(DEFAULT_CONFIG);
-    setFiles([]);
-    setResults([]);
+    setRecords([]);
     setProgress({ current: 0, total: 0 });
     setTheme("light");
     document.documentElement.setAttribute("data-theme", "light");
     showToast("已清空所有数据");
   };
+
+  const pendingFiles = records.filter((r) => !r.analyzedAt);
+  const analyzedRecords = records.filter((r) => r.analyzedAt && r.result);
 
   return (
     <div className="app">
@@ -192,25 +272,25 @@ export default function App() {
       <main className="app-content">
         {activeTab === "images" && (
           <Gallery
-            files={files}
+            records={pendingFiles}
             onAdd={addFiles}
             onRemove={removeFile}
             onClear={clearFiles}
             onAnalyze={handleAnalyze}
             isAnalyzing={isAnalyzing}
-            hasResults={results.length > 0}
             progress={progress}
+            log={analysisLog}
             disabled={isAnalyzing}
           />
         )}
 
         {activeTab === "results" && (
           <ResultsList
-            results={results}
-            files={files}
+            records={analyzedRecords}
             onSelect={(i) => setDetailIndex(i)}
             onExportJson={handleExportJson}
             onExportCsv={handleExportCsv}
+            onClear={clearResults}
           />
         )}
 
@@ -227,15 +307,14 @@ export default function App() {
         active={activeTab}
         onChange={setActiveTab}
         counts={{
-          images: files.length,
-          results: results.filter((r) => r.success).length,
+          images: pendingFiles.length,
+          results: analyzedRecords.length,
         }}
       />
 
       {detailIndex !== null && (
         <ImageDetail
-          results={results}
-          files={files}
+          records={analyzedRecords}
           initialIndex={detailIndex}
           onClose={() => setDetailIndex(null)}
         />

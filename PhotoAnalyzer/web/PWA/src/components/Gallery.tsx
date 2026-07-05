@@ -1,27 +1,30 @@
 import { useRef, useCallback } from "react";
-import type { FileEntry } from "../types";
+import type { RecordEntry } from "../api/storage";
+import type { AnalysisLog } from "../types";
 
 interface Props {
-  files: FileEntry[];
-  onAdd: (entries: FileEntry[]) => void;
+  records: RecordEntry[];
+  onAdd: (files: File[]) => void;
   onRemove: (id: string) => void;
   onClear: () => void;
   onAnalyze: () => void;
   isAnalyzing: boolean;
-  hasResults: boolean;
   progress: { current: number; total: number };
+  log: AnalysisLog[];
   disabled?: boolean;
 }
 
+const MAX_FILES = 10;
+
 export function Gallery({
-  files,
+  records,
   onAdd,
   onRemove,
   onClear,
   onAnalyze,
   isAnalyzing,
-  hasResults,
   progress,
+  log,
   disabled,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -38,28 +41,19 @@ export function Gallery({
       );
       if (imageFiles.length === 0) return;
 
-      const newEntries: FileEntry[] = imageFiles.map((f) => ({
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-        file: f,
-      }));
+      const available = MAX_FILES - records.length;
+      if (available <= 0) {
+        alert(`最多只能上传 ${MAX_FILES} 张图片`);
+        return;
+      }
+      const toProcess = imageFiles.slice(0, available);
+      if (imageFiles.length > available) {
+        alert(`已限制为 ${available} 张（最多 ${MAX_FILES} 张）`);
+      }
 
-      const thumbPromises = newEntries.map(
-        (entry) =>
-          new Promise<void>((resolve) => {
-            const reader = new FileReader();
-            reader.onload = (e) => {
-              entry.thumb = e.target?.result as string;
-              resolve();
-            };
-            reader.readAsDataURL(entry.file);
-          })
-      );
-
-      Promise.all(thumbPromises).then(() => {
-        onAdd(newEntries);
-      });
+      onAdd(toProcess);
     },
-    [onAdd]
+    [onAdd, records.length]
   );
 
   const handleDrop = useCallback(
@@ -83,6 +77,7 @@ export function Gallery({
   const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
 
   return (
+    <>
     <div className="card">
       <div className="card-header">
         <div className="card-header-icon">📁</div>
@@ -126,10 +121,10 @@ export function Gallery({
         }}
       />
 
-      {files.length > 0 && (
+      {records.length > 0 && (
         <>
           <div className="gallery-toolbar">
-            <span className="gallery-count">共 {files.length} 张</span>
+            <span className="gallery-count">共 {records.length} 张</span>
             <button
               className="btn btn-secondary btn-compact"
               onClick={onClear}
@@ -140,22 +135,28 @@ export function Gallery({
           </div>
 
           <div className="gallery-grid">
-            {files.map((entry) => (
-              <div key={entry.id} className="gallery-item">
-                {entry.thumb ? (
-                  <img src={entry.thumb} alt={entry.file.name} loading="lazy" />
+            {records.map((record) => (
+              <div
+                key={record.id}
+                className={`gallery-item ${record.failedAt ? "has-error" : ""}`}
+              >
+                {record.thumb ? (
+                  <img src={record.thumb} alt={record.fileName} loading="lazy" />
                 ) : (
                   <div className="gallery-placeholder">⏳</div>
                 )}
+                {record.failedAt && (
+                  <div className="gallery-error-badge">失败</div>
+                )}
                 <button
                   className="gallery-remove"
-                  onClick={() => onRemove(entry.id)}
+                  onClick={() => onRemove(record.id)}
                   disabled={disabled}
                   aria-label="删除"
                 >
                   ×
                 </button>
-                <div className="gallery-item-name">{entry.file.name}</div>
+                <div className="gallery-item-name">{record.fileName}</div>
               </div>
             ))}
           </div>
@@ -173,15 +174,43 @@ export function Gallery({
         </div>
       )}
 
-      {files.length > 0 && !showProgress && (
+      {records.length > 0 && !showProgress && (
         <button
           className="btn btn-primary analyze-btn-inline"
           onClick={onAnalyze}
           disabled={disabled || isAnalyzing}
         >
-          ✨ {hasResults ? "重新分析" : "开始分析"}
+          ✨ 分析
         </button>
       )}
     </div>
+
+    {log.length > 0 && (
+      <div className="card">
+        <div className="card-header">
+          <div className="card-header-icon">📋</div>
+          <span>分析日志</span>
+        </div>
+        <div className="log-list">
+          {log.map((item, i) => (
+            <div
+              key={i}
+              className={`log-item ${item.status === "success" ? "log-success" : "log-failed"}`}
+            >
+              <span className="log-icon">
+                {item.status === "success" ? "✅" : "❌"}
+              </span>
+              <span className="log-name">{item.fileName}</span>
+              <span className="log-detail">
+                {item.status === "success"
+                  ? `评分 ${item.score}`
+                  : item.error}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+    )}
+    </>
   );
 }
