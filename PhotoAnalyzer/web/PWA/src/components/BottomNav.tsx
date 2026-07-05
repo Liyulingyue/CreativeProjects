@@ -11,8 +11,8 @@ interface Props {
 
 const TABS: { id: TabType; icon: string; label: string }[] = [
   { id: "images", icon: "✨", label: "分析" },
-  { id: "results", icon: "📊", label: "结果" },
-  { id: "settings", icon: "⚙️", label: "设置" },
+  { id: "results", icon: "📊", label: "最近" },
+  { id: "settings", icon: "ℹ️", label: "关于" },
 ];
 
 export function BottomNav({ active, onChange, counts }: Props) {

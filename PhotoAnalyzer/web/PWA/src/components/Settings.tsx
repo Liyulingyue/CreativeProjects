@@ -98,20 +98,24 @@ export function Settings({ config, onUpdate, onClearCache }: Props) {
       <div className="card">
         <div className="card-header">
           <div className="card-header-icon">ℹ️</div>
-          <span>关于</span>
+          <span>说明</span>
         </div>
         <div className="about-text">
           <div className="about-row">
-            <span>版本</span>
-            <span>v1.0.0</span>
+            <span>定位</span>
+            <span>快捷辅助工具</span>
           </div>
           <div className="about-row">
-            <span>技术栈</span>
-            <span>React + Vite + PWA</span>
+            <span>功能</span>
+            <span>协助判断照片画面质量</span>
           </div>
           <div className="about-row">
-            <span>说明</span>
-            <span>所有数据本地处理</span>
+            <span>隐私</span>
+            <span>图片仅在本地处理，不上传服务器</span>
+          </div>
+          <div className="about-row">
+            <span>API</span>
+            <span>需自备 OpenAI 兼容接口</span>
           </div>
         </div>
       </div>

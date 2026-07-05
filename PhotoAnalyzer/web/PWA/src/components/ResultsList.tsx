@@ -1,28 +1,32 @@
-import type { AnalysisResult } from "../api/photoAnalyzer";
-import type { FileEntry } from "../types";
+import type { RecordEntry } from "../api/storage";
 
 interface Props {
-  results: AnalysisResult[];
-  files: FileEntry[];
+  records: RecordEntry[];
   onSelect: (index: number) => void;
   onExportJson: () => void;
   onExportCsv: () => void;
+  onClear: () => void;
 }
 
-export function ResultsList({ results, files, onSelect, onExportJson, onExportCsv }: Props) {
-  if (results.length === 0) {
+export function ResultsList({ records, onSelect, onExportJson, onExportCsv, onClear }: Props) {
+  if (records.length === 0) {
     return (
       <div className="empty-state">
         <span className="empty-state-icon">📭</span>
         <div>还没有分析结果</div>
         <div style={{ fontSize: 13, marginTop: 8 }}>
-          去「图片」标签上传照片并开始分析
+          去「分析」标签上传照片并开始分析
         </div>
       </div>
     );
   }
 
-  const successCount = results.filter((r) => r.success).length;
+  const successCount = records.filter((r) => r.result?.success).length;
+  const failCount = records.length - successCount;
+
+  const sorted = [...records].sort(
+    (a, b) => (b.analyzedAt || 0) - (a.analyzedAt || 0)
+  );
 
   return (
     <>
@@ -30,7 +34,7 @@ export function ResultsList({ results, files, onSelect, onExportJson, onExportCs
         <div className="results-summary">
           <div className="results-summary-stats">
             <div className="stat">
-              <div className="stat-value">{results.length}</div>
+              <div className="stat-value">{records.length}</div>
               <div className="stat-label">总计</div>
             </div>
             <div className="stat">
@@ -41,7 +45,7 @@ export function ResultsList({ results, files, onSelect, onExportJson, onExportCs
             </div>
             <div className="stat">
               <div className="stat-value" style={{ color: "var(--error)" }}>
-                {results.length - successCount}
+                {failCount}
               </div>
               <div className="stat-label">失败</div>
             </div>
@@ -58,31 +62,39 @@ export function ResultsList({ results, files, onSelect, onExportJson, onExportCs
       </div>
 
       <div className="card">
-        <div className="card-header">
-          <div className="card-header-icon">📷</div>
-          <span>相册视图</span>
+        <div className="card-header" style={{ justifyContent: "space-between" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div className="card-header-icon">📷</div>
+            <span>分析历史</span>
+          </div>
+          <button className="btn btn-secondary btn-compact" onClick={onClear}>
+            🗑️ 清空
+          </button>
         </div>
-        <div className="gallery-grid">
-          {results.map((r, i) => {
-            const thumb = files[i]?.thumb;
-            const score = r.data?.score;
-            const success = r.success;
+        <div className="history-list">
+          {sorted.map((record) => {
+            const score = record.result?.data?.score;
+            const success = record.result?.success;
+            const caption = record.result?.data?.caption;
             return (
               <div
-                key={`${r.file}-${i}`}
-                className={`gallery-item results-grid-item ${!success ? "has-error" : ""}`}
-                onClick={() => onSelect(i)}
+                key={record.id}
+                className={`history-item ${!success ? "has-error" : ""}`}
+                onClick={() => onSelect(records.indexOf(record))}
               >
-                {thumb ? (
-                  <img src={thumb} alt={r.file} loading="lazy" />
+                {record.thumb ? (
+                  <img src={record.thumb} alt={record.fileName} className="history-thumb" />
                 ) : (
-                  <div className="gallery-placeholder">{success ? "⏳" : "⚠️"}</div>
+                  <div className="gallery-placeholder">⏳</div>
                 )}
+                <div className="history-info">
+                  <div className="history-filename">{record.fileName}</div>
+                  <div className="history-caption">{caption || (success ? "分析成功" : record.result?.error || "分析失败")}</div>
+                </div>
                 {score !== undefined && success && (
-                  <div className="gallery-score-badge">{score}</div>
+                  <div className="history-score">{score}</div>
                 )}
-                {!success && <div className="gallery-error-badge">失败</div>}
-                <div className="gallery-item-name">{r.file}</div>
+                {!success && <div className="history-error-badge">失败</div>}
               </div>
             );
           })}

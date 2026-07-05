@@ -13,6 +13,13 @@ def create_app() -> FastAPI:
         version="1.0.0"
     )
     
+    @app.on_event("startup")
+    async def startup_event():
+        from minicoder.core.terminal_manager import terminal_manager
+        session = terminal_manager.get_or_create_session("_startup_check")
+        session.stop()
+        terminal_manager.sessions.pop("_startup_check", None)
+    
     # Add CORS Middleware
     app.add_middleware(
         CORSMiddleware,
