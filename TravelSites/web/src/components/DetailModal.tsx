@@ -113,11 +113,15 @@ export function DetailModal({ item, onClose }: Props) {
       });
     }
 
-    // 拉取节假日洞察
-    fetch(`/api/holidays?start_date=${activeItem.start_date}&end_date=${activeItem.end_date}`)
-      .then((res) => res.json())
-      .then((data) => setHolidayInsight(data))
-      .catch(() => {});
+    // 拉取节假日洞察（仅在有有效日期时）
+    if (activeItem.start_date && activeItem.end_date) {
+      fetch(`/api/holidays?start_date=${activeItem.start_date}&end_date=${activeItem.end_date}`)
+        .then((res) => res.json())
+        .then((data) => setHolidayInsight(data))
+        .catch(() => {});
+    } else {
+      setHolidayInsight(null);
+    }
   }, [activeItem.city, activeItem.start_date, activeItem.end_date]);
 
   return (
