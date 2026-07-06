@@ -26,7 +26,7 @@ const STYLES = [
 
 export function SearchBar({ onSearch, onExpand, onOpenPicker, origin, loading }: Props) {
   const today = new Date();
-  const [withDate, setWithDate] = useState(true);
+  const [withDate, setWithDate] = useState(false);
   const [startDate, setStartDate] = useState(format(addDays(today, 1)));
   const [endDate, setEndDate] = useState(format(addDays(today, 3)));
   const [duration, setDuration] = useState(3);
