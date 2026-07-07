@@ -1,3 +1,4 @@
+import { useState, useMemo } from 'react';
 import type { SearchResult, SearchResultItem } from '../types';
 import { formatDisplayDate } from '../utils/date';
 
@@ -5,6 +6,13 @@ interface Props {
   results: SearchResult;
   onItemClick: (item: SearchResultItem) => void;
 }
+
+const SORT_OPTIONS = [
+  { key: 'score', label: '综合评分' },
+  { key: 'distance', label: '距离最近' },
+  { key: 'weather', label: '天气最优' },
+  { key: 'preference', label: '偏好匹配' },
+];
 
 function getScoreColor(score: number): string {
   if (score >= 85) return '#10B981';
@@ -14,6 +22,26 @@ function getScoreColor(score: number): string {
 }
 
 export function SearchResultsList({ results, onItemClick }: Props) {
+  const [sortBy, setSortBy] = useState('score');
+
+  const sortedItems = useMemo(() => {
+    const items = [...results.items];
+    switch (sortBy) {
+      case 'distance':
+        return items.sort((a, b) => (a.distance_km || 0) - (b.distance_km || 0));
+      case 'weather':
+        return items.sort((a, b) => {
+          const aHasWeather = a.weather_summary ? 1 : 0;
+          const bHasWeather = b.weather_summary ? 1 : 0;
+          return bHasWeather - aHasWeather;
+        });
+      case 'preference':
+        return items.sort((a, b) => (b.preference_score || 0) - (a.preference_score || 0));
+      default:
+        return items.sort((a, b) => b.score - a.score);
+    }
+  }, [results.items, sortBy]);
+
   if (results.total === 0) {
     return (
       <div className="empty-state">
@@ -34,12 +62,28 @@ export function SearchResultsList({ results, onItemClick }: Props) {
   return (
     <div>
       <div className="results-header">
-        找到 <strong>{results.total}</strong> 个推荐目的地
-        {isGuide && <span className="source-badge">攻略</span>}
-        {!isGuide && <span className="source-badge source-matrix">实时</span>}
+        <div className="results-count">
+          找到 <strong>{results.total}</strong> 个推荐目的地
+          {isGuide && <span className="source-badge">攻略</span>}
+          {!isGuide && <span className="source-badge source-matrix">实时</span>}
+        </div>
+        <div className="results-sort">
+          <span className="sort-label">排序：</span>
+          <div className="sort-options">
+            {SORT_OPTIONS.map((opt) => (
+              <button
+                key={opt.key}
+                className={`sort-btn ${sortBy === opt.key ? 'active' : ''}`}
+                onClick={() => setSortBy(opt.key)}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
-      {results.items.map((item) => (
+      {sortedItems.map((item) => (
         <div
           key={`${item.city}-${item.start_date || ''}-${item.duration_days}`}
           className="result-card"
@@ -50,6 +94,9 @@ export function SearchResultsList({ results, onItemClick }: Props) {
               <div className="result-city-line">
                 <span className="city-name">{item.city}</span>
                 <span className="result-duration">{item.duration_days}天</span>
+                {item.distance_km && item.distance_km > 0 && (
+                  <span className="result-distance">{item.distance_km}km</span>
+                )}
               </div>
               <div className="result-meta">
                 {item.start_date ? (

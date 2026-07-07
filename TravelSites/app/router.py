@@ -2,7 +2,7 @@ from datetime import datetime, date, timedelta
 from fastapi import APIRouter, HTTPException, Query, Depends, Header, Request
 from typing import Optional
 
-from src.distance import calc_distance, transport_score
+from src.distance import calc_distance, transport_score, lookup_city_coord
 from src.holidays import get_holiday_impact, list_holidays_in_range, calculate_holiday_insights
 from src.weather import fetch_weather, is_extreme_weather, is_rainy
 from src.cities import lookup_city
@@ -93,6 +93,104 @@ def _weather_score(weather_list: list) -> float:
     return score / len(weather_list)
 
 
+def _calc_attraction_score(highlights: list, tags: list[str], blurb: str) -> float:
+    """
+    景点/吸引力评分 (0-100)。
+    基于高亮景点数量、标签匹配度、简介内容质量。
+    """
+    score = 50.0
+    if highlights:
+        score += min(len(highlights) * 8, 25)
+    if tags:
+        score += min(len(tags) * 5, 15)
+    if blurb and len(blurb) > 50:
+        score += 10
+    return min(score, 100)
+
+
+def calc_dynamic_score(
+    duration_days: int,
+    distance_km: float,
+    weather_list: list,
+    highlights: list,
+    tags: list[str],
+    blurb: str,
+) -> dict:
+    """
+    多维度动态评分系统。
+
+    权重分配:
+      - 天数合理性 (days): 40%
+      - 交通/距离 (transport): 25%
+      - 天气 (weather): 25%
+      - 景点吸引力 (attraction): 10%
+
+    Returns:
+        {
+            "total": int,           # 综合评分 0-100
+            "breakdown": {
+                "days_score": int,    # 天数得分 (0-100)
+                "days_weight": 0.4,
+                "transport_score": int,  # 交通得分 (0-100)
+                "transport_weight": 0.25,
+                "weather_score": int,    # 天气得分 (0-100)
+                "weather_weight": 0.25,
+                "attraction_score": int, # 吸引力得分 (0-100)
+                "attraction_weight": 0.1,
+                "distance_km": float,
+                "transport_hours": float,
+                "transport_mode": str,
+            }
+        }
+    """
+    days_score = 50
+    if 2 <= duration_days <= 4:
+        days_score = 100
+    elif duration_days == 1 or duration_days == 5:
+        days_score = 75
+    elif duration_days > 5:
+        days_score = max(40, 80 - (duration_days - 5) * 10)
+
+    if distance_km > 0:
+        t_score = transport_score(distance_km, duration_days)
+    else:
+        t_score = 50
+
+    w_score = _weather_score(weather_list) if weather_list else 0.5
+    weather_score_val = int(w_score * 100)
+
+    attraction_score_val = int(_calc_attraction_score(highlights, tags, blurb or ""))
+
+    total = int(
+        days_score * 0.40 +
+        t_score * 0.25 +
+        weather_score_val * 0.25 +
+        attraction_score_val * 0.10
+    )
+
+    transit_info = {"transport_mode": "", "transit_hours": 0.0, "distance_km": distance_km}
+    if distance_km > 0:
+        from src.distance import estimate_travel_time
+        transit_info = estimate_travel_time(distance_km)
+
+    return {
+        "total": max(0, min(100, total)),
+        "breakdown": {
+            "days_score": days_score,
+            "days_weight": 0.4,
+            "transport_score": t_score,
+            "transport_weight": 0.25,
+            "weather_score": weather_score_val,
+            "weather_weight": 0.25,
+            "attraction_score": attraction_score_val,
+            "attraction_weight": 0.1,
+            "distance_km": distance_km,
+            "transport_hours": transit_info.get("transit_hours", 0),
+            "transport_mode": transit_info.get("recommended_mode", ""),
+        }
+    }
+
+
 router = APIRouter()
 
 
@@ -147,7 +245,6 @@ async def search_travel_plans(req: SearchRequest, request: Request):
 
     generated_at = datetime.now().isoformat()
 
-    # ── 统一走 city_guides 静态攻略,叠加天气评分 + 偏好排序 ──
     duration = req.duration or 3
     style = req.style or "standard"
 
@@ -163,10 +260,8 @@ async def search_travel_plans(req: SearchRequest, request: Request):
     conn.commit()
 
     items: list[SearchResultItem] = []
-    weather_scores: dict[str, float] = {}
-
-    # 如果提供了日期,为所有城市预取天气预报
     weather_map: dict[str, list] = {}
+
     if req.start_date and req.end_date:
         try:
             start_dt = datetime.strptime(req.start_date, "%Y-%m-%d")
@@ -193,13 +288,10 @@ async def search_travel_plans(req: SearchRequest, request: Request):
                             ]
                         except Exception:
                             pass
-                # 预计算天气评分
-                for city, w_list in weather_map.items():
-                    if w_list:
-                        score = _weather_score(w_list)
-                        weather_scores[city] = score
         except Exception:
             pass
+
+    origin_coord = lookup_city_coord(req.origin_city or "北京市")
 
     for r in rows:
         try:
@@ -214,36 +306,76 @@ async def search_travel_plans(req: SearchRequest, request: Request):
             tags = []
 
         highlights = data.get("highlights", [])
-        w_score = weather_scores.get(r[0], 0.5)  # 无天气数据默认 0.5
-        base_score = int(85 * 0.5 + w_score * 15)  # 基础85,天气占权重50%
+        blurb = r[4] or ""
+
+        distance_km = 0.0
+        if origin_coord:
+            dest_coord = lookup_city_coord(r[0])
+            if dest_coord:
+                from src.distance import haversine_km
+                distance_km = round(haversine_km(origin_coord, dest_coord), 1)
+
+        w_list = weather_map.get(r[0], [])
+        dynamic = calc_dynamic_score(
+            duration_days=r[1],
+            distance_km=distance_km,
+            weather_list=w_list,
+            highlights=highlights,
+            tags=tags,
+            blurb=blurb,
+        )
 
         weather_summary = ""
-        if weather_map.get(r[0]):
+        weather_desc = ""
+        if w_list:
             weather_summary = " | ".join(
-                f"{w['date']} {w['weather_desc']}" for w in weather_map[r[0]]
+                f"{w['date']} {w['weather_desc']}" for w in w_list
             )
+            weather_desc = w_list[0].get("weather_desc", "")
 
-        items.append(SearchResultItem(
+        pref_score = 0.0
+        if req.preference:
+            pref_score = _calc_pref_match(req.preference, tags, blurb or "")
+
+        recommendation = "推荐"
+        if dynamic["total"] >= 80:
+            recommendation = "强烈推荐"
+        elif dynamic["total"] < 50:
+            recommendation = "不建议"
+
+        item = SearchResultItem(
             source="guide",
             city=r[0],
             start_date=req.start_date or "",
             end_date=req.end_date or "",
             duration_days=r[1],
-            score=base_score,
-            recommendation="推荐",
-            key_highlights=(r[4] or "")[:100],
+            score=dynamic["total"],
+            recommendation=recommendation,
+            key_highlights=blurb[:100] if blurb else "",
             top_attractions=(highlights or [])[:5],
-            blurb=(r[4] or "")[:200],
+            blurb=blurb[:200],
             tags=tags,
             weather_summary=weather_summary,
-        ))
+            weather_desc=weather_desc,
+            daily_plan=data.get("daily_plan", []),
+            score_breakdown=dynamic["breakdown"],
+            preference_score=pref_score,
+            distance_km=dynamic["breakdown"]["distance_km"],
+            transport_mode=dynamic["breakdown"]["transport_mode"],
+            transit_hours=dynamic["breakdown"]["transport_hours"],
+        )
+        items.append(item)
 
-    # 叠加偏好排序
-    if req.preference:
-        for item in items:
-            pref_score = _calc_pref_match(req.preference, item.tags, item.blurb or "")
-            item.preference_score = pref_score
-        items.sort(key=lambda x: -(x.score + (x.preference_score or 0) * 20))
+    sort_by = req.sort_by or "score"
+    if sort_by == "weather":
+        items.sort(key=lambda x: (
+            -len(weather_map.get(x.city, [])),
+            -x.distance_km if x.distance_km else 0
+        ))
+    elif sort_by == "preference":
+        items.sort(key=lambda x: -((x.preference_score or 0) * 20 + x.score))
+    elif sort_by == "distance":
+        items.sort(key=lambda x: x.distance_km if x.distance_km else float("inf"))
     else:
         items.sort(key=lambda x: -x.score)
 

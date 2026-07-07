@@ -23,6 +23,80 @@ import { AdminSettingsModal } from './components/AdminSettingsModal';
 
 type TabType = 'home' | 'search' | 'profile';
 
+interface GuideDaySchedule {
+  time: string;
+  spot: string;
+  duration_min: number;
+  note?: string;
+}
+
+interface GuideMeal {
+  place: string;
+  price: number;
+  specialty: string;
+}
+
+interface GuideDailyPlan {
+  day: number;
+  theme: string;
+  schedule: GuideDaySchedule[];
+  meals?: {
+    breakfast?: GuideMeal;
+    lunch?: GuideMeal;
+    dinner?: GuideMeal;
+  };
+  transport?: string;
+  accommodation?: string;
+}
+
+function adaptGuideDailyPlan(guideDays: GuideDailyPlan[]): any[] {
+  return guideDays.map((gd) => {
+    const activities = gd.schedule.map((s) => ({
+      attraction: s.spot,
+      time_slot: s.time,
+      hours: s.duration_min / 60,
+      notes: s.note || '',
+      verified: undefined as undefined,
+    }));
+
+    const extraNotes: string[] = [];
+    if (gd.meals?.breakfast) extraNotes.push(`早: ${gd.meals.breakfast.place} (${gd.meals.breakfast.specialty})`);
+    if (gd.meals?.lunch) extraNotes.push(`午: ${gd.meals.lunch.place} (${gd.meals.lunch.specialty})`);
+    if (gd.meals?.dinner) extraNotes.push(`晚: ${gd.meals.dinner.place} (${gd.meals.dinner.specialty})`);
+    if (gd.transport) extraNotes.push(`交通: ${gd.transport}`);
+    if (gd.accommodation) extraNotes.push(`住宿: ${gd.accommodation}`);
+
+    const combinedNotes = extraNotes.join('\n');
+
+    return {
+      day: gd.day,
+      date: '',
+      theme: gd.theme,
+      weather_hint: '',
+      routes: [
+        {
+          route_id: String(gd.day),
+          tags: [],
+          activities,
+          total_hours: Math.round(gd.schedule.reduce((sum, s) => sum + s.duration_min, 0) / 60 * 10) / 10,
+        },
+        ...(combinedNotes ? [{
+          route_id: `info-${gd.day}`,
+          tags: ['信息'],
+          activities: [{
+            attraction: '行程信息',
+            time_slot: '',
+            hours: 0,
+            notes: combinedNotes,
+            verified: undefined,
+          }],
+          total_hours: 0,
+        }] : []),
+      ],
+    };
+  });
+}
+
 export default function App() {
   const [health, setHealth] = useState<Health | null>(null);
   const [activeTab, setActiveTab] = useState<TabType>('home');
@@ -39,6 +113,16 @@ export default function App() {
   const [origin, setOrigin] = useState({ province: '北京市', city: '北京市', county: '朝阳区' });
   const [showLocationPicker, setShowLocationPicker] = useState(false);
   const [lastSearchParams, setLastSearchParams] = useState<{ startDate: string; endDate: string; preference: string } | null>(null);
+
+  // 当前搜索配置（由 SearchBar 展示，由 FilterModal 更新）
+  const [currentSearch, setCurrentSearch] = useState({
+    withDate: false,
+    duration: 2,
+    style: 'standard',
+    preference: '',
+    startDate: '',
+    endDate: '',
+  });
 
   // 用户态
   const [, setTokenState] = useState<string | null>(() => getToken());
@@ -71,6 +155,15 @@ export default function App() {
 
   const [toast, setToast] = useState('');
 
+  const handleItemClick = (item: SearchResultItem) => {
+    if (item.source === 'guide' && item.daily_plan && item.daily_plan.length > 0) {
+      const adapted = { ...item, daily_plan: adaptGuideDailyPlan(item.daily_plan as any) };
+      setSelectedItem(adapted);
+    } else {
+      setSelectedItem(item);
+    }
+  };
+
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('theme', theme);
@@ -93,6 +186,15 @@ export default function App() {
     }
   }, [activeTab, user]);
 
+  useEffect(() => {
+    if ((activeTab === 'home' || activeTab === 'search') && seedCities.length === 0) {
+      fetch('/api/cities')
+        .then((r) => r.json())
+        .then((d) => setSeedCities(d.cities || []))
+        .catch(() => {});
+    }
+  }, [activeTab, seedCities.length]);
+
   const showToast = (msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(''), 2400);
@@ -107,7 +209,7 @@ export default function App() {
       const results = await searchTravelPlans({
         startDate: input.startDate,
         endDate: input.endDate,
-        duration: input.duration,
+      duration: input.duration ?? 2,
         style: input.style as any,
         sortBy: input.sortBy,
         preference: input.preference,
@@ -139,8 +241,18 @@ export default function App() {
   };
 
   const handleFilterApply = async (input: { startDate?: string; endDate?: string; duration?: number; style?: string; sortBy?: string; preference: string }) => {
+    const withDate = !!(input.startDate && input.endDate);
+    setCurrentSearch({
+      withDate,
+      startDate: input.startDate || '',
+      endDate: input.endDate || '',
+      duration: input.duration ?? 2,
+      style: input.style ?? 'standard',
+      preference: input.preference || '',
+    });
     await doSearch(input, origin);
     setActiveTab('search');
+    setShowFilter(false);
   };
 
   return (
@@ -180,10 +292,11 @@ export default function App() {
           <div className="search-bar-wrapper">
             <SearchBar
               onSearch={handleSearch}
-              onExpand={() => setShowFilter(true)}
+              onOpenFilter={() => setShowFilter(true)}
               onOpenPicker={() => setShowLocationPicker(true)}
               origin={origin}
               loading={searchLoading}
+              currentSearch={currentSearch}
             />
           </div>
           <main className="app-content">
@@ -203,7 +316,7 @@ export default function App() {
             {searchResults && !searchLoading && (
               <SearchResultsList
                 results={searchResults}
-                onItemClick={setSelectedItem}
+                onItemClick={handleItemClick}
               />
             )}
           </main>
@@ -259,6 +372,7 @@ export default function App() {
         <FilterModal
           onClose={() => setShowFilter(false)}
           onApply={handleFilterApply}
+          initialValues={currentSearch}
         />
       )}
 

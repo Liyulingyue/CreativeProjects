@@ -13,6 +13,14 @@ interface SearchInput {
 interface Props {
   onApply: (input: SearchInput) => void;
   onClose: () => void;
+  initialValues?: {
+    withDate: boolean;
+    startDate?: string;
+    endDate?: string;
+    duration?: number;
+    style?: string;
+    preference?: string;
+  };
 }
 
 const QUICK_PREFERENCES = [
@@ -28,19 +36,20 @@ const STYLES = [
 ];
 const SORT_OPTIONS = [
   { key: 'score', label: '综合评分' },
-  { key: 'preference', label: '偏好匹配' },
+  { key: 'distance', label: '距离最近' },
   { key: 'weather', label: '天气最优' },
+  { key: 'preference', label: '偏好匹配' },
 ];
 
-export function FilterModal({ onApply, onClose }: Props) {
+export function FilterModal({ onApply, onClose, initialValues }: Props) {
   const today = new Date();
-  const [withDate, setWithDate] = useState(true);
-  const [startDate, setStartDate] = useState(format(addDays(today, 1)));
-  const [endDate, setEndDate] = useState(format(addDays(today, 3)));
-  const [duration, setDuration] = useState(3);
-  const [style, setStyle] = useState('standard');
+  const [withDate, setWithDate] = useState(initialValues?.withDate ?? false);
+  const [startDate, setStartDate] = useState(initialValues?.startDate || format(addDays(today, 1)));
+  const [endDate, setEndDate] = useState(initialValues?.endDate || format(addDays(today, 3)));
+  const [duration, setDuration] = useState(initialValues?.duration || 2);
+  const [style, setStyle] = useState(initialValues?.style || 'standard');
   const [sortBy, setSortBy] = useState('score');
-  const [preference, setPreference] = useState('');
+  const [preference, setPreference] = useState(initialValues?.preference || '');
   const [selectedChips, setSelectedChips] = useState<string[]>([]);
 
   const quickRanges = [
