@@ -1,8 +1,9 @@
 from datetime import datetime, date, timedelta
+import json
 from fastapi import APIRouter, HTTPException, Query, Depends, Header, Request
 from typing import Optional
 
-from src.distance import calc_distance, transport_score, lookup_city_coord
+from src.distance import calc_distance, transport_score, lookup_city_coord, haversine_km
 from src.holidays import get_holiday_impact, list_holidays_in_range, calculate_holiday_insights
 from src.weather import fetch_weather, is_extreme_weather, is_rainy
 from src.cities import lookup_city
@@ -248,6 +249,16 @@ async def search_travel_plans(req: SearchRequest, request: Request):
     duration = req.duration or 3
     style = req.style or "standard"
 
+    calculated_duration = duration
+    if req.start_date and req.end_date:
+        try:
+            start_dt = datetime.strptime(req.start_date, "%Y-%m-%d")
+            end_dt = datetime.strptime(req.end_date, "%Y-%m-%d")
+            if end_dt >= start_dt:
+                calculated_duration = (end_dt - start_dt).days + 1
+        except Exception:
+            pass
+
     conn = get_conn()
     rows = conn.execute("""
         SELECT g.city, g.duration, g.style, g.guide_json,
@@ -256,115 +267,182 @@ async def search_travel_plans(req: SearchRequest, request: Request):
         LEFT JOIN city_features f ON g.city = f.city
         WHERE g.duration = ? AND g.style = ?
         ORDER BY g.city
-    """, (duration, style)).fetchall()
+    """, (calculated_duration, style)).fetchall()
     conn.commit()
 
     items: list[SearchResultItem] = []
     weather_map: dict[str, list] = {}
+    source = "guide"
+    origin_coord = lookup_city_coord(req.origin_city or "北京市")
 
     if req.start_date and req.end_date:
         try:
             start_dt = datetime.strptime(req.start_date, "%Y-%m-%d")
             end_dt = datetime.strptime(req.end_date, "%Y-%m-%d")
             if end_dt >= start_dt:
-                for r in rows:
-                    city = r[0]
-                    coords = lookup_city(city)
-                    if coords:
-                        lat, lon = coords
+                matrix_rows = conn.execute("""
+                    SELECT city, start_date, end_date, duration, score, recommendation,
+                           weather_summary, full_result
+                    FROM trip_matrix_cache
+                    WHERE start_date = ? AND end_date = ?
+                """, (req.start_date, req.end_date)).fetchall()
+                conn.commit()
+
+                if matrix_rows:
+                    source = "matrix"
+                    for mr in matrix_rows:
                         try:
-                            w_list = fetch_weather(lat, lon, req.start_date, req.end_date)
-                            weather_map[city] = [
-                                {
-                                    "date": w.date,
-                                    "weather_code": w.weather_code,
-                                    "weather_desc": w.weather_desc,
-                                    "temp_max": w.temp_max,
-                                    "temp_min": w.temp_min,
-                                    "precipitation_mm": w.precipitation_mm,
-                                    "precipitation_probability": w.precipitation_probability,
-                                }
-                                for w in w_list
-                            ]
+                            full_result = json.loads(mr[6]) if isinstance(mr[6], str) else mr[6]
                         except Exception:
-                            pass
+                            full_result = {}
+                        highlights = full_result.get("highlights", [])
+                        tags = full_result.get("tags", [])
+                        blurb = full_result.get("city_intro", "") or ""
+
+                        distance_km = 0.0
+                        if origin_coord:
+                            dest_coord = lookup_city_coord(mr[0])
+                            if dest_coord:
+                                distance_km = round(haversine_km(origin_coord, dest_coord), 1)
+
+                        coords = lookup_city(mr[0])
+                        w_list = []
+                        if coords:
+                            try:
+                                w_list = fetch_weather(coords[0], coords[1], req.start_date, req.end_date)
+                                weather_map[mr[0]] = [
+                                    {
+                                        "date": w.date,
+                                        "weather_code": w.weather_code,
+                                        "weather_desc": w.weather_desc,
+                                        "temp_max": w.temp_max,
+                                        "temp_min": w.temp_min,
+                                        "precipitation_mm": w.precipitation_mm,
+                                        "precipitation_probability": w.precipitation_probability,
+                                    }
+                                    for w in w_list
+                                ]
+                            except Exception:
+                                pass
+
+                        dynamic = calc_dynamic_score(
+                            duration_days=mr[3],
+                            distance_km=distance_km,
+                            weather_list=weather_map.get(mr[0], []),
+                            highlights=highlights,
+                            tags=tags,
+                            blurb=blurb,
+                        )
+
+                        weather_summary = ""
+                        weather_desc = ""
+                        if weather_map.get(mr[0]):
+                            weather_summary = " | ".join(
+                                f"{w['date']} {w['weather_desc']}" for w in weather_map[mr[0]]
+                            )
+                            weather_desc = weather_map[mr[0]][0].get("weather_desc", "")
+
+                        recommendation = "推荐"
+                        if dynamic["total"] >= 80:
+                            recommendation = "强烈推荐"
+                        elif dynamic["total"] < 50:
+                            recommendation = "不建议"
+
+                        items.append(SearchResultItem(
+                            source="matrix",
+                            city=mr[0],
+                            start_date=mr[1],
+                            end_date=mr[2],
+                            duration_days=mr[3],
+                            score=dynamic["total"],
+                            recommendation=recommendation,
+                            key_highlights=blurb[:100] if blurb else "",
+                            top_attractions=(highlights or [])[:5],
+                            blurb=blurb[:200],
+                            tags=tags,
+                            weather_summary=weather_summary,
+                            weather_desc=weather_desc,
+                            daily_plan=full_result.get("daily_plan", []),
+                            score_breakdown=dynamic["breakdown"],
+                            distance_km=distance_km,
+                            transport_mode=dynamic["breakdown"]["transport_mode"],
+                            transit_hours=dynamic["breakdown"]["transport_hours"],
+                        ))
         except Exception:
             pass
 
-    origin_coord = lookup_city_coord(req.origin_city or "北京市")
-
-    for r in rows:
-        try:
-            import json as _json
-            data = _json.loads(r[3]) if isinstance(r[3], str) else r[3]
-        except Exception:
-            data = {}
-        tags = []
-        try:
-            tags = _json.loads(r[5]) if r[5] and isinstance(r[5], str) else (r[5] or [])
-        except Exception:
+    if not items:
+        for r in rows:
+            try:
+                import json as _json
+                data = _json.loads(r[3]) if isinstance(r[3], str) else r[3]
+            except Exception:
+                data = {}
             tags = []
+            try:
+                tags = _json.loads(r[5]) if r[5] and isinstance(r[5], str) else (r[5] or [])
+            except Exception:
+                tags = []
 
-        highlights = data.get("highlights", [])
-        blurb = r[4] or ""
+            highlights = data.get("highlights", [])
+            blurb = r[4] or ""
 
-        distance_km = 0.0
-        if origin_coord:
-            dest_coord = lookup_city_coord(r[0])
-            if dest_coord:
-                from src.distance import haversine_km
-                distance_km = round(haversine_km(origin_coord, dest_coord), 1)
+            distance_km = 0.0
+            if origin_coord:
+                dest_coord = lookup_city_coord(r[0])
+                if dest_coord:
+                    distance_km = round(haversine_km(origin_coord, dest_coord), 1)
 
-        w_list = weather_map.get(r[0], [])
-        dynamic = calc_dynamic_score(
-            duration_days=r[1],
-            distance_km=distance_km,
-            weather_list=w_list,
-            highlights=highlights,
-            tags=tags,
-            blurb=blurb,
-        )
-
-        weather_summary = ""
-        weather_desc = ""
-        if w_list:
-            weather_summary = " | ".join(
-                f"{w['date']} {w['weather_desc']}" for w in w_list
+            w_list = weather_map.get(r[0], [])
+            dynamic = calc_dynamic_score(
+                duration_days=r[1],
+                distance_km=distance_km,
+                weather_list=w_list,
+                highlights=highlights,
+                tags=tags,
+                blurb=blurb,
             )
-            weather_desc = w_list[0].get("weather_desc", "")
 
-        pref_score = 0.0
-        if req.preference:
-            pref_score = _calc_pref_match(req.preference, tags, blurb or "")
+            weather_summary = ""
+            weather_desc = ""
+            if w_list:
+                weather_summary = " | ".join(
+                    f"{w['date']} {w['weather_desc']}" for w in w_list
+                )
+                weather_desc = w_list[0].get("weather_desc", "")
 
-        recommendation = "推荐"
-        if dynamic["total"] >= 80:
-            recommendation = "强烈推荐"
-        elif dynamic["total"] < 50:
-            recommendation = "不建议"
+            pref_score = 0.0
+            if req.preference:
+                pref_score = _calc_pref_match(req.preference, tags, blurb or "")
 
-        item = SearchResultItem(
-            source="guide",
-            city=r[0],
-            start_date=req.start_date or "",
-            end_date=req.end_date or "",
-            duration_days=r[1],
-            score=dynamic["total"],
-            recommendation=recommendation,
-            key_highlights=blurb[:100] if blurb else "",
-            top_attractions=(highlights or [])[:5],
-            blurb=blurb[:200],
-            tags=tags,
-            weather_summary=weather_summary,
-            weather_desc=weather_desc,
-            daily_plan=data.get("daily_plan", []),
-            score_breakdown=dynamic["breakdown"],
-            preference_score=pref_score,
-            distance_km=dynamic["breakdown"]["distance_km"],
-            transport_mode=dynamic["breakdown"]["transport_mode"],
-            transit_hours=dynamic["breakdown"]["transport_hours"],
-        )
-        items.append(item)
+            recommendation = "推荐"
+            if dynamic["total"] >= 80:
+                recommendation = "强烈推荐"
+            elif dynamic["total"] < 50:
+                recommendation = "不建议"
+
+            item = SearchResultItem(
+                source="guide",
+                city=r[0],
+                start_date=req.start_date or "",
+                end_date=req.end_date or "",
+                duration_days=r[1],
+                score=dynamic["total"],
+                recommendation=recommendation,
+                key_highlights=blurb[:100] if blurb else "",
+                top_attractions=(highlights or [])[:5],
+                blurb=blurb[:200],
+                tags=tags,
+                weather_summary=weather_summary,
+                weather_desc=weather_desc,
+                daily_plan=data.get("daily_plan", []),
+                score_breakdown=dynamic["breakdown"],
+                preference_score=pref_score,
+                distance_km=dynamic["breakdown"]["distance_km"],
+                transport_mode=dynamic["breakdown"]["transport_mode"],
+                transit_hours=dynamic["breakdown"]["transport_hours"],
+            )
+            items.append(item)
 
     sort_by = req.sort_by or "score"
     if sort_by == "weather":
@@ -380,7 +458,7 @@ async def search_travel_plans(req: SearchRequest, request: Request):
         items.sort(key=lambda x: -x.score)
 
     return SearchResponse(
-        source="guide",
+        source=source,
         items=items,
         total=len(items),
         generated_at=generated_at,
