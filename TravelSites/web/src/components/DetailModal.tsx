@@ -293,10 +293,10 @@ export function DetailModal({ item, onClose }: Props) {
                   {day.routes && day.routes.map((route: any) => (
                     <div key={route.route_id} className="route-section">
                       <div className="route-tags">
-                        {route.tags && route.tags.map((tag: string) => (
+                        {route.tags && route.tags.filter((tag: string) => tag !== '信息').map((tag: string) => (
                           <span key={tag} className="route-tag">{tag}</span>
                         ))}
-                        {route.total_hours && (
+                        {route.total_hours > 0 && (
                           <span className="route-hours">⏱️ {route.total_hours}h</span>
                         )}
                       </div>
@@ -316,7 +316,11 @@ export function DetailModal({ item, onClose }: Props) {
                                   <span className="unverified-badge" title="AI 推荐">~</span>
                                 )}
                               </span>
-                              <span className="activity-meta">{act.time_slot} · {act.hours}h</span>
+                              <span className="activity-meta">
+                                {act.time_slot && `${act.time_slot}`}
+                                {act.time_slot && act.hours > 0 && ' · '}
+                                {act.hours > 0 && `${act.hours}h`}
+                              </span>
                               {act.notes && <p className="activity-notes">{act.notes}</p>}
                             </div>
                           </div>

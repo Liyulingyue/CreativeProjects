@@ -1,6 +1,5 @@
 import { useState, useMemo } from 'react';
 import type { SearchResult, SearchResultItem } from '../types';
-import { formatDisplayDate } from '../utils/date';
 
 interface Props {
   results: SearchResult;
@@ -99,13 +98,7 @@ export function SearchResultsList({ results, onItemClick }: Props) {
                 )}
               </div>
               <div className="result-meta">
-                {item.start_date ? (
-                  <span className="date-range">
-                    {formatDisplayDate(item.start_date)} - {formatDisplayDate(item.end_date || '')}
-                  </span>
-                ) : (
-                  <span className="date-range">{item.duration_days}天</span>
-                )}
+                <span className="date-range">{item.duration_days}天</span>
                 {item.tags && item.tags.length > 0 && (
                   <span className="city-tags">
                     {item.tags.slice(0, 3).map((t) => `${t} `)}
