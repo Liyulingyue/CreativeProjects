@@ -10,6 +10,7 @@ output/
 # Runtime data
 data/learned_cities.json
 data/travelsites.db
+travelsites.db
 data/travelsites.db-journal
 
 # Matrix cache directory（用于 LLM 长任务的断点续跑，临时文件）
