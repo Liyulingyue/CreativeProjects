@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -15,6 +15,8 @@ from pydantic import BaseModel
 
 from . import config
 from . import data_loader
+from . import geo
+from . import photo
 from . import planner
 from .models import (
     PlanRequest,
@@ -229,6 +231,52 @@ def get_checkins(session_id: str):
         "checkins": items,
         "completion_rate": round(len(items) / total, 3) if total else 0,
     }
+
+
+# ---------------------------------------------------------------------------
+# Geo: nearest venue
+# ---------------------------------------------------------------------------
+
+@app.get("/api/nearest")
+def nearest(lat: float, lon: float, top_k: int = 3):
+    """Find top-k nearest venues to (lat, lon)."""
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        raise HTTPException(status_code=400, detail="invalid lat/lon")
+    results = geo.find_nearest_venues(lat, lon, top_k=top_k)
+    in_park = geo.is_within_park(lat, lon)
+    return {
+        "lat": lat,
+        "lon": lon,
+        "in_park_estimate": in_park,
+        "bbox": geo.bbox(),
+        "results": results,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Photo evaluation (合照彩蛋)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/photo-evaluate")
+async def photo_evaluate(file: UploadFile = File(...)):
+    """Upload a photo, get a fun evaluation + auto-checkin."""
+    contents = await file.read()
+    if len(contents) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="file too large (max 8MB)")
+    suffix = Path(file.filename or "photo.jpg").suffix.lower()
+    if suffix not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+        suffix = ".jpg"
+    path = photo.save_photo(contents, suffix)
+    result = photo.evaluate_photo(path)
+    return result
+
+
+@app.get("/api/photo-evaluate/{eval_id}")
+def get_photo_eval(eval_id: str):
+    e = photo.get_evaluation(eval_id)
+    if not e:
+        raise HTTPException(status_code=404, detail="evaluation not found")
+    return e
 
 
 # ---------------------------------------------------------------------------

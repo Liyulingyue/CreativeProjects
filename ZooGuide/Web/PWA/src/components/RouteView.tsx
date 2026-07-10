@@ -1,7 +1,8 @@
 import { useState } from 'react'
-import type { Route, RouteStop, UserPreference } from '../types'
+import type { NearestResponse, Route, RouteStop, UserPreference } from '../types'
 import { api } from '../api/client'
 import { ReplanDialog } from './ReplanDialog'
+import { PhotoEvalDialog } from './PhotoEvalDialog'
 import { loadVisited, saveVisited } from '../lib/storage'
 
 interface Props {
@@ -14,7 +15,11 @@ interface Props {
 export function RouteView({ route, prefs, onRouteUpdate, onReset }: Props) {
   const [visited, setVisited] = useState<Set<string>>(loadVisited())
   const [replanOpen, setReplanOpen] = useState(false)
+  const [photoOpen, setPhotoOpen] = useState(false)
   const [currentStopIdx, setCurrentStopIdx] = useState(0)
+  const [nearest, setNearest] = useState<NearestResponse | null>(null)
+  const [locating, setLocating] = useState(false)
+  const [locationError, setLocationError] = useState<string | null>(null)
 
   function toggleVisited(venueId: string) {
     const next = new Set(visited)
@@ -29,13 +34,63 @@ export function RouteView({ route, prefs, onRouteUpdate, onReset }: Props) {
     setReplanOpen(false)
   }
 
-  // Calculate elapsed minutes from current position
+  function pickVenueFromExternal(venueId: string) {
+    const idx = route.stops.findIndex((s) => s.venue_id === venueId)
+    if (idx >= 0) {
+      setCurrentStopIdx(idx)
+      // Scroll into view
+      setTimeout(() => {
+        const el = document.getElementById(`stop-${idx}`)
+        el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }, 100)
+    }
+  }
+
   function elapsedFor(idx: number): number {
     let total = 0
     for (let i = 0; i < idx && i < route.stops.length; i++) {
       total += route.stops[i].visit_minutes + route.stops[i].walk_to_next_minutes
     }
     return total
+  }
+
+  function locate() {
+    setLocating(true)
+    setLocationError(null)
+    if (!navigator.geolocation) {
+      setLocationError('浏览器不支持定位')
+      setLocating(false)
+      return
+    }
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        try {
+          const r = await api.nearest(pos.coords.latitude, pos.coords.longitude, 3)
+          setNearest(r)
+          // If top result is a route stop, jump to it
+          const top = r.results[0]
+          if (top) {
+            const idx = route.stops.findIndex((s) => s.venue_id === top.id)
+            if (idx >= 0) {
+              setCurrentStopIdx(idx)
+              setTimeout(() => {
+                const el = document.getElementById(`stop-${idx}`)
+                el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+              }, 100)
+            }
+          }
+        } catch (e) {
+          setLocationError(e instanceof Error ? e.message : '查询失败')
+        } finally {
+          setLocating(false)
+        }
+      },
+      (err) => {
+        setLocationError(`定位失败：${err.message}`)
+        setLocating(false)
+      },
+      { enableHighAccuracy: true, timeout: 10000 },
+    )
   }
 
   return (
@@ -76,18 +131,66 @@ export function RouteView({ route, prefs, onRouteUpdate, onReset }: Props) {
         </div>
       )}
 
+      {/* Location-based "我在这里" */}
+      <div className="card" style={{ background: '#fff' }}>
+        <h3 className="card-title">📍 我在哪里？</h3>
+        <button
+          className="btn btn-primary btn-full"
+          onClick={locate}
+          disabled={locating}
+        >
+          {locating ? '定位中…' : '🛰️ 自动定位当前位置'}
+        </button>
+        {locationError && (
+          <div className="error-banner" style={{ marginTop: 10, fontSize: 12 }}>
+            {locationError}
+          </div>
+        )}
+        {nearest && (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginBottom: 6 }}>
+              {nearest.in_park_estimate ? '✅ 看起来在园区内' : '⚠️ 定位可能在园区外'}
+              {' · '}坐标 ({nearest.lat.toFixed(4)}, {nearest.lon.toFixed(4)})
+            </div>
+            {nearest.results.map((r, i) => (
+              <button
+                key={r.id}
+                className="nearest-row"
+                onClick={() => pickVenueFromExternal(r.id)}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div className="nearest-rank">{i + 1}</div>
+                  <div style={{ flex: 1, textAlign: 'left' }}>
+                    <div className="nearest-name">{r.name}</div>
+                    <div className="nearest-meta">
+                      {r.area} · {r.animals.slice(0, 2).join('、')}
+                    </div>
+                  </div>
+                  <div className="nearest-dist">
+                    {r.distance_m >= 1000
+                      ? `${(r.distance_m / 1000).toFixed(1)}km`
+                      : `${Math.round(r.distance_m)}m`}
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
       <div className="section-title">📍 路线安排</div>
       {route.stops.map((stop, idx) => (
-        <StopCard
-          key={`${stop.venue_id}-${idx}`}
-          stop={stop}
-          index={idx}
-          isLast={idx === route.stops.length - 1}
-          isVisited={visited.has(stop.venue_id)}
-          onToggleVisited={() => toggleVisited(stop.venue_id)}
-          onMarkCurrent={() => setCurrentStopIdx(idx)}
-          isCurrent={idx === currentStopIdx}
-        />
+        <div key={`${stop.venue_id}-${idx}`} id={`stop-${idx}`}>
+          <StopCard
+            stop={stop}
+            index={idx}
+            isLast={idx === route.stops.length - 1}
+            isVisited={visited.has(stop.venue_id)}
+            onToggleVisited={() => toggleVisited(stop.venue_id)}
+            onMarkCurrent={() => setCurrentStopIdx(idx)}
+            isCurrent={idx === currentStopIdx}
+          />
+        </div>
       ))}
 
       {route.warnings && route.warnings.length > 0 && (
@@ -105,8 +208,11 @@ export function RouteView({ route, prefs, onRouteUpdate, onReset }: Props) {
         <button className="btn btn-outline" onClick={onReset}>
           🔄 重新规划
         </button>
+        <button className="btn btn-ghost" onClick={() => setPhotoOpen(true)}>
+          📸 出片
+        </button>
         <button className="btn btn-primary" onClick={() => setReplanOpen(true)}>
-          ✨ 动态调整
+          ✨ 调整
         </button>
       </div>
 
@@ -119,6 +225,10 @@ export function RouteView({ route, prefs, onRouteUpdate, onReset }: Props) {
           onClose={() => setReplanOpen(false)}
           onApplied={applyReplan}
         />
+      )}
+
+      {photoOpen && (
+        <PhotoEvalDialog onClose={() => setPhotoOpen(false)} onPickVenue={pickVenueFromExternal} />
       )}
     </div>
   )

@@ -1,6 +1,8 @@
 import type {
   CheckinResponse,
   Meta,
+  NearestResponse,
+  PhotoEvaluation,
   QuizOptions,
   Route,
   UserPreference,
@@ -57,4 +59,19 @@ export const api = {
     request<{ session_id: string; checkins: any[]; completion_rate: number }>(
       `/api/checkin/${session_id}`,
     ),
+  nearest: (lat: number, lon: number, top_k = 3) =>
+    request<NearestResponse>(`/api/nearest?lat=${lat}&lon=${lon}&top_k=${top_k}`),
+  evaluatePhoto: async (file: File | Blob, filename = 'photo.jpg') => {
+    const form = new FormData()
+    form.append('file', file, filename)
+    const res = await fetch(`${BASE}/api/photo-evaluate`, {
+      method: 'POST',
+      body: form,
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      throw new Error(body.detail || `HTTP ${res.status}`)
+    }
+    return res.json() as Promise<PhotoEvaluation>
+  },
 }
