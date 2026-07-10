@@ -43,6 +43,7 @@ export function Questionnaire({ onComplete, initial }: Props) {
         animal_interests,
         entry_gate,
         start_time,
+        fast: false,
       }
       savePrefs(prefs)
       onComplete(prefs)

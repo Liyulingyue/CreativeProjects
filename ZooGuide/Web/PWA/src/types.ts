@@ -22,6 +22,7 @@ export interface UserPreference {
   animal_interests: InterestTag[]
   entry_gate: Gate
   start_time: string
+  fast?: boolean
 }
 
 export interface RouteStop {

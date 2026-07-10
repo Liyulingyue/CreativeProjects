@@ -34,6 +34,7 @@ class UserPreference(BaseModel):
     dynamic_feedback: Optional[str] = None
     current_venue_id: Optional[str] = None
     elapsed_minutes: int = 0
+    fast: bool = False  # if true, skip LLM, use rule engine only
 
 
 class PlanRequest(UserPreference):
