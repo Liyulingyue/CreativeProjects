@@ -37,49 +37,48 @@ def _party_style_guide(party_type: str, with_kids: bool, kids_age: Optional[int]
 
 def _build_user_prompt_plan(prefs: PlanRequest, candidates: list[dict], walking_matrix: dict) -> str:
     style = _party_style_guide(prefs.party_type, prefs.with_kids, prefs.kids_age)
+    # Only send top N candidates to LLM to keep prompt small
+    top_n = min(6, len(candidates))
+    top_candidates = candidates[:top_n]
     cand_brief = [
         {
             "id": c["id"],
             "name": c["name"],
-            "area": c["area"],
-            "animals": c.get("animals", []),
-            "tags": c.get("tags", []),
-            "themes": c.get("themes", []),
-            "recommended_visit_minutes": c.get("recommended_visit_minutes", 20),
+            "animals": c.get("animals", [])[:3],
+            "tags": [t for t in c.get("tags", []) if t in ("明星动物", "亲子", "网红", "2025新馆", "恒温", "有遮阴")],
+            "themes": c.get("themes", [])[:2],
+            "minutes": c.get("recommended_visit_minutes", 20),
             "shaded": c.get("shaded", False),
-            "rest_spots": c.get("rest_spots", False),
-            "must_see": c.get("must_see", False),
-            "kid_friendly": c.get("kid_friendly", 0),
-            "photo_op": c.get("photo_op", 0),
-            "score_hint": c.get("_score", 0),
+            "rest": c.get("rest_spots", False),
+            "must": c.get("must_see", False),
         }
-        for c in candidates
+        for c in top_candidates
     ]
 
-    return f"""【游客画像】
-- 同行方式：{prefs.party_type}{'，带娃' if prefs.with_kids else ''}{f'，孩子 {prefs.kids_age} 岁' if prefs.with_kids and prefs.kids_age else ''}
-- 讲解风格：{style}
-- 体力：{prefs.stamina}/5（1=很弱，5=暴走）
-- 防晒需求：{prefs.sun_tolerance}/5（5=完全不怕晒）
-- 是否接受爬山：{'是' if prefs.willing_to_hike else '否'}
-- 动物兴趣：{', '.join(prefs.animal_interests) if prefs.animal_interests else '无特别偏好'}
-- 入园门：{prefs.entry_gate}
-- 入园时间：{prefs.start_time}
-- 可用时间：{prefs.available_hours} 小时（共 {int(prefs.available_hours * 60)} 分钟）
-- 最大可参观场馆数（规则引擎建议）：{max_stops_by_time(prefs.available_hours)}
+    # Truncate walking matrix to only top candidates
+    top_ids = {c["id"] for c in top_candidates}
+    matrix_trimmed = {
+        a: {b: v for b, v in row.items() if b in top_ids}
+        for a, row in walking_matrix.items()
+        if a in top_ids
+    }
 
-【候选场馆】共 {len(candidates)} 个（按规则引擎分数排序，分数越高越推荐）
-{json.dumps(cand_brief, ensure_ascii=False, indent=2)}
+    return f"""游客：{prefs.party_type}{'带娃'+str(prefs.kids_age)+'岁' if prefs.with_kids else ''} | 体力{prefs.stamina}/5 | 防晒{prefs.sun_tolerance}/5 | 爬山={prefs.willing_to_hike} | 兴趣={','.join(prefs.animal_interests) or '无'} | 门={prefs.entry_gate} | {prefs.start_time}起 | 总{prefs.available_hours}h
 
-【步行矩阵】单位：分钟。从 A 到 B 直接键查 A->B。
-{json.dumps(walking_matrix, ensure_ascii=False, indent=2)}
+风格：{style}
 
-请基于以上信息输出 JSON 路线。再次强调：
-- 总时长（含步行）不超过 {int(prefs.available_hours * 60)} 分钟
-- stops 数量控制在 3-8 个
-- 必看场馆优先保留
-- 同一场馆对带娃家长 vs 年轻人讲解风格要不同
-- 输出必须严格符合 target_structure
+候选场馆({len(top_candidates)})：
+{json.dumps(cand_brief, ensure_ascii=False)}
+
+步行矩阵(分钟)：
+{json.dumps(matrix_trimmed, ensure_ascii=False)}
+
+要求：
+- 总时长（含步行）≤ {int(prefs.available_hours * 60)} 分钟
+- stops 3-{min(8, top_n)} 个，按 id 选
+- 必看场馆优先
+- narration 50-100 字
+- 输出符合 target_structure 的 JSON
 """
 
 
@@ -360,6 +359,7 @@ def plan_route(prefs: PlanRequest) -> tuple[Route, bool]:
             target_structure=prompts.PLAN_TARGET_STRUCTURE,
             background=prompts.SYSTEM_BACKGROUND,
             requirements=prompts.PLAN_REQUIREMENTS,
+            overall_timeout=180.0,
         )
         if not result.get("error") and result.get("data"):
             try:
@@ -412,6 +412,7 @@ def replan_route(
             target_structure=prompts.REPLAN_TARGET_STRUCTURE,
             background=prompts.SYSTEM_BACKGROUND,
             requirements=prompts.REPLAN_REQUIREMENTS,
+            overall_timeout=60.0,
         )
         if not result.get("error") and result.get("data"):
             try:
