@@ -151,13 +151,78 @@ def main() -> int:
             r = c.get(f"{BASE}/api/me/summary")
             failures += check("me/summary requires auth", r.status_code == 401)
 
-        # 16. chat: rule-based fast path
+        # 16. chat: rule-based fast path (rest)
         r = c.post(f"{BASE}/api/chat", json={"message": "孩子累了想休息"})
         d_chat = r.json()
         failures += check(
-            "chat rule-based",
+            "chat rule-based rest",
             r.status_code == 200 and d_chat.get("extracted_constraint", {}).get("type") == "rest_now",
             f"reply='{d_chat.get('reply', '')[:30]}'",
+        )
+
+        # 16b. chat: entity recognition
+        r = c.post(f"{BASE}/api/chat", json={"message": "加上考拉馆"})
+        d_chat = r.json()
+        failures += check(
+            "chat entity add_venue",
+            r.status_code == 200 and d_chat.get("extracted_constraint", {}).get("venue_id") == "koala",
+            f"venue={d_chat.get('extracted_constraint', {}).get('venue_name', '?')}",
+        )
+
+        # 16c. chat: skip venue + replan
+        r = c.post(
+            f"{BASE}/api/chat",
+            json={
+                "message": "跳过老虎",
+                "current_route": {
+                    "id": "r_test",
+                    "summary": "",
+                    "total_minutes": 60,
+                    "total_walk_minutes": 5,
+                    "stops": [
+                        {"venue_id": "panda", "venue_name": "大熊猫馆", "arrive_time": "09:00", "leave_time": "09:30", "visit_minutes": 30, "walk_to_next_minutes": 3, "narration": "", "tips": [], "rest_here": False},
+                        {"venue_id": "tiger", "venue_name": "虎馆", "arrive_time": "09:33", "leave_time": "09:53", "visit_minutes": 20, "walk_to_next_minutes": 0, "narration": "", "tips": [], "rest_here": False}
+                    ],
+                    "warnings": [], "tips": [],
+                    "_party_type": "solo", "_stamina": 4, "_sun_tolerance": 3,
+                    "_willing_to_hike": True, "_animal_interests": ["panda", "cat"],
+                    "_entry_gate": "north", "_start_time": "09:00", "_available_hours": 3
+                }
+            }
+        )
+        d_chat = r.json()
+        skip_works = (
+            "new_route" in d_chat
+            and "tiger" not in [s["venue_id"] for s in d_chat["new_route"]["stops"]]
+        )
+        failures += check(
+            "chat skip_venue replan",
+            skip_works,
+            f"stops={[s['venue_name'] for s in d_chat.get('new_route', {}).get('stops', [])]}",
+        )
+
+        # 16d. chat: multi-turn (LLM context)
+        r = c.post(
+            f"{BASE}/api/chat",
+            json={
+                "message": "那就去看细尾獴吧",
+                "history": [
+                    {"role": "user", "content": "能去羊驼吗"},
+                    {"role": "assistant", "content": "可以的"}
+                ],
+                "current_route": None
+            },
+            timeout=90.0,
+        )
+        d_chat = r.json()
+        multi_turn_works = (
+            r.status_code == 200
+            and d_chat.get("extracted_constraint", {}).get("venue_id") == "meerkat"
+        )
+        failures += check(
+            "chat multi-turn LLM context",
+            multi_turn_works,
+            f"venue={d_chat.get('extracted_constraint', {}).get('venue_name', '?')}",
         )
 
         # 17. plan-variants: 3 distinct
