@@ -7,17 +7,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import Depends, FastAPI, Header, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config
-from . import data_loader
-from . import geo
-from . import photo
-from . import planner
+from . import auth, config, data_loader, db, geo, photo, planner
 from .models import (
     PlanRequest,
     ReplanRequest,
@@ -26,14 +22,15 @@ from .models import (
 )
 
 
-# In-memory checkin store (process-local; resets on restart)
+# In-memory checkin store (process-local; resets on restart) — DEPRECATED, using DB
 _checkins: dict[str, list[dict]] = {}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    db.init_db()
     n = len(data_loader.get_all_venues())
-    print(f"[startup] ZooGuide ready: {n} venues loaded; USE_LLM={config.USE_LLM}")
+    print(f"[startup] ZooGuide ready: {n} venues loaded; USE_LLM={config.USE_LLM}; DB initialized")
     yield
 
 
@@ -155,7 +152,10 @@ def get_venue(venue_id: str):
 # ---------------------------------------------------------------------------
 
 @app.post("/api/plan")
-def plan(req: PlanRequest):
+def plan(
+    req: PlanRequest,
+    current_user: Optional[dict] = Depends(auth.get_current_user_optional),
+):
     try:
         route, used_llm = planner.plan_route(req, force_fast=req.fast)
         # Echo prefs back so client can /replan later
@@ -171,6 +171,22 @@ def plan(req: PlanRequest):
         resp["_start_time"] = req.start_time
         resp["_available_hours"] = req.available_hours
         resp["llm_used"] = used_llm
+        # Persist to DB (if logged in)
+        if current_user:
+            try:
+                prefs_dict = req.model_dump()
+                db.insert_route(
+                    route_id=route.id,
+                    prefs=prefs_dict,
+                    summary=route.summary,
+                    total_minutes=route.total_minutes,
+                    stops_count=len(route.stops),
+                    llm_used=used_llm,
+                    fallback=route.fallback,
+                    user_id=current_user["id"],
+                )
+            except Exception as e:
+                print(f"[warn] failed to persist route: {e}")
         return resp
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -203,28 +219,39 @@ class CheckinRecord(BaseModel):
 
 
 @app.post("/api/checkin")
-def checkin(req: CheckinRequest):
+def checkin(
+    req: CheckinRequest,
+    current_user: Optional[dict] = Depends(auth.get_current_user_optional),
+):
     venue = data_loader.get_venue_by_id(req.venue_id)
     if not venue:
         raise HTTPException(status_code=404, detail="venue not found")
     sid = req.session_id or str(uuid.uuid4())
-    from datetime import datetime
-    _checkins.setdefault(sid, []).append(
-        {"venue_id": venue.id, "venue_name": venue.name, "ts": datetime.now().isoformat(timespec="seconds")}
+    user_id = current_user["id"] if current_user else None
+    record = db.insert_checkin(
+        venue_id=venue.id,
+        venue_name=venue.name,
+        session_id=sid,
+        user_id=user_id,
     )
-    total = len(data_loader.get_all_venues())
+    # Count user's/session's checkins
+    if user_id:
+        items = db.list_checkins_by_user(user_id)
+    else:
+        items = db.list_checkins_by_session(sid)
+    total_venues = len(data_loader.get_all_venues())
     return {
         "ok": True,
         "session_id": sid,
-        "total_checkins": len(_checkins[sid]),
-        "completion_rate": round(len(_checkins[sid]) / total, 3),
+        "total_checkins": len(items),
+        "completion_rate": round(len(items) / total_venues, 3),
         "venue_name": venue.name,
     }
 
 
 @app.get("/api/checkin/{session_id}")
 def get_checkins(session_id: str):
-    items = _checkins.get(session_id, [])
+    items = db.list_checkins_by_session(session_id)
     total = len(data_loader.get_all_venues())
     return {
         "session_id": session_id,
@@ -258,7 +285,10 @@ def nearest(lat: float, lon: float, top_k: int = 3):
 # ---------------------------------------------------------------------------
 
 @app.post("/api/photo-evaluate")
-async def photo_evaluate(file: UploadFile = File(...)):
+async def photo_evaluate(
+    file: UploadFile = File(...),
+    current_user: Optional[dict] = Depends(auth.get_current_user_optional),
+):
     """Upload a photo, get a fun evaluation + auto-checkin."""
     contents = await file.read()
     if len(contents) > 8 * 1024 * 1024:
@@ -268,6 +298,16 @@ async def photo_evaluate(file: UploadFile = File(...)):
         suffix = ".jpg"
     path = photo.save_photo(contents, suffix)
     result = photo.evaluate_photo(path)
+    # Persist
+    try:
+        db.insert_photo_eval(
+            evaluation_id=result["evaluation_id"],
+            payload=result,
+            image_path=result.get("image_path"),
+            user_id=current_user["id"] if current_user else None,
+        )
+    except Exception as e:
+        print(f"[warn] failed to persist photo_eval: {e}")
     return result
 
 
@@ -277,6 +317,126 @@ def get_photo_eval(eval_id: str):
     if not e:
         raise HTTPException(status_code=404, detail="evaluation not found")
     return e
+
+
+# ---------------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------------
+
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+    display_name: Optional[str] = None
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/auth/register")
+def register(req: RegisterRequest):
+    if len(req.username) < 2 or len(req.username) > 32:
+        raise HTTPException(status_code=400, detail="用户名长度 2-32")
+    if len(req.password) < 4:
+        raise HTTPException(status_code=400, detail="密码至少 4 位")
+    if db.find_user_by_username(req.username):
+        raise HTTPException(status_code=409, detail="用户名已被占用")
+    uid = db.create_user(req.username, auth.hash_password(req.password), req.display_name)
+    token = db.create_token(uid)
+    return {
+        "ok": True,
+        "token": token,
+        "user": {"id": uid, "username": req.username, "display_name": req.display_name or req.username},
+    }
+
+
+@app.post("/api/auth/login")
+def login(req: LoginRequest):
+    user = db.find_user_by_username(req.username)
+    if not user or not auth.verify_password(req.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    token = db.create_token(user["id"])
+    return {
+        "ok": True,
+        "token": token,
+        "user": {"id": user["id"], "username": user["username"], "display_name": user["display_name"]},
+    }
+
+
+@app.post("/api/auth/logout")
+def logout(authorization: Optional[str] = Header(default=None)):
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization[7:].strip()
+        if token:
+            db.delete_token(token)
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+def auth_me(current_user: dict = Depends(auth.get_current_user)):
+    return {
+        "id": current_user["id"],
+        "username": current_user["username"],
+        "display_name": current_user["display_name"],
+        "created_at": current_user["created_at"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# User history ("/me/*")
+# ---------------------------------------------------------------------------
+
+@app.get("/api/me/checkins")
+def me_checkins(current_user: dict = Depends(auth.get_current_user)):
+    items = db.list_checkins_by_user(current_user["id"])
+    return {"user_id": current_user["id"], "checkins": items}
+
+
+@app.get("/api/me/photo-evals")
+def me_photo_evals(current_user: dict = Depends(auth.get_current_user)):
+    items = db.list_photo_evals_by_user(current_user["id"])
+    return {"user_id": current_user["id"], "evals": items}
+
+
+@app.get("/api/me/routes")
+def me_routes(current_user: dict = Depends(auth.get_current_user)):
+    items = db.list_routes_by_user(current_user["id"])
+    return {"user_id": current_user["id"], "routes": items}
+
+
+@app.get("/api/me/summary")
+def me_summary(current_user: dict = Depends(auth.get_current_user)):
+    checkins = db.list_checkins_by_user(current_user["id"])
+    routes = db.list_routes_by_user(current_user["id"])
+    photo_evals = db.list_photo_evals_by_user(current_user["id"])
+    venue_ids = {c["venue_id"] for c in checkins}
+    return {
+        "user": {
+            "id": current_user["id"],
+            "username": current_user["username"],
+            "display_name": current_user["display_name"],
+        },
+        "stats": {
+            "checkins_count": len(checkins),
+            "venues_visited": len(venue_ids),
+            "routes_planned": len(routes),
+            "photos_evaluated": len(photo_evals),
+        },
+        "recent_checkins": checkins[:5],
+        "recent_routes": routes[:5],
+        "recent_photos": [
+            {
+                "evaluation_id": e["evaluation_id"],
+                "ts": e["ts"],
+                "badge": e["payload"].get("badge", ""),
+                "animal_guess": e["payload"].get("animal_guess", ""),
+                "matched_venue_name": e["payload"].get("matched_venue_name", ""),
+                "vibe_score": e["payload"].get("vibe_score", 0),
+            }
+            for e in photo_evals[:5]
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -11,9 +11,18 @@ import type {
 
 const BASE = '' // proxied via vite to backend
 
+function getToken(): string | null {
+  return localStorage.getItem('zooguide:token:v1')
+}
+
+function authHeader(): Record<string, string> {
+  const t = getToken()
+  return t ? { Authorization: `Bearer ${t}` } : {}
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
     ...init,
   })
   if (!res.ok) {
@@ -67,6 +76,7 @@ export const api = {
     const res = await fetch(`${BASE}/api/photo-evaluate`, {
       method: 'POST',
       body: form,
+      headers: authHeader(),
     })
     if (!res.ok) {
       const body = await res.json().catch(() => ({}))
@@ -74,4 +84,42 @@ export const api = {
     }
     return res.json() as Promise<PhotoEvaluation>
   },
+
+  // Auth
+  register: (username: string, password: string, display_name?: string) =>
+    request<{ ok: boolean; token: string; user: { id: number; username: string; display_name: string } }>(
+      '/api/auth/register',
+      { method: 'POST', body: JSON.stringify({ username, password, display_name }) },
+    ),
+  login: (username: string, password: string) =>
+    request<{ ok: boolean; token: string; user: { id: number; username: string; display_name: string } }>(
+      '/api/auth/login',
+      { method: 'POST', body: JSON.stringify({ username, password }) },
+    ),
+  logout: () =>
+    request<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
+  me: () =>
+    request<{ id: number; username: string; display_name: string; created_at: string }>('/api/auth/me'),
+
+  // User history
+  mySummary: () =>
+    request<{
+      user: { id: number; username: string; display_name: string }
+      stats: {
+        checkins_count: number
+        venues_visited: number
+        routes_planned: number
+        photos_evaluated: number
+      }
+      recent_checkins: Array<{ venue_id: string; venue_name: string; ts: string }>
+      recent_routes: Array<{ id: string; summary: string; total_minutes: number; created_at: string }>
+      recent_photos: Array<{
+        evaluation_id: string
+        ts: string
+        badge: string
+        animal_guess: string
+        matched_venue_name: string
+        vibe_score: number
+      }>
+    }>('/api/me/summary'),
 }

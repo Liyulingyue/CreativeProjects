@@ -4,7 +4,10 @@ import type { Meta, Route, UserPreference, Venue } from './types'
 import { Home } from './components/Home'
 import { Questionnaire } from './components/Questionnaire'
 import { RouteView } from './components/RouteView'
-import { loadPrefs } from './lib/storage'
+import { AuthModal } from './components/AuthModal'
+import { ProfileModal } from './components/ProfileModal'
+import { getStoredUser, loadPrefs } from './lib/storage'
+import type { AuthUser } from './lib/storage'
 
 type Stage = 'home' | 'quiz' | 'loading' | 'route' | 'error'
 
@@ -16,11 +19,13 @@ export default function App() {
   const [venues, setVenues] = useState<Venue[]>([])
   const [error, setError] = useState<string | null>(null)
   const [fastMode, setFastMode] = useState(false)
+  const [authOpen, setAuthOpen] = useState(false)
+  const [profileOpen, setProfileOpen] = useState(false)
+  const [user, setUser] = useState<AuthUser | null>(getStoredUser())
 
   useEffect(() => {
     api.meta().then(setMeta).catch(console.error)
     api.venues().then((d) => setVenues(d.venues)).catch(console.error)
-    // load saved prefs on start
     const saved = loadPrefs()
     if (saved) setPrefs(saved)
   }, [])
@@ -48,11 +53,28 @@ export default function App() {
     setStage('quiz')
   }
 
+  function onAuthed(u: AuthUser) {
+    setUser(u)
+  }
+
   return (
     <div className="app">
       <header className="app-header">
         <h1>🦒 ZooGuide</h1>
         <span className="badge">红山省力 Agent</span>
+        <button
+          onClick={() => (user ? setProfileOpen(true) : setAuthOpen(true))}
+          style={{
+            background: 'rgba(255,255,255,0.18)',
+            color: 'white',
+            padding: '4px 10px',
+            borderRadius: 8,
+            fontSize: 12,
+            fontWeight: 600,
+          }}
+        >
+          {user ? `👤 ${user.display_name}` : '登录'}
+        </button>
       </header>
 
       <main className="app-body">
@@ -115,6 +137,14 @@ export default function App() {
           </>
         )}
       </main>
+
+      {authOpen && <AuthModal onClose={() => setAuthOpen(false)} onAuthed={onAuthed} />}
+      {profileOpen && (
+        <ProfileModal
+          onClose={() => setProfileOpen(false)}
+          onGoLogin={() => setAuthOpen(true)}
+        />
+      )}
     </div>
   )
 }

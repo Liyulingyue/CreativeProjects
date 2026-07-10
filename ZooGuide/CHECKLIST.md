@@ -55,6 +55,17 @@ cd /home/liyulingyue/Codes/CreativeProjects/ZooGuide
 3. 上传后获得：徽章（"国宝认证"/"野菜F4认证"/"撞脸不撞DNA"等）+ 出片分 + 趣味评价 + 拍摄建议
 4. 「📍 我在XX馆」可一键跳转打卡
 
+### 7. 登录 + 个人历史
+1. 顶部右侧「登录」按钮 → 注册（用户名+密码）
+2. 登录后顶栏变成「👤 昵称」，点击可看个人面板：
+   - 打卡次数 / 去过的馆 / 规划路线 / 照片评价 统计
+   - 最近 5 条路线、打卡、照片
+3. 数据存 SQLite（重启不丢），跨设备同步
+4. 退出登录后再访问 → 数据隔离回匿名模式
+
+### 8. 演示账号（可选提前创建）
+- 用户名：`demo`，密码：`demo1234`（演示前可手动在 SQLite 插入）
+
 ## API 验证
 
 ```bash
@@ -82,6 +93,7 @@ python e2e_test.py
 - ✅ CORS：前端 Vite proxy 已配
 - ✅ **GPS 自动定位**：浏览器定位 → 最近场馆推荐 → 自动跳转
 - ✅ **合照彩蛋**：拍照/选图 → 出片点评 + 红山专属徽章 + 拍摄建议
+- ✅ **DB + 登录**：SQLite 存储，bcrypt 密码，UUID token，重启数据不丢
 
 ## 已知限制（合理范围内）
 
@@ -100,3 +112,5 @@ python e2e_test.py
 | 路线规划卡死 | 看 /tmp/zooguide-backend.log，等 LLM 或勾选极速模式 |
 | LLM 出错回退 | /tmp/zooguide-backend.log 应有 LLM error，fallback=true 仍可演示 |
 | npm install 卡 | 用淘宝镜像：`npm config set registry https://registry.npmmirror.com` |
+| 登录失败 | 检查 Backend/.env 里 OPENAI_* 配置；DB 在 Backend/data/zooguide.db |
+| 重置数据 | `rm Backend/data/zooguide.db`，重启 backend 自动重建 |
