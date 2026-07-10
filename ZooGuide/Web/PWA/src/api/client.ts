@@ -122,4 +122,23 @@ export const api = {
         vibe_score: number
       }>
     }>('/api/me/summary'),
+
+  // Chat & variants
+  chat: (params: {
+    message: string
+    current_route?: any
+    prefs?: any
+    history?: any[]
+  }) =>
+    request<{
+      reply: string
+      suggested_replan: boolean
+      extracted_constraint?: any
+      new_route?: any
+    }>('/api/chat', { method: 'POST', body: JSON.stringify(params) }),
+  planVariants: (prefs: UserPreference) =>
+    request<{ variants: Array<any & { variant_label?: string }>; prefs: UserPreference }>(
+      '/api/plan-variants',
+      { method: 'POST', body: JSON.stringify(prefs) },
+    ),
 }

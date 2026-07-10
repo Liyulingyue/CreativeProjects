@@ -6,6 +6,8 @@ import { Questionnaire } from './components/Questionnaire'
 import { RouteView } from './components/RouteView'
 import { AuthModal } from './components/AuthModal'
 import { ProfileModal } from './components/ProfileModal'
+import { ChatDialog } from './components/ChatDialog'
+import { VariantsModal } from './components/VariantsModal'
 import { getStoredUser, loadPrefs } from './lib/storage'
 import type { AuthUser } from './lib/storage'
 
@@ -19,8 +21,11 @@ export default function App() {
   const [venues, setVenues] = useState<Venue[]>([])
   const [error, setError] = useState<string | null>(null)
   const [fastMode, setFastMode] = useState(false)
+  const [strictHours, setStrictHours] = useState(false)
   const [authOpen, setAuthOpen] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
+  const [chatOpen, setChatOpen] = useState(false)
+  const [variantsOpen, setVariantsOpen] = useState(false)
   const [user, setUser] = useState<AuthUser | null>(getStoredUser())
 
   useEffect(() => {
@@ -35,7 +40,7 @@ export default function App() {
     setStage('loading')
     setError(null)
     try {
-      const r = await api.plan({ ...p, fast: fastMode })
+      const r = await api.plan({ ...p, fast: fastMode, strict_hours: strictHours })
       setRoute(r)
       setStage('route')
     } catch (e) {
@@ -55,6 +60,11 @@ export default function App() {
 
   function onAuthed(u: AuthUser) {
     setUser(u)
+  }
+
+  function pickVariant(r: Route) {
+    setRoute(r)
+    setStage('route')
   }
 
   return (
@@ -100,6 +110,24 @@ export default function App() {
                 </div>
               </label>
             </div>
+            <div className="card" style={{ marginTop: 10 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={strictHours}
+                  onChange={(e) => setStrictHours(e.target.checked)}
+                  style={{ width: 18, height: 18, accentColor: 'var(--primary)' }}
+                />
+                <div>
+                  <div style={{ fontWeight: 600, color: 'var(--primary-strong)', fontSize: 14 }}>
+                    🕒 严格开闭馆
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 2 }}>
+                    勾选后会跳过已闭馆或闭馆前的场馆（默认只警告不剔除）
+                  </div>
+                </div>
+              </label>
+            </div>
           </>
         )}
 
@@ -123,7 +151,16 @@ export default function App() {
         )}
 
         {stage === 'route' && route && prefs && (
-          <RouteView route={route} prefs={prefs} onRouteUpdate={setRoute} onReset={reset} />
+          <>
+            <RouteView
+              route={route}
+              prefs={prefs}
+              onRouteUpdate={setRoute}
+              onReset={reset}
+              onChat={() => setChatOpen(true)}
+              onVariants={() => setVariantsOpen(true)}
+            />
+          </>
         )}
 
         {stage === 'error' && (
@@ -140,10 +177,18 @@ export default function App() {
 
       {authOpen && <AuthModal onClose={() => setAuthOpen(false)} onAuthed={onAuthed} />}
       {profileOpen && (
-        <ProfileModal
-          onClose={() => setProfileOpen(false)}
-          onGoLogin={() => setAuthOpen(true)}
+        <ProfileModal onClose={() => setProfileOpen(false)} onGoLogin={() => setAuthOpen(true)} />
+      )}
+      {chatOpen && (
+        <ChatDialog
+          onClose={() => setChatOpen(false)}
+          currentRoute={route}
+          prefs={prefs}
+          onNewRoute={(r) => setRoute(r)}
         />
+      )}
+      {variantsOpen && prefs && (
+        <VariantsModal prefs={prefs} onClose={() => setVariantsOpen(false)} onPick={pickVariant} />
       )}
     </div>
   )

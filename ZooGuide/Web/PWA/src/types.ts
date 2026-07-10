@@ -23,6 +23,8 @@ export interface UserPreference {
   entry_gate: Gate
   start_time: string
   fast?: boolean
+  strict_hours?: boolean
+  style?: string
 }
 
 export interface RouteStop {

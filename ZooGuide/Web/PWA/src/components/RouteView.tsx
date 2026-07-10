@@ -10,9 +10,11 @@ interface Props {
   prefs: UserPreference
   onRouteUpdate: (r: Route) => void
   onReset: () => void
+  onChat?: () => void
+  onVariants?: () => void
 }
 
-export function RouteView({ route, prefs, onRouteUpdate, onReset }: Props) {
+export function RouteView({ route, prefs, onRouteUpdate, onReset, onChat, onVariants }: Props) {
   const [visited, setVisited] = useState<Set<string>>(loadVisited())
   const [replanOpen, setReplanOpen] = useState(false)
   const [photoOpen, setPhotoOpen] = useState(false)
@@ -208,8 +210,11 @@ export function RouteView({ route, prefs, onRouteUpdate, onReset }: Props) {
         <button className="btn btn-outline" onClick={onReset}>
           🔄 重新规划
         </button>
-        <button className="btn btn-ghost" onClick={() => setPhotoOpen(true)}>
-          📸 出片
+        <button className="btn btn-ghost" onClick={onVariants}>
+          🧭 对比
+        </button>
+        <button className="btn btn-ghost" onClick={onChat}>
+          💬 聊天
         </button>
         <button className="btn btn-primary" onClick={() => setReplanOpen(true)}>
           ✨ 调整
