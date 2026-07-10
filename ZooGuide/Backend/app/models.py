@@ -35,6 +35,8 @@ class UserPreference(BaseModel):
     current_venue_id: Optional[str] = None
     elapsed_minutes: int = 0
     fast: bool = False  # if true, skip LLM, use rule engine only
+    strict_hours: bool = False  # if true, exclude venues that will be closed by visit time
+    style: str = "balanced"  # balanced / must_see / hidden_gem (alt route styles)
 
 
 class PlanRequest(UserPreference):
@@ -110,3 +112,17 @@ class Venue(BaseModel):
     kid_friendly: int
     photo_op: int
     must_see: bool
+
+
+class ChatRequest(BaseModel):
+    message: str
+    current_route: Optional[dict] = None
+    prefs: Optional[dict] = None
+    history: list[dict] = Field(default_factory=list)
+
+
+class ChatResponse(BaseModel):
+    reply: str
+    suggested_replan: bool = False
+    extracted_constraint: Optional[dict] = None
+    new_route: Optional[dict] = None

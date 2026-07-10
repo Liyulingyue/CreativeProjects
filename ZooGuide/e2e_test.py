@@ -9,6 +9,11 @@ Verifies:
   5. /api/checkin records and reads back
   6. /api/nearest returns closest venues
   7. /api/photo-evaluate accepts an image and returns evaluation
+  8. /api/auth/* flow
+  9. /api/me/summary
+  10. /api/chat: rule-based reply + extracted_constraint
+  11. /api/plan-variants: 3 distinct variants
+  12. /api/plan-stream: SSE events
 """
 import json
 import sys
@@ -145,6 +150,61 @@ def main() -> int:
             # 15. unauthenticated /me/summary
             r = c.get(f"{BASE}/api/me/summary")
             failures += check("me/summary requires auth", r.status_code == 401)
+
+        # 16. chat: rule-based fast path
+        r = c.post(f"{BASE}/api/chat", json={"message": "孩子累了想休息"})
+        d_chat = r.json()
+        failures += check(
+            "chat rule-based",
+            r.status_code == 200 and d_chat.get("extracted_constraint", {}).get("type") == "rest_now",
+            f"reply='{d_chat.get('reply', '')[:30]}'",
+        )
+
+        # 17. plan-variants: 3 distinct
+        r = c.post(
+            f"{BASE}/api/plan-variants",
+            json={
+                "available_hours": 4.0,
+                "party_type": "solo",
+                "with_kids": False,
+                "stamina": 4,
+                "sun_tolerance": 3,
+                "willing_to_hike": True,
+                "animal_interests": ["panda", "cat", "ape"],
+                "entry_gate": "north",
+                "start_time": "09:00",
+            },
+        )
+        d_v = r.json()
+        failures += check(
+            "plan-variants",
+            r.status_code == 200 and len(d_v.get("variants", [])) >= 2,
+            f"{len(d_v.get('variants', []))} variants: {[v.get('variant_label') for v in d_v.get('variants', [])]}",
+        )
+
+        # 18. plan-stream: SSE first event
+        r = c.post(
+            f"{BASE}/api/plan-stream",
+            json={
+                "available_hours": 2.0,
+                "party_type": "solo",
+                "with_kids": False,
+                "stamina": 4,
+                "sun_tolerance": 3,
+                "willing_to_hike": True,
+                "animal_interests": ["panda"],
+                "entry_gate": "north",
+                "start_time": "09:00",
+                "fast": True,
+            },
+            timeout=30.0,
+        )
+        first_lines = r.text[:200]
+        failures += check(
+            "plan-stream SSE",
+            r.status_code == 200 and "event:" in first_lines,
+            f"first 60 chars: {first_lines[:60]!r}",
+        )
 
     print()
     if failures == 0:

@@ -199,43 +199,67 @@ def _greedy_fallback_route(
     candidates: list[dict],
     remaining_minutes: Optional[int] = None,
     current_venue_id: Optional[str] = None,
+    style: Optional[str] = None,
 ) -> Route:
     """Pure rule-based route. Always works even without LLM."""
     budget = remaining_minutes if remaining_minutes is not None else int(prefs.available_hours * 60)
-    if current_venue_id:
-        # Replan: skip venues already in original route
-        pass
+    style = style or prefs.style or "balanced"
 
-    # 1. Pick top-K candidates that fit in budget
+    # Apply style to candidates (re-rank)
+    candidates = _apply_style(candidates, style)
+
     max_stops = max_stops_by_time(budget / 60.0)
     picked: list[dict] = []
     used_ids: set[str] = set()
     if current_venue_id:
         used_ids.add(current_venue_id)
 
-    # Entry first: nearest must-see to gate if exists
+    # Entry first: depends on style
     entry_minutes_first = 0
     if current_venue_id is None:
         gate = prefs.entry_gate
-        sorted_by_entry = sorted(
-            [c for c in candidates if c["id"] not in used_ids],
-            key=lambda c: get_entry_venue_minutes(gate, c["id"]),
-        )
-        if sorted_by_entry:
-            first = sorted_by_entry[0]
+        if style == "must_see":
+            # Top-ranked must_see venue (regardless of distance)
+            first = next((c for c in candidates if c["id"] not in used_ids), None)
+        elif style == "hidden_gem":
+            # Pick a non-must_see venue closer to the user's area
+            sorted_by_entry = sorted(
+                [c for c in candidates if c["id"] not in used_ids and not c.get("must_see")],
+                key=lambda c: get_entry_venue_minutes(gate, c["id"]),
+            )
+            first = sorted_by_entry[0] if sorted_by_entry else candidates[0]
+        else:
+            # Balanced: nearest must-see to gate
+            sorted_by_entry = sorted(
+                [c for c in candidates if c["id"] not in used_ids],
+                key=lambda c: get_entry_venue_minutes(gate, c["id"]),
+            )
+            first = sorted_by_entry[0] if sorted_by_entry else None
+        if first:
             picked.append(first)
             used_ids.add(first["id"])
             entry_minutes_first = get_entry_venue_minutes(gate, first["id"])
 
-    # 2. Greedy nearest-neighbor
     cur_id = picked[-1]["id"] if picked else current_venue_id
     cur_time_used = entry_minutes_first + (picked[0]["recommended_visit_minutes"] if picked else 0)
+
+    # For hidden_gem, prefer moving to less-visited areas
+    visited_areas = {picked[0]["area"]} if picked else set()
 
     for _ in range(max_stops - len(picked)):
         candidates_left = [c for c in candidates if c["id"] not in used_ids]
         if not candidates_left:
             break
-        candidates_left.sort(key=lambda c: get_inter_venue_minutes(cur_id, c["id"]))
+        if style == "hidden_gem":
+            # Prefer different area (variety)
+            candidates_left.sort(
+                key=lambda c: (
+                    0 if c["area"] not in visited_areas else 5,
+                    get_inter_venue_minutes(cur_id, c["id"]),
+                )
+            )
+        else:
+            candidates_left.sort(key=lambda c: get_inter_venue_minutes(cur_id, c["id"]))
         nxt = candidates_left[0]
         walk = get_inter_venue_minutes(cur_id, nxt["id"])
         visit = nxt.get("recommended_visit_minutes", 20)
@@ -245,8 +269,8 @@ def _greedy_fallback_route(
         used_ids.add(nxt["id"])
         cur_id = nxt["id"]
         cur_time_used += walk + visit
+        visited_areas.add(nxt["area"])
 
-    # 3. Build stops with timestamps
     stops: list[RouteStop] = []
     base = _parse_hhmm(prefs.start_time) or datetime.now().replace(hour=9, minute=0, second=0, microsecond=0)
     cur = base
@@ -280,7 +304,7 @@ def _greedy_fallback_route(
     total = sum(s.visit_minutes + s.walk_to_next_minutes for s in stops)
     total_walk = sum(s.walk_to_next_minutes for s in stops)
 
-    summary = _fallback_summary(picked, prefs)
+    summary = _fallback_summary(picked, prefs, style)
 
     return Route(
         id=f"r_{uuid.uuid4().hex[:8]}",
@@ -292,6 +316,46 @@ def _greedy_fallback_route(
         tips=_fallback_general_tips(prefs),
         fallback=True,
     )
+
+
+def _apply_style(candidates: list[dict], style: str) -> list[dict]:
+    """Re-rank candidates by style. Must_see / hidden_gem / balanced.
+
+    Each style tags picks differently so greedy diverges:
+      - must_see: massive bonus to must_see venues → greedy picks those first
+      - hidden_gem: penalty to must_see + bonus to kid_friendly + animal variety
+      - balanced: original scores
+    """
+    if style == "must_see":
+        return sorted(
+            candidates,
+            key=lambda c: (
+                100 if c.get("must_see") else 0,  # huge boost for must-see
+                c.get("photo_op", 0) * 3,
+                c.get("_score", 0),
+            ),
+            reverse=True,
+        )
+    if style == "hidden_gem":
+        return sorted(
+            candidates,
+            key=lambda c: (
+                0 if c.get("must_see") else 10,  # bonus to non-must-see
+                c.get("kid_friendly", 0) * 2,
+                len(c.get("animals", [])) * 3,  # more diverse animals = bonus
+                c.get("_score", 0),
+            ),
+            reverse=True,
+        )
+    return candidates
+
+
+def _fallback_summary(venues: list[dict], prefs: PlanRequest, style: str = "balanced") -> str:
+    if not venues:
+        return "时间太紧张啦，建议把可用时间调到 1.5 小时以上，再来一次。"
+    names = " → ".join(v["name"] for v in venues)
+    prefix = {"must_see": "【必看精选】", "hidden_gem": "【小众探索】", "balanced": ""}.get(style, "")
+    return f"{prefix}为你选了 {len(venues)} 个场馆：{names}。红山的故事，由这些场馆串起来。"
 
 
 def _fallback_narration(v: dict, prefs: PlanRequest) -> str:
@@ -338,7 +402,8 @@ def _fallback_general_tips(prefs: PlanRequest) -> list[str]:
     return tips[:3]
 
 
-def _fallback_summary(venues: list[dict], prefs: PlanRequest) -> str:
+def _fallback_summary_legacy(venues: list[dict], prefs: PlanRequest) -> str:
+    """Legacy version kept for replan path."""
     if not venues:
         return "时间太紧张啦，建议把可用时间调到 1.5 小时以上，再来一次。"
     names = " → ".join(v["name"] for v in venues)
@@ -370,8 +435,29 @@ def plan_route(prefs: PlanRequest, force_fast: bool = False) -> tuple[Route, boo
                 pass
 
     # Fallback (also used if LLM disabled or failed)
-    route = _greedy_fallback_route(prefs, candidates)
+    route = _greedy_fallback_route(prefs, candidates, style=prefs.style)
     return route, False
+
+
+def plan_route_variants(prefs: PlanRequest) -> list[dict]:
+    """Generate 3 variant routes for comparison.
+
+    Each variant uses a different style:
+      - must_see: prioritize must_see venues, ignore distance
+      - hidden_gem: deprioritize must_see, prioritize unique picks
+      - balanced: default scoring
+    """
+    variants = []
+    styles = ["must_see", "hidden_gem", "balanced"]
+    labels = {"balanced": "⚖️ 平衡推荐", "must_see": "⭐ 必看精选", "hidden_gem": "💎 小众探索"}
+    for style in styles:
+        p = prefs.model_copy()
+        p.style = style
+        route, _ = plan_route(p, force_fast=True)
+        d = route.model_dump()
+        d["variant_label"] = labels[style]
+        variants.append(d)
+    return variants
 
 
 def replan_route(
