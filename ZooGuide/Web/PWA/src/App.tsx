@@ -73,6 +73,11 @@ export default function App() {
             <div style={{ fontSize: 12, marginTop: 8 }}>
               规则引擎筛选 + LLM 编排中
             </div>
+            <div style={{ fontSize: 11, marginTop: 16, color: 'var(--fg-muted)', maxWidth: 280, lineHeight: 1.5 }}>
+              ⏱️ LLM 思考中（一般 30-90 秒）
+              <br />
+              如果太久，会自动用规则引擎的方案
+            </div>
           </div>
         )}
 
