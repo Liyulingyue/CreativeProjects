@@ -111,3 +111,37 @@ export interface CheckinResponse {
   completion_rate: number
   venue_name: string
 }
+
+export interface NearestResult {
+  id: string
+  name: string
+  distance_m: number
+  area: string
+  animals: string[]
+}
+
+export interface NearestResponse {
+  lat: number
+  lon: number
+  in_park_estimate: boolean
+  bbox: { min_lat: number; max_lat: number; min_lon: number; max_lon: number }
+  results: NearestResult[]
+}
+
+export interface PhotoEvaluation {
+  evaluation_id: string
+  animal_guess: string
+  animal_confidence: number
+  matched_venue_id: string
+  matched_venue_name: string
+  caption: string
+  vibe_score: number
+  vibe_label: string
+  comment: string
+  badge: string
+  tips: string[]
+  fallback: boolean
+  fallback_reason?: string
+  image_path?: string
+  ts: string
+}

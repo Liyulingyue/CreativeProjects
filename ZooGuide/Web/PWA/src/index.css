@@ -684,6 +684,60 @@ textarea {
   flex: 1;
 }
 
+/* ----- Nearest venue list ----- */
+.nearest-row {
+  display: block;
+  width: 100%;
+  background: var(--primary-soft);
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 10px;
+  margin-bottom: 6px;
+  text-align: left;
+  transition: background 0.15s ease;
+}
+
+.nearest-row:active {
+  background: var(--primary);
+  color: white;
+}
+
+.nearest-row:active .nearest-meta,
+.nearest-row:active .nearest-dist {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.nearest-rank {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: white;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.nearest-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--primary-strong);
+}
+
+.nearest-meta {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.nearest-dist {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--primary-strong);
+}
+
 .meta-info {
   display: grid;
   grid-template-columns: 1fr 1fr;
