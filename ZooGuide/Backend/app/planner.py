@@ -412,7 +412,7 @@ def replan_route(
             target_structure=prompts.REPLAN_TARGET_STRUCTURE,
             background=prompts.SYSTEM_BACKGROUND,
             requirements=prompts.REPLAN_REQUIREMENTS,
-            overall_timeout=60.0,
+            overall_timeout=120.0,
         )
         if not result.get("error") and result.get("data"):
             try:
