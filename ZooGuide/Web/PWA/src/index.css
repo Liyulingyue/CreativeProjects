@@ -738,6 +738,27 @@ textarea {
   color: var(--primary-strong);
 }
 
+/* ----- Profile / History ----- */
+.history-row {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+}
+
+.history-title {
+  font-size: 13px;
+  color: var(--primary-strong);
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.history-meta {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
 .meta-info {
   display: grid;
   grid-template-columns: 1fr 1fr;

@@ -5,4 +5,5 @@ httpx==0.27.2
 python-dotenv==1.0.1
 openai==2.45.0
 python-multipart==0.0.32
+bcrypt==5.0.0
 openaijsonwrapper @ file:///home/liyulingyue/Codes/CreativeProjects/OpenAIJsonWrapper

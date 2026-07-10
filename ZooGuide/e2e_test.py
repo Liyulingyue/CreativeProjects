@@ -107,6 +107,45 @@ def main() -> int:
         failures += check("photo-evaluate", r.status_code == 200 and d6.get("evaluation_id"),
                           f"animal_guess={d6.get('animal_guess', '?')[:20]}, badge={d6.get('badge', '?')}")
 
+        # 8. auth: register
+        import time as _t
+        uname = f"e2e_{int(_t.time())}"
+        r = c.post(f"{BASE}/api/auth/register", json={"username": uname, "password": "test1234"})
+        d7 = r.json()
+        failures += check("auth register", r.status_code == 200 and d7.get("token"),
+                          f"user={d7.get('user', {}).get('username', '?')}")
+        token = d7.get("token", "")
+
+        if token:
+            auth = {"Authorization": f"Bearer {token}"}
+            # 9. auth/me
+            r = c.get(f"{BASE}/api/auth/me", headers=auth)
+            failures += check("auth me", r.status_code == 200 and r.json().get("username") == uname)
+            # 10. login + me again
+            r = c.post(f"{BASE}/api/auth/login", json={"username": uname, "password": "test1234"})
+            d8 = r.json()
+            failures += check("auth login", r.status_code == 200 and d8.get("token"))
+            # 10b. authenticated checkin (must come BEFORE /me/summary)
+            r = c.post(f"{BASE}/api/checkin", json={"venue_id": "koala"}, headers=auth)
+            failures += check("auth checkin", r.status_code == 200)
+            # 11. /me/summary
+            r = c.get(f"{BASE}/api/me/summary", headers=auth)
+            d9 = r.json()
+            failures += check("me/summary", r.status_code == 200 and d9.get("stats", {}).get("checkins_count", 0) >= 1,
+                              f"checkins={d9.get('stats', {}).get('checkins_count', 0)}")
+            # 12. /me/checkins
+            r = c.get(f"{BASE}/api/me/checkins", headers=auth)
+            failures += check("me/checkins", r.status_code == 200 and isinstance(r.json().get("checkins"), list))
+            # 13. duplicate username
+            r = c.post(f"{BASE}/api/auth/register", json={"username": uname, "password": "test1234"})
+            failures += check("register dup rejected", r.status_code == 409)
+            # 14. wrong password
+            r = c.post(f"{BASE}/api/auth/login", json={"username": uname, "password": "wrong"})
+            failures += check("login wrong password", r.status_code == 401)
+            # 15. unauthenticated /me/summary
+            r = c.get(f"{BASE}/api/me/summary")
+            failures += check("me/summary requires auth", r.status_code == 401)
+
     print()
     if failures == 0:
         print("🎉 All checks passed.")
