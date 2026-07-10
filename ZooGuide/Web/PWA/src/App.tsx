@@ -15,6 +15,7 @@ export default function App() {
   const [meta, setMeta] = useState<Meta | null>(null)
   const [venues, setVenues] = useState<Venue[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [fastMode, setFastMode] = useState(false)
 
   useEffect(() => {
     api.meta().then(setMeta).catch(console.error)
@@ -29,7 +30,7 @@ export default function App() {
     setStage('loading')
     setError(null)
     try {
-      const r = await api.plan(p)
+      const r = await api.plan({ ...p, fast: fastMode })
       setRoute(r)
       setStage('route')
     } catch (e) {
@@ -59,6 +60,24 @@ export default function App() {
           <>
             <Home onStart={startQuiz} />
             {meta && <MetaInfo meta={meta} venues={venues.length} />}
+            <div className="card" style={{ marginTop: 14, background: 'var(--primary-soft)', border: 'none' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={fastMode}
+                  onChange={(e) => setFastMode(e.target.checked)}
+                  style={{ width: 18, height: 18, accentColor: 'var(--primary)' }}
+                />
+                <div>
+                  <div style={{ fontWeight: 600, color: 'var(--primary-strong)', fontSize: 14 }}>
+                    ⚡ 极速模式（跳过 LLM）
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 2 }}>
+                    1-2 秒出方案，但讲解词通用。LLM 模式 30-90 秒，但讲解个性化
+                  </div>
+                </div>
+              </label>
+            </div>
           </>
         )}
 

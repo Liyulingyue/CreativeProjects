@@ -345,13 +345,13 @@ def _fallback_summary(venues: list[dict], prefs: PlanRequest) -> str:
     return f"为你选了 {len(venues)} 个场馆：{names}。红山的故事，由这些场馆串起来。"
 
 
-def plan_route(prefs: PlanRequest) -> tuple[Route, bool]:
+def plan_route(prefs: PlanRequest, force_fast: bool = False) -> tuple[Route, bool]:
     """Returns (route, used_llm)."""
     candidates = filter_and_rank(prefs)
     walking_matrix = build_walking_matrix([c["id"] for c in candidates])
 
-    # Try LLM
-    if llm_client.is_llm_enabled():
+    # Try LLM (unless fast mode forced)
+    if llm_client.is_llm_enabled() and not force_fast:
         user_prompt = _build_user_prompt_plan(prefs, candidates, walking_matrix)
         messages = [{"role": "user", "content": [{"type": "text", "text": user_prompt}]}]
         result = llm_client.chat_json(
@@ -359,7 +359,7 @@ def plan_route(prefs: PlanRequest) -> tuple[Route, bool]:
             target_structure=prompts.PLAN_TARGET_STRUCTURE,
             background=prompts.SYSTEM_BACKGROUND,
             requirements=prompts.PLAN_REQUIREMENTS,
-            overall_timeout=180.0,
+            overall_timeout=120.0,
         )
         if not result.get("error") and result.get("data"):
             try:

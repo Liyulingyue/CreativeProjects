@@ -155,7 +155,7 @@ def get_venue(venue_id: str):
 @app.post("/api/plan")
 def plan(req: PlanRequest):
     try:
-        route, used_llm = planner.plan_route(req)
+        route, used_llm = planner.plan_route(req, force_fast=req.fast)
         # Echo prefs back so client can /replan later
         resp = route.model_dump()
         resp["_party_type"] = req.party_type
