@@ -52,6 +52,8 @@ echo ""
 echo "[start] 启动 Backend (port 8000)..."
 source "$BACKEND/.venv/bin/activate"
 cd "$BACKEND"
+# Create demo user if not exists
+python create_demo_user.py 2>/dev/null || true
 setsid python run.py > /tmp/zooguide-backend.log 2>&1 < /dev/null &
 BACKEND_PID=$!
 echo "[start] Backend PID: $BACKEND_PID"
