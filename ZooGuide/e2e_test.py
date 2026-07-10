@@ -7,6 +7,8 @@ Verifies:
   3. /api/plan returns a valid route (LLM or fallback)
   4. /api/replan returns a valid adjusted route
   5. /api/checkin records and reads back
+  6. /api/nearest returns closest venues
+  7. /api/photo-evaluate accepts an image and returns evaluation
 """
 import json
 import sys
@@ -86,6 +88,24 @@ def main() -> int:
             d4 = r.json()
             failures += check("checkin readback", r.status_code == 200 and len(d4.get("checkins", [])) >= 1,
                               f"{len(d4.get('checkins', []))} checkins")
+
+        # 6. nearest
+        r = c.get(f"{BASE}/api/nearest?lat=32.1030&lon=118.8100&top_k=3")
+        d5 = r.json()
+        failures += check("nearest", r.status_code == 200 and len(d5.get("results", [])) >= 3,
+                          f"top1={d5.get('results', [{}])[0].get('name', '?')}")
+
+        # 7. photo-evaluate (with generated test image)
+        import io
+        from PIL import Image
+        img = Image.new("RGB", (320, 240), (200, 220, 200))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG")
+        buf.seek(0)
+        r = c.post(f"{BASE}/api/photo-evaluate", files={"file": ("test.jpg", buf.read(), "image/jpeg")})
+        d6 = r.json()
+        failures += check("photo-evaluate", r.status_code == 200 and d6.get("evaluation_id"),
+                          f"animal_guess={d6.get('animal_guess', '?')[:20]}, badge={d6.get('badge', '?')}")
 
     print()
     if failures == 0:
