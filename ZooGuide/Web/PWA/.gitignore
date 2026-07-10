@@ -2,4 +2,4 @@
 dist/
 node_modules/
 *.tsbuildinfo
-*.local
+*.localZooGuide/Web/PWA/vite.config.d.ts

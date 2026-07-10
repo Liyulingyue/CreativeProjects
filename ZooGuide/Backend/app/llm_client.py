@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from typing import Optional
 
 from openai import OpenAI
@@ -17,7 +18,11 @@ _client: Optional[OpenAI] = None
 def _get_client() -> OpenAI:
     global _client
     if _client is None:
-        _client = OpenAI(api_key=config.API_KEY, base_url=config.BASE_URL)
+        _client = OpenAI(
+            api_key=config.API_KEY,
+            base_url=config.BASE_URL,
+            timeout=180.0,  # cap any single HTTP call (glm-5 can be slow)
+        )
     return _client
 
 
@@ -46,20 +51,44 @@ def chat_json(
     background: str,
     requirements: list[str],
     model: Optional[str] = None,
-    max_retries: int = 2,
+    max_retries: int = 1,
+    overall_timeout: float = 75.0,
 ) -> dict:
-    """Returns dict with keys: error, data, reasoning, raw_content."""
+    """Returns dict with keys: error, data, reasoning, raw_content.
+
+    Bounded by overall_timeout (seconds) so the route generation never hangs the HTTP request.
+    """
     wrapper = get_wrapper(target_structure, background, requirements, model)
-    last_err: Optional[str] = None
-    for attempt in range(max_retries):
+
+    result_holder: dict = {}
+
+    def _call():
         try:
-            result = wrapper.chat(messages=messages)
-            if not result.get("error"):
-                return result
-            last_err = result.get("error")
+            result_holder["result"] = wrapper.chat(messages=messages)
         except Exception as e:
-            last_err = str(e)
-    return {"error": last_err or "unknown", "data": None, "reasoning": None, "raw_content": None}
+            result_holder["error"] = str(e)
+
+    th = threading.Thread(target=_call, daemon=True)
+    th.start()
+    th.join(timeout=overall_timeout)
+
+    if "result" not in result_holder and "error" not in result_holder:
+        return {
+            "error": f"LLM timeout after {overall_timeout}s",
+            "data": None,
+            "reasoning": None,
+            "raw_content": None,
+        }
+
+    if "error" in result_holder:
+        return {
+            "error": result_holder["error"],
+            "data": None,
+            "reasoning": None,
+            "raw_content": None,
+        }
+
+    return result_holder["result"]
 
 
 def dump_prompt_for_debug(
