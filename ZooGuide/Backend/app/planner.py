@@ -1,0 +1,440 @@
+"""Planner: orchestrates rule engine + LLM with graceful fallback."""
+
+from __future__ import annotations
+
+import json
+import uuid
+from datetime import datetime, timedelta
+from typing import Optional
+
+from . import config, llm_client, prompts
+from .models import PlanRequest, ReplanRequest, Route, RouteStop
+from .rule_engine import filter_and_rank, max_stops_by_time
+from .walking import (
+    build_walking_matrix,
+    get_entry_venue_minutes,
+    get_inter_venue_minutes,
+)
+
+
+def _hhmm(t: datetime) -> str:
+    return t.strftime("%H:%M")
+
+
+def _party_style_guide(party_type: str, with_kids: bool, kids_age: Optional[int]) -> str:
+    if with_kids:
+        if kids_age is not None and kids_age <= 6:
+            return "学龄前娃家长：节奏慢，多亲子互动，讲解要有童趣比喻，不要讲残酷的食物链"
+        return "带娃家长：节奏适中，可加科普小知识，讲解要兼顾孩子兴趣"
+    if party_type == "solo":
+        return "独行游客：可以深度观察，讲解偏科普和行为学细节"
+    if party_type == "couple":
+        return "情侣/朋友：节奏轻快，可加出片点位、动物梗"
+    if party_type == "seniors":
+        return "带老人：少爬坡，多座椅与厕所，讲解平和有回忆感"
+    return "一般游客：平衡科普与趣味"
+
+
+def _build_user_prompt_plan(prefs: PlanRequest, candidates: list[dict], walking_matrix: dict) -> str:
+    style = _party_style_guide(prefs.party_type, prefs.with_kids, prefs.kids_age)
+    cand_brief = [
+        {
+            "id": c["id"],
+            "name": c["name"],
+            "area": c["area"],
+            "animals": c.get("animals", []),
+            "tags": c.get("tags", []),
+            "themes": c.get("themes", []),
+            "recommended_visit_minutes": c.get("recommended_visit_minutes", 20),
+            "shaded": c.get("shaded", False),
+            "rest_spots": c.get("rest_spots", False),
+            "must_see": c.get("must_see", False),
+            "kid_friendly": c.get("kid_friendly", 0),
+            "photo_op": c.get("photo_op", 0),
+            "score_hint": c.get("_score", 0),
+        }
+        for c in candidates
+    ]
+
+    return f"""【游客画像】
+- 同行方式：{prefs.party_type}{'，带娃' if prefs.with_kids else ''}{f'，孩子 {prefs.kids_age} 岁' if prefs.with_kids and prefs.kids_age else ''}
+- 讲解风格：{style}
+- 体力：{prefs.stamina}/5（1=很弱，5=暴走）
+- 防晒需求：{prefs.sun_tolerance}/5（5=完全不怕晒）
+- 是否接受爬山：{'是' if prefs.willing_to_hike else '否'}
+- 动物兴趣：{', '.join(prefs.animal_interests) if prefs.animal_interests else '无特别偏好'}
+- 入园门：{prefs.entry_gate}
+- 入园时间：{prefs.start_time}
+- 可用时间：{prefs.available_hours} 小时（共 {int(prefs.available_hours * 60)} 分钟）
+- 最大可参观场馆数（规则引擎建议）：{max_stops_by_time(prefs.available_hours)}
+
+【候选场馆】共 {len(candidates)} 个（按规则引擎分数排序，分数越高越推荐）
+{json.dumps(cand_brief, ensure_ascii=False, indent=2)}
+
+【步行矩阵】单位：分钟。从 A 到 B 直接键查 A->B。
+{json.dumps(walking_matrix, ensure_ascii=False, indent=2)}
+
+请基于以上信息输出 JSON 路线。再次强调：
+- 总时长（含步行）不超过 {int(prefs.available_hours * 60)} 分钟
+- stops 数量控制在 3-8 个
+- 必看场馆优先保留
+- 同一场馆对带娃家长 vs 年轻人讲解风格要不同
+- 输出必须严格符合 target_structure
+"""
+
+
+def _build_user_prompt_replan(
+    original: dict,
+    prefs: ReplanRequest,
+    candidates: list[dict],
+    walking_matrix: dict,
+    remaining_candidates: list[dict],
+) -> str:
+    style = _party_style_guide(
+        original.get("_party_type", "solo"),
+        original.get("_with_kids", False),
+        original.get("_kids_age"),
+    )
+    cand_brief = [
+        {
+            "id": c["id"],
+            "name": c["name"],
+            "area": c["area"],
+            "animals": c.get("animals", []),
+            "tags": c.get("tags", []),
+            "must_see": c.get("must_see", False),
+            "shaded": c.get("shaded", False),
+            "rest_spots": c.get("rest_spots", False),
+        }
+        for c in remaining_candidates
+    ]
+    remaining_minutes = max(0, int(original.get("_available_hours", 3) * 60) - prefs.elapsed_minutes)
+
+    return f"""【原始路线】
+{json.dumps(original.get('stops', []), ensure_ascii=False, indent=2)}
+
+【当前状态】
+- 已走到：{prefs.current_venue_id or '还未开始'}
+- 已用时：{prefs.elapsed_minutes} 分钟
+- 用户反馈：『{prefs.feedback}』
+- 剩余时间：约 {remaining_minutes} 分钟
+
+【讲解风格】{style}
+
+【未参观候选】（按规则引擎重排分数）
+{json.dumps(cand_brief, ensure_ascii=False, indent=2)}
+
+【步行矩阵】
+{json.dumps(walking_matrix, ensure_ascii=False, indent=2)}
+
+请重新规划从 {prefs.current_venue_id or '起点'} 开始的后半段路线。stops 必须从下一个未参观场馆开始。
+- 总剩余时长（含步行）不超过 {remaining_minutes} 分钟
+- stops 数量 2-5 个
+- narration 必须呼应用户的反馈（『{prefs.feedback}』），让用户感觉 Agent 听懂了
+- 输出严格 JSON
+"""
+
+
+def _parse_hhmm(s: str) -> Optional[datetime]:
+    """Parse HH:MM to today's datetime. Returns None on failure."""
+    try:
+        now = datetime.now()
+        h, m = s.split(":")
+        return now.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
+    except Exception:
+        return None
+
+
+def _route_from_llm_data(
+    data: dict,
+    candidates: list[dict],
+    entry_gate: str,
+    start_time: str,
+    elapsed_minutes: int = 0,
+) -> Route:
+    """Validate + transform LLM JSON to a Route object."""
+    cand_map = {c["id"]: c for c in candidates}
+    stops: list[RouteStop] = []
+    base = _parse_hhmm(start_time)
+    if base is None:
+        base = datetime.now().replace(hour=9, minute=0, second=0, microsecond=0)
+    base = base + timedelta(minutes=elapsed_minutes)
+
+    cur = base
+    for s in data.get("stops", []):
+        vid = s.get("venue_id")
+        venue = cand_map.get(vid, {})
+        visit_minutes = int(s.get("visit_minutes", venue.get("recommended_visit_minutes", 20)))
+        walk_to_next = int(s.get("walk_to_next_minutes", 0))
+        arrive = cur
+        leave = arrive + timedelta(minutes=visit_minutes)
+        stops.append(
+            RouteStop(
+                venue_id=vid or "",
+                venue_name=s.get("venue_name") or venue.get("name", ""),
+                arrive_time=_hhmm(arrive),
+                leave_time=_hhmm(leave),
+                visit_minutes=visit_minutes,
+                walk_to_next_minutes=walk_to_next,
+                narration=s.get("narration", ""),
+                tips=s.get("tips", []) or [],
+                rest_here=bool(s.get("rest_here", False)),
+            )
+        )
+        cur = leave + timedelta(minutes=walk_to_next)
+
+    return Route(
+        id=data.get("id") or f"r_{uuid.uuid4().hex[:8]}",
+        summary=data.get("summary", ""),
+        total_minutes=int(data.get("total_minutes", sum(s.visit_minutes + s.walk_to_next_minutes for s in stops))),
+        total_walk_minutes=int(data.get("total_walk_minutes", sum(s.walk_to_next_minutes for s in stops))),
+        stops=stops,
+        warnings=data.get("warnings", []) or config.UNIVERSAL_WARNINGS,
+        tips=data.get("tips", []) or [],
+        fallback=False,
+    )
+
+
+def _greedy_fallback_route(
+    prefs: PlanRequest,
+    candidates: list[dict],
+    remaining_minutes: Optional[int] = None,
+    current_venue_id: Optional[str] = None,
+) -> Route:
+    """Pure rule-based route. Always works even without LLM."""
+    budget = remaining_minutes if remaining_minutes is not None else int(prefs.available_hours * 60)
+    if current_venue_id:
+        # Replan: skip venues already in original route
+        pass
+
+    # 1. Pick top-K candidates that fit in budget
+    max_stops = max_stops_by_time(budget / 60.0)
+    picked: list[dict] = []
+    used_ids: set[str] = set()
+    if current_venue_id:
+        used_ids.add(current_venue_id)
+
+    # Entry first: nearest must-see to gate if exists
+    entry_minutes_first = 0
+    if current_venue_id is None:
+        gate = prefs.entry_gate
+        sorted_by_entry = sorted(
+            [c for c in candidates if c["id"] not in used_ids],
+            key=lambda c: get_entry_venue_minutes(gate, c["id"]),
+        )
+        if sorted_by_entry:
+            first = sorted_by_entry[0]
+            picked.append(first)
+            used_ids.add(first["id"])
+            entry_minutes_first = get_entry_venue_minutes(gate, first["id"])
+
+    # 2. Greedy nearest-neighbor
+    cur_id = picked[-1]["id"] if picked else current_venue_id
+    cur_time_used = entry_minutes_first + (picked[0]["recommended_visit_minutes"] if picked else 0)
+
+    for _ in range(max_stops - len(picked)):
+        candidates_left = [c for c in candidates if c["id"] not in used_ids]
+        if not candidates_left:
+            break
+        candidates_left.sort(key=lambda c: get_inter_venue_minutes(cur_id, c["id"]))
+        nxt = candidates_left[0]
+        walk = get_inter_venue_minutes(cur_id, nxt["id"])
+        visit = nxt.get("recommended_visit_minutes", 20)
+        if cur_time_used + walk + visit > budget:
+            break
+        picked.append(nxt)
+        used_ids.add(nxt["id"])
+        cur_id = nxt["id"]
+        cur_time_used += walk + visit
+
+    # 3. Build stops with timestamps
+    stops: list[RouteStop] = []
+    base = _parse_hhmm(prefs.start_time) or datetime.now().replace(hour=9, minute=0, second=0, microsecond=0)
+    cur = base
+    if picked and current_venue_id is None:
+        first_walk = get_entry_venue_minutes(prefs.entry_gate, picked[0]["id"])
+        cur = cur + timedelta(minutes=first_walk)
+    for i, v in enumerate(picked):
+        visit = v.get("recommended_visit_minutes", 20)
+        arrive = cur
+        leave = arrive + timedelta(minutes=visit)
+        walk_to_next = (
+            get_inter_venue_minutes(v["id"], picked[i + 1]["id"]) if i + 1 < len(picked) else 0
+        )
+        narration = _fallback_narration(v, prefs)
+        tips = _fallback_tips(v, prefs)
+        stops.append(
+            RouteStop(
+                venue_id=v["id"],
+                venue_name=v["name"],
+                arrive_time=_hhmm(arrive),
+                leave_time=_hhmm(leave),
+                visit_minutes=visit,
+                walk_to_next_minutes=walk_to_next,
+                narration=narration,
+                tips=tips,
+                rest_here=bool(v.get("rest_spots", False)) and (i == len(picked) // 2),
+            )
+        )
+        cur = leave + timedelta(minutes=walk_to_next)
+
+    total = sum(s.visit_minutes + s.walk_to_next_minutes for s in stops)
+    total_walk = sum(s.walk_to_next_minutes for s in stops)
+
+    summary = _fallback_summary(picked, prefs)
+
+    return Route(
+        id=f"r_{uuid.uuid4().hex[:8]}",
+        summary=summary,
+        total_minutes=total,
+        total_walk_minutes=total_walk,
+        stops=stops,
+        warnings=config.UNIVERSAL_WARNINGS,
+        tips=_fallback_general_tips(prefs),
+        fallback=True,
+    )
+
+
+def _fallback_narration(v: dict, prefs: PlanRequest) -> str:
+    name = v["name"]
+    animals = v.get("animals", [])
+    animal_str = "、".join(animals[:2]) if animals else "这里的动物"
+    base_intros = {
+        "solo": f"独行逛{name}，可以慢慢观察{animal_str}的细节行为，不赶时间。",
+        "couple": f"和同伴一起看{animal_str}，这里是园里出片率很高的点位之一。",
+        "family_young": f"小朋友最爱{animal_str}啦！这里的布置会让孩子很兴奋，记得蹲下来和它们打招呼。",
+        "family_teen": f"{name}的{animal_str}值得多停留一会儿，可以聊聊它的野外生存与保护现状。",
+        "seniors": f"{name}里的{animal_str}是我们这代人的老朋友，慢慢看，慢慢聊。",
+    }
+    return base_intros.get(prefs.party_type, f"{name}是红山不可错过的场馆之一，{animal_str}在这里生活得很自在。")
+
+
+def _fallback_tips(v: dict, prefs: PlanRequest) -> list[str]:
+    tips: list[str] = []
+    if v.get("shaded"):
+        tips.append("场馆有遮阴，不怕晒")
+    if v.get("rest_spots"):
+        tips.append("附近有座椅，可以歇脚")
+    if "周一二闭馆" in v.get("tags", []):
+        tips.append("注意：周一、周二闭馆")
+    if prefs.with_kids and v.get("kid_friendly", 0) >= 4:
+        tips.append("很适合小朋友近距离观察")
+    if not tips:
+        tips.append("放慢脚步，多看看动物的自然行为")
+    return tips[:3]
+
+
+def _fallback_general_tips(prefs: PlanRequest) -> list[str]:
+    tips: list[str] = []
+    if prefs.with_kids:
+        tips.append("带娃节奏建议每 1.5 小时休息一次")
+    if prefs.sun_tolerance <= 2:
+        tips.append("防晒优先：尽量选有遮阴的场馆停留")
+    if not prefs.willing_to_hike:
+        tips.append("少爬坡：南门新区地形起伏大，建议平地为主")
+    if prefs.stamina <= 2:
+        tips.append("体力保留：每两个场馆间坐下来休息一下")
+    if not tips:
+        tips.append("红山是国内少见的山地型森林动物园，慢慢逛最有味道")
+    return tips[:3]
+
+
+def _fallback_summary(venues: list[dict], prefs: PlanRequest) -> str:
+    if not venues:
+        return "时间太紧张啦，建议把可用时间调到 1.5 小时以上，再来一次。"
+    names = " → ".join(v["name"] for v in venues)
+    return f"为你选了 {len(venues)} 个场馆：{names}。红山的故事，由这些场馆串起来。"
+
+
+def plan_route(prefs: PlanRequest) -> tuple[Route, bool]:
+    """Returns (route, used_llm)."""
+    candidates = filter_and_rank(prefs)
+    walking_matrix = build_walking_matrix([c["id"] for c in candidates])
+
+    # Try LLM
+    if llm_client.is_llm_enabled():
+        user_prompt = _build_user_prompt_plan(prefs, candidates, walking_matrix)
+        messages = [{"role": "user", "content": [{"type": "text", "text": user_prompt}]}]
+        result = llm_client.chat_json(
+            messages=messages,
+            target_structure=prompts.PLAN_TARGET_STRUCTURE,
+            background=prompts.SYSTEM_BACKGROUND,
+            requirements=prompts.PLAN_REQUIREMENTS,
+        )
+        if not result.get("error") and result.get("data"):
+            try:
+                route = _route_from_llm_data(result["data"], candidates, prefs.entry_gate, prefs.start_time)
+                return route, True
+            except Exception as e:
+                # Fall through to greedy fallback
+                pass
+
+    # Fallback (also used if LLM disabled or failed)
+    route = _greedy_fallback_route(prefs, candidates)
+    return route, False
+
+
+def replan_route(
+    original_route: dict,
+    prefs: ReplanRequest,
+) -> tuple[Route, bool]:
+    """Re-plan the second half of a route based on user feedback."""
+    # Use the original prefs to recompute candidates
+    party_type = original_route.get("_party_type", "solo")
+    plan_prefs = PlanRequest(
+        available_hours=original_route.get("_available_hours", 3),
+        party_type=party_type,
+        with_kids=original_route.get("_with_kids", False),
+        kids_age=original_route.get("_kids_age"),
+        stamina=original_route.get("_stamina", 3),
+        sun_tolerance=original_route.get("_sun_tolerance", 3),
+        willing_to_hike=original_route.get("_willing_to_hike", True),
+        animal_interests=original_route.get("_animal_interests", []),
+        entry_gate=original_route.get("_entry_gate", "north"),
+        start_time=original_route.get("_start_time", "09:00"),
+    )
+    candidates = filter_and_rank(plan_prefs)
+    walking_matrix = build_walking_matrix([c["id"] for c in candidates])
+
+    visited_ids = {s.get("venue_id") for s in original_route.get("stops", []) if s.get("venue_id")}
+    remaining_candidates = [c for c in candidates if c["id"] not in visited_ids]
+
+    # Adjust remaining time budget
+    remaining_minutes = max(0, int(plan_prefs.available_hours * 60) - prefs.elapsed_minutes)
+
+    if llm_client.is_llm_enabled():
+        user_prompt = _build_user_prompt_replan(
+            original_route, prefs, candidates, walking_matrix, remaining_candidates
+        )
+        messages = [{"role": "user", "content": [{"type": "text", "text": user_prompt}]}]
+        result = llm_client.chat_json(
+            messages=messages,
+            target_structure=prompts.REPLAN_TARGET_STRUCTURE,
+            background=prompts.SYSTEM_BACKGROUND,
+            requirements=prompts.REPLAN_REQUIREMENTS,
+        )
+        if not result.get("error") and result.get("data"):
+            try:
+                # Anchor: start at current_venue_id's leave_time if known, else +elapsed
+                anchor = None
+                if prefs.current_venue_id:
+                    for s in original_route.get("stops", []):
+                        if s.get("venue_id") == prefs.current_venue_id:
+                            anchor = s.get("leave_time")
+                            break
+                anchor_time = anchor or plan_prefs.start_time
+                route = _route_from_llm_data(
+                    result["data"], candidates, plan_prefs.entry_gate, anchor_time
+                )
+                return route, True
+            except Exception:
+                pass
+
+    # Fallback: greedy on remaining candidates
+    fallback = _greedy_fallback_route(
+        plan_prefs,
+        remaining_candidates,
+        remaining_minutes=remaining_minutes,
+        current_venue_id=prefs.current_venue_id,
+    )
+    return fallback, False
