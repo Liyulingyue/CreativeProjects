@@ -36,7 +36,7 @@
       "name": "大熊猫馆",
       "area": "大红山片区",
       "near_gate": "north",
-      "lat": 32.1030, "lon": 118.8100,
+      "lat": 32.1027, "lon": 118.8098,
       "open_time": "08:30",
       "close_time": "17:00",
       "animals": ["大熊猫"],

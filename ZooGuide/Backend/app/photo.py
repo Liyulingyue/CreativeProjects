@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from . import config, data_loader, llm_client
+from . import config, data_loader, db, llm_client
 
 
 PHOTO_DIR = Path(__file__).resolve().parent.parent / "data" / "photos"
@@ -87,93 +87,107 @@ def save_photo(file_bytes: bytes, suffix: str) -> Path:
     return path
 
 
-def evaluate_photo(image_path: Path) -> dict:
+def evaluate_photo(
+    image_path: Path,
+    user_id: Optional[int] = None,
+    session_id: Optional[str] = None,
+    auto_checkin: bool = True,
+) -> dict:
     """Call multi-modal LLM to evaluate a saved photo. Returns evaluation dict."""
     if not llm_client.is_llm_enabled():
-        return _fallback_evaluation(image_path, reason="USE_LLM=false")
+        result = _fallback_evaluation(image_path, reason="USE_LLM=false")
+    else:
+        try:
+            result = _evaluate_with_llm(image_path)
+        except Exception as e:
+            result = _fallback_evaluation(image_path, reason=str(e))
 
+    # Auto checkin: if matched venue, record a checkin
+    if auto_checkin and result.get("matched_venue_id"):
+        venue = data_loader.get_venue_dict_by_id(result["matched_venue_id"])
+        if venue:
+            sid = session_id or (str(user_id) if user_id else "anon")
+            try:
+                checkin = db.insert_checkin(
+                    venue_id=venue["id"],
+                    venue_name=venue["name"],
+                    session_id=sid,
+                    user_id=user_id,
+                    note=f"auto from photo {result['evaluation_id']}",
+                )
+                result["auto_checkin"] = checkin
+            except Exception:
+                pass
+
+    return result
+
+
+def _evaluate_with_llm(image_path: Path) -> dict:
     user_prompt = (
         f"请分析这张照片，按 target_structure 输出 JSON。\n"
         f"\n候选场馆（请用 matched_venue_id 匹配其中之一）：\n"
         f"{json.dumps(_venues_brief(), ensure_ascii=False)}"
     )
-
-    try:
-        with image_path.open("rb") as f:
-            b64 = base64.b64encode(f.read()).decode("ascii")
-        # Determine mime type
-        suffix = image_path.suffix.lower()
-        mime = {
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".png": "image/png",
-            ".webp": "image/webp",
-            ".gif": "image/gif",
-        }.get(suffix, "image/jpeg")
-
-        client = llm_client._get_client()
-        messages = [
-            {"role": "system", "content": PHOTO_BACKGROUND},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": user_prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
-                ],
-            },
-        ]
-        # Direct call (not via OpenAIJsonWrapper since it doesn't natively
-        # pass through image_url with structured output in a way that works
-        # on every model)
-        resp = client.chat.completions.create(
-            model=config.MODEL_NAME,
-            messages=messages,
-            response_format={"type": "json_object"},
-            max_tokens=1500,
-            timeout=60.0,
-        )
-        content = resp.choices[0].message.content or "{}"
-        # Strip code fences if present
-        if "```" in content:
-            for fence in ("```json", "```"):
-                if fence in content:
-                    content = content.split(fence)[1].split("```")[0]
-                    break
-        data = json.loads(content)
-        eval_id = uuid.uuid4().hex[:8]
-        result = {
-            "evaluation_id": eval_id,
-            "image_path": str(image_path.relative_to(PHOTO_DIR.parent)),
-            "animal_guess": data.get("animal_guess", ""),
-            "animal_confidence": data.get("animal_confidence", 0),
-            "matched_venue_id": data.get("matched_venue_id", ""),
-            "caption": data.get("caption", ""),
-            "vibe_score": data.get("vibe_score", 0),
-            "vibe_label": data.get("vibe_label", ""),
-            "comment": data.get("comment", ""),
-            "badge": data.get("badge", ""),
-            "tips": data.get("tips", []),
-            "fallback": False,
-            "ts": datetime.now().isoformat(timespec="seconds"),
-        }
-        # Resolve matched venue name
-        if result["matched_venue_id"]:
-            v = data_loader.get_venue_dict_by_id(result["matched_venue_id"])
-            if v:
-                result["matched_venue_name"] = v["name"]
-        _evaluations[eval_id] = result
-        return result
-    except Exception as e:
-        return _fallback_evaluation(image_path, reason=str(e))
+    with image_path.open("rb") as f:
+        b64 = base64.b64encode(f.read()).decode("ascii")
+    suffix = image_path.suffix.lower()
+    mime = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+    }.get(suffix, "image/jpeg")
+    client = llm_client._get_client()
+    messages = [
+        {"role": "system", "content": PHOTO_BACKGROUND},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": user_prompt},
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+            ],
+        },
+    ]
+    resp = client.chat.completions.create(
+        model=config.MODEL_NAME,
+        messages=messages,
+        response_format={"type": "json_object"},
+        max_tokens=1500,
+        timeout=60.0,
+    )
+    content = resp.choices[0].message.content or "{}"
+    if "```" in content:
+        for fence in ("```json", "```"):
+            if fence in content:
+                content = content.split(fence)[1].split("```")[0]
+                break
+    data = json.loads(content)
+    eval_id = uuid.uuid4().hex[:8]
+    result = {
+        "evaluation_id": eval_id,
+        "image_path": str(image_path.relative_to(PHOTO_DIR.parent)),
+        "animal_guess": data.get("animal_guess", ""),
+        "animal_confidence": data.get("animal_confidence", 0),
+        "matched_venue_id": data.get("matched_venue_id", ""),
+        "caption": data.get("caption", ""),
+        "vibe_score": data.get("vibe_score", 0),
+        "vibe_label": data.get("vibe_label", ""),
+        "comment": data.get("comment", ""),
+        "badge": data.get("badge", ""),
+        "tips": data.get("tips", []),
+        "fallback": False,
+        "ts": datetime.now().isoformat(timespec="seconds"),
+    }
+    if result["matched_venue_id"]:
+        v = data_loader.get_venue_dict_by_id(result["matched_venue_id"])
+        if v:
+            result["matched_venue_name"] = v["name"]
+    _evaluations[eval_id] = result
+    return result
 
 
 def _fallback_evaluation(image_path: Path, reason: str = "") -> dict:
-    """Rule-based evaluation when LLM is not available.
-
-    Heuristics:
-      - Match by filename hint (if user labeled)
-      - Random pick from a fun pool with venue-specific copy
-    """
     eval_id = uuid.uuid4().hex[:8]
     name = image_path.stem.lower()
     matched_venue = None
@@ -181,14 +195,11 @@ def _fallback_evaluation(image_path: Path, reason: str = "") -> dict:
         if v["id"] in name or any(a.replace(" ", "") in name for a in v.get("animals", [])):
             matched_venue = v
             break
-
-    # If no match, hash-based "random" pick from must-see venues
     if not matched_venue:
         must_sees = [v for v in data_loader.get_all_venue_dicts() if v.get("must_see")]
         idx = int(hashlib.md5(name.encode()).hexdigest(), 16) % len(must_sees)
         matched_venue = must_sees[idx]
 
-    # Venue-specific flavored templates
     venue_captions = {
         "panda": ("圆滚滚的黑眼圈", "你拍到了国民顶流"),
         "gorilla": ("野菜F4日常出镜", "大猩猩四兄弟同款pose"),
@@ -199,7 +210,6 @@ def _fallback_evaluation(image_path: Path, reason: str = "") -> dict:
         "meerkat": ("站岗小哨兵", "网红打卡名场面"),
         "red_panda": ("滚滚本滚不是滚滚", "和小熊猫撞脸"),
     }
-
     venue_comments = {
         "panda": "这只圆滚滚正专心啃竹子，竹叶从嘴边掉下来都浑然不觉。这不就是上班摸鱼的我吗？建议存下来当表情包。",
         "gorilla": "香椿头/马兰头/小蒜头/枸杞头四兄弟里，你拍到了哪一只？看这个眼神，像不像周一早上的你？",
@@ -210,7 +220,6 @@ def _fallback_evaluation(image_path: Path, reason: str = "") -> dict:
         "meerkat": "它立正站好的样子，让我想起每天早晨地铁里端着手抓饼赶早高峰的自己。",
         "red_panda": "很多人以为小熊猫是熊猫小时候，其实它们和大熊猫是远亲。是趋同进化的经典案例（说人话：撞脸不撞DNA）。",
     }
-
     badges = {
         "panda": "国宝认证",
         "gorilla": "野菜F4认证",
@@ -228,9 +237,8 @@ def _fallback_evaluation(image_path: Path, reason: str = "") -> dict:
     comment = venue_comments.get(vid, f"这张照片定格了你在{matched_venue['name']}的某个瞬间。")
     badge = badges.get(vid, "红山留念")
 
-    # Pseudo-random vibe based on hash
     hash_int = int(hashlib.md5(name.encode()).hexdigest()[:4], 16)
-    vibe_score = 70 + (hash_int % 25)  # 70-94
+    vibe_score = 70 + (hash_int % 25)
     vibe_labels = ["治愈系", "出片神图", "自然氛围", "氛围感拉满", "小红书素材"]
     vibe_label = vibe_labels[hash_int % len(vibe_labels)]
 

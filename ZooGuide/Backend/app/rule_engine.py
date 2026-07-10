@@ -6,6 +6,8 @@ Outputs: filtered candidate list + per-candidate score
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 from .data_loader import get_all_venue_dicts
 from .models import UserPreference
 
@@ -96,6 +98,57 @@ def _is_hard_excluded(venue: dict, pref: UserPreference) -> bool:
     return False
 
 
+def _venue_open_at(venue: dict, visit_dt: datetime) -> tuple[bool, str]:
+    """Check if venue is open at visit_dt. Returns (open, reason_if_closed)."""
+    open_str = venue.get("open_time", "08:30")
+    close_str = venue.get("close_time", "16:30")
+    # Handle "09:00-16:30" format from 大壮观阁
+    if "-" in open_str:
+        open_str = open_str.split("-")[0]
+    try:
+        oh, om = map(int, open_str.split(":"))
+        ch, cm = map(int, close_str.split(":"))
+    except Exception:
+        return True, ""
+    open_dt = visit_dt.replace(hour=oh, minute=om, second=0, microsecond=0)
+    close_dt = visit_dt.replace(hour=ch, minute=cm, second=0, microsecond=0)
+    if visit_dt < open_dt:
+        return False, f"今天 {open_str} 才开"
+    if visit_dt > close_dt:
+        return False, f"今天 {close_str} 已闭馆"
+    return True, ""
+
+
+def filter_by_hours(
+    candidates: list[dict],
+    pref: UserPreference,
+    arrival_dt: datetime,
+    visit_minutes_per_venue: int = 20,
+) -> tuple[list[dict], list[dict]]:
+    """Filter (or mark) venues that would be closed when user arrives.
+
+    If strict_hours=True, hard-exclude.
+    Returns (kept, warned).
+    """
+    kept = []
+    warned = []
+    cur_time = arrival_dt
+    for v in candidates:
+        open_ok, reason = _venue_open_at(v, cur_time)
+        if open_ok:
+            kept.append(v)
+        else:
+            if pref.strict_hours:
+                # hard exclude
+                continue
+            v_copy = dict(v)
+            v_copy["_open_warning"] = reason
+            warned.append(v_copy)
+        # advance time as if visiting
+        cur_time = cur_time + timedelta(minutes=visit_minutes_per_venue + 5)
+    return kept, warned
+
+
 def filter_and_rank(pref: UserPreference) -> list[dict]:
     """Return candidates ranked by score, with score attached."""
     venues = get_all_venue_dicts()
@@ -107,12 +160,24 @@ def filter_and_rank(pref: UserPreference) -> list[dict]:
         scored.append((s, v))
     scored.sort(key=lambda x: x[0], reverse=True)
 
-    # Attach score for LLM visibility
-    out = []
-    for s, v in scored:
-        v_copy = dict(v)
-        v_copy["_score"] = round(s, 1)
-        out.append(v_copy)
+    # Apply operating hours filter (soft by default)
+    try:
+        hh, mm = map(int, pref.start_time.split(":"))
+        arrival = datetime.now().replace(hour=hh, minute=mm, second=0, microsecond=0)
+    except Exception:
+        arrival = datetime.now().replace(hour=9, minute=0, second=0, microsecond=0)
+    if scored:
+        candidate_dicts = []
+        for s, v in scored:
+            v_copy = dict(v)
+            v_copy["_score"] = round(s, 1)
+            candidate_dicts.append(v_copy)
+        kept, warned = filter_by_hours(candidate_dicts, pref, arrival)
+        # merge: kept first, warned after (kept already score-sorted)
+        out = kept + warned
+    else:
+        out = []
+
     return out
 
 

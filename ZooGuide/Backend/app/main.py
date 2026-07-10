@@ -13,8 +13,10 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import auth, config, data_loader, db, geo, photo, planner
+from . import auth, chat as chat_mod, config, data_loader, db, geo, photo, planner
 from .models import (
+    ChatRequest,
+    ChatResponse,
     PlanRequest,
     ReplanRequest,
     Route,
@@ -192,6 +194,120 @@ def plan(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/plan-variants")
+def plan_variants(req: PlanRequest):
+    """Generate 2-3 alternative routes for comparison (always fast / rule-based)."""
+    try:
+        variants = planner.plan_route_variants(req)
+        return {
+            "variants": variants,
+            "prefs": req.model_dump(),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Streaming plan (SSE)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/plan-stream")
+async def plan_stream(req: PlanRequest):
+    """Server-Sent Events stream of the planning process.
+
+    Events:
+      - thinking: {"text": "..."} chunks
+      - done: {"route": {...}}
+      - error: {"message": "..."}
+    Falls back to non-streaming rule engine if model doesn't support streaming.
+    """
+    from fastapi.responses import StreamingResponse
+    from . import config
+    import json as _json
+
+    async def event_gen():
+        # 1. Emit progress preamble
+        yield f"event: thinking\ndata: {_json.dumps({'text': '正在分析你的偏好…'})}\n\n"
+        yield f"event: thinking\ndata: {_json.dumps({'text': '从 23 个场馆中筛选候选…'})}\n\n"
+
+        if req.fast or not llm_client.is_llm_enabled():
+            # Fast path: no streaming, just rule-based route
+            yield f"event: thinking\ndata: {_json.dumps({'text': '使用规则引擎（极速模式）'})}\n\n"
+            route, _ = planner.plan_route(req, force_fast=True)
+            yield f"event: done\ndata: {_json.dumps({'route': route.model_dump()})}\n\n"
+            return
+
+        # 2. Slow path: try LLM with streaming
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=config.API_KEY, base_url=config.BASE_URL, timeout=180.0)
+            from .prompts import PLAN_TARGET_STRUCTURE, SYSTEM_BACKGROUND, PLAN_REQUIREMENTS
+            from .rule_engine import filter_and_rank, max_stops_by_time
+            from .walking import build_walking_matrix
+            import json as _json2
+            from .planner import _build_user_prompt_plan, _route_from_llm_data
+
+            yield f"event: thinking\ndata: {_json.dumps({'text': '请 LLM 编排路线（30-90 秒）…'})}\n\n"
+
+            candidates = filter_and_rank(req)
+            walking_matrix = build_walking_matrix([c["id"] for c in candidates])
+            user_prompt = _build_user_prompt_plan(req, candidates, walking_matrix)
+
+            system = (
+                SYSTEM_BACKGROUND
+                + "\n\n请输出严格的 JSON，不要任何额外文字。"
+                + "\n\nJSON 结构:\n"
+                + _json2.dumps(PLAN_TARGET_STRUCTURE, ensure_ascii=False)
+                + "\n\nRequirements:\n"
+                + "\n".join(PLAN_REQUIREMENTS)
+            )
+
+            stream = client.chat.completions.create(
+                model=config.MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_prompt},
+                ],
+                stream=True,
+                max_tokens=4000,
+                timeout=180.0,
+            )
+
+            collected = ""
+            for chunk in stream:
+                delta = chunk.choices[0].delta.content or ""
+                if delta:
+                    collected += delta
+                    yield f"event: token\ndata: {_json.dumps({'text': delta})}\n\n"
+
+            # Try to parse collected as JSON
+            from .planner import _route_from_llm_data
+            try:
+                if "```" in collected:
+                    for fence in ("```json", "```"):
+                        if fence in collected:
+                            collected = collected.split(fence)[1].split("```")[0]
+                            break
+                data = _json2.loads(collected)
+                route = _route_from_llm_data(data, candidates, req.entry_gate, req.start_time)
+                yield f"event: done\ndata: {_json.dumps({'route': route.model_dump()})}\n\n"
+            except Exception as e:
+                # Parse failed, fall back to rule engine
+                yield f"event: thinking\ndata: {_json.dumps({'text': '解析失败，回退到规则引擎'})}\n\n"
+                route, _ = planner.plan_route(req, force_fast=True)
+                yield f"event: done\ndata: {_json.dumps({'route': route.model_dump()})}\n\n"
+        except Exception as e:
+            yield f"event: error\ndata: {_json.dumps({'message': str(e)})}\n\n"
+            # Always provide a fallback route
+            try:
+                route, _ = planner.plan_route(req, force_fast=True)
+                yield f"event: done\ndata: {_json.dumps({'route': route.model_dump()})}\n\n"
+            except Exception:
+                pass
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
 @app.post("/api/replan")
 def replan(req: ReplanRequest):
     try:
@@ -201,6 +317,28 @@ def replan(req: ReplanRequest):
         return resp
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Chat (natural-language replan)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/chat")
+async def chat_endpoint(req: ChatRequest):
+    """Conversational replan. Returns reply + optional new route."""
+    reply = await chat_mod.chat(req)
+    if req.current_route and reply.get("suggested_replan") and reply.get("extracted_constraint"):
+        try:
+            new_route = chat_mod.apply_chat_constraint(
+                req.current_route,
+                reply["extracted_constraint"],
+                req.prefs or {},
+            )
+            if new_route:
+                reply["new_route"] = new_route.model_dump()
+        except Exception as e:
+            print(f"[warn] chat apply_constraint failed: {e}")
+    return reply
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +354,19 @@ class CheckinRecord(BaseModel):
     venue_id: str
     venue_name: str
     ts: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+    current_route: Optional[dict] = None
+    prefs: Optional[dict] = None
+    history: list = []
+
+
+class ChatResponse(BaseModel):
+    reply: str
+    suggested_replan: bool = False
+    extracted_constraint: Optional[dict] = None  # e.g. {"type":"skip","venue_id":"..."}
 
 
 @app.post("/api/checkin")
@@ -287,6 +438,8 @@ def nearest(lat: float, lon: float, top_k: int = 3):
 @app.post("/api/photo-evaluate")
 async def photo_evaluate(
     file: UploadFile = File(...),
+    session_id: Optional[str] = None,
+    auto_checkin: bool = True,
     current_user: Optional[dict] = Depends(auth.get_current_user_optional),
 ):
     """Upload a photo, get a fun evaluation + auto-checkin."""
@@ -297,14 +450,21 @@ async def photo_evaluate(
     if suffix not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
         suffix = ".jpg"
     path = photo.save_photo(contents, suffix)
-    result = photo.evaluate_photo(path)
-    # Persist
+    user_id = current_user["id"] if current_user else None
+    sid = session_id or (f"u{user_id}" if user_id else "anon")
+    result = photo.evaluate_photo(
+        path,
+        user_id=user_id,
+        session_id=sid,
+        auto_checkin=auto_checkin,
+    )
     try:
         db.insert_photo_eval(
             evaluation_id=result["evaluation_id"],
             payload=result,
             image_path=result.get("image_path"),
-            user_id=current_user["id"] if current_user else None,
+            session_id=sid,
+            user_id=user_id,
         )
     except Exception as e:
         print(f"[warn] failed to persist photo_eval: {e}")
