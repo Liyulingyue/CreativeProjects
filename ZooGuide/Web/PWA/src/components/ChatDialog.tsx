@@ -11,6 +11,7 @@ interface ChatMsg {
   role: 'user' | 'agent'
   text: string
   constraint?: any
+  questions?: string[]
   route?: any
 }
 
@@ -32,9 +33,9 @@ export function ChatDialog({ onClose, onNewRoute, currentRoute, prefs }: Props) 
   const QUICK = [
     '走不动了，能少走点吗？',
     '太阳太晒，能换阴凉的路线吗',
-    '孩子累了想坐一会儿',
-    '想多看几个馆',
-    '想换条不一样的路线',
+    '加上考拉馆',
+    '跳过老虎',
+    '帮我多看几个馆',
     '想看网红动物',
   ]
 
@@ -64,6 +65,7 @@ export function ChatDialog({ onClose, onNewRoute, currentRoute, prefs }: Props) 
         role: 'agent',
         text: d.reply || '…',
         constraint: d.extracted_constraint,
+        questions: d.questions || [],
         route: d.new_route,
       }
       setMessages((prev) => [...prev, reply])
@@ -128,10 +130,25 @@ export function ChatDialog({ onClose, onNewRoute, currentRoute, prefs }: Props) 
                     style={{
                       marginTop: 6,
                       fontSize: 11,
-                      opacity: 0.8,
+                      opacity: 0.85,
                     }}
                   >
                     💡 已识别：{m.constraint.type}
+                    {m.constraint.venue_name && ` → ${m.constraint.venue_name}`}
+                  </div>
+                )}
+                {m.questions && m.questions.length > 0 && (
+                  <div
+                    style={{
+                      marginTop: 6,
+                      fontSize: 12,
+                      background: 'var(--primary-soft)',
+                      padding: '6px 10px',
+                      borderRadius: 8,
+                      color: 'var(--primary-strong)',
+                    }}
+                  >
+                    🤔 {m.questions[0]}
                   </div>
                 )}
                 {m.route && (

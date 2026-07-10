@@ -326,18 +326,23 @@ def replan(req: ReplanRequest):
 @app.post("/api/chat")
 async def chat_endpoint(req: ChatRequest):
     """Conversational replan. Returns reply + optional new route."""
+    import copy
+    # Deep copy current_route to avoid mutation
+    current_route_copy = copy.deepcopy(req.current_route) if req.current_route else None
     reply = await chat_mod.chat(req)
-    if req.current_route and reply.get("suggested_replan") and reply.get("extracted_constraint"):
+    # chat() may have already called apply_chat_constraint internally (rule path)
+    # Only call it again if no new_route yet
+    if "new_route" not in reply and current_route_copy and reply.get("suggested_replan") and reply.get("extracted_constraint"):
         try:
             new_route = chat_mod.apply_chat_constraint(
-                req.current_route,
+                current_route_copy,
                 reply["extracted_constraint"],
                 req.prefs or {},
             )
             if new_route:
                 reply["new_route"] = new_route.model_dump()
         except Exception as e:
-            print(f"[warn] chat apply_constraint failed: {e}")
+            print(f"[warn] chat apply_constraint failed: {e}", flush=True)
     return reply
 
 

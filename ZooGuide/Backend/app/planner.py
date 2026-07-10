@@ -463,6 +463,7 @@ def plan_route_variants(prefs: PlanRequest) -> list[dict]:
 def replan_route(
     original_route: dict,
     prefs: ReplanRequest,
+    force_fast: bool = False,
 ) -> tuple[Route, bool]:
     """Re-plan the second half of a route based on user feedback."""
     # Use the original prefs to recompute candidates
@@ -488,7 +489,7 @@ def replan_route(
     # Adjust remaining time budget
     remaining_minutes = max(0, int(plan_prefs.available_hours * 60) - prefs.elapsed_minutes)
 
-    if llm_client.is_llm_enabled():
+    if llm_client.is_llm_enabled() and not force_fast:
         user_prompt = _build_user_prompt_replan(
             original_route, prefs, candidates, walking_matrix, remaining_candidates
         )
@@ -502,7 +503,6 @@ def replan_route(
         )
         if not result.get("error") and result.get("data"):
             try:
-                # Anchor: start at current_venue_id's leave_time if known, else +elapsed
                 anchor = None
                 if prefs.current_venue_id:
                     for s in original_route.get("stops", []):
