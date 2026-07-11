@@ -680,9 +680,70 @@ textarea {
   pointer-events: auto;
 }
 
-/* In fullscreen mode, there's no TabBar above */
-.fullscreen-bar {
+/* ----- Action Toolbar (RouteView bottom - matches TabBar style) ----- */
+.action-toolbar {
+  position: fixed;
   bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  background: rgba(255, 255, 255, 0.95);
+  border-top: 1px solid var(--border);
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
+  z-index: 50;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.06);
+  gap: 4px;
+}
+
+.at-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 6px 4px;
+  border-radius: 10px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--fg-muted);
+  transition: background 0.15s, transform 0.1s;
+  min-height: 50px;
+}
+
+.at-btn:active {
+  transform: scale(0.96);
+}
+
+.at-btn.ghost {
+  background: transparent;
+}
+
+.at-btn.ghost:active {
+  background: var(--bg);
+}
+
+.at-btn.primary {
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+}
+
+.at-btn.primary:active {
+  background: var(--primary);
+  color: white;
+}
+
+.at-icon {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.at-label {
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .bottom-bar .btn {
