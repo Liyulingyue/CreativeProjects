@@ -11,6 +11,7 @@ interface Props {
   onRouteChange: (r: Route | null) => void
   onOpenChat: () => void
   externalRoute?: Route | null
+  initialStage?: Stage
 }
 
 type Stage = 'home' | 'quiz' | 'loading' | 'route' | 'error'
@@ -21,8 +22,11 @@ export function PlanFlow({
   onRouteChange,
   onOpenChat,
   externalRoute,
+  initialStage,
 }: Props) {
-  const [stage, setStage] = useState<Stage>(externalRoute ? 'route' : 'home')
+  const [stage, setStage] = useState<Stage>(
+    initialStage || (externalRoute ? 'route' : 'home')
+  )
   const [prefs, setPrefs] = useState<UserPreference | null>(initialPrefs)
   const [route, setRoute] = useState<Route | null>(externalRoute || null)
   const [error, setError] = useState<string | null>(null)
@@ -143,12 +147,11 @@ export function PlanFlow({
             route={route}
             prefs={prefs}
             onRouteUpdate={handleRouteUpdate}
-            onReset={reset}
-            onChat={() => {
+            onRestartQuiz={restartQuiz}
+            onOpenChat={() => {
               setChatOpen(true)
               onOpenChat()
             }}
-            onRestartQuiz={restartQuiz}
           />
         )}
 

@@ -9,9 +9,8 @@ interface Props {
   route: Route
   prefs: UserPreference
   onRouteUpdate: (r: Route) => void
-  onReset: () => void
-  onChat?: () => void
   onRestartQuiz?: () => void
+  onOpenChat?: () => void
 }
 
 type SubTab = 'current' | 'more' | 'adjust'
@@ -20,9 +19,8 @@ export function RouteView({
   route,
   prefs,
   onRouteUpdate,
-  onReset,
-  onChat,
   onRestartQuiz,
+  onOpenChat,
 }: Props) {
   const [currentStopIdx, setCurrentStopIdx] = useState<number>(() => {
     try {
@@ -104,7 +102,7 @@ export function RouteView({
             // keep currentStopIdx pointing to similar venue
           }}
           onRestartQuiz={() => onRestartQuiz?.()}
-          onOpenChat={() => onChat?.()}
+          onOpenChat={() => onOpenChat?.()}
         />
       )}
 
@@ -132,18 +130,6 @@ export function RouteView({
           <span className="rt-label">调整</span>
         </button>
       </nav>
-
-      {/* Header actions (replan / chat) */}
-      <div className="route-header-actions">
-        <button className="pill-btn" onClick={onReset}>
-          🔄 重做
-        </button>
-        {onChat && (
-          <button className="pill-btn" onClick={onChat}>
-            💬 聊
-          </button>
-        )}
-      </div>
     </div>
   )
 }

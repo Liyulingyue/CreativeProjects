@@ -8,8 +8,8 @@ interface Props {
   elapsedMinutes: number
   prefs: any
   onReplanned: (r: Route) => void
-  onRestartQuiz: () => void
-  onOpenChat: () => void
+  onRestartQuiz?: () => void
+  onOpenChat?: () => void
 }
 
 const QUICK = [
