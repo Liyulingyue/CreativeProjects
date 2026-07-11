@@ -2854,6 +2854,74 @@ textarea {
   animation: toastSlideIn 0.3s ease-out;
 }
 
+/* Photo Wall */
+.wall-photo-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  text-align: center;
+}
+
+.wall-photo-emoji {
+  font-size: 32px;
+  margin-bottom: 4px;
+}
+
+.wall-photo-venue {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--primary-strong);
+  margin-bottom: 2px;
+}
+
+.wall-photo-animal {
+  font-size: 11px;
+  color: var(--fg-muted);
+  margin-bottom: 6px;
+}
+
+.wall-photo-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.wall-photo-badge {
+  font-size: 10px;
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+.wall-photo-score {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.wall-photo-caption {
+  font-size: 11px;
+  color: var(--fg-muted);
+  line-height: 1.4;
+  margin-bottom: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.wall-photo-time {
+  font-size: 10px;
+  color: var(--fg-muted);
+  text-align: right;
+}
+
 @keyframes toastSlideIn {
   from {
     transform: translateY(-100%);
