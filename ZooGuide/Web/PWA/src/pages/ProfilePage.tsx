@@ -31,8 +31,24 @@ interface Summary {
   }>
 }
 
+interface Achievement {
+  id: string
+  name: string
+  description: string
+  icon: string
+  category: string
+  criteria_type: string
+  criteria_threshold: number
+  earned: boolean
+  progress: number
+  current_value: number
+  earned_at: string | null
+}
+
 export function ProfilePage({ user, onUserChange, onRouteOpen }: Props) {
   const [summary, setSummary] = useState<Summary | null>(null)
+  const [achievements, setAchievements] = useState<Achievement[]>([])
+  const [earnedCount, setEarnedCount] = useState(0)
   const [loading, setLoading] = useState(false)
   const [authOpen, setAuthOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -43,8 +59,10 @@ export function ProfilePage({ user, onUserChange, onRouteOpen }: Props) {
     setLoading(true)
     setError(null)
     try {
-      const s = await api.mySummary()
+      const [s, a] = await Promise.all([api.mySummary(), api.myAchievements()])
       setSummary(s)
+      setAchievements(a.achievements)
+      setEarnedCount(a.earned_count)
     } catch (e) {
       setError(e instanceof Error ? e.message : '加载失败')
     } finally {
@@ -175,16 +193,112 @@ export function ProfilePage({ user, onUserChange, onRouteOpen }: Props) {
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: '1fr 1fr',
-              gap: 8,
+              gridTemplateColumns: '1fr 1fr 1fr 1fr',
+              gap: 6,
               marginBottom: 14,
             }}
           >
-            <StatCard label="打卡次数" value={summary.stats.checkins_count} />
-            <StatCard label="去过的馆" value={summary.stats.venues_visited} />
-            <StatCard label="规划路线" value={summary.stats.routes_planned} />
-            <StatCard label="照片评价" value={summary.stats.photos_evaluated} />
+            <StatBlock label="打卡" value={summary.stats.checkins_count} />
+            <StatBlock label="馆" value={summary.stats.venues_visited} />
+            <StatBlock label="路线" value={summary.stats.routes_planned} />
+            <StatBlock label="出片" value={summary.stats.photos_evaluated} />
           </div>
+
+          {/* 活动成就 */}
+          {achievements.length > 0 && (
+            <Section
+              title={
+                <span>
+                  🏆 活动成就
+                  <span
+                    style={{
+                      fontSize: 11,
+                      color: 'var(--fg-muted)',
+                      fontWeight: 500,
+                      background: 'var(--bg)',
+                      padding: '2px 8px',
+                      borderRadius: 999,
+                      marginLeft: 8,
+                    }}
+                  >
+                    {earnedCount} / {achievements.length}
+                  </span>
+                </span>
+              }
+            >
+              {achievements.map((a) => (
+                <div
+                  key={a.id}
+                  className={`history-row achievement-row ${a.earned ? 'earned' : ''}`}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <div
+                      style={{
+                        fontSize: 24,
+                        opacity: a.earned ? 1 : 0.35,
+                        filter: a.earned ? 'none' : 'grayscale(1)',
+                      }}
+                    >
+                      {a.icon}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div
+                        className="history-title"
+                        style={{
+                          color: a.earned ? 'var(--primary-strong)' : 'var(--fg-muted)',
+                        }}
+                      >
+                        {a.name}
+                      </div>
+                      <div className="history-meta" style={{ fontSize: 11 }}>
+                        {a.description}
+                      </div>
+                      {!a.earned && a.progress > 0 && (
+                        <div
+                          style={{
+                            marginTop: 4,
+                            height: 4,
+                            background: 'var(--bg)',
+                            borderRadius: 2,
+                            overflow: 'hidden',
+                          }}
+                        >
+                          <div
+                            style={{
+                              height: '100%',
+                              width: `${a.progress}%`,
+                              background: 'var(--primary)',
+                              borderRadius: 2,
+                            }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                    {a.earned ? (
+                      <span
+                        style={{
+                          fontSize: 11,
+                          color: 'var(--accent)',
+                          fontWeight: 700,
+                        }}
+                      >
+                        ✓
+                      </span>
+                    ) : (
+                      <span
+                        style={{
+                          fontSize: 11,
+                          color: 'var(--fg-muted)',
+                        }}
+                      >
+                        🔒
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </Section>
+          )}
 
           {summary.recent_routes.length > 0 && (
             <Section title="🧭 最近规划的路线">
@@ -240,7 +354,8 @@ export function ProfilePage({ user, onUserChange, onRouteOpen }: Props) {
 
           {summary.recent_routes.length === 0 &&
             summary.recent_checkins.length === 0 &&
-            summary.recent_photos.length === 0 && (
+            summary.recent_photos.length === 0 &&
+            achievements.length === 0 && (
               <div
                 className="card"
                 style={{ textAlign: 'center', color: 'var(--fg-muted)' }}
@@ -258,7 +373,7 @@ export function ProfilePage({ user, onUserChange, onRouteOpen }: Props) {
   )
 }
 
-function StatCard({ label, value }: { label: string; value: number }) {
+function StatBlock({ label, value }: { label: string; value: number }) {
   return (
     <div
       style={{
@@ -276,7 +391,7 @@ function StatCard({ label, value }: { label: string; value: number }) {
   )
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children }: { title: React.ReactNode; children: React.ReactNode }) {
   return (
     <div style={{ marginBottom: 12 }}>
       <div

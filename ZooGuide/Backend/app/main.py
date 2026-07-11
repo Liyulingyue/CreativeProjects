@@ -382,7 +382,7 @@ def checkin(
     venue = data_loader.get_venue_by_id(req.venue_id)
     if not venue:
         raise HTTPException(status_code=404, detail="venue not found")
-    sid = req.session_id or str(uuid.uuid4())
+    sid = req.session_id or (f"u{current_user['id']}" if current_user else "anon")
     user_id = current_user["id"] if current_user else None
     record = db.insert_checkin(
         venue_id=venue.id,
@@ -390,18 +390,25 @@ def checkin(
         session_id=sid,
         user_id=user_id,
     )
-    # Count user's/session's checkins
     if user_id:
         items = db.list_checkins_by_user(user_id)
     else:
         items = db.list_checkins_by_session(sid)
     total_venues = len(data_loader.get_all_venues())
+    # Evaluate achievements (only for logged-in users)
+    new_achievements = []
+    if user_id:
+        try:
+            new_achievements = db.evaluate_achievements(user_id)
+        except Exception as e:
+            print(f"[warn] achievement eval failed: {e}")
     return {
         "ok": True,
         "session_id": sid,
         "total_checkins": len(items),
         "completion_rate": round(len(items) / total_venues, 3),
         "venue_name": venue.name,
+        "new_achievements": new_achievements,
     }
 
 
@@ -473,7 +480,67 @@ async def photo_evaluate(
         )
     except Exception as e:
         print(f"[warn] failed to persist photo_eval: {e}")
+
+    # Evaluate achievements (only for logged-in users)
+    if user_id:
+        try:
+            newly_earned = db.evaluate_achievements(user_id)
+            if newly_earned:
+                # Get details to return
+                catalog = {a["id"]: a for a in db.list_all_achievements()}
+                result["new_achievements"] = [
+                    {**catalog[aid], "earned_at": "just now"}
+                    for aid in newly_earned
+                    if aid in catalog
+                ]
+        except Exception as e:
+            print(f"[warn] achievement eval failed: {e}")
+
     return result
+
+
+class GpsCheckinRequest(BaseModel):
+    lat: float
+    lon: float
+    in_park: bool = False
+    nearest_venue_id: Optional[str] = None
+    nearest_venue_name: Optional[str] = None
+
+
+@app.post("/api/gps-checkin")
+def gps_checkin(
+    req: GpsCheckinRequest,
+    current_user: Optional[dict] = Depends(auth.get_current_user_optional),
+):
+    """Record a GPS-based check-in (for achievement tracking)."""
+    user_id = current_user["id"] if current_user else None
+    sid = f"u{user_id}" if user_id else "anon"
+    try:
+        db.insert_gps_checkin(
+            lat=req.lat,
+            lon=req.lon,
+            user_id=user_id,
+            session_id=sid,
+            nearest_venue_id=req.nearest_venue_id,
+            nearest_venue_name=req.nearest_venue_name,
+            in_park=req.in_park,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    newly_earned = []
+    if user_id:
+        try:
+            newly_earned = db.evaluate_achievements(user_id)
+        except Exception as e:
+            print(f"[warn] achievement eval failed: {e}")
+    return {"ok": True, "new_achievements": newly_earned}
+
+
+@app.get("/api/achievements")
+def list_achievements():
+    """Public list of all available achievements."""
+    return {"achievements": db.list_all_achievements()}
 
 
 @app.get("/api/photo-evaluate/{eval_id}")
@@ -562,6 +629,39 @@ def me_checkins(current_user: dict = Depends(auth.get_current_user)):
 def me_photo_evals(current_user: dict = Depends(auth.get_current_user)):
     items = db.list_photo_evals_by_user(current_user["id"])
     return {"user_id": current_user["id"], "evals": items}
+
+
+@app.get("/api/me/achievements")
+def me_achievements(current_user: dict = Depends(auth.get_current_user)):
+    """All achievements + which ones the user has earned."""
+    catalog = db.list_all_achievements()
+    earned = db.get_user_earned(current_user["id"])
+    earned_ids = {a["id"] for a in earned}
+    # Augment catalog with progress per achievement
+    stats = db.get_user_stats_for_achievements(current_user["id"])
+    items = []
+    for a in catalog:
+        is_earned = a["id"] in earned_ids
+        current = stats.get(a["criteria_type"], 0)
+        progress_pct = (
+            min(100, int(100 * current / a["criteria_threshold"])) if a["criteria_threshold"] > 0 else 0
+        )
+        earned_record = next((e for e in earned if e["id"] == a["id"]), None)
+        items.append(
+            {
+                **a,
+                "earned": is_earned,
+                "progress": progress_pct,
+                "current_value": current,
+                "earned_at": earned_record["earned_at"] if earned_record else None,
+            }
+        )
+    return {
+        "user_id": current_user["id"],
+        "stats": stats,
+        "achievements": items,
+        "earned_count": sum(1 for i in items if i["earned"]),
+    }
 
 
 @app.get("/api/me/routes")
