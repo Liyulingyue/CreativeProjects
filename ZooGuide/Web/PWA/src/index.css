@@ -1078,6 +1078,31 @@ textarea {
   background: rgba(0, 0, 0, 0.1);
 }
 
+.arc-icon-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--fg-muted);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.1s;
+}
+
+.arc-icon-btn:active {
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.arc-icon-btn.danger {
+  color: var(--warn);
+}
+
+.arc-icon-btn.danger:active {
+  background: rgba(185, 28, 28, 0.12);
+}
+
 .arc-summary {
   display: flex;
   align-items: center;

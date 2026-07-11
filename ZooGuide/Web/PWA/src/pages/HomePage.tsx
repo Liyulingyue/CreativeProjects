@@ -59,45 +59,12 @@ export function HomePage({
           route={route}
           onContinue={onContinueRoute}
           onClear={onClearRoute}
+          onReplan={onStartPlan}
         />
       )}
 
       {/* Hero card - STATE AWARE */}
-      {hasRoute ? (
-        <div
-          className="card"
-          style={{
-            background: 'linear-gradient(135deg, #fff, #fef9e7)',
-            padding: '20px 16px',
-          }}
-        >
-          <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: 40, marginBottom: 6 }}>🧭</div>
-            <h2
-              style={{
-                margin: '0 0 6px',
-                color: 'var(--primary-strong)',
-                fontSize: 18,
-              }}
-            >
-              想换条路线？
-            </h2>
-            <p
-              style={{
-                fontSize: 13,
-                color: 'var(--fg-muted)',
-                margin: '0 auto 14px',
-                maxWidth: 280,
-              }}
-            >
-              {prefs ? '保留上次偏好' : '调整偏好或换种逛法'}
-            </p>
-            <button className="btn btn-outline btn-full" onClick={onStartPlan}>
-              🔄 重新规划
-            </button>
-          </div>
-        </div>
-      ) : (
+      {!hasRoute && (
         <div
           className="card"
           style={{
@@ -219,10 +186,12 @@ function ActiveRouteCard({
   route,
   onContinue,
   onClear,
+  onReplan,
 }: {
   route: Route
   onContinue: () => void
   onClear: () => void
+  onReplan: () => void
 }) {
   const visited = (() => {
     try {
@@ -244,18 +213,30 @@ function ActiveRouteCard({
         <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--primary-strong)', letterSpacing: 0.5 }}>
           路线进行中
         </span>
-        <button
-          className="arc-clear"
-          onClick={(e) => {
-            e.stopPropagation()
-            if (confirm('确定丢弃当前路线？')) {
-              onClear()
-            }
-          }}
-          title="丢弃当前路线"
-        >
-          ✕
-        </button>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+          <button
+            className="arc-icon-btn"
+            onClick={(e) => {
+              e.stopPropagation()
+              onReplan()
+            }}
+            title="重新规划"
+          >
+            🔄
+          </button>
+          <button
+            className="arc-icon-btn danger"
+            onClick={(e) => {
+              e.stopPropagation()
+              if (confirm('确定丢弃当前路线？')) {
+                onClear()
+              }
+            }}
+            title="丢弃当前路线"
+          >
+            ✕
+          </button>
+        </div>
       </div>
 
       <div className="arc-summary" onClick={onContinue}>
