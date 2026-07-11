@@ -1038,12 +1038,12 @@ textarea {
 
 /* ----- ActiveRouteCard (HomePage main route) ----- */
 .active-route-card {
-  background: linear-gradient(135deg, var(--primary-soft), #fff);
+  background: #ffffff;
   border: 2px solid var(--primary);
   border-radius: 14px;
   padding: 14px 16px;
   margin-bottom: 14px;
-  box-shadow: 0 4px 16px rgba(45, 106, 79, 0.15);
+  box-shadow: 0 4px 16px rgba(45, 106, 79, 0.18);
 }
 
 .arc-header {
@@ -1059,13 +1059,14 @@ textarea {
   border-radius: 50%;
   background: var(--primary);
   animation: pulse 1.5s ease-in-out infinite;
+  flex-shrink: 0;
 }
 
 .arc-icon-btn {
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.05);
+  background: var(--bg);
   color: var(--fg-muted);
   font-size: 13px;
   display: flex;
@@ -1075,65 +1076,62 @@ textarea {
 }
 
 .arc-icon-btn:active {
-  background: rgba(0, 0, 0, 0.12);
+  background: var(--border);
 }
 
 .arc-icon-btn.danger {
   color: var(--warn);
 }
 
-.arc-icon-btn.danger:active {
-  background: rgba(185, 28, 28, 0.12);
-}
-
-/* Current stop highlight (focus) */
+/* Current stop highlight — solid dark green for max contrast */
 .arc-current-stop {
-  background: linear-gradient(135deg, var(--primary), var(--primary-strong));
-  color: white;
+  background: var(--primary-strong);
+  color: #ffffff;
   border-radius: 12px;
   padding: 12px 14px;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
   cursor: pointer;
 }
 
 .arc-cs-label {
   font-size: 10px;
-  opacity: 0.9;
+  color: rgba(255, 255, 255, 0.85);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   font-weight: 700;
-  margin-bottom: 2px;
+  margin-bottom: 4px;
 }
 
 .arc-cs-name {
   font-size: 18px;
   font-weight: 700;
-  line-height: 1.2;
+  color: #ffffff;
+  line-height: 1.25;
+  margin-bottom: 4px;
 }
 
 .arc-cs-time {
   font-size: 12px;
-  opacity: 0.85;
-  margin-top: 4px;
+  color: rgba(255, 255, 255, 0.92);
+  font-weight: 500;
 }
 
-/* Next stop preview */
+/* Next stop preview — clean white card with bold text */
 .arc-next-stop {
   background: var(--bg-elev);
-  border: 1px dashed var(--border);
+  border: 1px solid var(--primary);
   border-radius: 10px;
-  padding: 8px 12px;
+  padding: 10px 12px;
   margin-bottom: 10px;
-  font-size: 13px;
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 4px;
   align-items: center;
   cursor: pointer;
 }
 
 .arc-next-stop:active {
-  background: var(--bg);
+  background: var(--primary-soft);
 }
 
 .arc-next-stop.finish {
@@ -1147,51 +1145,51 @@ textarea {
 .arc-ns-label {
   font-size: 11px;
   color: var(--fg-muted);
+  font-weight: 600;
   flex-basis: 100%;
+  margin-bottom: 2px;
 }
 
 .arc-ns-name {
   color: var(--primary-strong);
-  font-weight: 600;
+  font-weight: 700;
+  font-size: 14px;
 }
 
 .arc-ns-time {
   color: var(--fg-muted);
-  font-weight: normal;
+  font-weight: 500;
   font-size: 12px;
+  margin-left: 4px;
+}
+
+/* Progress — clear contrast */
+.arc-progress-wrap {
+  margin-bottom: 12px;
 }
 
 .arc-progress {
-  position: relative;
-  margin-top: 4px;
-  margin-bottom: 12px;
-  height: 22px;
+  height: 8px;
   background: var(--bg);
-  border-radius: 11px;
+  border-radius: 4px;
   overflow: hidden;
   cursor: pointer;
+  border: 1px solid var(--border);
 }
 
 .arc-progress-bar {
   height: 100%;
-  background: linear-gradient(90deg, var(--primary), var(--primary-strong));
-  border-radius: 11px;
+  background: var(--primary);
+  border-radius: 4px;
   transition: width 0.4s;
 }
 
 .arc-progress-label {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
   font-size: 11px;
   font-weight: 600;
-  color: var(--primary-strong);
-  white-space: nowrap;
-}
-
-.arc-progress-bar:not([style*="width: 0%"]) ~ .arc-progress-label {
-  color: white;
+  color: var(--fg);
+  margin-top: 6px;
+  text-align: center;
 }
 
 .arc-header {
