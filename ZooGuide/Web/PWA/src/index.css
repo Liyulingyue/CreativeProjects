@@ -1221,6 +1221,42 @@ textarea {
   background: var(--bg);
 }
 
+/* ----- Highlight list (AboutHongshan) ----- */
+.highlight-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.highlight-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: var(--bg);
+  padding: 8px 10px;
+  border-radius: 8px;
+}
+
+.highlight-num {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: white;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.highlight-text {
+  font-size: 13px;
+  color: var(--fg);
+  line-height: 1.5;
+}
+
 /* ----- PlanFlow (fullscreen overlay) ----- */
 .fullscreen-flow {
   position: fixed;
