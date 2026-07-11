@@ -7,7 +7,11 @@ interface Props {
   currentStopIdx: number
   onMarkCurrent: (idx: number) => void
   onToggleVisited: (venueId: string) => void
-  onOpenStop: (idx: number) => void
+}
+
+interface AreaGroup {
+  area: string
+  stops: Array<{ stop: RouteStop; idx: number }>
 }
 
 export function CurrentRouteTab({
@@ -21,34 +25,124 @@ export function CurrentRouteTab({
   const total = stops.length
   const visitedCount = stops.filter((s) => visited.has(s.venue_id)).length
   const progress = total > 0 ? visitedCount / total : 0
+  const remainingCount = total - visitedCount
 
   const currentStop = stops[Math.min(currentStopIdx, total - 1)]
   const nextStop = stops[currentStopIdx + 1]
-  const remainingCount = total - visitedCount
 
   function handleVisitedAndAdvance(venueId: string) {
     onToggleVisited(venueId)
-    // Auto-advance: if this was the current stop and not last, move to next
     const idx = stops.findIndex((s) => s.venue_id === venueId)
     if (idx === currentStopIdx && idx < total - 1) {
       setTimeout(() => onMarkCurrent(idx + 1), 200)
     }
   }
 
+  // Group by area
+  const areaMap: Record<string, AreaGroup> = {}
+  stops.forEach((s, i) => {
+    const area = (s as any).area || '其他'
+    if (!areaMap[area]) areaMap[area] = { area, stops: [] }
+    areaMap[area].stops.push({ stop: s, idx: i })
+  })
+  const areaGroups = Object.values(areaMap)
+
   return (
     <div className="current-tab">
-      {/* ===== Top: Route Overview CARD (variant style) ===== */}
+      {/* ===== Section 1: Current progress + Next ===== */}
+      <div className="progress-card">
+        <div className="progress-header">
+          <div className="progress-step">
+            第 {currentStopIdx + 1} / {total} 馆
+          </div>
+          <div className="progress-percent">
+            {visitedCount}/{total} 已游览
+          </div>
+        </div>
+
+        <div className="progress-bar">
+          <div
+            className="progress-bar-fill"
+            style={{ width: `${progress * 100}%` }}
+          />
+        </div>
+
+        {/* Current stop */}
+        {currentStop && (
+          <div className="current-stop-card">
+            <div className="cs-header">
+              <span className="cs-num">{currentStopIdx + 1}</span>
+              <div style={{ flex: 1 }}>
+                <div className="cs-name">{currentStop.venue_name}</div>
+                <div className="cs-time">
+                  🕐 {currentStop.arrive_time} – {currentStop.leave_time} ·{' '}
+                  {currentStop.visit_minutes}min
+                </div>
+              </div>
+            </div>
+            {currentStop.narration && (
+              <div className="cs-narration">{currentStop.narration}</div>
+            )}
+            <div className="cs-actions">
+              <button
+                className={`cs-btn ${visited.has(currentStop.venue_id) ? 'on' : 'ghost'}`}
+                onClick={() => handleVisitedAndAdvance(currentStop.venue_id)}
+              >
+                {visited.has(currentStop.venue_id)
+                  ? '✓ 已游览'
+                  : '🦒 标记为已游览'}
+              </button>
+              {currentStop.rest_here && (
+                <span
+                  style={{
+                    fontSize: 11,
+                    color: 'var(--fg-muted)',
+                    display: 'flex',
+                    alignItems: 'center',
+                  }}
+                >
+                  🪑 歇脚点
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Next stop */}
+        {nextStop && (
+          <div className="next-stop">
+            <div className="ns-label">
+              ↓ 下一站 · 步行 {nextStop.walk_to_next_minutes}min
+            </div>
+            <div className="ns-name">
+              {nextStop.venue_name}
+              <span className="ns-time"> {nextStop.arrive_time}</span>
+            </div>
+          </div>
+        )}
+
+        {!nextStop && currentStopIdx === total - 1 && (
+          <div className="next-stop finish">
+            <div className="ns-label">🎉 已游览全部</div>
+            <div className="ns-name">完成今日探索 🎊</div>
+          </div>
+        )}
+      </div>
+
+      {/* ===== Section 2: 总览 (overview) ===== */}
       <div className="route-overview-card">
         <div className="roc-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1 }}>
-            <span style={{ fontSize: 24 }}>🧭</span>
+            <span style={{ fontSize: 22 }}>🧭</span>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 11, color: 'var(--fg-muted)' }}>当前路线</div>
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.85)' }}>
+                总览
+              </div>
               <div
                 style={{
                   fontSize: 14,
                   fontWeight: 700,
-                  color: 'var(--primary-strong)',
+                  color: 'white',
                   lineHeight: 1.3,
                 }}
               >
@@ -70,16 +164,6 @@ export function CurrentRouteTab({
           </div>
         </div>
 
-        {/* Progress */}
-        <div className="roc-progress">
-          <div className="roc-progress-bar" style={{ width: `${progress * 100}%` }} />
-          <div className="roc-progress-label">
-            {visitedCount}/{total} 已游览
-            {remainingCount > 0 && ` · 还剩 ${remainingCount} 馆`}
-          </div>
-        </div>
-
-        {/* Mini stops preview - inline list */}
         <div className="roc-stops-mini">
           {stops.map((s, i) => (
             <div
@@ -92,52 +176,74 @@ export function CurrentRouteTab({
             >
               <span className="roc-mini-num">{i + 1}</span>
               <span className="roc-mini-name">{s.venue_name}</span>
-              {visited.has(s.venue_id) && <span className="roc-mini-mark">✓</span>}
-              {i === currentStopIdx && <span className="roc-mini-mark here">📍</span>}
+              <span className="roc-mini-time">{s.arrive_time?.slice(0, 5)}</span>
+              {visited.has(s.venue_id) && <span className="roc-mini-mark visited">✓</span>}
+              {i === currentStopIdx && (
+                <span className="roc-mini-mark current">📍</span>
+              )}
             </div>
           ))}
         </div>
       </div>
 
-      {/* ===== Specific venues (detailed cards) ===== */}
-      <div className="stops-detail">
-        {stops.map((s, i) => (
-          <StopDetailCard
-            key={`${s.venue_id}-${i}`}
-            stop={s}
-            idx={i}
-            isVisited={visited.has(s.venue_id)}
-            isCurrent={i === currentStopIdx}
-            isNext={i === currentStopIdx + 1}
-            onMarkCurrent={() => onMarkCurrent(i)}
-            onToggleVisited={() => handleVisitedAndAdvance(s.venue_id)}
-          />
+      {/* ===== Section 3: 各区域单览 ===== */}
+      <div className="area-sections">
+        <div
+          style={{
+            fontSize: 12,
+            fontWeight: 700,
+            color: 'var(--primary-strong)',
+            marginBottom: 10,
+            padding: '4px 8px',
+            background: 'var(--primary-soft)',
+            borderRadius: 8,
+            display: 'inline-block',
+          }}
+        >
+          🗺️ 按区域查看
+        </div>
+        {areaGroups.map((group) => (
+          <div key={group.area} className="area-section">
+            <div className="area-section-header">
+              <span className="area-section-icon">📍</span>
+              <span className="area-section-name">{group.area}</span>
+              <span className="area-section-count">
+                {group.stops.length} 馆
+              </span>
+            </div>
+            {group.stops.map(({ stop, idx }) => {
+              const isVisited = visited.has(stop.venue_id)
+              const isCurrent = idx === currentStopIdx
+              return (
+                <AreaStopCard
+                  key={`${stop.venue_id}-${idx}`}
+                  stop={stop}
+                  idx={idx}
+                  isVisited={isVisited}
+                  isCurrent={isCurrent}
+                  onMarkCurrent={() => onMarkCurrent(idx)}
+                  onToggleVisited={() => handleVisitedAndAdvance(stop.venue_id)}
+                />
+              )
+            })}
+          </div>
         ))}
       </div>
 
-      {currentStop && remainingCount > 0 && (
-        <div className="next-stop-banner">
-          <div className="nsb-label">↓ 下一站 · 步行 {nextStop?.walk_to_next_minutes || 0}min</div>
-          <div className="nsb-name">{nextStop?.venue_name}</div>
-        </div>
-      )}
-
-      {currentStop && remainingCount === 0 && (
-        <div className="next-stop-banner finish">
-          <div className="nsb-label">🎉 已游览全部</div>
-          <div className="nsb-name">完成今日探索 🎊</div>
+      {remainingCount === 0 && (
+        <div className="finish-banner">
+          🎉 全部完成！期待下一次见面
         </div>
       )}
     </div>
   )
 }
 
-function StopDetailCard({
+function AreaStopCard({
   stop,
   idx,
   isVisited,
   isCurrent,
-  isNext,
   onMarkCurrent,
   onToggleVisited,
 }: {
@@ -145,7 +251,6 @@ function StopDetailCard({
   idx: number
   isVisited: boolean
   isCurrent: boolean
-  isNext: boolean
   onMarkCurrent: () => void
   onToggleVisited: () => void
 }) {
@@ -153,61 +258,55 @@ function StopDetailCard({
 
   return (
     <div
-      className={`stop-detail-card ${
-        isCurrent ? 'current' : isNext ? 'next' : isVisited ? 'visited' : ''
-      }`}
+      className={`area-stop-card ${isCurrent ? 'current' : ''} ${isVisited ? 'visited' : ''}`}
       onClick={() => setExpanded(!expanded)}
     >
-      <div className="sdc-header">
-        <div className="sdc-num">{idx + 1}</div>
-        <div className="sdc-body">
-          <div className="sdc-title">
-            {stop.venue_name}
-            {isCurrent && <span className="sdc-tag current">📍 当前</span>}
-            {isNext && <span className="sdc-tag next">↓ 下一站</span>}
-            {isVisited && <span className="sdc-tag visited">✓ 已游览</span>}
-            {stop.rest_here && <span className="sdc-tag rest">🪑 歇脚</span>}
-          </div>
-          <div className="sdc-meta">
-            🕐 {stop.arrive_time} – {stop.leave_time} ·{' '}
+      <div className="asc-header">
+        <div className="asc-num">{idx + 1}</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="asc-name">{stop.venue_name}</div>
+          <div className="asc-meta">
+            🕐 {stop.arrive_time?.slice(0, 5)} – {stop.leave_time?.slice(0, 5)} ·{' '}
             {stop.visit_minutes}min
-            {stop.walk_to_next_minutes > 0 &&
-              ` · 步行 ${stop.walk_to_next_minutes}min`}
+            {stop.rest_here && <span style={{ marginLeft: 4 }}>🪑</span>}
           </div>
         </div>
-        <div className="sdc-toggle">{expanded ? '−' : '+'}</div>
+        <div className="asc-tags">
+          {isCurrent && <span className="asc-tag current">📍 当前</span>}
+          {isVisited && <span className="asc-tag visited">✓</span>}
+        </div>
+        <div className="asc-toggle">{expanded ? '−' : '+'}</div>
       </div>
 
       {expanded && (
-        <>
+        <div className="asc-body" onClick={(e) => e.stopPropagation()}>
           {stop.narration && (
-            <div className="sdc-narration">{stop.narration}</div>
+            <div className="asc-narration">{stop.narration}</div>
           )}
-
           {stop.tips && stop.tips.length > 0 && (
-            <div className="sdc-tips">
+            <div className="asc-tips">
               {stop.tips.map((t, i) => (
-                <div key={i} className="sdc-tip">💡 {t}</div>
+                <div key={i} className="asc-tip">
+                  💡 {t}
+                </div>
               ))}
             </div>
           )}
-
-          <div className="sdc-actions" onClick={(e) => e.stopPropagation()}>
+          <div className="asc-actions">
             <button
-              className={`sdc-btn ${isCurrent ? 'on' : 'ghost'}`}
+              className={`asc-btn ${isCurrent ? 'on' : 'ghost'}`}
               onClick={onMarkCurrent}
-              title="标记为当前所在地"
             >
               📍 我在这里
             </button>
             <button
-              className={`sdc-btn visited-btn ${isVisited ? 'on' : 'primary'}`}
+              className={`asc-btn primary ${isVisited ? 'on' : ''}`}
               onClick={onToggleVisited}
             >
-              {isVisited ? '✓ 已游览' : '🦒 标记为已游览'}
+              {isVisited ? '✓ 已游览' : '🦒 已游览'}
             </button>
           </div>
-        </>
+        </div>
       )}
     </div>
   )
