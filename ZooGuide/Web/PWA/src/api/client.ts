@@ -70,9 +70,16 @@ export const api = {
     ),
   nearest: (lat: number, lon: number, top_k = 3) =>
     request<NearestResponse>(`/api/nearest?lat=${lat}&lon=${lon}&top_k=${top_k}`),
-  evaluatePhoto: async (file: File | Blob, filename = 'photo.jpg') => {
+  evaluatePhoto: async (
+    file: File | Blob,
+    filename = 'photo.jpg',
+    options?: { expectedVenueId?: string },
+  ) => {
     const form = new FormData()
     form.append('file', file, filename)
+    if (options?.expectedVenueId) {
+      form.append('expected_venue_id', options.expectedVenueId)
+    }
     const res = await fetch(`${BASE}/api/photo-evaluate`, {
       method: 'POST',
       body: form,
@@ -82,7 +89,7 @@ export const api = {
       const body = await res.json().catch(() => ({}))
       throw new Error(body.detail || `HTTP ${res.status}`)
     }
-    return res.json() as Promise<PhotoEvaluation>
+    return res.json() as Promise<PhotoEvaluation & { success?: boolean; failure_reason?: string }>
   },
 
   // Auth

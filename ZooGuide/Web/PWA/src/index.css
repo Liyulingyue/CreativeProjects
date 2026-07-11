@@ -2922,6 +2922,78 @@ textarea {
   text-align: right;
 }
 
+/* ----- Venue selector (PhotoFlow step 1) ----- */
+.venue-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.venue-selector-section {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.venue-selector-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: var(--primary-soft);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--primary-strong);
+}
+
+.venue-selector-count {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--fg-muted);
+  font-weight: 500;
+  background: var(--bg-elev);
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+.venue-selector-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 8px;
+}
+
+.venue-selector-tile {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  text-align: left;
+  transition: all 0.1s;
+}
+
+.venue-selector-tile:active {
+  background: var(--primary-soft);
+  border-color: var(--primary);
+  transform: scale(0.97);
+}
+
+.vst-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--primary-strong);
+}
+
+.vst-animals {
+  font-size: 10px;
+  color: var(--fg-muted);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @keyframes toastSlideIn {
   from {
     transform: translateY(-100%);
