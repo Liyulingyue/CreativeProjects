@@ -232,6 +232,32 @@ function EvaluationResult({
           marginBottom: 14,
         }}
       >
+        {/* Auto-checkin success banner */}
+        {evaluation.auto_checkin && (
+          <div
+            style={{
+              background: 'var(--primary)',
+              color: 'white',
+              padding: '8px 12px',
+              borderRadius: 8,
+              fontSize: 13,
+              fontWeight: 600,
+              marginBottom: 10,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+            }}
+          >
+            <span style={{ fontSize: 16 }}>✓</span>
+            <div>
+              已自动打卡「{evaluation.auto_checkin.venue_name}」
+              <div style={{ fontSize: 11, fontWeight: 400, opacity: 0.9, marginTop: 2 }}>
+                在「我的」和「路线」里都能看到
+              </div>
+            </div>
+          </div>
+        )}
+
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div style={{ fontSize: 13, color: 'var(--fg-muted)' }}>
             🐾 推测：<strong>{evaluation.animal_guess}</strong>

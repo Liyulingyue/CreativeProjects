@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import type { Venue } from '../types'
 import { api } from '../api/client'
 import { PhotoEvalDialog } from '../components/PhotoEvalDialog'
+import { useVisitedVenues, notifyVisitedChanged } from '../hooks/useVisitedVenues'
+import { saveVisited } from '../lib/storage'
 
 export function ActivityPage() {
   const [venues, setVenues] = useState<Venue[]>([])
@@ -9,14 +11,7 @@ export function ActivityPage() {
   const [locating, setLocating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [photoOpen, setPhotoOpen] = useState(false)
-  const [checkedIn, setCheckedIn] = useState<Set<string>>(() => {
-    try {
-      const raw = localStorage.getItem('zooguide:visited:v1')
-      return new Set(raw ? JSON.parse(raw) : [])
-    } catch {
-      return new Set()
-    }
-  })
+  const { visited: checkedIn } = useVisitedVenues()
 
   useEffect(() => {
     api.venues().then((d) => setVenues(d.venues)).catch(console.error)
@@ -53,8 +48,7 @@ export function ActivityPage() {
     const next = new Set(checkedIn)
     if (next.has(venueId)) next.delete(venueId)
     else next.add(venueId)
-    setCheckedIn(next)
-    localStorage.setItem('zooguide:visited:v1', JSON.stringify([...next]))
+    saveVisited(next) // triggers cross-component update via custom event
     // Optional: also POST to backend if logged in
     fetch('/api/checkin', {
       method: 'POST',
