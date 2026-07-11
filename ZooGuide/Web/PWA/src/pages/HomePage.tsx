@@ -12,6 +12,7 @@ interface Props {
   hasRoute: boolean
   onStartPlan: () => void
   onContinueRoute: () => void
+  onReplanFromScratch: () => void
   onSwitchTab: (tab: string) => void
   onClearRoute: () => void
 }
@@ -32,6 +33,7 @@ export function HomePage({
   hasRoute,
   onStartPlan,
   onContinueRoute,
+  onReplanFromScratch,
   onSwitchTab,
   onClearRoute,
 }: Props) {
@@ -54,12 +56,12 @@ export function HomePage({
   return (
     <div>
       {hasRoute && route && (
-        <ActiveRouteCard
-          route={route}
-          onContinue={onContinueRoute}
-          onClear={onClearRoute}
-          onReplan={onStartPlan}
-        />
+          <ActiveRouteCard
+            route={route}
+            onContinue={onContinueRoute}
+            onClear={onClearRoute}
+            onReplan={onReplanFromScratch}
+          />
       )}
 
       {/* Hero card */}

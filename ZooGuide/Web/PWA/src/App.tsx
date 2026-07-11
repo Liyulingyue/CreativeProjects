@@ -20,6 +20,7 @@ export default function App() {
   const [route, setRoute] = useState<Route | null>(null)
   const [user, setUser] = useState<AuthUser | null>(getStoredUser())
   const [planOpen, setPlanOpen] = useState(false)
+  const [planInitialStage, setPlanInitialStage] = useState<'quiz' | undefined>(undefined)
 
   useEffect(() => {
     api.meta().then(setMeta).catch(console.error)
@@ -54,10 +55,17 @@ export default function App() {
 
   function openPlan() {
     setPlanOpen(true)
+    setPlanInitialStage(undefined)
+  }
+
+  function openPlanAtQuiz() {
+    setPlanInitialStage('quiz')
+    setPlanOpen(true)
   }
 
   function closePlan() {
     setPlanOpen(false)
+    setPlanInitialStage(undefined)
   }
 
   function clearRoute() {
@@ -82,6 +90,7 @@ export default function App() {
             hasRoute={!!route}
             onStartPlan={openPlan}
             onContinueRoute={openPlan}
+            onReplanFromScratch={openPlanAtQuiz}
             onSwitchTab={handleTabChange}
             onClearRoute={clearRoute}
           />
@@ -103,6 +112,7 @@ export default function App() {
         <PlanFlow
           initialPrefs={prefs}
           externalRoute={route}
+          initialStage={planInitialStage}
           onClose={closePlan}
           onRouteChange={setRoute}
           onOpenChat={() => setTab('chat')}
