@@ -1192,6 +1192,37 @@ textarea {
   text-align: center;
 }
 
+/* Two side-by-side action buttons */
+.arc-cta-row {
+  display: flex;
+  gap: 8px;
+}
+
+.arc-cta-btn {
+  flex: 1;
+  padding: 10px 8px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 10px;
+}
+
+.arc-secondary {
+  background: var(--bg-elev);
+  color: var(--primary-strong);
+  border: 2px solid var(--primary);
+}
+
+.arc-secondary:active {
+  background: var(--primary-soft);
+  transform: scale(0.98);
+}
+
+.on-arc-secondary {
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+  border: 2px solid var(--primary);
+}
+
 .arc-header {
   display: flex;
   align-items: center;
