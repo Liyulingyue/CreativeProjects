@@ -47,6 +47,9 @@ export function CurrentRouteTab({
   })
   const areaGroups = Object.values(areaMap)
 
+  // Overview collapse state (default expanded)
+  const [overviewOpen, setOverviewOpen] = useState(true)
+
   return (
     <div className="current-tab">
       {/* ===== Section 1: Current progress + Next ===== */}
@@ -129,61 +132,52 @@ export function CurrentRouteTab({
         )}
       </div>
 
-      {/* ===== Section 2: 总览 (overview) ===== */}
+      {/* ===== Section 2: 总览 (overview, collapsible) ===== */}
       <div className="route-overview-card">
-        <div className="roc-header">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1 }}>
-            <span style={{ fontSize: 22 }}>🧭</span>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.85)' }}>
-                总览
-              </div>
-              <div
-                style={{
-                  fontSize: 14,
-                  fontWeight: 700,
-                  color: 'white',
-                  lineHeight: 1.3,
-                }}
-              >
-                {route.summary?.slice(0, 60) || '今天逛这些'}
-              </div>
+        <div className="roc-header" onClick={() => setOverviewOpen(!overviewOpen)}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
+            <span style={{ fontSize: 20 }}>🧭</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="roc-label">总览</div>
+              <div className="roc-summary">{route.summary?.slice(0, 60) || '今天逛这些'}</div>
             </div>
           </div>
-          <div className="roc-stats">
-            <div className="roc-stat">
-              <div className="roc-stat-num">{total}</div>
-              <div className="roc-stat-label">馆</div>
-            </div>
-            <div className="roc-stat">
-              <div className="roc-stat-num">
-                {Math.round(route.total_minutes / 60 * 10) / 10}
-              </div>
-              <div className="roc-stat-label">h</div>
-            </div>
+          <div className="roc-quickstats">
+            <span><strong>{total}</strong> 馆</span>
+            <span><strong>{Math.round(route.total_minutes / 60 * 10) / 10}</strong> h</span>
           </div>
+          <div className="roc-toggle">{overviewOpen ? '−' : '+'}</div>
         </div>
 
-        <div className="roc-stops-mini">
-          {stops.map((s, i) => (
-            <div
-              key={`${s.venue_id}-${i}`}
-              className={`roc-mini-stop ${visited.has(s.venue_id) ? 'visited' : ''} ${
-                i === currentStopIdx ? 'current' : ''
-              }`}
-              onClick={() => onMarkCurrent(i)}
-              title={`跳到第 ${i + 1} 馆`}
-            >
-              <span className="roc-mini-num">{i + 1}</span>
-              <span className="roc-mini-name">{s.venue_name}</span>
-              <span className="roc-mini-time">{s.arrive_time?.slice(0, 5)}</span>
-              {visited.has(s.venue_id) && <span className="roc-mini-mark visited">✓</span>}
-              {i === currentStopIdx && (
-                <span className="roc-mini-mark current">📍</span>
-              )}
+        {overviewOpen && (
+          <div className="roc-body">
+            <div className="roc-stops-mini">
+              {stops.map((s, i) => (
+                <div
+                  key={`${s.venue_id}-${i}`}
+                  className={`roc-mini-stop ${visited.has(s.venue_id) ? 'visited' : ''} ${
+                    i === currentStopIdx ? 'current' : ''
+                  }`}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onMarkCurrent(i)
+                  }}
+                  title={`跳到第 ${i + 1} 馆`}
+                >
+                  <span className="roc-mini-num">{i + 1}</span>
+                  <span className="roc-mini-name">{s.venue_name}</span>
+                  <span className="roc-mini-time">{s.arrive_time?.slice(0, 5)}</span>
+                  {visited.has(s.venue_id) && (
+                    <span className="roc-mini-mark visited">✓</span>
+                  )}
+                  {i === currentStopIdx && (
+                    <span className="roc-mini-mark current">📍</span>
+                  )}
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          </div>
+        )}
       </div>
 
       {/* ===== Section 3: 各区域单览 ===== */}
