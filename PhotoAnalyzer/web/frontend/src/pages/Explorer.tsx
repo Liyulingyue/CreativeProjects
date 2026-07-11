@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { listDirs, browseFiles, addDir, removeDir } from "@/api/files";
 import type { DirEntry, BrowseResult, FileNode } from "@/api/types";
 import { PhotoGrid } from "@/components/PhotoGrid";
+import { FolderPicker } from "@/components/FolderPicker";
 
 export function Explorer() {
   const navigate = useNavigate();
@@ -11,9 +12,7 @@ export function Explorer() {
   const [browse, setBrowse] = useState<BrowseResult | null>(null);
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
-  const [showAddDir, setShowAddDir] = useState(false);
-  const [newDirPath, setNewDirPath] = useState("");
-  const [newDirName, setNewDirName] = useState("");
+  const [showPicker, setShowPicker] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const loadDirs = useCallback(async () => {
@@ -43,15 +42,11 @@ export function Explorer() {
     if (activeDir) loadBrowse(activeDir);
   }, [activeDir, loadBrowse]);
 
-  const handleAddDir = async () => {
-    if (!newDirPath.trim()) return;
+  const handlePickFolder = async (path: string, name: string) => {
     try {
-      const dir = await addDir(newDirPath.trim(), newDirName.trim() || undefined);
+      const dir = await addDir(path, name);
       setDirs((prev) => [...prev, dir]);
       setActiveDir(dir);
-      setShowAddDir(false);
-      setNewDirPath("");
-      setNewDirName("");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to add dir");
     }
@@ -114,27 +109,8 @@ export function Explorer() {
         <div className="explorer__sidebar">
           <div className="explorer__dir-header">
             <h3>目录</h3>
-            <button className="btn btn--sm" onClick={() => setShowAddDir(true)}>+ 添加</button>
+            <button className="btn btn--sm" onClick={() => setShowPicker(true)}>+ 添加</button>
           </div>
-
-          {showAddDir && (
-            <div className="add-dir-form">
-              <input
-                placeholder="路径 (如 /mnt/nas/photos)"
-                value={newDirPath}
-                onChange={(e) => setNewDirPath(e.target.value)}
-              />
-              <input
-                placeholder="名称 (可选)"
-                value={newDirName}
-                onChange={(e) => setNewDirName(e.target.value)}
-              />
-              <div className="add-dir-form__actions">
-                <button className="btn btn--sm btn--primary" onClick={handleAddDir}>确定</button>
-                <button className="btn btn--sm" onClick={() => setShowAddDir(false)}>取消</button>
-              </div>
-            </div>
-          )}
 
           <div className="dir-list">
             {dirs.map((dir) => (
@@ -154,7 +130,7 @@ export function Explorer() {
                 </button>
               </div>
             ))}
-            {dirs.length === 0 && <div className="empty-hint">尚未添加目录，点击上方按钮添加</div>}
+            {dirs.length === 0 && <div className="empty-hint">尚未添加目录，点击上方按钮选择文件夹</div>}
           </div>
         </div>
 
@@ -224,6 +200,12 @@ export function Explorer() {
           )}
         </div>
       </div>
+
+      <FolderPicker
+        open={showPicker}
+        onClose={() => setShowPicker(false)}
+        onSelect={handlePickFolder}
+      />
     </div>
   );
 }
