@@ -975,6 +975,166 @@ textarea {
   white-space: nowrap;
 }
 
+/* ----- ActiveRouteCard (HomePage main route) ----- */
+.active-route-card {
+  background: linear-gradient(135deg, var(--primary-soft), #fff);
+  border: 2px solid var(--primary);
+  border-radius: 14px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  box-shadow: 0 4px 16px rgba(45, 106, 79, 0.15);
+}
+
+.arc-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.arc-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--primary);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.arc-clear {
+  margin-left: auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--fg-muted);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.arc-clear:active {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.arc-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.arc-icon {
+  font-size: 32px;
+  flex-shrink: 0;
+}
+
+.arc-cta {
+  background: var(--primary);
+  color: white;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.arc-progress {
+  margin-top: 12px;
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.arc-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--primary), var(--primary-strong));
+  border-radius: 3px;
+  transition: width 0.3s;
+}
+
+.arc-stops {
+  margin-top: 12px;
+  background: var(--bg-elev);
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.arc-stop {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  transition: background 0.1s;
+}
+
+.arc-stop:last-child {
+  border-bottom: none;
+}
+
+.arc-stop:active {
+  background: var(--bg);
+}
+
+.arc-stop.visited {
+  background: rgba(45, 106, 79, 0.06);
+}
+
+.arc-stop-num {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--border);
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.arc-stop.visited .arc-stop-num {
+  background: var(--primary);
+  color: white;
+}
+
+.arc-stop-name {
+  flex: 1;
+  color: var(--primary-strong);
+  font-weight: 500;
+}
+
+.arc-stop.visited .arc-stop-name {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
+.arc-stop-time {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.arc-stop-mark {
+  font-size: 12px;
+  color: var(--primary);
+  font-weight: 700;
+}
+
+.arc-stops-more {
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  text-align: center;
+  background: var(--bg);
+}
+
 /* ----- PlanFlow (fullscreen overlay) ----- */
 .fullscreen-flow {
   position: fixed;

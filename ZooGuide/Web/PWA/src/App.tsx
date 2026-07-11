@@ -60,6 +60,10 @@ export default function App() {
     setPlanOpen(false)
   }
 
+  function clearRoute() {
+    setRoute(null)
+  }
+
   return (
     <div className="app">
       <header className="app-header">
@@ -79,6 +83,7 @@ export default function App() {
             onStartPlan={openPlan}
             onContinueRoute={openPlan}
             onSwitchTab={handleTabChange}
+            onClearRoute={clearRoute}
           />
         )}
         {tab === 'chat' && (
