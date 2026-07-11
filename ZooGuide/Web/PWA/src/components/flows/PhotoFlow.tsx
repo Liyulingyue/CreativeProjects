@@ -7,14 +7,17 @@ interface Props {
   venue: Venue
   onClose: () => void
   onCheckinSuccess?: (venueId: string) => void
+  initialFile?: File
 }
 
 type Step = 'capture' | 'preview' | 'evaluating' | 'result' | 'error'
 
-export function PhotoFlow({ venue, onClose, onCheckinSuccess }: Props) {
-  const [step, setStep] = useState<Step>('capture')
-  const [file, setFile] = useState<File | null>(null)
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+export function PhotoFlow({ venue, onClose, onCheckinSuccess, initialFile }: Props) {
+  const [step, setStep] = useState<Step>(initialFile ? 'preview' : 'capture')
+  const [file, setFile] = useState<File | null>(initialFile ?? null)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(
+    initialFile ? URL.createObjectURL(initialFile) : null,
+  )
   const [evaluation, setEvaluation] = useState<any | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [usingCamera, setUsingCamera] = useState(false)

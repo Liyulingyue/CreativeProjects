@@ -511,6 +511,13 @@ a {
   padding: 20px;
 }
 
+.flow-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: var(--bg);
+}
+
 .modal {
   background: var(--bg-elev);
   border-radius: 18px;

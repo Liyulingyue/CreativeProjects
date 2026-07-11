@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import { AuthModal } from '../components/AuthModal'
 import { PlanFlow } from '../components/PlanFlow'
-import { getStoredUser, clearAuth, type AuthUser } from '../lib/storage'
+import { getStoredUser, clearAuth, loadPhotoLog, type AuthUser } from '../lib/storage'
 import type { Route } from '../types'
 
 interface Props {
@@ -190,19 +190,56 @@ export function ProfilePage({ user, onUserChange, onRouteOpen }: Props) {
 
       {summary && (
         <>
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: '1fr 1fr 1fr 1fr',
-              gap: 6,
-              marginBottom: 14,
-            }}
-          >
-            <StatBlock label="打卡" value={summary.stats.checkins_count} />
-            <StatBlock label="馆" value={summary.stats.venues_visited} />
-            <StatBlock label="路线" value={summary.stats.routes_planned} />
-            <StatBlock label="出片" value={summary.stats.photos_evaluated} />
-          </div>
+
+          <Section title="🧭 我的路线">
+            {summary.recent_routes.length > 0 ? (() => {
+              const r = summary.recent_routes[0]
+              return (
+                <div
+                  className="history-row"
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => setPlanOpen(true)}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <div style={{ flex: 1 }}>
+                      <div className="history-title">{r.summary?.slice(0, 40) || '路线'}</div>
+                      <div className="history-meta">
+                        {Math.round(r.total_minutes / 60 * 10) / 10}h ·{' '}
+                        {r.created_at?.slice(0, 10)}
+                      </div>
+                    </div>
+                    <span style={{ fontSize: 18, color: 'var(--primary)' }}>›</span>
+                  </div>
+                </div>
+              )
+            })() : (
+              <div style={{ textAlign: 'center', color: 'var(--fg-muted)', fontSize: 13, padding: 16 }}>
+                暂无路线
+              </div>
+            )}
+          </Section>
+
+          <Section title="📸 我的照片">
+            {(() => {
+              const photos = loadPhotoLog()
+              return photos.length > 0 ? (
+                photos.slice(0, 10).map((p) => (
+                  <div key={p.evaluation_id} className="history-row">
+                    <div className="history-title">
+                      🏅 {p.badge} · {p.matched_venue_name || p.animal_guess}
+                    </div>
+                    <div className="history-meta">
+                      {p.vibe_score}分 · {p.ts?.slice(0, 16).replace('T', ' ')}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div style={{ textAlign: 'center', color: 'var(--fg-muted)', fontSize: 13, padding: 16 }}>
+                  暂无照片
+                </div>
+              )
+            })()}
+          </Section>
 
           {/* 活动成就 */}
           {achievements.length > 0 && (
@@ -300,60 +337,7 @@ export function ProfilePage({ user, onUserChange, onRouteOpen }: Props) {
             </Section>
           )}
 
-          {summary.recent_routes.length > 0 && (
-            <Section title="🧭 最近规划的路线">
-              {summary.recent_routes.map((r) => (
-                <div
-                  key={r.id}
-                  className="history-row"
-                  style={{ cursor: 'pointer' }}
-                  onClick={() => setPlanOpen(true)}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <div style={{ flex: 1 }}>
-                      <div className="history-title">{r.summary?.slice(0, 40) || '路线'}</div>
-                      <div className="history-meta">
-                        {Math.round(r.total_minutes / 60 * 10) / 10}h ·{' '}
-                        {r.created_at?.slice(0, 10)}
-                      </div>
-                    </div>
-                    <span style={{ fontSize: 18, color: 'var(--primary)' }}>›</span>
-                  </div>
-                </div>
-              ))}
-            </Section>
-          )}
-
-          {summary.recent_checkins.length > 0 && (
-            <Section title="🦒 最近打卡">
-              {summary.recent_checkins.map((c, i) => (
-                <div key={i} className="history-row">
-                  <div className="history-title">{c.venue_name}</div>
-                  <div className="history-meta">
-                    {c.ts?.slice(0, 16).replace('T', ' ')}
-                  </div>
-                </div>
-              ))}
-            </Section>
-          )}
-
-          {summary.recent_photos.length > 0 && (
-            <Section title="📸 最近的出片">
-              {summary.recent_photos.map((p) => (
-                <div key={p.evaluation_id} className="history-row">
-                  <div className="history-title">
-                    🏅 {p.badge} · {p.matched_venue_name || p.animal_guess}
-                  </div>
-                  <div className="history-meta">
-                    {p.vibe_score}分 · {p.ts?.slice(0, 16).replace('T', ' ')}
-                  </div>
-                </div>
-              ))}
-            </Section>
-          )}
-
           {summary.recent_routes.length === 0 &&
-            summary.recent_checkins.length === 0 &&
             summary.recent_photos.length === 0 &&
             achievements.length === 0 && (
               <div

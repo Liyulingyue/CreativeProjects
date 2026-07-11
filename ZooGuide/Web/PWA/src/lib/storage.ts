@@ -43,8 +43,23 @@ export function loadVisited(): Set<string> {
 
 export function saveVisited(ids: Set<string>) {
   localStorage.setItem(VISITED_KEY, JSON.stringify([...ids]))
-  // Notify other components in same tab
   window.dispatchEvent(new Event('zooguide:visitedChanged'))
+}
+
+const ACTIVITY_VISITED_PREFIX = 'zooguide:activity:visited:'
+
+export function loadActivityVisited(activity: string): Set<string> {
+  try {
+    const raw = localStorage.getItem(ACTIVITY_VISITED_PREFIX + activity)
+    return new Set(raw ? JSON.parse(raw) : [])
+  } catch {
+    return new Set()
+  }
+}
+
+export function saveActivityVisited(activity: string, ids: Set<string>) {
+  localStorage.setItem(ACTIVITY_VISITED_PREFIX + activity, JSON.stringify([...ids]))
+  window.dispatchEvent(new Event('zooguide:activityVisitedChanged'))
 }
 
 // Recent photo evaluations (capped)
