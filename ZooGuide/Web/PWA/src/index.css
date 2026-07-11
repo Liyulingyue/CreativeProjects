@@ -1257,6 +1257,363 @@ textarea {
   line-height: 1.5;
 }
 
+/* ----- RouteView 3-tab toolbar (currently/更多/调整) ----- */
+.route-view {
+  padding-bottom: 60px; /* space for toolbar */
+}
+
+.route-toolbar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  background: rgba(255, 255, 255, 0.95);
+  border-top: 1px solid var(--border);
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
+  z-index: 50;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.06);
+  gap: 4px;
+}
+
+.rt-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 8px 4px;
+  border-radius: 10px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--fg-muted);
+  transition: background 0.15s, transform 0.1s;
+}
+
+.rt-btn:active {
+  transform: scale(0.96);
+}
+
+.rt-btn.on {
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+}
+
+.rt-icon {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.rt-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.route-header-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+/* ----- CurrentRouteTab ----- */
+.current-tab {
+  padding: 4px 0;
+}
+
+.progress-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  box-shadow: var(--shadow);
+}
+
+.progress-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.progress-step {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--primary-strong);
+}
+
+.progress-percent {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.progress-bar {
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--primary), var(--primary-strong));
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+.current-stop-card {
+  background: linear-gradient(135deg, var(--primary-soft), #fff);
+  border: 2px solid var(--primary);
+  border-radius: 12px;
+  padding: 14px;
+}
+
+.cs-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.cs-num {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: white;
+  font-size: 16px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.cs-name {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--primary-strong);
+}
+
+.cs-time {
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin-top: 2px;
+}
+
+.cs-narration {
+  background: var(--bg-elev);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--fg);
+  line-height: 1.5;
+  margin-bottom: 10px;
+  border-left: 3px solid var(--primary);
+}
+
+.cs-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.cs-btn {
+  flex: 1;
+  padding: 8px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--primary-strong);
+  cursor: pointer;
+}
+
+.cs-btn.primary {
+  background: var(--primary);
+  color: white;
+  border-color: var(--primary);
+}
+
+.cs-btn.ghost.on {
+  background: var(--primary);
+  color: white;
+  border-color: var(--primary);
+}
+
+.next-stop {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: var(--bg-elev);
+  border-radius: 10px;
+  border: 1px dashed var(--border);
+}
+
+.next-stop.finish {
+  border: 1px solid var(--primary);
+  background: var(--primary-soft);
+}
+
+.ns-label {
+  font-size: 11px;
+  color: var(--fg-muted);
+  margin-bottom: 4px;
+}
+
+.ns-name {
+  font-size: 14px;
+  color: var(--primary-strong);
+  font-weight: 600;
+}
+
+.ns-time {
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-weight: normal;
+  margin-left: 6px;
+}
+
+/* Overview list */
+.overview-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.overview-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--primary-strong);
+  margin-bottom: 10px;
+}
+
+.overview-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stop-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.stop-row:active {
+  background: var(--primary-soft);
+}
+
+.stop-row.current {
+  background: var(--primary-soft);
+  border: 1px solid var(--primary);
+}
+
+.stop-row.visited .stop-row-name {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+
+.stop-row-num {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--border);
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.stop-row.current .stop-row-num {
+  background: var(--primary);
+  color: white;
+}
+
+.stop-row.visited .stop-row-num {
+  background: #10b981;
+  color: white;
+}
+
+.stop-row-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.stop-row-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--primary-strong);
+}
+
+.stop-row-meta {
+  font-size: 11px;
+  color: var(--fg-muted);
+  margin-top: 2px;
+}
+
+.stop-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.stop-row-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: transparent;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.stop-row-btn:active {
+  background: var(--bg-elev);
+}
+
+.stop-row-mark {
+  color: #10b981;
+  font-weight: 700;
+  font-size: 14px;
+}
+
+/* ----- MoreRoutesTab ----- */
+.more-tab {
+  padding: 4px 0;
+}
+
+.variant-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+  margin-bottom: 12px;
+  box-shadow: var(--shadow);
+  transition: border-color 0.15s;
+}
+
+.variant-card:hover {
+  border-color: var(--primary);
+}
+
+/* ----- AdjustRouteTab ----- */
+.adjust-tab {
+  padding: 4px 0;
+}
+
 /* ----- PlanFlow (fullscreen overlay) ----- */
 .fullscreen-flow {
   position: fixed;

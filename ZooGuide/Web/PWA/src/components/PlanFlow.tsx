@@ -1,10 +1,9 @@
 import { useState } from 'react'
-import type { Route, UserPreference, Venue } from '../types'
+import type { Route, UserPreference } from '../types'
 import { api } from '../api/client'
-import { Questionnaire } from '../components/Questionnaire'
-import { RouteView } from '../components/RouteView'
-import { VariantsModal } from '../components/VariantsModal'
-import { ChatDialog } from '../components/ChatDialog'
+import { Questionnaire } from './Questionnaire'
+import { RouteView } from './RouteView'
+import { ChatDialog } from './ChatDialog'
 
 interface Props {
   initialPrefs: UserPreference | null
@@ -16,14 +15,19 @@ interface Props {
 
 type Stage = 'home' | 'quiz' | 'loading' | 'route' | 'error'
 
-export function PlanFlow({ initialPrefs, onClose, onRouteChange, onOpenChat, externalRoute }: Props) {
+export function PlanFlow({
+  initialPrefs,
+  onClose,
+  onRouteChange,
+  onOpenChat,
+  externalRoute,
+}: Props) {
   const [stage, setStage] = useState<Stage>(externalRoute ? 'route' : 'home')
   const [prefs, setPrefs] = useState<UserPreference | null>(initialPrefs)
   const [route, setRoute] = useState<Route | null>(externalRoute || null)
   const [error, setError] = useState<string | null>(null)
   const [fastMode, setFastMode] = useState(false)
   const [strictHours, setStrictHours] = useState(false)
-  const [variantsOpen, setVariantsOpen] = useState(false)
   const [chatOpen, setChatOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
 
@@ -52,10 +56,8 @@ export function PlanFlow({ initialPrefs, onClose, onRouteChange, onOpenChat, ext
     setStage('quiz')
   }
 
-  function pickVariant(r: Route) {
-    setRoute(r)
-    onRouteChange(r)
-    setStage('route')
+  function restartQuiz() {
+    setStage('quiz')
   }
 
   function handleRouteUpdate(r: Route) {
@@ -146,8 +148,7 @@ export function PlanFlow({ initialPrefs, onClose, onRouteChange, onOpenChat, ext
               setChatOpen(true)
               onOpenChat()
             }}
-            onVariants={() => setVariantsOpen(true)}
-            isFullscreen
+            onRestartQuiz={restartQuiz}
           />
         )}
 
@@ -181,13 +182,6 @@ export function PlanFlow({ initialPrefs, onClose, onRouteChange, onOpenChat, ext
           currentRoute={route}
           prefs={prefs}
           onNewRoute={(r) => handleRouteUpdate(r)}
-        />
-      )}
-      {variantsOpen && prefs && (
-        <VariantsModal
-          prefs={prefs}
-          onClose={() => setVariantsOpen(false)}
-          onPick={pickVariant}
         />
       )}
     </div>
