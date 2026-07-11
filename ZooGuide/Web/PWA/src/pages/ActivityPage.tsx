@@ -18,12 +18,12 @@ const ALL_BADGES = [
 
 export function ActivityPage() {
   const [venues, setVenues] = useState<Venue[]>([])
+  const [photoOpen, setPhotoOpen] = useState(false)
+  const [photoLog, setPhotoLog] = useState<PhotoLogEntry[]>(loadPhotoLog())
+  const [openEntry, setOpenEntry] = useState<string | null>(null)
   const [nearest, setNearest] = useState<any>(null)
   const [locating, setLocating] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [photoOpen, setPhotoOpen] = useState(false)
-  const [photoLog, setPhotoLog] = useState<PhotoLogEntry[]>(loadPhotoLog())
-  const [showAlt, setShowAlt] = useState(false)
   const { visited: checkedIn } = useVisitedVenues()
 
   useEffect(() => {
@@ -34,6 +34,10 @@ export function ActivityPage() {
     window.addEventListener('zooguide:photoLogChanged', onPhotoLogChanged)
     return () => window.removeEventListener('zooguide:photoLogChanged', onPhotoLogChanged)
   }, [])
+
+  function toggleEntry(id: string) {
+    setOpenEntry((cur) => (cur === id ? null : id))
+  }
 
   function quickCheckin(venueId: string) {
     const next = new Set(checkedIn)
@@ -79,19 +83,7 @@ export function ActivityPage() {
 
   return (
     <div>
-      {/* ===== Hero: 拍照打卡 ===== */}
-      <div className="activity-hero">
-        <div className="activity-hero-icon">📸</div>
-        <div className="activity-hero-title">拍照打卡</div>
-        <div className="activity-hero-sub">
-          拍一张动物照片 → AI 识别 → 自动打卡 + 出徽章
-        </div>
-        <button className="activity-cta-camera" onClick={() => setPhotoOpen(true)}>
-          📷 来一张
-        </button>
-      </div>
-
-      {/* ===== 统计 ===== */}
+      {/* ===== 顶部：今日统计 ===== */}
       <div className="activity-stats-grid">
         <StatCell value={photoLog.length} label="出片" />
         <StatCell value={checkedIn.size} label="已打卡" />
@@ -101,99 +93,53 @@ export function ActivityPage() {
         />
       </div>
 
-      {/* ===== 我的出片 (横向滚动缩略图) ===== */}
+      {/* ===== 打卡方式入口 ===== */}
       <div className="activity-section-title">
-        🖼 我的出片
-        <span className="activity-section-count">{photoLog.length} 张</span>
+        <span>🎯 打卡方式</span>
       </div>
-      {photoLog.length === 0 ? (
-        <div className="activity-empty">还没有出片，去拍第一张试试 ✨</div>
-      ) : (
-        <div className="activity-photos">
-          {photoLog.slice(0, 12).map((p) => (
-            <div key={p.evaluation_id} className="activity-photo">
-              <div className="activity-photo-emoji">
-                {venueEmoji(p.matched_venue_id)}
-              </div>
-              <div className="activity-photo-name">{p.matched_venue_name}</div>
-              <div className="activity-photo-badge">{p.badge}</div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* ===== 我的徽章 ===== */}
-      <div className="activity-section-title">
-        🏅 我的徽章
-        <span className="activity-section-count">
-          {unlockedBadges.size} / {ALL_BADGES.length}
-        </span>
-      </div>
-      <div className="badge-grid">
-        {ALL_BADGES.map((b) => {
-          const unlocked = unlockedBadges.has(b.id)
-          return (
-            <div
-              key={b.id}
-              className={`badge-tile ${unlocked ? '' : 'locked'}`}
-            >
-              <div className="badge-tile-icon">{b.emoji}</div>
-              <div className="badge-tile-body">
-                <div className="badge-tile-name">{b.name}</div>
-                <div className={`badge-tile-status ${unlocked ? 'unlocked' : ''}`}>
-                  {unlocked ? '✓ 已解锁' : '🔒 未解锁'}
-                </div>
-              </div>
-            </div>
-          )
-        })}
-      </div>
-
-      {/* ===== 备选工具 (折叠) ===== */}
-      <div className="activity-alt-section" style={{ marginTop: 14 }}>
-        <div className="activity-alt-header">
-          <div className="activity-alt-title">不拍照也能打卡？</div>
-          <button
-            className="activity-alt-toggle"
-            onClick={() => setShowAlt(!showAlt)}
-          >
-            {showAlt ? '−' : '+'}
-          </button>
-        </div>
-
-        {showAlt && (
-          <div className="activity-alt-content">
-            <p>📍 自动定位 · 必看馆网格快速打卡</p>
-
+      <div className="entry-list">
+        <EntryRow
+          icon="📷"
+          title="拍照打卡"
+          subtitle="拍一张动物照片，AI 识别并自动记录"
+          badge={photoLog.length > 0 ? `${photoLog.length} 张` : undefined}
+          isOpen={openEntry === 'photo'}
+          onClick={() => setPhotoOpen(true)}
+        />
+        <EntryRow
+          icon="🛰️"
+          title="GPS 定位"
+          subtitle="看看我在园区哪里，附近有什么馆"
+          badge={nearest ? `${nearest.results.length} 馆` : undefined}
+          isOpen={openEntry === 'gps'}
+          onClick={() => toggleEntry('gps')}
+        />
+        {openEntry === 'gps' && (
+          <div className="entry-expanded">
             <button
               className="activity-locate-btn"
               onClick={locate}
               disabled={locating}
             >
-              {locating ? '🛰️ 定位中…' : '🛰️ 自动定位当前位置'}
+              {locating ? '🛰️ 定位中…' : nearest ? '🛰️ 重新定位' : '🛰️ 开始定位'}
             </button>
-
-            {error && (
-              <div className="error-banner" style={{ marginBottom: 10, fontSize: 12 }}>
-                {error}
-              </div>
-            )}
-
+            {error && <div className="error-banner" style={{ fontSize: 12, marginBottom: 8 }}>{error}</div>}
             {nearest && (
-              <div style={{ marginBottom: 12 }}>
-                {nearest.results.slice(0, 3).map((r: any, i: number) => (
+              <div style={{ marginTop: 8 }}>
+                <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginBottom: 6 }}>
+                  {nearest.in_park_estimate ? '✅ 在园区内' : '⚠️ 可能在园区外'} ·{' '}
+                  距 {nearest.results[0]?.name}{' '}
+                  {nearest.results[0]?.distance_m >= 1000
+                    ? `${(nearest.results[0].distance_m / 1000).toFixed(1)}km`
+                    : `${Math.round(nearest.results[0]?.distance_m || 0)}m`}
+                </div>
+                {nearest.results.slice(0, 5).map((r: any, i: number) => (
                   <button
                     key={r.id}
                     className="nearest-row"
                     onClick={() => quickCheckin(r.id)}
                   >
-                    <div
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 8,
-                      }}
-                    >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <div className="nearest-rank">{i + 1}</div>
                       <div style={{ flex: 1, textAlign: 'left' }}>
                         <div className="nearest-name">{r.name}</div>
@@ -219,19 +165,21 @@ export function ActivityPage() {
                 ))}
               </div>
             )}
+          </div>
+        )}
 
-            <div
-              style={{
-                fontSize: 11,
-                fontWeight: 700,
-                color: 'var(--primary-strong)',
-                marginBottom: 6,
-              }}
-            >
-              ⭐ 必看馆快速打卡
-            </div>
+        <EntryRow
+          icon="🦒"
+          title="必看馆快速打卡"
+          subtitle="21 个明星馆一键打卡，不拍照也行"
+          badge={mustSee.length > 0 ? `${mustSee.length} 馆` : undefined}
+          isOpen={openEntry === 'quick'}
+          onClick={() => toggleEntry('quick')}
+        />
+        {openEntry === 'quick' && (
+          <div className="entry-expanded">
             <div className="activity-checkin-grid">
-              {mustSee.slice(0, 8).map((v) => (
+              {mustSee.map((v) => (
                 <button
                   key={v.id}
                   className={`activity-checkin-tile ${checkedIn.has(v.id) ? 'on' : ''}`}
@@ -252,6 +200,29 @@ export function ActivityPage() {
         )}
       </div>
 
+      {/* ===== 我的收集入口 ===== */}
+      <div className="activity-section-title">
+        <span>📚 我的收集</span>
+      </div>
+      <div className="entry-list">
+        <PhotoLogEntry
+          photos={photoLog}
+          onClick={() => toggleEntry('photos')}
+          isOpen={openEntry === 'photos'}
+        />
+        <BadgeLogEntry
+          unlocked={unlockedBadges}
+          onClick={() => toggleEntry('badges')}
+          isOpen={openEntry === 'badges'}
+        />
+        <CheckinLogEntry
+          checkedIn={checkedIn}
+          venues={venues}
+          onClick={() => toggleEntry('checkins')}
+          isOpen={openEntry === 'checkins'}
+        />
+      </div>
+
       <div
         className="card"
         style={{
@@ -260,7 +231,7 @@ export function ActivityPage() {
           color: 'var(--fg-muted)',
         }}
       >
-        💡 提示：每张出片都会算分（0-100），80+ 解锁对应馆徽章
+        💡 未来扩展：音频导览、动物知识问答、活动报名等都会以同样入口形式加进来
       </div>
 
       {photoOpen && <PhotoEvalDialog onClose={() => setPhotoOpen(false)} />}
@@ -274,6 +245,199 @@ function StatCell({ value, label }: { value: number; label: string }) {
       <div className="activity-stat-num">{value}</div>
       <div className="activity-stat-label">{label}</div>
     </div>
+  )
+}
+
+function EntryRow({
+  icon,
+  title,
+  subtitle,
+  badge,
+  isOpen,
+  onClick,
+}: {
+  icon: string
+  title: string
+  subtitle: string
+  badge?: string
+  isOpen?: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      className={`entry-row ${isOpen ? 'open' : ''}`}
+      onClick={onClick}
+    >
+      <div className="entry-row-icon">{icon}</div>
+      <div className="entry-row-body">
+        <div className="entry-row-title">{title}</div>
+        <div className="entry-row-subtitle">{subtitle}</div>
+      </div>
+      {badge && <div className="entry-row-badge">{badge}</div>}
+      <div className="entry-row-chevron">{isOpen ? '−' : '›'}</div>
+    </button>
+  )
+}
+
+function PhotoLogEntry({
+  photos,
+  onClick,
+  isOpen,
+}: {
+  photos: PhotoLogEntry[]
+  onClick: () => void
+  isOpen?: boolean
+}) {
+  return (
+    <>
+      <button
+        className={`entry-row ${isOpen ? 'open' : ''}`}
+        onClick={onClick}
+      >
+        <div className="entry-row-icon">🖼</div>
+        <div className="entry-row-body">
+          <div className="entry-row-title">我的出片</div>
+          <div className="entry-row-subtitle">所有拍照评价 + 徽章记录</div>
+        </div>
+        <div className="entry-row-badge">{photos.length} 张</div>
+        <div className="entry-row-chevron">{isOpen ? '−' : '›'}</div>
+      </button>
+      {isOpen && (
+        <div className="entry-expanded">
+          {photos.length === 0 ? (
+            <div className="activity-empty">还没有出片</div>
+          ) : (
+            <div className="entry-photo-list">
+              {photos.map((p) => (
+                <div key={p.evaluation_id} className="entry-photo-row">
+                  <div className="entry-photo-emoji">{venueEmoji(p.matched_venue_id)}</div>
+                  <div className="entry-photo-body">
+                    <div className="entry-photo-name">{p.matched_venue_name}</div>
+                    <div className="entry-photo-meta">
+                      {p.animal_guess} · {p.badge} · {p.vibe_score}分
+                    </div>
+                  </div>
+                  <div className="entry-photo-time">
+                    {new Date(p.ts).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  )
+}
+
+function BadgeLogEntry({
+  unlocked,
+  onClick,
+  isOpen,
+}: {
+  unlocked: Set<string>
+  onClick: () => void
+  isOpen?: boolean
+}) {
+  const count = unlocked.size
+  return (
+    <>
+      <button
+        className={`entry-row ${isOpen ? 'open' : ''}`}
+        onClick={onClick}
+      >
+        <div className="entry-row-icon">🏅</div>
+        <div className="entry-row-body">
+          <div className="entry-row-title">我的徽章</div>
+          <div className="entry-row-subtitle">已解锁 / 总徽章</div>
+        </div>
+        <div className="entry-row-badge">{count} / {ALL_BADGES.length}</div>
+        <div className="entry-row-chevron">{isOpen ? '−' : '›'}</div>
+      </button>
+      {isOpen && (
+        <div className="entry-expanded">
+          <div className="badge-grid">
+            {ALL_BADGES.map((b) => {
+              const isUnlocked = unlocked.has(b.id)
+              return (
+                <div
+                  key={b.id}
+                  className={`badge-tile ${isUnlocked ? '' : 'locked'}`}
+                >
+                  <div className="badge-tile-icon">{b.emoji}</div>
+                  <div className="badge-tile-body">
+                    <div className="badge-tile-name">{b.name}</div>
+                    <div className={`badge-tile-status ${isUnlocked ? 'unlocked' : ''}`}>
+                      {isUnlocked ? '✓ 已解锁' : '🔒 未解锁'}
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
+function CheckinLogEntry({
+  checkedIn,
+  venues,
+  onClick,
+  isOpen,
+}: {
+  checkedIn: Set<string>
+  venues: Venue[]
+  onClick: () => void
+  isOpen?: boolean
+}) {
+  const checked = venues.filter((v) => checkedIn.has(v.id))
+  return (
+    <>
+      <button
+        className={`entry-row ${isOpen ? 'open' : ''}`}
+        onClick={onClick}
+      >
+        <div className="entry-row-icon">📍</div>
+        <div className="entry-row-body">
+          <div className="entry-row-title">打卡记录</div>
+          <div className="entry-row-subtitle">所有已打卡的场馆</div>
+        </div>
+        <div className="entry-row-badge">{checkedIn.size} 馆</div>
+        <div className="entry-row-chevron">{isOpen ? '−' : '›'}</div>
+      </button>
+      {isOpen && (
+        <div className="entry-expanded">
+          {checked.length === 0 ? (
+            <div className="activity-empty">还没打卡过任何馆</div>
+          ) : (
+            <div className="entry-photo-list">
+              {checked.map((v) => (
+                <div key={v.id} className="entry-photo-row">
+                  <div className="entry-photo-emoji">📍</div>
+                  <div className="entry-photo-body">
+                    <div className="entry-photo-name">{v.name}</div>
+                    <div className="entry-photo-meta">{v.area}</div>
+                  </div>
+                  <button
+                    className="entry-photo-undo"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      const next = new Set(checkedIn)
+                      next.delete(v.id)
+                      saveVisited(next)
+                    }}
+                  >
+                    ↶
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </>
   )
 }
 

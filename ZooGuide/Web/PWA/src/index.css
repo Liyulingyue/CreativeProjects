@@ -2734,6 +2734,156 @@ textarea {
   background: var(--bg-elev);
 }
 
+/* ----- Entry list pattern (Activity page Hub) ----- */
+.entry-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.entry-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  transition: background 0.1s, transform 0.1s;
+}
+
+.entry-row:active {
+  background: var(--bg);
+  transform: scale(0.99);
+}
+
+.entry-row.open {
+  background: var(--primary-soft);
+  border-color: var(--primary);
+}
+
+.entry-row-icon {
+  font-size: 22px;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.entry-row.open .entry-row-icon {
+  background: var(--bg-elev);
+}
+
+.entry-row-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.entry-row-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--primary-strong);
+}
+
+.entry-row-subtitle {
+  font-size: 11px;
+  color: var(--fg-muted);
+  margin-top: 2px;
+}
+
+.entry-row-badge {
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+  padding: 3px 10px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.entry-row.open .entry-row-badge {
+  background: var(--bg-elev);
+}
+
+.entry-row-chevron {
+  font-size: 20px;
+  color: var(--fg-muted);
+  font-weight: 700;
+  flex-shrink: 0;
+  width: 16px;
+  text-align: right;
+}
+
+.entry-expanded {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-top: none;
+  border-radius: 0 0 12px 12px;
+  margin-top: -8px;
+  padding: 12px;
+  margin-bottom: 8px;
+}
+
+.entry-photo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.entry-photo-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-elev);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.entry-photo-emoji {
+  font-size: 24px;
+  flex-shrink: 0;
+}
+
+.entry-photo-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.entry-photo-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--primary-strong);
+}
+
+.entry-photo-meta {
+  font-size: 11px;
+  color: var(--fg-muted);
+  margin-top: 1px;
+}
+
+.entry-photo-time {
+  font-size: 11px;
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+
+.entry-photo-undo {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 16px;
+}
+
 .chat-context {
   display: flex;
   align-items: center;
