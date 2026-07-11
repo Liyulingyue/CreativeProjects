@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { Meta, Route, UserPreference, Venue } from '../types'
 import { api } from '../api/client'
-import { getStoredUser, type AuthUser } from '../lib/storage'
+import { type AuthUser } from '../lib/storage'
 
 interface Props {
   meta: Meta | null
@@ -13,6 +13,7 @@ interface Props {
   onStartPlan: () => void
   onContinueRoute: () => void
   onSwitchTab: (tab: string) => void
+  onClearRoute: () => void
 }
 
 interface RouteSummary {
@@ -22,7 +23,18 @@ interface RouteSummary {
   created_at: string
 }
 
-export function HomePage({ meta, venues, prefs, user, route, hasRoute, onStartPlan, onContinueRoute, onSwitchTab }: Props) {
+export function HomePage({
+  meta,
+  venues,
+  prefs,
+  user,
+  route,
+  hasRoute,
+  onStartPlan,
+  onContinueRoute,
+  onSwitchTab,
+  onClearRoute,
+}: Props) {
   const [recentRoute, setRecentRoute] = useState<RouteSummary | null>(null)
   const [stats, setStats] = useState<any>(null)
 
@@ -41,64 +53,87 @@ export function HomePage({ meta, venues, prefs, user, route, hasRoute, onStartPl
 
   return (
     <div>
-      {/* Active route banner - top priority, always visible if has route */}
-      {hasRoute && (
+      {/* Top route banner - shown only when active route exists */}
+      {hasRoute && route && (
+        <ActiveRouteCard
+          route={route}
+          onContinue={onContinueRoute}
+          onClear={onClearRoute}
+        />
+      )}
+
+      {/* Hero card - STATE AWARE */}
+      {hasRoute ? (
         <div
-          className="active-route-banner"
-          onClick={onContinueRoute}
-          role="button"
+          className="card"
+          style={{
+            background: 'linear-gradient(135deg, #fff, #fef9e7)',
+            padding: '20px 16px',
+          }}
         >
-          <div className="arb-pulse" />
-          <div className="arb-icon">🧭</div>
-          <div className="arb-info">
-            <div className="arb-label">当前路线进行中</div>
-            <div className="arb-meta">
-              {route?.stops.length} 馆 ·{' '}
-              {Math.round((route?.total_minutes || 0) / 60 * 10) / 10}h
-            </div>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 40, marginBottom: 6 }}>🧭</div>
+            <h2
+              style={{
+                margin: '0 0 6px',
+                color: 'var(--primary-strong)',
+                fontSize: 18,
+              }}
+            >
+              想换条路线？
+            </h2>
+            <p
+              style={{
+                fontSize: 13,
+                color: 'var(--fg-muted)',
+                margin: '0 auto 14px',
+                maxWidth: 280,
+              }}
+            >
+              {prefs ? '保留上次偏好' : '调整偏好或换种逛法'}
+            </p>
+            <button className="btn btn-outline btn-full" onClick={onStartPlan}>
+              🔄 重新规划
+            </button>
           </div>
-          <div className="arb-cta">
-            继续 →
-          </div>
+        </div>
+      ) : (
+        <div
+          className="card"
+          style={{
+            background: 'linear-gradient(135deg, var(--primary-soft), #fff)',
+            textAlign: 'center',
+            padding: '24px 16px',
+          }}
+        >
+          <div style={{ fontSize: 56, marginBottom: 6 }}>🦒</div>
+          <h2 style={{ margin: '0 0 8px', color: 'var(--primary-strong)', fontSize: 22 }}>
+            逛红山，不必人挤人
+          </h2>
+          <p
+            style={{
+              fontSize: 13,
+              color: 'var(--fg-muted)',
+              lineHeight: 1.6,
+              margin: '0 auto 18px',
+              maxWidth: 320,
+            }}
+          >
+            告诉我你的时间、体力、带没带娃、怕不怕晒，
+            我帮你定制一趟只属于你的红山路线。
+          </p>
+          <button className="btn btn-primary btn-full" onClick={onStartPlan}>
+            ✨ 开始定制我的路线
+          </button>
         </div>
       )}
 
-      {/* Hero */}
-      <div
-        className="card"
-        style={{
-          background: 'linear-gradient(135deg, var(--primary-soft), #fff)',
-          textAlign: 'center',
-          padding: '24px 16px',
-        }}
-      >
-        <div style={{ fontSize: 56, marginBottom: 6 }}>🦒</div>
-        <h2 style={{ margin: '0 0 8px', color: 'var(--primary-strong)', fontSize: 22 }}>
-          逛红山，不必人挤人
-        </h2>
-        <p
-          style={{
-            fontSize: 13,
-            color: 'var(--fg-muted)',
-            lineHeight: 1.6,
-            margin: '0 auto 18px',
-            maxWidth: 320,
-          }}
-        >
-          告诉我你的时间、体力、带没带娃、怕不怕晒，
-          我帮你定制一趟只属于你的红山路线。
-        </p>
-        <button className="btn btn-primary btn-full" onClick={onStartPlan}>
-          ✨ 开始定制我的路线
-        </button>
-      </div>
-
-      {/* Quick actions */}
+      {/* Quick actions - always available */}
       <div className="quick-actions">
         <button className="qa-card" onClick={() => onSwitchTab('chat')}>
           <div className="qa-icon">💬</div>
           <div className="qa-title">跟 Agent 聊聊</div>
-          <div className="qa-desc">说"想看熊猫/累了"</div>
+          <div className="qa-desc">{hasRoute ? '调当前路线' : '说"想看熊猫"'}</div>
         </button>
         <button className="qa-card" onClick={() => onSwitchTab('activity')}>
           <div className="qa-icon">📍</div>
@@ -117,7 +152,7 @@ export function HomePage({ meta, venues, prefs, user, route, hasRoute, onStartPl
         </button>
       </div>
 
-      {/* Recent route from DB (logged in) */}
+      {/* Recent route from DB (logged in, no active route) */}
       {user && recentRoute && !hasRoute && (
         <div
           className="card"
@@ -125,7 +160,7 @@ export function HomePage({ meta, venues, prefs, user, route, hasRoute, onStartPl
             background: 'linear-gradient(135deg, #fef3c7, #fff)',
             cursor: 'pointer',
           }}
-          onClick={onContinueRoute}
+          onClick={onStartPlan}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div style={{ fontSize: 24 }}>🕰️</div>
@@ -139,7 +174,7 @@ export function HomePage({ meta, venues, prefs, user, route, hasRoute, onStartPl
                 {recentRoute.created_at?.slice(0, 10)}
               </div>
             </div>
-            <span className="pill-btn primary">查看 →</span>
+            <span className="pill-btn primary">恢复 →</span>
           </div>
         </div>
       )}
@@ -176,6 +211,108 @@ export function HomePage({ meta, venues, prefs, user, route, hasRoute, onStartPl
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+function ActiveRouteCard({
+  route,
+  onContinue,
+  onClear,
+}: {
+  route: Route
+  onContinue: () => void
+  onClear: () => void
+}) {
+  const visited = (() => {
+    try {
+      const raw = localStorage.getItem('zooguide:visited:v1')
+      return new Set(raw ? JSON.parse(raw) : [])
+    } catch {
+      return new Set()
+    }
+  })()
+
+  const visitedInRoute = route.stops.filter((s) => visited.has(s.venue_id)).length
+  const total = route.stops.length
+  const progress = total > 0 ? visitedInRoute / total : 0
+
+  return (
+    <div className="active-route-card">
+      <div className="arc-header">
+        <div className="arc-pulse" />
+        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--primary-strong)', letterSpacing: 0.5 }}>
+          路线进行中
+        </span>
+        <button
+          className="arc-clear"
+          onClick={(e) => {
+            e.stopPropagation()
+            if (confirm('确定丢弃当前路线？')) {
+              onClear()
+            }
+          }}
+          title="丢弃当前路线"
+        >
+          ✕
+        </button>
+      </div>
+
+      <div className="arc-summary" onClick={onContinue}>
+        <div className="arc-icon">🧭</div>
+        <div style={{ flex: 1 }}>
+          <div
+            style={{
+              fontSize: 14,
+              fontWeight: 600,
+              color: 'var(--primary-strong)',
+              lineHeight: 1.4,
+            }}
+          >
+            {route.summary?.slice(0, 50) || '当前路线'}
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 4 }}>
+            {total} 馆 · {Math.round(route.total_minutes / 60 * 10) / 10}h
+            {visitedInRoute > 0 && ` · 已打卡 ${visitedInRoute}`}
+          </div>
+        </div>
+        <div className="arc-cta">查看 →</div>
+      </div>
+
+      {/* Progress bar */}
+      {visitedInRoute > 0 && (
+        <div className="arc-progress">
+          <div
+            className="arc-progress-bar"
+            style={{ width: `${progress * 100}%` }}
+          />
+        </div>
+      )}
+
+      {/* Stops preview */}
+      <div className="arc-stops">
+        {route.stops.slice(0, 5).map((s, i) => (
+          <div
+            key={`${s.venue_id}-${i}`}
+            className={`arc-stop ${visited.has(s.venue_id) ? 'visited' : ''}`}
+            onClick={onContinue}
+          >
+            <span className="arc-stop-num">{i + 1}</span>
+            <span className="arc-stop-name">{s.venue_name}</span>
+            <span className="arc-stop-time">
+              {s.arrive_time?.slice(0, 5) || ''}
+            </span>
+            {visited.has(s.venue_id) && <span className="arc-stop-mark">✓</span>}
+          </div>
+        ))}
+        {route.stops.length > 5 && (
+          <div className="arc-stops-more">…还有 {route.stops.length - 5} 馆</div>
+        )}
+      </div>
+
+      <button className="btn btn-primary btn-full" style={{ marginTop: 12 }} onClick={onContinue}>
+        📍 打开完整路线
+      </button>
     </div>
   )
 }
