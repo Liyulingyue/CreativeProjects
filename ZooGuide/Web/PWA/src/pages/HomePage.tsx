@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { Meta, Route, UserPreference, Venue } from '../types'
 import { api } from '../api/client'
-import { type AuthUser } from '../lib/storage'
+import { type AuthUser, loadActivityVisited, loadPhotoLog } from '../lib/storage'
 import { useVisitedVenues } from '../hooks/useVisitedVenues'
 
 interface Props {
@@ -40,6 +40,7 @@ export function HomePage({
 }: Props) {
   const [recentRoute, setRecentRoute] = useState<RouteSummary | null>(null)
   const [stats, setStats] = useState<any>(null)
+  const [earnedCount, setEarnedCount] = useState(0)
 
   useEffect(() => {
     if (!user) return
@@ -51,6 +52,10 @@ export function HomePage({
           setRecentRoute(s.recent_routes[0])
         }
       })
+      .catch(() => {})
+    api
+      .myAchievements()
+      .then((a) => setEarnedCount(a.earned_count))
       .catch(() => {})
   }, [user?.id])
 
@@ -149,18 +154,17 @@ export function HomePage({
       )}
 
       {/* Stats */}
-      {stats && (
+      {user && (
         <div
           className="card"
           style={{ cursor: 'pointer' }}
           onClick={() => onSwitchTab('me')}
         >
           <h3 className="card-title">📊 我的足迹</h3>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 6 }}>
-            <StatBlock label="打卡" value={stats.checkins_count} />
-            <StatBlock label="馆" value={stats.venues_visited} />
-            <StatBlock label="路线" value={stats.routes_planned} />
-            <StatBlock label="出片" value={stats.photos_evaluated} />
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 }}>
+            <StatBlock label="拍照打卡" value={loadActivityVisited('photo').size} />
+            <StatBlock label="照片" value={loadPhotoLog().length} />
+            <StatBlock label="成就" value={earnedCount} />
           </div>
         </div>
       )}
