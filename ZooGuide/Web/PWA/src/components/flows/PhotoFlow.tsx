@@ -4,32 +4,25 @@ import { api } from '../../api/client'
 import { loadPhotoLog, type PhotoLogEntry } from '../../lib/storage'
 
 interface Props {
-  venues: Venue[]
+  venue: Venue
   onClose: () => void
+  onCheckinSuccess?: (venueId: string) => void
 }
 
-type Step = 'select' | 'capture' | 'preview' | 'evaluating' | 'result' | 'error'
+type Step = 'capture' | 'preview' | 'evaluating' | 'result' | 'error'
 
-export function PhotoFlow({ venues, onClose }: Props) {
-  const [step, setStep] = useState<Step>('select')
-  const [venue, setVenue] = useState<Venue | null>(null)
+export function PhotoFlow({ venue, onClose, onCheckinSuccess }: Props) {
+  const [step, setStep] = useState<Step>('capture')
   const [file, setFile] = useState<File | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [evaluation, setEvaluation] = useState<any | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [usingCamera, setUsingCamera] = useState(false)
+  const [saved, setSaved] = useState(false)
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [history, setHistory] = useState<PhotoLogEntry[]>(loadPhotoLog())
-
-  // Group venues by area
-  const byArea: Record<string, Venue[]> = {}
-  venues.forEach((v) => {
-    const a = v.area || '其他'
-    if (!byArea[a]) byArea[a] = []
-    byArea[a].push(v)
-  })
 
   function pickFile(f: File) {
     if (f.size > 8 * 1024 * 1024) {
@@ -93,7 +86,7 @@ export function PhotoFlow({ venues, onClose }: Props) {
   }
 
   async function submit() {
-    if (!file || !venue) return
+    if (!file) return
     setStep('evaluating')
     setError(null)
     try {
@@ -117,6 +110,14 @@ export function PhotoFlow({ venues, onClose }: Props) {
         setHistory(loadPhotoLog())
       } catch {}
       setStep('result')
+
+      // If success, mark as visited in localStorage
+      if (result.success && result.matched_venue_id === venue.id) {
+        setSaved(true)
+        if (onCheckinSuccess) {
+          onCheckinSuccess(venue.id)
+        }
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : '评价失败')
       setStep('error')
@@ -129,12 +130,7 @@ export function PhotoFlow({ venues, onClose }: Props) {
     setPreviewUrl(null)
     setEvaluation(null)
     setError(null)
-    setStep('select')
-    setVenue(null)
-  }
-
-  function selectVenue(v: Venue) {
-    setVenue(v)
+    setSaved(false)
     setStep('capture')
   }
 
@@ -144,95 +140,49 @@ export function PhotoFlow({ venues, onClose }: Props) {
         <button
           className="flow-back"
           onClick={() => {
-            if (step === 'select') onClose()
-            else reset()
+            stopCamera()
+            onClose()
           }}
         >
           ←
         </button>
         <div className="flow-title">
-          {step === 'select' && '📷 选场馆'}
-          {step === 'capture' && `📷 拍 ${venue?.name?.slice(0, 6)}…`}
+          {step === 'capture' && `📷 拍 ${venue.name}`}
           {step === 'preview' && '📷 预览'}
-          {(step === 'evaluating' || step === 'result') && `📷 ${venue?.name?.slice(0, 6)}…`}
+          {step === 'evaluating' && '📷 验证中'}
+          {step === 'result' && (saved ? '✓ 打卡成功' : '📷 验证结果')}
           {step === 'error' && '📷 出错了'}
         </div>
         <div style={{ width: 36 }} />
       </header>
 
       <div className="flow-body">
-        {/* Step 1: Select venue */}
-        {step === 'select' && (
-          <>
-            <div
-              style={{
-                background: 'linear-gradient(135deg, #f59e0b, #d97706)',
-                color: 'white',
-                borderRadius: 14,
-                padding: 18,
-                textAlign: 'center',
-                marginBottom: 14,
-              }}
-            >
-              <div style={{ fontSize: 40, marginBottom: 6 }}>📷</div>
-              <div style={{ fontSize: 18, fontWeight: 700 }}>先选场馆</div>
-              <div style={{ fontSize: 12, opacity: 0.9, marginTop: 4 }}>
-                选好后拍照，AI 会验证是否对应
-              </div>
+        {/* Venue context (always shown) */}
+        <div
+          style={{
+            background: 'linear-gradient(135deg, var(--primary-soft), #fff)',
+            borderRadius: 12,
+            padding: '12px 14px',
+            marginBottom: 12,
+            border: '1px solid var(--primary)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+          }}
+        >
+          <div style={{ fontSize: 28 }}>{venueEmoji(venue.id)}</div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 11, color: 'var(--fg-muted)' }}>拍照打卡</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--primary-strong)' }}>
+              {venue.name}
             </div>
-
-            <div className="venue-selector">
-              {Object.entries(byArea).map(([area, list]) => (
-                <div key={area} className="venue-selector-section">
-                  <div className="venue-selector-header">
-                    <span>📍</span>
-                    <span>{area}</span>
-                    <span className="venue-selector-count">{list.length}</span>
-                  </div>
-                  <div className="venue-selector-grid">
-                    {list.map((v) => (
-                      <button
-                        key={v.id}
-                        className="venue-selector-tile"
-                        onClick={() => selectVenue(v)}
-                      >
-                        <div className="vst-name">{v.name}</div>
-                        <div className="vst-animals">{v.animals.slice(0, 2).join('·')}</div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-
-        {/* Step 2: Capture */}
-        {step === 'capture' && venue && !usingCamera && (
-          <div
-            style={{
-              background: 'linear-gradient(135deg, var(--primary-soft), #fff)',
-              borderRadius: 14,
-              padding: 16,
-              marginBottom: 14,
-              border: '2px solid var(--primary)',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <div style={{ fontSize: 36 }}>📍</div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 11, color: 'var(--fg-muted)' }}>已选场馆</div>
-                <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--primary-strong)' }}>
-                  {venue.name}
-                </div>
-                <div style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
-                  常见动物：{venue.animals.slice(0, 3).join('、')}
-                </div>
-              </div>
+            <div style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+              常见动物：{venue.animals.slice(0, 3).join(' · ')}
             </div>
           </div>
-        )}
+        </div>
 
+        {/* Step 1: Capture */}
         {step === 'capture' && !usingCamera && (
           <div style={{ display: 'flex', gap: 10 }}>
             <button
@@ -285,7 +235,7 @@ export function PhotoFlow({ venues, onClose }: Props) {
           </>
         )}
 
-        {/* Step 3: Preview + confirm */}
+        {/* Step 2: Preview + confirm */}
         {step === 'preview' && previewUrl && (
           <>
             <img
@@ -299,25 +249,23 @@ export function PhotoFlow({ venues, onClose }: Props) {
                 marginBottom: 12,
               }}
             />
-            {venue && (
-              <div
-                style={{
-                  background: 'var(--primary-soft)',
-                  borderRadius: 10,
-                  padding: 10,
-                  fontSize: 12,
-                  color: 'var(--primary-strong)',
-                  marginBottom: 12,
-                  textAlign: 'center',
-                }}
-              >
-                将验证是否匹配：<strong>{venue.name}</strong>
-              </div>
-            )}
+            <div
+              style={{
+                background: 'var(--primary-soft)',
+                borderRadius: 10,
+                padding: 10,
+                fontSize: 12,
+                color: 'var(--primary-strong)',
+                marginBottom: 12,
+                textAlign: 'center',
+              }}
+            >
+              将验证照片是否匹配：<strong>{venue.name}</strong>
+            </div>
             {error && <div className="error-banner" style={{ marginBottom: 10 }}>{error}</div>}
             <div className="modal-actions">
               <button className="btn btn-ghost btn-full" onClick={reset}>
-                重选
+                重拍
               </button>
               <button className="btn btn-primary btn-full" onClick={submit}>
                 ✨ 提交验证
@@ -331,15 +279,16 @@ export function PhotoFlow({ venues, onClose }: Props) {
             <div className="spinner" />
             正在让 Agent 验证照片…
             <div style={{ fontSize: 12, marginTop: 8 }}>
-              识别动物 + 比对「{venue?.name}」
+              识别动物 + 比对「{venue.name}」
             </div>
           </div>
         )}
 
-        {step === 'result' && evaluation && venue && (
+        {step === 'result' && evaluation && (
           <ResultCard
             evaluation={evaluation}
             expectedVenue={venue}
+            saved={saved}
             onAgain={reset}
             onClose={onClose}
           />
@@ -351,34 +300,10 @@ export function PhotoFlow({ venues, onClose }: Props) {
               <strong>评价失败：</strong>
               {error}
             </div>
-            <button className="btn btn-primary btn-full" onClick={() => setStep('capture')}>
+            <button className="btn btn-primary btn-full" onClick={reset}>
               重试
             </button>
           </>
-        )}
-
-        {step === 'select' && history.length > 0 && (
-          <div style={{ marginTop: 28 }}>
-            <div
-              style={{
-                fontSize: 12,
-                fontWeight: 700,
-                color: 'var(--primary-strong)',
-                marginBottom: 8,
-              }}
-            >
-              🖼 最近出片
-            </div>
-            <div className="activity-photos">
-              {history.slice(0, 6).map((p) => (
-                <div key={p.evaluation_id} className="activity-photo">
-                  <div className="activity-photo-emoji">📷</div>
-                  <div className="activity-photo-name">{p.matched_venue_name}</div>
-                  <div className="activity-photo-badge">{p.badge}</div>
-                </div>
-              ))}
-            </div>
-          </div>
         )}
       </div>
     </div>
@@ -388,15 +313,17 @@ export function PhotoFlow({ venues, onClose }: Props) {
 function ResultCard({
   evaluation,
   expectedVenue,
+  saved,
   onAgain,
   onClose,
 }: {
   evaluation: any
   expectedVenue: Venue
+  saved: boolean
   onAgain: () => void
   onClose: () => void
 }) {
-  const success = evaluation.success === true
+  const success = evaluation.success === true && evaluation.matched_venue_id === expectedVenue.id
   const actual = evaluation.matched_venue_name || evaluation.animal_guess || '未识别'
 
   return (
@@ -417,55 +344,23 @@ function ResultCard({
           <div style={{ fontSize: 32 }}>{success ? '✓' : '⚠️'}</div>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 16, fontWeight: 700 }}>
-              {success ? '打卡成功！' : '验证未通过'}
+              {success ? `打卡成功！` : '验证未通过'}
             </div>
             <div style={{ fontSize: 12, opacity: 0.95, marginTop: 2 }}>
               {success
                 ? `已为「${expectedVenue.name}」自动打卡`
-                : evaluation.failure_reason || `照片里没有 ${expectedVenue.name}`}
+                : (evaluation.failure_reason || `照片里没有 ${expectedVenue.name}（识别为：${actual}）`)}
             </div>
           </div>
         </div>
-        {success && evaluation.auto_checkin && (
-          <div
-            style={{
-              fontSize: 11,
-              marginTop: 6,
-              opacity: 0.9,
-            }}
-          >
-            🕓 {new Date(evaluation.auto_checkin.ts).toLocaleString('zh-CN')}
+        {saved && (
+          <div style={{ fontSize: 11, marginTop: 6, opacity: 0.9 }}>
+            🕓 {new Date().toLocaleString('zh-CN')}
           </div>
         )}
       </div>
 
-      {/* Achievement unlocked banner */}
-      {evaluation.new_achievements && evaluation.new_achievements.length > 0 && (
-        <div
-          style={{
-            background: 'linear-gradient(135deg, #fbbf24, #f59e0b)',
-            color: 'white',
-            padding: '10px 14px',
-            borderRadius: 10,
-            fontSize: 14,
-            fontWeight: 600,
-            marginBottom: 12,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-          }}
-        >
-          <span style={{ fontSize: 18 }}>🏆</span>
-          <div>
-            解锁新成就 ×{evaluation.new_achievements.length}
-            <div style={{ fontSize: 11, fontWeight: 400, opacity: 0.9, marginTop: 2 }}>
-              去「我的」查看详情
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Photo + AI analysis (always shown) */}
+      {/* Photo + AI analysis */}
       <div
         style={{
           background: 'linear-gradient(135deg, var(--primary-soft), #fff)',
@@ -530,13 +425,7 @@ function ResultCard({
 
       {evaluation.tips && evaluation.tips.length > 0 && (
         <div style={{ marginBottom: 14 }}>
-          <div
-            style={{
-              fontSize: 12,
-              color: 'var(--fg-muted)',
-              marginBottom: 4,
-            }}
-          >
+          <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginBottom: 4 }}>
             📷 拍摄小贴士
           </div>
           {evaluation.tips.map((t: string, i: number) => (
@@ -558,13 +447,33 @@ function ResultCard({
       )}
 
       <div className="modal-actions">
-        <button className="btn btn-ghost btn-full" onClick={onAgain}>
-          🔄 再拍一张
-        </button>
+        {!success && (
+          <button className="btn btn-ghost btn-full" onClick={onAgain}>
+            🔄 重拍
+          </button>
+        )}
         <button className="btn btn-primary btn-full" onClick={onClose}>
           ✓ 完成
         </button>
       </div>
     </div>
   )
+}
+
+function venueEmoji(venueId: string): string {
+  const map: Record<string, string> = {
+    panda: '🐼',
+    koala: '🐨',
+    gorilla: '🦍',
+    tiger: '🐯',
+    giraffe: '🦒',
+    meerkat: '🦝',
+    red_panda: '🐾',
+    tangjiahe: '🏔️',
+    hornbill: '🦜',
+    crane: '🦢',
+    monkey_mountain: '🐒',
+    bear: '🐻',
+  }
+  return map[venueId] || '📍'
 }
