@@ -90,37 +90,43 @@ export function ChatPage({ currentRoute, prefs, onRouteUpdate, onGoPlan, onGoAct
 
   return (
     <div className="chat-page">
-      {/* Context banner */}
+      {/* Context banner - prominent pill button */}
       <div className="chat-context">
         {currentRoute ? (
           <>
-            <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>当前路线</span>
-            <span
-              style={{
-                fontSize: 12,
-                fontWeight: 600,
-                color: 'var(--primary-strong)',
-                marginLeft: 6,
-              }}
-            >
-              {currentRoute.stops.length} 馆 ·{' '}
-              {Math.round(currentRoute.total_minutes / 60 * 10) / 10}h
-            </span>
-            <button
-              className="link-btn"
-              style={{ marginLeft: 'auto' }}
-              onClick={onGoPlan}
-            >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
+              <span style={{ fontSize: 22 }}>🧭</span>
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--fg-muted)' }}>当前路线</div>
+                <div
+                  style={{
+                    fontSize: 14,
+                    fontWeight: 700,
+                    color: 'var(--primary-strong)',
+                    lineHeight: 1.2,
+                  }}
+                >
+                  {currentRoute.stops.length} 馆 ·{' '}
+                  {Math.round(currentRoute.total_minutes / 60 * 10) / 10}h
+                </div>
+              </div>
+            </div>
+            <button className="pill-btn primary" onClick={onGoPlan}>
               打开完整路线
+              <span style={{ marginLeft: 4 }}>→</span>
             </button>
           </>
         ) : (
           <>
-            <span style={{ fontSize: 13, color: 'var(--fg-muted)' }}>
-              💡 你还没有规划路线，可以先
-            </span>
-            <button className="link-btn" onClick={onGoPlan}>
-              去规划 →
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
+              <span style={{ fontSize: 22 }}>💡</span>
+              <div style={{ fontSize: 13, color: 'var(--fg-muted)', lineHeight: 1.4 }}>
+                你还没有规划路线
+              </div>
+            </div>
+            <button className="pill-btn primary" onClick={onGoPlan}>
+              去规划
+              <span style={{ marginLeft: 4 }}>→</span>
             </button>
           </>
         )}
@@ -171,13 +177,48 @@ export function ChatPage({ currentRoute, prefs, onRouteUpdate, onGoPlan, onGoAct
                 </div>
               )}
               {m.route && (
-                <button
-                  className="link-btn"
-                  style={{ marginTop: 6, fontSize: 12 }}
-                  onClick={onGoPlan}
+                <div
+                  style={{
+                    marginTop: 8,
+                    padding: '10px 12px',
+                    background: 'var(--bg)',
+                    borderRadius: 10,
+                    border: '1px solid var(--primary)',
+                  }}
                 >
-                  📍 查看新路线 →
-                </button>
+                  <div
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 700,
+                      color: 'var(--primary-strong)',
+                      marginBottom: 4,
+                    }}
+                  >
+                    🧭 新路线已生成
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: 'var(--fg-muted)',
+                      lineHeight: 1.4,
+                      marginBottom: 8,
+                    }}
+                  >
+                    {m.route.summary?.slice(0, 60)}...
+                    <br />
+                    <strong style={{ color: 'var(--primary-strong)' }}>
+                      {m.route.stops.length} 馆 ·{' '}
+                      {Math.round(m.route.total_minutes / 60 * 10) / 10}h
+                    </strong>
+                  </div>
+                  <button
+                    className="pill-btn primary"
+                    style={{ width: '100%', justifyContent: 'center' }}
+                    onClick={onGoPlan}
+                  >
+                    📍 查看完整路线 →
+                  </button>
+                </div>
               )}
             </div>
           </div>

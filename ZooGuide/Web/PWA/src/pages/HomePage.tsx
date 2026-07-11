@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { Meta, UserPreference, Venue } from '../types'
+import type { Meta, Route, UserPreference, Venue } from '../types'
 import { api } from '../api/client'
 import { getStoredUser, type AuthUser } from '../lib/storage'
 
@@ -8,6 +8,7 @@ interface Props {
   venues: Venue[]
   prefs: UserPreference | null
   user: AuthUser | null
+  route: Route | null
   hasRoute: boolean
   onStartPlan: () => void
   onContinueRoute: () => void
@@ -21,7 +22,7 @@ interface RouteSummary {
   created_at: string
 }
 
-export function HomePage({ meta, venues, prefs, user, hasRoute, onStartPlan, onContinueRoute, onSwitchTab }: Props) {
+export function HomePage({ meta, venues, prefs, user, route, hasRoute, onStartPlan, onContinueRoute, onSwitchTab }: Props) {
   const [recentRoute, setRecentRoute] = useState<RouteSummary | null>(null)
   const [stats, setStats] = useState<any>(null)
 
@@ -40,6 +41,28 @@ export function HomePage({ meta, venues, prefs, user, hasRoute, onStartPlan, onC
 
   return (
     <div>
+      {/* Active route banner - top priority, always visible if has route */}
+      {hasRoute && (
+        <div
+          className="active-route-banner"
+          onClick={onContinueRoute}
+          role="button"
+        >
+          <div className="arb-pulse" />
+          <div className="arb-icon">🧭</div>
+          <div className="arb-info">
+            <div className="arb-label">当前路线进行中</div>
+            <div className="arb-meta">
+              {route?.stops.length} 馆 ·{' '}
+              {Math.round((route?.total_minutes || 0) / 60 * 10) / 10}h
+            </div>
+          </div>
+          <div className="arb-cta">
+            继续 →
+          </div>
+        </div>
+      )}
+
       {/* Hero */}
       <div
         className="card"
@@ -94,33 +117,40 @@ export function HomePage({ meta, venues, prefs, user, hasRoute, onStartPlan, onC
         </button>
       </div>
 
-      {/* Continue last route */}
-      {(hasRoute || recentRoute) && (
-        <div className="card" style={{ background: 'var(--primary-soft)', border: 'none' }}>
+      {/* Recent route from DB (logged in) */}
+      {user && recentRoute && !hasRoute && (
+        <div
+          className="card"
+          style={{
+            background: 'linear-gradient(135deg, #fef3c7, #fff)',
+            cursor: 'pointer',
+          }}
+          onClick={onContinueRoute}
+        >
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{ fontSize: 24 }}>🧭</div>
+            <div style={{ fontSize: 24 }}>🕰️</div>
             <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600, color: 'var(--primary-strong)', fontSize: 14 }}>
-                {hasRoute ? '当前有未完成的路线' : '最近规划的路线'}
+              <div style={{ fontWeight: 700, color: 'var(--primary-strong)', fontSize: 14 }}>
+                上次规划的路线
               </div>
               <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 2 }}>
-                {recentRoute ? `${Math.round(recentRoute.total_minutes / 60 * 10) / 10}h · ${recentRoute.created_at?.slice(0, 10)}` : '点开继续'}
+                {recentRoute.summary?.slice(0, 40)} ·{' '}
+                {Math.round(recentRoute.total_minutes / 60 * 10) / 10}h ·{' '}
+                {recentRoute.created_at?.slice(0, 10)}
               </div>
             </div>
-            <button
-              className="btn btn-primary"
-              style={{ padding: '8px 14px', fontSize: 13 }}
-              onClick={onContinueRoute}
-            >
-              查看
-            </button>
+            <span className="pill-btn primary">查看 →</span>
           </div>
         </div>
       )}
 
       {/* Stats (logged in) */}
       {stats && (
-        <div className="card">
+        <div
+          className="card"
+          style={{ cursor: 'pointer' }}
+          onClick={() => onSwitchTab('me')}
+        >
           <h3 className="card-title">📊 我的足迹</h3>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 6 }}>
             <StatBlock label="打卡" value={stats.checkins_count} />
