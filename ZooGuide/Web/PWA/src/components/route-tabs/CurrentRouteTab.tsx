@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { Route, RouteStop } from '../../types'
+import { useVisitedVenues } from '../../hooks/useVisitedVenues'
 
 interface Props {
   route: Route
@@ -20,7 +21,7 @@ export function CurrentRouteTab({
   onMarkCurrent,
   onToggleVisited,
 }: Props) {
-  const visited = loadVisited()
+  const { visited } = useVisitedVenues()
   const stops: RouteStop[] = route.stops
   const total = stops.length
   const visitedCount = stops.filter((s) => visited.has(s.venue_id)).length
@@ -261,7 +262,7 @@ function AreaStopCard({
   )
 }
 
-function loadVisited(): Set<string> {
+function loadVisitedFn(): Set<string> {
   try {
     const raw = localStorage.getItem('zooguide:visited:v1')
     return new Set(raw ? JSON.parse(raw) : [])

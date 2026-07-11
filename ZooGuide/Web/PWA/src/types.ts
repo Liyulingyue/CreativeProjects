@@ -133,6 +133,13 @@ export interface NearestResponse {
   results: NearestResult[]
 }
 
+export interface AutoCheckin {
+  id: number
+  venue_id: string
+  venue_name: string
+  ts: string
+}
+
 export interface PhotoEvaluation {
   evaluation_id: string
   animal_guess: string
@@ -149,4 +156,5 @@ export interface PhotoEvaluation {
   fallback_reason?: string
   image_path?: string
   ts: string
+  auto_checkin?: AutoCheckin  // 新增：自动打卡结果
 }

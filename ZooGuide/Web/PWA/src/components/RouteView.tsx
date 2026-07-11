@@ -4,6 +4,7 @@ import { saveVisited } from '../lib/storage'
 import { CurrentRouteTab } from './route-tabs/CurrentRouteTab'
 import { MoreRoutesTab } from './route-tabs/MoreRoutesTab'
 import { AdjustRouteTab } from './route-tabs/AdjustRouteTab'
+import { useVisitedVenues } from '../hooks/useVisitedVenues'
 
 interface Props {
   route: Route
@@ -32,8 +33,8 @@ export function RouteView({
     } catch {}
     return 0
   })
-  const [visited, setVisited] = useState<Set<string>>(loadVisited())
   const [subTab, setSubTab] = useState<SubTab>('current')
+  const { visited } = useVisitedVenues()
 
   function persistCurrentStop(idx: number) {
     setCurrentStopIdx(idx)
@@ -46,7 +47,6 @@ export function RouteView({
     const next = new Set(visited)
     if (next.has(venueId)) next.delete(venueId)
     else next.add(venueId)
-    setVisited(next)
     saveVisited(next)
   }
 

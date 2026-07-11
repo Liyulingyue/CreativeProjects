@@ -31,11 +31,11 @@ export function getSessionId(): string {
 }
 
 const VISITED_KEY = 'zooguide:visited:v1'
+
 export function loadVisited(): Set<string> {
   try {
     const raw = localStorage.getItem(VISITED_KEY)
-    if (!raw) return new Set()
-    return new Set(JSON.parse(raw))
+    return new Set(raw ? JSON.parse(raw) : [])
   } catch {
     return new Set()
   }
@@ -43,6 +43,8 @@ export function loadVisited(): Set<string> {
 
 export function saveVisited(ids: Set<string>) {
   localStorage.setItem(VISITED_KEY, JSON.stringify([...ids]))
+  // Notify other components in same tab
+  window.dispatchEvent(new Event('zooguide:visitedChanged'))
 }
 
 const TOKEN_KEY = 'zooguide:token:v1'

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { Meta, Route, UserPreference, Venue } from '../types'
 import { api } from '../api/client'
 import { type AuthUser } from '../lib/storage'
+import { useVisitedVenues } from '../hooks/useVisitedVenues'
 
 interface Props {
   meta: Meta | null
@@ -333,14 +334,7 @@ function ActiveRouteCard({
   onClear: () => void
   onReplan: () => void
 }) {
-  const visited = (() => {
-    try {
-      const raw = localStorage.getItem('zooguide:visited:v1')
-      return new Set(raw ? JSON.parse(raw) : [])
-    } catch {
-      return new Set()
-    }
-  })()
+  const { visited } = useVisitedVenues()
 
   // 找当前所在馆（优先从 localStorage 读取，否则第一个未游览的）
   let currentIdx: number
