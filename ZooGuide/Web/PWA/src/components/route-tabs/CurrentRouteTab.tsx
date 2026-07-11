@@ -37,11 +37,10 @@ export function CurrentRouteTab({
     }
   }
 
-  // Group by area - 缺失 area 的 stop 单独成组但用更友好的标题
+  // Group by area - 缺失 area 的 stop 用友好标题归并（不显示"其他"标签）
   const areaMap: Record<string, AreaGroup> = {}
   stops.forEach((s, i) => {
-    const area = (s as any).area?.trim() || ''
-    if (!area) return // skip venues without area (shouldn't happen in real data)
+    const area = (s as any).area?.trim() || '已规划场馆'
     if (!areaMap[area]) areaMap[area] = { area, stops: [] }
     areaMap[area].stops.push({ stop: s, idx: i })
   })
