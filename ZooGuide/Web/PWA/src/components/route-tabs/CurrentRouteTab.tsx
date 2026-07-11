@@ -37,10 +37,11 @@ export function CurrentRouteTab({
     }
   }
 
-  // Group by area
+  // Group by area - 缺失 area 的 stop 单独成组但用更友好的标题
   const areaMap: Record<string, AreaGroup> = {}
   stops.forEach((s, i) => {
-    const area = (s as any).area || '其他'
+    const area = (s as any).area?.trim() || ''
+    if (!area) return // skip venues without area (shouldn't happen in real data)
     if (!areaMap[area]) areaMap[area] = { area, stops: [] }
     areaMap[area].stops.push({ stop: s, idx: i })
   })
@@ -140,26 +141,24 @@ export function CurrentRouteTab({
           className="avc-header"
           onClick={() => setAreaViewOpen(!areaViewOpen)}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
-            <span style={{ fontSize: 22 }}>🧭</span>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="avc-label">总览 · 按区域查看</div>
-              <div className="avc-summary">
-                {route.summary?.slice(0, 50) || '今天逛这些'}
-              </div>
+          <div className="avc-header-top">
+            <span style={{ fontSize: 20 }}>🧭</span>
+            <div className="avc-label">总览 · 按区域查看</div>
+            <div className="avc-quickstats">
+              <span className="avc-stat-pill">
+                <strong>{total}</strong>
+                <span>馆</span>
+              </span>
+              <span className="avc-stat-pill">
+                <strong>{Math.round(route.total_minutes / 60 * 10) / 10}</strong>
+                <span>h</span>
+              </span>
             </div>
+            <div className="avc-toggle">{areaViewOpen ? '−' : '+'}</div>
           </div>
-          <div className="avc-quickstats">
-            <span className="avc-stat-pill">
-              <strong>{total}</strong>
-              <span>馆</span>
-            </span>
-            <span className="avc-stat-pill">
-              <strong>{Math.round(route.total_minutes / 60 * 10) / 10}</strong>
-              <span>h</span>
-            </span>
+          <div className="avc-summary">
+            {route.summary || '今天逛这些'}
           </div>
-          <div className="avc-toggle">{areaViewOpen ? '−' : '+'}</div>
         </div>
 
         {areaViewOpen && (
