@@ -452,9 +452,15 @@ async def photo_evaluate(
     file: UploadFile = File(...),
     session_id: Optional[str] = None,
     auto_checkin: bool = True,
+    expected_venue_id: Optional[str] = None,
     current_user: Optional[dict] = Depends(auth.get_current_user_optional),
 ):
-    """Upload a photo, get a fun evaluation + auto-checkin."""
+    """Upload a photo, get a fun evaluation + auto-checkin.
+
+    If expected_venue_id is provided, verifies the photo matches that venue
+    and returns a 'success' field. If photo doesn't match, still evaluates
+    but doesn't auto-checkin (user must select correct venue).
+    """
     contents = await file.read()
     if len(contents) > 8 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="file too large (max 8MB)")
@@ -464,29 +470,79 @@ async def photo_evaluate(
     path = photo.save_photo(contents, suffix)
     user_id = current_user["id"] if current_user else None
     sid = session_id or (f"u{user_id}" if user_id else "anon")
-    result = photo.evaluate_photo(
-        path,
-        user_id=user_id,
-        session_id=sid,
-        auto_checkin=auto_checkin,
-    )
-    try:
-        db.insert_photo_eval(
-            evaluation_id=result["evaluation_id"],
-            payload=result,
-            image_path=result.get("image_path"),
-            session_id=sid,
-            user_id=user_id,
-        )
-    except Exception as e:
-        print(f"[warn] failed to persist photo_eval: {e}")
 
-    # Evaluate achievements (only for logged-in users)
-    if user_id:
+    # Build expected venue context for LLM
+    expected_venue = None
+    if expected_venue_id:
+        expected_venue = data_loader.get_venue_dict_by_id(expected_venue_id)
+        if expected_venue:
+            result = photo.evaluate_photo_with_expected(
+                path,
+                user_id=user_id,
+                session_id=sid,
+                auto_checkin=False,  # we'll handle checkin based on success
+                expected_venue=expected_venue,
+            )
+        else:
+            result = photo.evaluate_photo(
+                path,
+                user_id=user_id,
+                session_id=sid,
+                auto_checkin=auto_checkin,
+            )
+    else:
+        result = photo.evaluate_photo(
+            path,
+            user_id=user_id,
+            session_id=sid,
+            auto_checkin=auto_checkin,
+        )
+
+# Determine success: matched_venue_id == expected_venue_id
+    if expected_venue_id:
+        matched = result.get("matched_venue_id") == expected_venue_id
+        result["success"] = matched
+        result["expected_venue_id"] = expected_venue_id
+        if matched:
+            # Only auto-checkin on success
+            venue = data_loader.get_venue_dict_by_id(expected_venue_id)
+            if venue:
+                result["auto_checkin"] = db.insert_checkin(
+                    venue_id=expected_venue["id"],
+                    venue_name=expected_venue["name"],
+                    session_id=sid,
+                    user_id=user_id,
+                    note=f"photo eval {result['evaluation_id']}",
+                )
+        else:
+            actual_name = result.get("matched_venue_name") or "未识别"
+            expected_name = expected_venue["name"]
+            result["failure_reason"] = (
+                f"照片里没有 {expected_name}（识别为：{actual_name}）"
+            )
+    else:
+        # No expected venue - just use normal auto-checkin logic
+        if auto_checkin and result.get("matched_venue_id"):
+            venue = data_loader.get_venue_dict_by_id(result["matched_venue_id"])
+            if venue:
+                sid = session_id or (str(user_id) if user_id else "anon")
+                try:
+                    checkin = db.insert_checkin(
+                        venue_id=venue["id"],
+                        venue_name=venue["name"],
+                        session_id=sid,
+                        user_id=user_id,
+                        note=f"photo eval {result['evaluation_id']}",
+                    )
+                    result["auto_checkin"] = checkin
+                except Exception:
+                    pass
+
+    # Evaluate achievements (only for logged-in users, on success)
+    if user_id and (not expected_venue_id or result.get("success")):
         try:
             newly_earned = db.evaluate_achievements(user_id)
             if newly_earned:
-                # Get details to return
                 catalog = {a["id"]: a for a in db.list_all_achievements()}
                 result["new_achievements"] = [
                     {**catalog[aid], "earned_at": "just now"}

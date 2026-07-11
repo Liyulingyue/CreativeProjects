@@ -1,15 +1,18 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import type { Venue } from '../../types'
 import { api } from '../../api/client'
 import { loadPhotoLog, type PhotoLogEntry } from '../../lib/storage'
 
 interface Props {
+  venues: Venue[]
   onClose: () => void
 }
 
-type Phase = 'idle' | 'preview' | 'evaluating' | 'result' | 'error'
+type Step = 'select' | 'capture' | 'preview' | 'evaluating' | 'result' | 'error'
 
-export function PhotoFlow({ onClose }: Props) {
-  const [phase, setPhase] = useState<Phase>('idle')
+export function PhotoFlow({ venues, onClose }: Props) {
+  const [step, setStep] = useState<Step>('select')
+  const [venue, setVenue] = useState<Venue | null>(null)
   const [file, setFile] = useState<File | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [evaluation, setEvaluation] = useState<any | null>(null)
@@ -20,6 +23,14 @@ export function PhotoFlow({ onClose }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [history, setHistory] = useState<PhotoLogEntry[]>(loadPhotoLog())
 
+  // Group venues by area
+  const byArea: Record<string, Venue[]> = {}
+  venues.forEach((v) => {
+    const a = v.area || '其他'
+    if (!byArea[a]) byArea[a] = []
+    byArea[a].push(v)
+  })
+
   function pickFile(f: File) {
     if (f.size > 8 * 1024 * 1024) {
       setError('图片太大（最大 8MB）')
@@ -28,7 +39,7 @@ export function PhotoFlow({ onClose }: Props) {
     if (previewUrl) URL.revokeObjectURL(previewUrl)
     setFile(f)
     setPreviewUrl(URL.createObjectURL(f))
-    setPhase('preview')
+    setStep('preview')
     setError(null)
   }
 
@@ -82,12 +93,15 @@ export function PhotoFlow({ onClose }: Props) {
   }
 
   async function submit() {
-    if (!file) return
-    setPhase('evaluating')
+    if (!file || !venue) return
+    setStep('evaluating')
     setError(null)
     try {
-      const result = await api.evaluatePhoto(file, file.name)
+      const result = await api.evaluatePhoto(file, file.name, {
+        expectedVenueId: venue.id,
+      })
       setEvaluation(result)
+      // Append to local photo log
       try {
         const { appendPhotoLog } = await import('../../lib/storage')
         appendPhotoLog({
@@ -102,10 +116,10 @@ export function PhotoFlow({ onClose }: Props) {
         })
         setHistory(loadPhotoLog())
       } catch {}
-      setPhase('result')
+      setStep('result')
     } catch (e) {
       setError(e instanceof Error ? e.message : '评价失败')
-      setPhase('error')
+      setStep('error')
     }
   }
 
@@ -115,43 +129,124 @@ export function PhotoFlow({ onClose }: Props) {
     setPreviewUrl(null)
     setEvaluation(null)
     setError(null)
-    setPhase('idle')
+    setStep('select')
+    setVenue(null)
+  }
+
+  function selectVenue(v: Venue) {
+    setVenue(v)
+    setStep('capture')
   }
 
   return (
     <div className="fullscreen-flow">
       <header className="flow-header">
-        <button className="flow-back" onClick={onClose}>
+        <button
+          className="flow-back"
+          onClick={() => {
+            if (step === 'select') onClose()
+            else reset()
+          }}
+        >
           ←
         </button>
-        <div className="flow-title">📷 拍照打卡</div>
+        <div className="flow-title">
+          {step === 'select' && '📷 选场馆'}
+          {step === 'capture' && `📷 拍 ${venue?.name?.slice(0, 6)}…`}
+          {step === 'preview' && '📷 预览'}
+          {(step === 'evaluating' || step === 'result') && `📷 ${venue?.name?.slice(0, 6)}…`}
+          {step === 'error' && '📷 出错了'}
+        </div>
         <div style={{ width: 36 }} />
       </header>
 
       <div className="flow-body">
-        {phase === 'idle' && !usingCamera && (
-          <div className="flow-home">
-            <div className="flow-hero">📷</div>
-            <h2 style={{ margin: '12px 0 6px', color: 'var(--primary-strong)' }}>
-              拍下你的红山一刻
-            </h2>
-            <p style={{ fontSize: 14, color: 'var(--fg-muted)', lineHeight: 1.6, margin: '0 0 18px' }}>
-              拍动物照片，AI 识别 + 评分 + 自动打卡
-            </p>
-            <div style={{ display: 'flex', gap: 10 }}>
-              <button
-                className="btn btn-primary btn-full"
-                onClick={() => fileInputRef.current?.click()}
-              >
-                📁 从相册选
-              </button>
-              <button
-                className="btn btn-ghost btn-full"
-                onClick={startCamera}
-              >
-                📷 拍一张
-              </button>
+        {/* Step 1: Select venue */}
+        {step === 'select' && (
+          <>
+            <div
+              style={{
+                background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+                color: 'white',
+                borderRadius: 14,
+                padding: 18,
+                textAlign: 'center',
+                marginBottom: 14,
+              }}
+            >
+              <div style={{ fontSize: 40, marginBottom: 6 }}>📷</div>
+              <div style={{ fontSize: 18, fontWeight: 700 }}>先选场馆</div>
+              <div style={{ fontSize: 12, opacity: 0.9, marginTop: 4 }}>
+                选好后拍照，AI 会验证是否对应
+              </div>
             </div>
+
+            <div className="venue-selector">
+              {Object.entries(byArea).map(([area, list]) => (
+                <div key={area} className="venue-selector-section">
+                  <div className="venue-selector-header">
+                    <span>📍</span>
+                    <span>{area}</span>
+                    <span className="venue-selector-count">{list.length}</span>
+                  </div>
+                  <div className="venue-selector-grid">
+                    {list.map((v) => (
+                      <button
+                        key={v.id}
+                        className="venue-selector-tile"
+                        onClick={() => selectVenue(v)}
+                      >
+                        <div className="vst-name">{v.name}</div>
+                        <div className="vst-animals">{v.animals.slice(0, 2).join('·')}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {/* Step 2: Capture */}
+        {step === 'capture' && venue && !usingCamera && (
+          <div
+            style={{
+              background: 'linear-gradient(135deg, var(--primary-soft), #fff)',
+              borderRadius: 14,
+              padding: 16,
+              marginBottom: 14,
+              border: '2px solid var(--primary)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{ fontSize: 36 }}>📍</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 11, color: 'var(--fg-muted)' }}>已选场馆</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--primary-strong)' }}>
+                  {venue.name}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+                  常见动物：{venue.animals.slice(0, 3).join('、')}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {step === 'capture' && !usingCamera && (
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button
+              className="btn btn-primary btn-full"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              📁 从相册选
+            </button>
+            <button
+              className="btn btn-ghost btn-full"
+              onClick={startCamera}
+            >
+              📷 拍一张
+            </button>
             <input
               ref={fileInputRef}
               type="file"
@@ -165,7 +260,7 @@ export function PhotoFlow({ onClose }: Props) {
           </div>
         )}
 
-        {phase === 'idle' && usingCamera && (
+        {step === 'capture' && usingCamera && (
           <>
             <video
               ref={videoRef}
@@ -190,7 +285,8 @@ export function PhotoFlow({ onClose }: Props) {
           </>
         )}
 
-        {phase === 'preview' && previewUrl && (
+        {/* Step 3: Preview + confirm */}
+        {step === 'preview' && previewUrl && (
           <>
             <img
               src={previewUrl}
@@ -203,43 +299,65 @@ export function PhotoFlow({ onClose }: Props) {
                 marginBottom: 12,
               }}
             />
+            {venue && (
+              <div
+                style={{
+                  background: 'var(--primary-soft)',
+                  borderRadius: 10,
+                  padding: 10,
+                  fontSize: 12,
+                  color: 'var(--primary-strong)',
+                  marginBottom: 12,
+                  textAlign: 'center',
+                }}
+              >
+                将验证是否匹配：<strong>{venue.name}</strong>
+              </div>
+            )}
             {error && <div className="error-banner" style={{ marginBottom: 10 }}>{error}</div>}
             <div className="modal-actions">
               <button className="btn btn-ghost btn-full" onClick={reset}>
                 重选
               </button>
               <button className="btn btn-primary btn-full" onClick={submit}>
-                ✨ 让 Agent 评分
+                ✨ 提交验证
               </button>
             </div>
           </>
         )}
 
-        {phase === 'evaluating' && (
+        {step === 'evaluating' && (
           <div className="loading">
             <div className="spinner" />
-            正在分析照片…
-            <div style={{ fontSize: 12, marginTop: 8 }}>AI 识别 + 自动打卡中</div>
+            正在让 Agent 验证照片…
+            <div style={{ fontSize: 12, marginTop: 8 }}>
+              识别动物 + 比对「{venue?.name}」
+            </div>
           </div>
         )}
 
-        {phase === 'result' && evaluation && (
-          <ResultCard evaluation={evaluation} onAgain={reset} onClose={onClose} />
+        {step === 'result' && evaluation && venue && (
+          <ResultCard
+            evaluation={evaluation}
+            expectedVenue={venue}
+            onAgain={reset}
+            onClose={onClose}
+          />
         )}
 
-        {phase === 'error' && (
+        {step === 'error' && (
           <>
             <div className="error-banner">
               <strong>评价失败：</strong>
               {error}
             </div>
-            <button className="btn btn-primary btn-full" onClick={() => setPhase('idle')}>
-              再试一次
+            <button className="btn btn-primary btn-full" onClick={() => setStep('capture')}>
+              重试
             </button>
           </>
         )}
 
-        {phase === 'idle' && history.length > 0 && (
+        {step === 'select' && history.length > 0 && (
           <div style={{ marginTop: 28 }}>
             <div
               style={{
@@ -269,41 +387,59 @@ export function PhotoFlow({ onClose }: Props) {
 
 function ResultCard({
   evaluation,
+  expectedVenue,
   onAgain,
   onClose,
 }: {
   evaluation: any
+  expectedVenue: Venue
   onAgain: () => void
   onClose: () => void
 }) {
+  const success = evaluation.success === true
+  const actual = evaluation.matched_venue_name || evaluation.animal_guess || '未识别'
+
   return (
     <div>
-      {/* Auto checkin success banner */}
-      {evaluation.auto_checkin && (
-        <div
-          style={{
-            background: 'var(--primary)',
-            color: 'white',
-            padding: '10px 14px',
-            borderRadius: 10,
-            fontSize: 14,
-            fontWeight: 600,
-            marginBottom: 12,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-          }}
-        >
-          <span style={{ fontSize: 18 }}>✓</span>
-          <div>
-            已自动打卡「{evaluation.auto_checkin.venue_name}」
-            <div style={{ fontSize: 11, fontWeight: 400, opacity: 0.9, marginTop: 2 }}>
-              在「我的」和「路线」里都能看到
+      {/* Success/failure banner */}
+      <div
+        style={{
+          background: success
+            ? 'linear-gradient(135deg, #10b981, #059669)'
+            : 'linear-gradient(135deg, #f59e0b, #d97706)',
+          color: 'white',
+          padding: '14px 16px',
+          borderRadius: 12,
+          marginBottom: 14,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ fontSize: 32 }}>{success ? '✓' : '⚠️'}</div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 16, fontWeight: 700 }}>
+              {success ? '打卡成功！' : '验证未通过'}
+            </div>
+            <div style={{ fontSize: 12, opacity: 0.95, marginTop: 2 }}>
+              {success
+                ? `已为「${expectedVenue.name}」自动打卡`
+                : evaluation.failure_reason || `照片里没有 ${expectedVenue.name}`}
             </div>
           </div>
         </div>
-      )}
+        {success && evaluation.auto_checkin && (
+          <div
+            style={{
+              fontSize: 11,
+              marginTop: 6,
+              opacity: 0.9,
+            }}
+          >
+            🕓 {new Date(evaluation.auto_checkin.ts).toLocaleString('zh-CN')}
+          </div>
+        )}
+      </div>
 
+      {/* Achievement unlocked banner */}
       {evaluation.new_achievements && evaluation.new_achievements.length > 0 && (
         <div
           style={{
@@ -329,6 +465,7 @@ function ResultCard({
         </div>
       )}
 
+      {/* Photo + AI analysis (always shown) */}
       <div
         style={{
           background: 'linear-gradient(135deg, var(--primary-soft), #fff)',
@@ -340,11 +477,13 @@ function ResultCard({
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div style={{ fontSize: 13, color: 'var(--fg-muted)' }}>
             🐾 推测：<strong>{evaluation.animal_guess}</strong>
-            {evaluation.matched_venue_name && <> · {evaluation.matched_venue_name}</>}
+            {evaluation.matched_venue_name && (
+              <> · {evaluation.matched_venue_name}</>
+            )}
           </div>
           <div
             style={{
-              background: 'var(--primary)',
+              background: success ? '#10b981' : '#f59e0b',
               color: '#fff',
               borderRadius: 8,
               padding: '4px 10px',
@@ -415,21 +554,6 @@ function ResultCard({
               · {t}
             </div>
           ))}
-        </div>
-      )}
-
-      {evaluation.fallback && (
-        <div
-          style={{
-            fontSize: 11,
-            color: 'var(--fg-muted)',
-            background: '#fef3c7',
-            padding: 8,
-            borderRadius: 8,
-            marginBottom: 14,
-          }}
-        >
-          ⓘ LLM 不可用，使用规则引擎兜底评价
         </div>
       )}
 

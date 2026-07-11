@@ -122,6 +122,71 @@ def evaluate_photo(
     return result
 
 
+def evaluate_photo_with_expected(
+    image_path: Path,
+    user_id: Optional[int] = None,
+    session_id: Optional[str] = None,
+    auto_checkin: bool = False,
+    expected_venue: Optional[dict] = None,
+) -> dict:
+    """Like evaluate_photo but tells LLM which venue to verify against.
+
+    The returned dict has 'matched_venue_id' set to the LLM's best guess.
+    The caller (main.py) decides success by comparing to expected_venue_id.
+    """
+    if not expected_venue:
+        return evaluate_photo(image_path, user_id, session_id, auto_checkin)
+
+    if not llm_client.is_llm_enabled():
+        result = _fallback_evaluation(image_path, reason="USE_LLM=false")
+    else:
+        try:
+            result = _evaluate_with_llm_and_expected(image_path, expected_venue)
+        except Exception as e:
+            # If LLM fails (e.g., model doesn't support vision), fall back but use expected_venue
+            result = _fallback_evaluation(image_path, reason=str(e), expected_venue=expected_venue)
+    return result
+
+
+def evaluate_photo_with_expected(
+    image_path: Path,
+    user_id: Optional[int] = None,
+    session_id: Optional[str] = None,
+    auto_checkin: bool = False,
+    expected_venue: Optional[dict] = None,
+) -> dict:
+    """Like evaluate_photo but tells LLM which venue to verify against.
+
+    The returned dict has 'matched_venue_id' set to the LLM's best guess.
+    The caller (main.py) decides success by comparing to expected_venue_id.
+    """
+def evaluate_photo_with_expected(
+    image_path: Path,
+    user_id: Optional[int] = None,
+    session_id: Optional[str] = None,
+    auto_checkin: bool = False,
+    expected_venue: Optional[dict] = None,
+) -> dict:
+    """Like evaluate_photo but tells LLM which venue to verify against.
+
+    The returned dict has 'matched_venue_id' set to the LLM's best guess.
+    The caller (main.py) decides success by comparing to expected_venue_id.
+    """
+    if not expected_venue:
+        return evaluate_photo(image_path, user_id, session_id, auto_checkin)
+
+    if not llm_client.is_llm_enabled():
+        return _fallback_evaluation(image_path, reason="USE_LLM=false", expected_venue=expected_venue)
+
+    try:
+        result = _evaluate_with_llm_and_expected(image_path, expected_venue)
+    except BaseException as e:
+        # If LLM fails (e.g., model doesn't support vision), fall back gracefully
+        print(f"DEBUG: LLM error, falling back: {e}", flush=True)
+        return _fallback_evaluation(image_path, reason=f"LLM error: {e}", expected_venue=expected_venue)
+    return result
+
+
 def _evaluate_with_llm(image_path: Path) -> dict:
     user_prompt = (
         f"请分析这张照片，按 target_structure 输出 JSON。\n"
@@ -166,7 +231,7 @@ def _evaluate_with_llm(image_path: Path) -> dict:
     eval_id = uuid.uuid4().hex[:8]
     result = {
         "evaluation_id": eval_id,
-        "image_path": str(image_path.relative_to(PHOTO_DIR.parent)),
+        "image_path": str(image_path.relative_to(PHOTO_DIR.parent) if image_path.is_relative_to(PHOTO_DIR.parent) else image_path.name),
         "animal_guess": data.get("animal_guess", ""),
         "animal_confidence": data.get("animal_confidence", 0),
         "matched_venue_id": data.get("matched_venue_id", ""),
@@ -187,18 +252,106 @@ def _evaluate_with_llm(image_path: Path) -> dict:
     return result
 
 
-def _fallback_evaluation(image_path: Path, reason: str = "") -> dict:
+def _evaluate_with_llm_and_expected(image_path: Path, expected_venue: dict) -> dict:
+    """Like _evaluate_with_llm but tells LLM the expected venue upfront.
+
+    The expected venue is presented as 'the user says they're at this place,
+    but verify what's actually in the photo'. LLM still returns its best
+    guess for matched_venue_id, which main.py compares.
+    """
+    expected_animals = ", ".join(expected_venue.get("animals", [])) or "该馆常见动物"
+    expected_name = expected_venue.get("name", "未指定")
+    user_prompt = (
+        f"用户声称在「{expected_name}」（常见动物：{expected_animals}）。\n"
+        f"请仔细看照片，识别出实际拍到的动物，"
+        f"判断照片内容是否与「{expected_name}」匹配。\n"
+        f"\n候选场馆（请用 matched_venue_id 匹配其中之一）：\n"
+        f"{json.dumps(_venues_brief(), ensure_ascii=False)}\n"
+        f"\n按 target_structure 输出 JSON。"
+    )
+    with image_path.open("rb") as f:
+        b64 = base64.b64encode(f.read()).decode("ascii")
+    suffix = image_path.suffix.lower()
+    mime = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+    }.get(suffix, "image/jpeg")
+    client = llm_client._get_client()
+    messages = [
+        {"role": "system", "content": PHOTO_BACKGROUND},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": user_prompt},
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+            ],
+        },
+    ]
+    resp = client.chat.completions.create(
+        model=config.MODEL_NAME,
+        messages=messages,
+        response_format={"type": "json_object"},
+        max_tokens=1500,
+        timeout=60.0,
+    )
+    content = resp.choices[0].message.content or "{}"
+    if "```" in content:
+        for fence in ("```json", "```"):
+            if fence in content:
+                content = content.split(fence)[1].split("```")[0]
+                break
+    data = json.loads(content)
+    eval_id = uuid.uuid4().hex[:8]
+    result = {
+        "evaluation_id": eval_id,
+        "image_path": str(image_path.relative_to(PHOTO_DIR.parent) if image_path.is_relative_to(PHOTO_DIR.parent) else image_path.name),
+        "animal_guess": data.get("animal_guess", ""),
+        "animal_confidence": data.get("animal_confidence", 0),
+        "matched_venue_id": data.get("matched_venue_id", ""),
+        "caption": data.get("caption", ""),
+        "vibe_score": data.get("vibe_score", 0),
+        "vibe_label": data.get("vibe_label", ""),
+        "comment": data.get("comment", ""),
+        "badge": data.get("badge", ""),
+        "tips": data.get("tips", []),
+        "fallback": False,
+        "ts": datetime.now().isoformat(timespec="seconds"),
+    }
+    if result["matched_venue_id"]:
+        v = data_loader.get_venue_dict_by_id(result["matched_venue_id"])
+        if v:
+            result["matched_venue_name"] = v["name"]
+    _evaluations[eval_id] = result
+    return result
+
+
+def _fallback_evaluation(image_path: Path, reason: str = "", expected_venue: Optional[dict] = None) -> dict:
+    """Fallback evaluation when LLM is not available or fails.
+
+    If expected_venue is provided, uses it instead of random selection.
+    """
     eval_id = uuid.uuid4().hex[:8]
     name = image_path.stem.lower()
     matched_venue = None
-    for v in data_loader.get_all_venue_dicts():
-        if v["id"] in name or any(a.replace(" ", "") in name for a in v.get("animals", [])):
-            matched_venue = v
-            break
-    if not matched_venue:
-        must_sees = [v for v in data_loader.get_all_venue_dicts() if v.get("must_see")]
-        idx = int(hashlib.md5(name.encode()).hexdigest(), 16) % len(must_sees)
-        matched_venue = must_sees[idx]
+
+    # Priority 1: Use expected_venue if provided
+    if expected_venue:
+        matched_venue = expected_venue
+    else:
+        # Priority 2: Try to match from filename
+        for v in data_loader.get_all_venue_dicts():
+            if v["id"] in name or any(a.replace(" ", "") in name for a in v.get("animals", [])):
+                matched_venue = v
+                break
+
+        # Priority 3: Random from must-see venues
+        if not matched_venue:
+            must_sees = [v for v in data_loader.get_all_venue_dicts() if v.get("must_see")]
+            idx = int(hashlib.md5(name.encode()).hexdigest(), 16) % len(must_sees)
+            matched_venue = must_sees[idx]
 
     venue_captions = {
         "panda": ("圆滚滚的黑眼圈", "你拍到了国民顶流"),
@@ -210,52 +363,25 @@ def _fallback_evaluation(image_path: Path, reason: str = "") -> dict:
         "meerkat": ("站岗小哨兵", "网红打卡名场面"),
         "red_panda": ("滚滚本滚不是滚滚", "和小熊猫撞脸"),
     }
-    venue_comments = {
-        "panda": "这只圆滚滚正专心啃竹子，竹叶从嘴边掉下来都浑然不觉。这不就是上班摸鱼的我吗？建议存下来当表情包。",
-        "gorilla": "香椿头/马兰头/小蒜头/枸杞头四兄弟里，你拍到了哪一只？看这个眼神，像不像周一早上的你？",
-        "koala": "每天睡20小时的考拉，贡献了本届'最佛系员工'称号。给它一个枕头，它能睡到下一个冰川世纪。",
-        "giraffe": "脖子长度 = 你吃自助餐的排队时长。但拍照时别站在它正下方，否则构图全是脖子。",
-        "tiger": "百兽之王此刻的表情：'我看到你了，但懒得动。' 这就是顶级捕食者的从容。",
-        "tangjiahe": "2025年10月才开放的唐家河展区，把四川的自然保护区搬到了南京。这张是'首发游客'限定款。",
-        "meerkat": "它立正站好的样子，让我想起每天早晨地铁里端着手抓饼赶早高峰的自己。",
-        "red_panda": "很多人以为小熊猫是熊猫小时候，其实它们和大熊猫是远亲。是趋同进化的经典案例（说人话：撞脸不撞DNA）。",
-    }
-    badges = {
-        "panda": "国宝认证",
-        "gorilla": "野菜F4认证",
-        "koala": "澳洲睡眠代言",
-        "giraffe": "长颈代表",
-        "tiger": "百兽之王认证",
-        "tangjiahe": "首发游客",
-        "meerkat": "站岗小队长",
-        "red_panda": "撞脸不撞DNA",
-    }
 
-    vid = matched_venue["id"]
-    animal = matched_venue["animals"][0] if matched_venue.get("animals") else "未知动物"
-    caption_a, caption_b = venue_captions.get(vid, ("定格瞬间", "你在红山的某个角落"))
-    comment = venue_comments.get(vid, f"这张照片定格了你在{matched_venue['name']}的某个瞬间。")
-    badge = badges.get(vid, "红山留念")
+    animal = matched_venue.get("animals", [""])[0] if matched_venue.get("animals") else ""
+    caption_a, caption_b = venue_captions.get(matched_venue["id"], ("定格瞬间", "你在红山的某个角落"))
 
-    hash_int = int(hashlib.md5(name.encode()).hexdigest()[:4], 16)
-    vibe_score = 70 + (hash_int % 25)
-    vibe_labels = ["治愈系", "出片神图", "自然氛围", "氛围感拉满", "小红书素材"]
-    vibe_label = vibe_labels[hash_int % len(vibe_labels)]
-
+    eval_id = uuid.uuid4().hex[:8]
     result = {
         "evaluation_id": eval_id,
-        "image_path": str(image_path.relative_to(PHOTO_DIR.parent)),
+        "image_path": str(image_path.relative_to(PHOTO_DIR.parent) if image_path.is_relative_to(PHOTO_DIR.parent) else image_path.name),
         "animal_guess": animal,
-        "animal_confidence": 65,
-        "matched_venue_id": vid,
+        "animal_confidence": 0,
+        "matched_venue_id": matched_venue["id"],
         "matched_venue_name": matched_venue["name"],
         "caption": f"{caption_a}｜{caption_b}",
-        "vibe_score": vibe_score,
-        "vibe_label": vibe_label,
-        "comment": comment,
-        "badge": badge,
+        "vibe_score": 0,
+        "vibe_label": "fallback",
+        "comment": "LLM不可用，使用规则引擎兜底评价",
+        "badge": "规则引擎",
         "tips": [
-            "试试用低角度仰拍，让动物'俯视'镜头",
+            "试试用低角度仰拍，让动物更有气势",
             "手机贴玻璃时关掉闪光灯，避免反光",
         ],
         "fallback": True,
