@@ -88,7 +88,7 @@ a {
 /* ----- Bottom safe area ----- */
 .app-body {
   flex: 1;
-  padding: 18px 18px 100px;
+  padding: 18px 18px 24px; /* TabBar handles bottom via padding on .app */
 }
 
 /* ----- Buttons ----- */
@@ -665,11 +665,11 @@ textarea {
 
 .bottom-bar {
   position: fixed;
-  bottom: 0;
+  bottom: 60px;  /* sit above TabBar */
   left: 0;
   right: 0;
   background: linear-gradient(180deg, transparent, var(--bg) 30%);
-  padding: 20px 18px 28px;
+  padding: 20px 18px 18px;
   display: flex;
   gap: 10px;
   z-index: 5;
@@ -758,6 +758,109 @@ textarea {
   font-size: 11px;
   color: var(--fg-muted);
 }
+
+/* ----- Tab Bar (bottom navigation) ----- */
+.tab-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  background: rgba(255, 255, 255, 0.96);
+  border-top: 1px solid var(--border);
+  padding: 4px 0 calc(4px + env(safe-area-inset-bottom, 0px));
+  z-index: 50;
+  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.06);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.tab-bar-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--fg-muted);
+  transition: color 0.15s, transform 0.1s;
+}
+
+.tab-bar-btn:active {
+  transform: scale(0.95);
+}
+
+.tab-bar-btn.active {
+  color: var(--primary-strong);
+}
+
+.tab-bar-icon {
+  font-size: 22px;
+  line-height: 1;
+  margin-bottom: 2px;
+}
+
+.tab-bar-label {
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.tab-bar-btn.active .tab-bar-label {
+  font-weight: 700;
+}
+
+/* ----- Venue list (NearbyPage) ----- */
+.venue-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 8px;
+  box-shadow: var(--shadow);
+}
+
+.venue-card-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.venue-card-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--primary-strong);
+}
+
+.venue-card-meta {
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin-top: 2px;
+}
+
+/* ----- Badge list (PhotoPage) ----- */
+.badge-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border-radius: 8px;
+}
+
+/* App body needs bottom padding so content isn't covered */
+.app {
+  padding-bottom: 60px;
+}
+
+.bottom-bar {
+  bottom: 60px;  /* sit above TabBar */
+}
+
+/* When TabBar is visible, the floating action bar moves up */
+
 
 .meta-info {
   display: grid;
