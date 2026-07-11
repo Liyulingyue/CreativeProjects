@@ -71,7 +71,6 @@ export function RouteView({
           currentStopIdx={currentStopIdx}
           onMarkCurrent={persistCurrentStop}
           onToggleVisited={toggleVisited}
-          onOpenStop={openStop}
         />
       )}
 
