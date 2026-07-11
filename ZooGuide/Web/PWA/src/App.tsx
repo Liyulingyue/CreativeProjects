@@ -74,6 +74,7 @@ export default function App() {
             venues={venues}
             prefs={prefs}
             user={user}
+            route={route}
             hasRoute={!!route}
             onStartPlan={openPlan}
             onContinueRoute={openPlan}

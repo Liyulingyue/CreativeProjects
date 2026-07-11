@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import { AuthModal } from '../components/AuthModal'
+import { PlanFlow } from '../components/PlanFlow'
 import { getStoredUser, clearAuth, type AuthUser } from '../lib/storage'
+import type { Route } from '../types'
 
 interface Props {
   user: AuthUser | null
   onUserChange: (u: AuthUser | null) => void
+  onRouteOpen?: (r: Route) => void
 }
 
 interface Summary {
@@ -28,11 +31,12 @@ interface Summary {
   }>
 }
 
-export function ProfilePage({ user, onUserChange }: Props) {
+export function ProfilePage({ user, onUserChange, onRouteOpen }: Props) {
   const [summary, setSummary] = useState<Summary | null>(null)
   const [loading, setLoading] = useState(false)
   const [authOpen, setAuthOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [planOpen, setPlanOpen] = useState(false)
 
   async function load() {
     if (!user) return
@@ -92,18 +96,28 @@ export function ProfilePage({ user, onUserChange }: Props) {
           </ul>
         </div>
 
-        {authOpen && (
-          <AuthModal
-            onClose={() => setAuthOpen(false)}
-            onAuthed={(u) => {
-              onUserChange(u)
-              setAuthOpen(false)
-            }}
-          />
-        )}
-      </div>
-    )
-  }
+{authOpen && (
+        <AuthModal
+          onClose={() => setAuthOpen(false)}
+          onAuthed={(u) => {
+            onUserChange(u)
+            setAuthOpen(false)
+          }}
+        />
+      )}
+
+      {planOpen && (
+        <PlanFlow
+          initialPrefs={null}
+          externalRoute={null}
+          onClose={() => setPlanOpen(false)}
+          onRouteChange={() => {}}
+          onOpenChat={() => {}}
+        />
+      )}
+    </div>
+  )
+}
 
   // Logged in view
   return (
@@ -175,11 +189,21 @@ export function ProfilePage({ user, onUserChange }: Props) {
           {summary.recent_routes.length > 0 && (
             <Section title="🧭 最近规划的路线">
               {summary.recent_routes.map((r) => (
-                <div key={r.id} className="history-row">
-                  <div className="history-title">{r.summary?.slice(0, 40) || '路线'}</div>
-                  <div className="history-meta">
-                    {Math.round(r.total_minutes / 60 * 10) / 10}h ·{' '}
-                    {r.created_at?.slice(0, 10)}
+                <div
+                  key={r.id}
+                  className="history-row"
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => setPlanOpen(true)}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <div style={{ flex: 1 }}>
+                      <div className="history-title">{r.summary?.slice(0, 40) || '路线'}</div>
+                      <div className="history-meta">
+                        {Math.round(r.total_minutes / 60 * 10) / 10}h ·{' '}
+                        {r.created_at?.slice(0, 10)}
+                      </div>
+                    </div>
+                    <span style={{ fontSize: 18, color: 'var(--primary)' }}>›</span>
                   </div>
                 </div>
               ))}
