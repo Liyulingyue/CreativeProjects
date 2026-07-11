@@ -97,12 +97,15 @@ export interface QuizOptions {
 
 export interface Meta {
   name: string
+  name_en?: string
   address: string
+  area_km2?: number
   open_time: string
   close_time: string
   ticket: string
   highlights: string[]
   gates: string[]
+  gates_text?: string[]
   areas: Record<string, string>
 }
 

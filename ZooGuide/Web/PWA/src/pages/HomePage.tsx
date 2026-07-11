@@ -53,7 +53,6 @@ export function HomePage({
 
   return (
     <div>
-      {/* Top route banner - shown only when active route exists */}
       {hasRoute && route && (
         <ActiveRouteCard
           route={route}
@@ -63,7 +62,7 @@ export function HomePage({
         />
       )}
 
-      {/* Hero card - STATE AWARE */}
+      {/* Hero card */}
       {!hasRoute && (
         <div
           className="card"
@@ -95,7 +94,7 @@ export function HomePage({
         </div>
       )}
 
-      {/* Quick actions - always available */}
+      {/* Quick actions */}
       <div className="quick-actions">
         <button className="qa-card" onClick={() => onSwitchTab('chat')}>
           <div className="qa-icon">💬</div>
@@ -119,7 +118,7 @@ export function HomePage({
         </button>
       </div>
 
-      {/* Recent route from DB (logged in, no active route) */}
+      {/* Recent route from DB */}
       {user && recentRoute && !hasRoute && (
         <div
           className="card"
@@ -146,7 +145,7 @@ export function HomePage({
         </div>
       )}
 
-      {/* Stats (logged in) */}
+      {/* Stats */}
       {stats && (
         <div
           className="card"
@@ -163,19 +162,158 @@ export function HomePage({
         </div>
       )}
 
-      {/* Park info */}
-      {meta && (
-        <div className="card">
-          <h3 className="card-title">📋 园区速览</h3>
-          <div className="meta-info">
-            <div className="item">🕒 {meta.open_time}–{meta.close_time}</div>
-            <div className="item">🎫 {meta.ticket}</div>
-            <div className="item">📍 {venues.length} 个展馆</div>
-            <div className="item">📐 {Object.keys(meta.areas).length} 大片区</div>
+      {/* About 红山 (only shown when no route, so it doesn't clutter) */}
+      {!hasRoute && <AboutHongshan meta={meta} venues={venues} />}
+
+      {/* Park quick facts (always shown - useful even with active route) */}
+      {meta && <ParkFacts meta={meta} venues={venues} />}
+    </div>
+  )
+}
+
+/* ----- About 红山 section ----- */
+function AboutHongshan({ meta, venues }: { meta: Meta | null; venues: Venue[] }) {
+  if (!meta) return null
+
+  return (
+    <div className="card">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+        <div style={{ fontSize: 28 }}>🦒</div>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--primary-strong)' }}>
+            {meta.name}
           </div>
-          <div style={{ marginTop: 10, fontSize: 12, color: 'var(--fg-muted)', lineHeight: 1.6 }}>
-            {meta.highlights?.[0]}
+          <div style={{ fontSize: 11, color: 'var(--fg-muted)' }}>{meta.name_en} · 国家AAAA级</div>
+        </div>
+      </div>
+
+      <p
+        style={{
+          fontSize: 13,
+          color: 'var(--fg)',
+          lineHeight: 1.6,
+          margin: '0 0 12px',
+        }}
+      >
+        这是中国第一个取消动物表演的动物园（2011 年起）。不卖动物表演，不诱导投喂，
+        一切都按动物的需求来设计展馆。游客能看到动物在自然的步调下生活。
+      </p>
+
+      <div
+        style={{
+          fontSize: 11,
+          fontWeight: 700,
+          color: 'var(--primary-strong)',
+          marginBottom: 8,
+          textTransform: 'uppercase',
+          letterSpacing: 0.5,
+        }}
+      >
+        🏆 为什么是红山
+      </div>
+
+      <div className="highlight-list">
+        {(meta.highlights || []).map((h, i) => (
+          <div key={i} className="highlight-item">
+            <div className="highlight-num">{i + 1}</div>
+            <div className="highlight-text">{h}</div>
           </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/* ----- Park facts (quick info grid + tips) ----- */
+function ParkFacts({ meta, venues }: { meta: Meta; venues: Venue[] }) {
+  const mustSeeCount = venues.filter((v) => v.must_see).length
+  const areaEntries = Object.entries(meta.areas || {})
+  const address = meta.address || ''
+
+  return (
+    <div className="card">
+      <h3 className="card-title">📋 园区速览</h3>
+
+      {/* Quick facts grid */}
+      <div className="meta-info">
+        <div className="item">
+          🕒 {meta.open_time}–{meta.close_time}
+        </div>
+        <div className="item">
+          🎫 {meta.ticket}
+        </div>
+        <div className="item">
+          📍 {venues.length} 个展馆
+        </div>
+        <div className="item">
+          ⭐ {mustSeeCount} 个必看
+        </div>
+        <div className="item">
+          📐 {areaEntries.length} 大片区
+        </div>
+        <div className="item">
+          🗺️ {meta.area_km2} km²
+        </div>
+      </div>
+
+      {/* Areas breakdown */}
+      <div style={{ marginTop: 14 }}>
+        <div
+          style={{
+            fontSize: 11,
+            fontWeight: 700,
+            color: 'var(--primary-strong)',
+            marginBottom: 6,
+            textTransform: 'uppercase',
+            letterSpacing: 0.5,
+          }}
+        >
+          🗺️ 四大片区
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {areaEntries.map(([name, desc]) => (
+            <div key={name} style={{ fontSize: 12, color: 'var(--fg)', lineHeight: 1.5 }}>
+              <strong style={{ color: 'var(--primary-strong)' }}>· {name}</strong>
+              <span style={{ color: 'var(--fg-muted)' }}>：{desc}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Tips */}
+      <div
+        style={{
+          marginTop: 14,
+          padding: '10px 12px',
+          background: '#fef9e7',
+          borderRadius: 10,
+          fontSize: 12,
+          color: '#78350f',
+          lineHeight: 1.6,
+        }}
+      >
+        <div style={{ fontWeight: 700, marginBottom: 4 }}>💡 实用小贴士</div>
+        <div>
+          · 上午 9-10 点动物最活跃；下午 2-3 点午睡醒来
+        </div>
+        <div>· 北门最近熊猫馆；南门是 2025 新区主入口</div>
+        <div>· 山地型园区，多上下坡，穿舒适的鞋</div>
+        <div>· 禁止投喂动物、禁止使用闪光灯、禁止无人机</div>
+      </div>
+
+      {/* Address */}
+      {address && (
+        <div
+          style={{
+            marginTop: 12,
+            fontSize: 11,
+            color: 'var(--fg-muted)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+          }}
+        >
+          📍 {address}
         </div>
       )}
     </div>
@@ -260,17 +398,12 @@ function ActiveRouteCard({
         <div className="arc-cta">查看 →</div>
       </div>
 
-      {/* Progress bar */}
       {visitedInRoute > 0 && (
         <div className="arc-progress">
-          <div
-            className="arc-progress-bar"
-            style={{ width: `${progress * 100}%` }}
-          />
+          <div className="arc-progress-bar" style={{ width: `${progress * 100}%` }} />
         </div>
       )}
 
-      {/* Stops preview */}
       <div className="arc-stops">
         {route.stops.slice(0, 5).map((s, i) => (
           <div
@@ -280,9 +413,7 @@ function ActiveRouteCard({
           >
             <span className="arc-stop-num">{i + 1}</span>
             <span className="arc-stop-name">{s.venue_name}</span>
-            <span className="arc-stop-time">
-              {s.arrive_time?.slice(0, 5) || ''}
-            </span>
+            <span className="arc-stop-time">{s.arrive_time?.slice(0, 5) || ''}</span>
             {visited.has(s.venue_id) && <span className="arc-stop-mark">✓</span>}
           </div>
         ))}
@@ -308,9 +439,7 @@ function StatBlock({ label, value }: { label: string; value: number }) {
         textAlign: 'center',
       }}
     >
-      <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--primary-strong)' }}>
-        {value}
-      </div>
+      <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--primary-strong)' }}>{value}</div>
       <div style={{ fontSize: 11, color: 'var(--fg-muted)' }}>{label}</div>
     </div>
   )
