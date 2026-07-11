@@ -1,35 +1,63 @@
 import { useEffect, useState } from 'react'
 import { api } from './api/client'
-import type { Meta, UserPreference, Venue } from './types'
+import type { Meta, Route, UserPreference, Venue } from './types'
 import { TabBar } from './components/TabBar'
-import { PlanPage } from './pages/PlanPage'
-import { NearbyPage } from './pages/NearbyPage'
-import { PhotoPage } from './pages/PhotoPage'
+import { PlanFlow } from './components/PlanFlow'
+import { HomePage } from './pages/HomePage'
+import { ChatPage } from './pages/ChatPage'
+import { ActivityPage } from './pages/ActivityPage'
 import { ProfilePage } from './pages/ProfilePage'
 import { getStoredUser, loadPrefs } from './lib/storage'
 import type { AuthUser } from './lib/storage'
 
-type Tab = 'plan' | 'nearby' | 'photo' | 'me'
+type Tab = 'home' | 'chat' | 'activity' | 'me'
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>('plan')
+  const [tab, setTab] = useState<Tab>('home')
   const [prefs, setPrefs] = useState<UserPreference | null>(null)
   const [meta, setMeta] = useState<Meta | null>(null)
   const [venues, setVenues] = useState<Venue[]>([])
+  const [route, setRoute] = useState<Route | null>(null)
   const [user, setUser] = useState<AuthUser | null>(getStoredUser())
+  const [planOpen, setPlanOpen] = useState(false)
 
   useEffect(() => {
     api.meta().then(setMeta).catch(console.error)
     api.venues().then((d) => setVenues(d.venues)).catch(console.error)
     const saved = loadPrefs()
     if (saved) setPrefs(saved)
+    // Try restore route from localStorage
+    try {
+      const raw = localStorage.getItem('zooguide:currentRoute:v1')
+      if (raw) setRoute(JSON.parse(raw))
+    } catch {}
   }, [])
 
+  // Persist current route
+  useEffect(() => {
+    try {
+      if (route) localStorage.setItem('zooguide:currentRoute:v1', JSON.stringify(route))
+      else localStorage.removeItem('zooguide:currentRoute:v1')
+    } catch {}
+  }, [route])
+
   const titles: Record<Tab, string> = {
-    plan: '🧭 规划路线',
-    nearby: '📍 附近场馆',
-    photo: '📸 出片',
-    me: user ? `👤 ${user.display_name}` : '👤 我的',
+    home: 'ZooGuide',
+    chat: '红山导游',
+    activity: '园区活动',
+    me: user ? user.display_name : '我的',
+  }
+
+  function handleTabChange(t: string) {
+    setTab(t as Tab)
+  }
+
+  function openPlan() {
+    setPlanOpen(true)
+  }
+
+  function closePlan() {
+    setPlanOpen(false)
   }
 
   return (
@@ -37,23 +65,45 @@ export default function App() {
       <header className="app-header">
         <h1>🦒 ZooGuide</h1>
         <span className="badge">红山省力 Agent</span>
-        <span style={{ flex: 1, fontSize: 13, opacity: 0.9, textAlign: 'right', minWidth: 0, marginLeft: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {titles[tab]}
-        </span>
       </header>
 
       <main className="app-body">
-        {tab === 'plan' && (
-          <PlanPage initialPrefs={prefs} venues={venues} meta={meta} user={user} />
+        {tab === 'home' && (
+          <HomePage
+            meta={meta}
+            venues={venues}
+            prefs={prefs}
+            user={user}
+            hasRoute={!!route}
+            onStartPlan={openPlan}
+            onContinueRoute={openPlan}
+            onSwitchTab={handleTabChange}
+          />
         )}
-        {tab === 'nearby' && <NearbyPage />}
-        {tab === 'photo' && <PhotoPage />}
-        {tab === 'me' && (
-          <ProfilePage user={user} onUserChange={setUser} />
+        {tab === 'chat' && (
+          <ChatPage
+            currentRoute={route}
+            prefs={prefs}
+            onRouteUpdate={setRoute}
+            onGoPlan={openPlan}
+            onGoActivity={() => setTab('activity')}
+          />
         )}
+        {tab === 'activity' && <ActivityPage />}
+        {tab === 'me' && <ProfilePage user={user} onUserChange={setUser} />}
       </main>
 
-      <TabBar active={tab} onChange={(t) => setTab(t as Tab)} />
+      {planOpen && (
+        <PlanFlow
+          initialPrefs={prefs}
+          externalRoute={route}
+          onClose={closePlan}
+          onRouteChange={setRoute}
+          onOpenChat={() => setTab('chat')}
+        />
+      )}
+
+      <TabBar active={tab} onChange={handleTabChange} />
     </div>
   )
 }

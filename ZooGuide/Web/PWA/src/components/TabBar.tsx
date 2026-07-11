@@ -7,12 +7,13 @@ interface Tab {
 interface Props {
   active: string
   onChange: (tab: string) => void
+  unread?: number  // optional badge count
 }
 
 const TABS: Tab[] = [
-  { id: 'plan', label: '规划', icon: '🧭' },
-  { id: 'nearby', label: '附近', icon: '📍' },
-  { id: 'photo', label: '出片', icon: '📸' },
+  { id: 'home', label: '首页', icon: '🏠' },
+  { id: 'chat', label: '对话', icon: '💬' },
+  { id: 'activity', label: '活动', icon: '🎯' },
   { id: 'me', label: '我的', icon: '👤' },
 ]
 

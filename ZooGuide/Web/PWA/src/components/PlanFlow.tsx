@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import type { Route, UserPreference, Venue } from '../types'
 import { api } from '../api/client'
-import { Home } from '../components/Home'
 import { Questionnaire } from '../components/Questionnaire'
 import { RouteView } from '../components/RouteView'
 import { VariantsModal } from '../components/VariantsModal'
@@ -9,22 +8,23 @@ import { ChatDialog } from '../components/ChatDialog'
 
 interface Props {
   initialPrefs: UserPreference | null
-  venues: Venue[]
-  meta: any
-  user: any
+  onClose: () => void
+  onRouteChange: (r: Route | null) => void
+  onOpenChat: () => void
+  externalRoute?: Route | null
 }
 
 type Stage = 'home' | 'quiz' | 'loading' | 'route' | 'error'
 
-export function PlanPage({ initialPrefs, venues, meta, user }: Props) {
-  const [stage, setStage] = useState<Stage>('home')
+export function PlanFlow({ initialPrefs, onClose, onRouteChange, onOpenChat, externalRoute }: Props) {
+  const [stage, setStage] = useState<Stage>(externalRoute ? 'route' : 'home')
   const [prefs, setPrefs] = useState<UserPreference | null>(initialPrefs)
-  const [route, setRoute] = useState<Route | null>(null)
+  const [route, setRoute] = useState<Route | null>(externalRoute || null)
   const [error, setError] = useState<string | null>(null)
   const [fastMode, setFastMode] = useState(false)
   const [strictHours, setStrictHours] = useState(false)
-  const [chatOpen, setChatOpen] = useState(false)
   const [variantsOpen, setVariantsOpen] = useState(false)
+  const [chatOpen, setChatOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
 
   async function handlePlan(p: UserPreference) {
@@ -34,6 +34,7 @@ export function PlanPage({ initialPrefs, venues, meta, user }: Props) {
     try {
       const r = await api.plan({ ...p, fast: fastMode, strict_hours: strictHours })
       setRoute(r)
+      onRouteChange(r)
       setStage('route')
     } catch (e) {
       setError(e instanceof Error ? e.message : '规划失败')
@@ -44,6 +45,7 @@ export function PlanPage({ initialPrefs, venues, meta, user }: Props) {
   function reset() {
     setStage('home')
     setRoute(null)
+    onRouteChange(null)
   }
 
   function startQuiz() {
@@ -52,77 +54,115 @@ export function PlanPage({ initialPrefs, venues, meta, user }: Props) {
 
   function pickVariant(r: Route) {
     setRoute(r)
+    onRouteChange(r)
     setStage('route')
   }
 
+  function handleRouteUpdate(r: Route) {
+    setRoute(r)
+    onRouteChange(r)
+  }
+
+  function handleClose() {
+    onClose()
+  }
+
   return (
-    <div>
-      {stage === 'home' && (
-        <>
-          <Home onStart={startQuiz} />
-          {meta && (
-            <div className="card" style={{ marginTop: 14 }}>
-              <h3 className="card-title">📋 园区速览</h3>
-              <div className="meta-info">
-                <div className="item">🕒 {meta.open_time}–{meta.close_time}</div>
-                <div className="item">🎫 {meta.ticket}</div>
-                <div className="item">📍 {venues.length} 个展馆</div>
-                <div className="item">📐 {Object.keys(meta.areas).length} 大片区</div>
-              </div>
-            </div>
-          )}
-          <button
-            className="btn btn-outline btn-full"
-            style={{ marginTop: 14 }}
-            onClick={() => setSettingsOpen(true)}
-          >
-            ⚙️ 规划设置
-          </button>
-        </>
-      )}
-
-      {stage === 'quiz' && (
-        <Questionnaire onComplete={handlePlan} initial={prefs} />
-      )}
-
-      {stage === 'loading' && (
-        <div className="loading">
-          <div className="spinner" />
-          正在为你定制红山路线…
-          <div style={{ fontSize: 12, marginTop: 8 }}>
-            规则引擎筛选 + LLM 编排中
-          </div>
-          <div style={{ fontSize: 11, marginTop: 16, color: 'var(--fg-muted)', maxWidth: 280, lineHeight: 1.5 }}>
-            ⏱️ LLM 思考中（一般 30-90 秒）
-            <br />
-            如果太久，会自动用规则引擎的方案
-          </div>
+    <div className="fullscreen-flow">
+      <header className="flow-header">
+        <button className="flow-back" onClick={handleClose}>
+          ←
+        </button>
+        <div className="flow-title">
+          {stage === 'route' ? '🧭 我的路线' : '🧭 定制路线'}
         </div>
-      )}
+        {stage === 'route' && (
+          <button
+            className="flow-settings"
+            onClick={() => setSettingsOpen(true)}
+            title="设置"
+          >
+            ⚙️
+          </button>
+        )}
+      </header>
 
-      {stage === 'route' && route && prefs && (
-        <>
+      <div className="flow-body">
+        {stage === 'home' && (
+          <div className="flow-home">
+            <div className="flow-hero">🦒</div>
+            <h2 style={{ margin: '12px 0 6px', color: 'var(--primary-strong)' }}>
+              逛红山，不必人挤人
+            </h2>
+            <p style={{ fontSize: 14, color: 'var(--fg-muted)', lineHeight: 1.6, margin: '0 0 18px' }}>
+              告诉我你的时间、体力、带没带娃、怕不怕晒，
+              我帮你定制一趟只属于你的红山路线。
+            </p>
+            <button className="btn btn-primary btn-full" onClick={startQuiz}>
+              开始定制路线 ✨
+            </button>
+            <button
+              className="btn btn-ghost btn-full"
+              style={{ marginTop: 10 }}
+              onClick={() => setSettingsOpen(true)}
+            >
+              ⚙️ 规划设置
+            </button>
+          </div>
+        )}
+
+        {stage === 'quiz' && (
+          <Questionnaire onComplete={handlePlan} initial={prefs} />
+        )}
+
+        {stage === 'loading' && (
+          <div className="loading">
+            <div className="spinner" />
+            正在为你定制红山路线…
+            <div style={{ fontSize: 12, marginTop: 8 }}>规则引擎筛选 + LLM 编排中</div>
+            <div
+              style={{
+                fontSize: 11,
+                marginTop: 16,
+                color: 'var(--fg-muted)',
+                maxWidth: 280,
+                lineHeight: 1.5,
+              }}
+            >
+              ⏱️ LLM 思考中（一般 30-90 秒）
+              <br />
+              如果太久，会自动用规则引擎的方案
+            </div>
+          </div>
+        )}
+
+        {stage === 'route' && route && prefs && (
           <RouteView
             route={route}
             prefs={prefs}
-            onRouteUpdate={setRoute}
+            onRouteUpdate={handleRouteUpdate}
             onReset={reset}
-            onChat={() => setChatOpen(true)}
+            onChat={() => {
+              setChatOpen(true)
+              onOpenChat()
+            }}
             onVariants={() => setVariantsOpen(true)}
+            isFullscreen
           />
-        </>
-      )}
+        )}
 
-      {stage === 'error' && (
-        <>
-          <div className="error-banner">
-            <strong>规划失败：</strong>{error}
-          </div>
-          <button className="btn btn-primary btn-full" onClick={() => setStage('quiz')}>
-            再试一次
-          </button>
-        </>
-      )}
+        {stage === 'error' && (
+          <>
+            <div className="error-banner">
+              <strong>规划失败：</strong>
+              {error}
+            </div>
+            <button className="btn btn-primary btn-full" onClick={() => setStage('quiz')}>
+              再试一次
+            </button>
+          </>
+        )}
+      </div>
 
       {settingsOpen && (
         <SettingsModal
@@ -140,11 +180,15 @@ export function PlanPage({ initialPrefs, venues, meta, user }: Props) {
           onClose={() => setChatOpen(false)}
           currentRoute={route}
           prefs={prefs}
-          onNewRoute={(r) => setRoute(r)}
+          onNewRoute={(r) => handleRouteUpdate(r)}
         />
       )}
       {variantsOpen && prefs && (
-        <VariantsModal prefs={prefs} onClose={() => setVariantsOpen(false)} onPick={pickVariant} />
+        <VariantsModal
+          prefs={prefs}
+          onClose={() => setVariantsOpen(false)}
+          onPick={pickVariant}
+        />
       )}
     </div>
   )
