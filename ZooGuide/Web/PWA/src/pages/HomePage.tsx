@@ -437,8 +437,10 @@ function ActiveRouteCard({
       )}
 
       {/* 进度条 */}
-      <div className="arc-progress" onClick={onContinue}>
-        <div className="arc-progress-bar" style={{ width: `${progress * 100}%` }} />
+      <div className="arc-progress-wrap">
+        <div className="arc-progress" onClick={onContinue}>
+          <div className="arc-progress-bar" style={{ width: `${progress * 100}%` }} />
+        </div>
         <div className="arc-progress-label">
           {visitedCount}/{total} 已游览{remainingCount > 0 && ` · 还剩 ${remainingCount} 馆`}
         </div>
