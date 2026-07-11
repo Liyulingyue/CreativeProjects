@@ -1472,8 +1472,8 @@ textarea {
   margin-left: 6px;
 }
 
-/* Section 2: Route overview card (neutral, collapsible) */
-.route-overview-card {
+/* Section 2: Area view card (合并 总览 + 按区域) */
+.area-view-card {
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -1482,7 +1482,7 @@ textarea {
   box-shadow: var(--shadow);
 }
 
-.roc-header {
+.avc-header {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -1492,11 +1492,11 @@ textarea {
   user-select: none;
 }
 
-.roc-header:active {
+.avc-header:active {
   background: var(--bg);
 }
 
-.roc-label {
+.avc-label {
   font-size: 11px;
   color: var(--fg-muted);
   text-transform: uppercase;
@@ -1504,12 +1504,11 @@ textarea {
   margin-bottom: 2px;
 }
 
-.roc-summary {
+.avc-summary {
   font-size: 13px;
   font-weight: 600;
   color: var(--primary-strong);
   line-height: 1.4;
-  /* Allow ellipsis */
   overflow: hidden;
   text-overflow: ellipsis;
   display: -webkit-box;
@@ -1517,24 +1516,31 @@ textarea {
   -webkit-box-orient: vertical;
 }
 
-.roc-quickstats {
+.avc-quickstats {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  text-align: right;
-  font-size: 12px;
-  color: var(--fg-muted);
-  white-space: nowrap;
+  gap: 4px;
   flex-shrink: 0;
 }
 
-.roc-quickstats strong {
+.avc-stat-pill {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: var(--primary-soft);
   color: var(--primary-strong);
-  font-size: 14px;
-  margin-right: 4px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  min-width: 36px;
 }
 
-.roc-toggle {
+.avc-stat-pill strong {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.avc-toggle {
   width: 28px;
   height: 28px;
   border-radius: 50%;
@@ -1548,143 +1554,56 @@ textarea {
   flex-shrink: 0;
 }
 
-.roc-body {
+.avc-body {
   border-top: 1px solid var(--border);
-  padding: 6px 0;
 }
 
-.roc-progress {
-  position: relative;
-  height: 24px;
-  background: rgba(255, 255, 255, 0.2);
-  border-radius: 12px;
-  margin-bottom: 12px;
-  overflow: hidden;
-}
 
-.roc-progress-bar {
-  height: 100%;
-  background: rgba(255, 255, 255, 0.7);
-  border-radius: 12px;
-  transition: width 0.4s ease;
-}
 
-.roc-progress-label {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  font-size: 12px;
-  font-weight: 600;
-  color: white;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-}
-
-.roc-stops-mini {
-  display: flex;
-  flex-direction: column;
-}
-
-.roc-mini-stop {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  font-size: 13px;
-  cursor: pointer;
-  transition: background 0.1s;
-  border-bottom: 1px solid var(--border);
-}
-
-.roc-mini-stop:last-child {
+.area-section:last-child {
   border-bottom: none;
 }
 
-.roc-mini-stop:active {
-  background: var(--bg);
-}
 
-.roc-mini-stop.current {
-  background: var(--primary-soft);
-}
 
-.roc-mini-stop.visited {
-  opacity: 0.6;
-}
 
-.roc-mini-stop.visited .roc-mini-name {
-  text-decoration: line-through;
-}
 
-.roc-mini-num {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: var(--border);
-  color: var(--fg-muted);
-  font-size: 11px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
 
-.roc-mini-stop.current .roc-mini-num {
-  background: var(--primary);
-  color: white;
-}
 
-.roc-mini-stop.visited .roc-mini-num {
-  background: #10b981;
-  color: white;
-}
 
-.roc-mini-name {
-  flex: 1;
-  color: var(--primary-strong);
-  font-weight: 500;
-}
 
-.roc-mini-stop.visited .roc-mini-name {
-  color: var(--fg-muted);
-}
 
-.roc-mini-mark {
-  font-size: 12px;
-}
 
-.roc-mini-mark {
-  font-size: 12px;
-  color: white;
-}
 
-.roc-mini-mark.visited {
-  opacity: 0.85;
-}
 
-.roc-mini-mark.current {
-  font-size: 14px;
-}
 
-.roc-mini-time {
-  font-size: 11px;
-  opacity: 0.85;
-  font-family: ui-monospace, monospace;
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 /* Section 3: 按区域查看 */
-.area-sections {
-  margin-top: 4px;
-}
 
-.area-section {
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  margin-bottom: 12px;
-  overflow: hidden;
-}
+
+
 
 .area-section-header {
   display: flex;

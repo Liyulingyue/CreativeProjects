@@ -24,7 +24,6 @@ export function CurrentRouteTab({
   const stops: RouteStop[] = route.stops
   const total = stops.length
   const visitedCount = stops.filter((s) => visited.has(s.venue_id)).length
-  const progress = total > 0 ? visitedCount / total : 0
   const remainingCount = total - visitedCount
 
   const currentStop = stops[Math.min(currentStopIdx, total - 1)]
@@ -47,8 +46,8 @@ export function CurrentRouteTab({
   })
   const areaGroups = Object.values(areaMap)
 
-  // Overview collapse state (default expanded)
-  const [overviewOpen, setOverviewOpen] = useState(true)
+  // Area view collapse state (default expanded)
+  const [areaViewOpen, setAreaViewOpen] = useState(true)
 
   return (
     <div className="current-tab">
@@ -66,11 +65,12 @@ export function CurrentRouteTab({
         <div className="progress-bar">
           <div
             className="progress-bar-fill"
-            style={{ width: `${progress * 100}%` }}
+            style={{
+              width: `${total > 0 ? (visitedCount / total) * 100 : 0}%`,
+            }}
           />
         </div>
 
-        {/* Current stop */}
         {currentStop && (
           <div className="current-stop-card">
             <div className="cs-header">
@@ -88,7 +88,9 @@ export function CurrentRouteTab({
             )}
             <div className="cs-actions">
               <button
-                className={`cs-btn ${visited.has(currentStop.venue_id) ? 'on' : 'ghost'}`}
+                className={`cs-btn ${
+                  visited.has(currentStop.venue_id) ? 'on' : 'ghost'
+                }`}
                 onClick={() => handleVisitedAndAdvance(currentStop.venue_id)}
               >
                 {visited.has(currentStop.venue_id)
@@ -111,7 +113,6 @@ export function CurrentRouteTab({
           </div>
         )}
 
-        {/* Next stop */}
         {nextStop && (
           <div className="next-stop">
             <div className="ns-label">
@@ -132,102 +133,67 @@ export function CurrentRouteTab({
         )}
       </div>
 
-      {/* ===== Section 2: 总览 (overview, collapsible) ===== */}
-      <div className="route-overview-card">
-        <div className="roc-header" onClick={() => setOverviewOpen(!overviewOpen)}>
+      {/* ===== Section 2 (merged): 总览+按区域 ===== */}
+      <div className="area-view-card">
+        {/* Header: 总览 + collapse toggle */}
+        <div
+          className="avc-header"
+          onClick={() => setAreaViewOpen(!areaViewOpen)}
+        >
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
-            <span style={{ fontSize: 20 }}>🧭</span>
+            <span style={{ fontSize: 22 }}>🧭</span>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="roc-label">总览</div>
-              <div className="roc-summary">{route.summary?.slice(0, 60) || '今天逛这些'}</div>
+              <div className="avc-label">总览 · 按区域查看</div>
+              <div className="avc-summary">
+                {route.summary?.slice(0, 50) || '今天逛这些'}
+              </div>
             </div>
           </div>
-          <div className="roc-quickstats">
-            <span><strong>{total}</strong> 馆</span>
-            <span><strong>{Math.round(route.total_minutes / 60 * 10) / 10}</strong> h</span>
+          <div className="avc-quickstats">
+            <span className="avc-stat-pill">
+              <strong>{total}</strong>
+              <span>馆</span>
+            </span>
+            <span className="avc-stat-pill">
+              <strong>{Math.round(route.total_minutes / 60 * 10) / 10}</strong>
+              <span>h</span>
+            </span>
           </div>
-          <div className="roc-toggle">{overviewOpen ? '−' : '+'}</div>
+          <div className="avc-toggle">{areaViewOpen ? '−' : '+'}</div>
         </div>
 
-        {overviewOpen && (
-          <div className="roc-body">
-            <div className="roc-stops-mini">
-              {stops.map((s, i) => (
-                <div
-                  key={`${s.venue_id}-${i}`}
-                  className={`roc-mini-stop ${visited.has(s.venue_id) ? 'visited' : ''} ${
-                    i === currentStopIdx ? 'current' : ''
-                  }`}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onMarkCurrent(i)
-                  }}
-                  title={`跳到第 ${i + 1} 馆`}
-                >
-                  <span className="roc-mini-num">{i + 1}</span>
-                  <span className="roc-mini-name">{s.venue_name}</span>
-                  <span className="roc-mini-time">{s.arrive_time?.slice(0, 5)}</span>
-                  {visited.has(s.venue_id) && (
-                    <span className="roc-mini-mark visited">✓</span>
-                  )}
-                  {i === currentStopIdx && (
-                    <span className="roc-mini-mark current">📍</span>
-                  )}
+        {areaViewOpen && (
+          <div className="avc-body">
+            {areaGroups.map((group) => (
+              <div key={group.area} className="area-section">
+                <div className="area-section-header">
+                  <span className="area-section-icon">📍</span>
+                  <span className="area-section-name">{group.area}</span>
+                  <span className="area-section-count">{group.stops.length} 馆</span>
                 </div>
-              ))}
-            </div>
+                {group.stops.map(({ stop, idx }) => {
+                  const isVisited = visited.has(stop.venue_id)
+                  const isCurrent = idx === currentStopIdx
+                  return (
+                    <AreaStopCard
+                      key={`${stop.venue_id}-${idx}`}
+                      stop={stop}
+                      idx={idx}
+                      isVisited={isVisited}
+                      isCurrent={isCurrent}
+                      onMarkCurrent={() => onMarkCurrent(idx)}
+                      onToggleVisited={() => handleVisitedAndAdvance(stop.venue_id)}
+                    />
+                  )
+                })}
+              </div>
+            ))}
           </div>
         )}
       </div>
 
-      {/* ===== Section 3: 各区域单览 ===== */}
-      <div className="area-sections">
-        <div
-          style={{
-            fontSize: 12,
-            fontWeight: 700,
-            color: 'var(--primary-strong)',
-            marginBottom: 10,
-            padding: '4px 8px',
-            background: 'var(--primary-soft)',
-            borderRadius: 8,
-            display: 'inline-block',
-          }}
-        >
-          🗺️ 按区域查看
-        </div>
-        {areaGroups.map((group) => (
-          <div key={group.area} className="area-section">
-            <div className="area-section-header">
-              <span className="area-section-icon">📍</span>
-              <span className="area-section-name">{group.area}</span>
-              <span className="area-section-count">
-                {group.stops.length} 馆
-              </span>
-            </div>
-            {group.stops.map(({ stop, idx }) => {
-              const isVisited = visited.has(stop.venue_id)
-              const isCurrent = idx === currentStopIdx
-              return (
-                <AreaStopCard
-                  key={`${stop.venue_id}-${idx}`}
-                  stop={stop}
-                  idx={idx}
-                  isVisited={isVisited}
-                  isCurrent={isCurrent}
-                  onMarkCurrent={() => onMarkCurrent(idx)}
-                  onToggleVisited={() => handleVisitedAndAdvance(stop.venue_id)}
-                />
-              )
-            })}
-          </div>
-        ))}
-      </div>
-
       {remainingCount === 0 && (
-        <div className="finish-banner">
-          🎉 全部完成！期待下一次见面
-        </div>
+        <div className="finish-banner">🎉 全部完成！期待下一次见面</div>
       )}
     </div>
   )
@@ -266,7 +232,7 @@ function AreaStopCard({
           </div>
         </div>
         <div className="asc-tags">
-          {isCurrent && <span className="asc-tag current">📍 当前</span>}
+          {isCurrent && <span className="asc-tag current">📍</span>}
           {isVisited && <span className="asc-tag visited">✓</span>}
         </div>
         <div className="asc-toggle">{expanded ? '−' : '+'}</div>
@@ -274,9 +240,7 @@ function AreaStopCard({
 
       {expanded && (
         <div className="asc-body" onClick={(e) => e.stopPropagation()}>
-          {stop.narration && (
-            <div className="asc-narration">{stop.narration}</div>
-          )}
+          {stop.narration && <div className="asc-narration">{stop.narration}</div>}
           {stop.tips && stop.tips.length > 0 && (
             <div className="asc-tips">
               {stop.tips.map((t, i) => (
