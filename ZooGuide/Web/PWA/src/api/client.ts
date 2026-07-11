@@ -123,6 +123,33 @@ export const api = {
       }>
     }>('/api/me/summary'),
 
+  myAchievements: () =>
+    request<{
+      user_id: number
+      stats: {
+        photo_count: number
+        checkin_count: number
+        venues_unique: number
+        best_vibe: number
+        consecutive_days: number
+        gps_count: number
+      }
+      achievements: Array<{
+        id: string
+        name: string
+        description: string
+        icon: string
+        category: string
+        criteria_type: string
+        criteria_threshold: number
+        earned: boolean
+        progress: number
+        current_value: number
+        earned_at: string | null
+      }>
+      earned_count: number
+    }>('/api/me/achievements'),
+
   // Chat & variants
   chat: (params: {
     message: string

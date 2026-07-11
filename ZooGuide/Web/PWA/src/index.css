@@ -2734,6 +2734,164 @@ textarea {
   background: var(--bg-elev);
 }
 
+/* ----- Activity 3-card main design ----- */
+.activity-card-main {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  border-radius: 16px;
+  padding: 16px 18px;
+  margin-bottom: 12px;
+  color: white;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  transition: transform 0.1s, box-shadow 0.15s;
+}
+
+.activity-card-main:first-of-type {
+  margin-top: 0;
+}
+
+.activity-card-main:active {
+  transform: scale(0.99);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+.acm-icon {
+  font-size: 36px;
+  flex-shrink: 0;
+}
+
+.acm-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.acm-title {
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.acm-sub {
+  font-size: 12px;
+  opacity: 0.95;
+  line-height: 1.5;
+}
+
+.acm-sub strong {
+  font-weight: 700;
+}
+
+.acm-arrow {
+  font-size: 24px;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.gps-results {
+  margin-top: 8px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px;
+}
+
+.activity-alt {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-top: 12px;
+}
+
+.activity-alt summary {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--primary-strong);
+  cursor: pointer;
+  list-style: none;
+}
+
+.activity-alt summary::-webkit-details-marker {
+  display: none;
+}
+
+.activity-alt summary::before {
+  content: '▸ ';
+  display: inline-block;
+  margin-right: 4px;
+  transition: transform 0.15s;
+}
+
+.activity-alt[open] summary::before {
+  content: '▾ ';
+}
+
+.activity-alt[open] {
+  padding-bottom: 12px;
+}
+
+.activity-alt .activity-checkin-grid {
+  margin-top: 10px;
+}
+
+.achievement-toast {
+  position: fixed;
+  top: 80px;
+  left: 16px;
+  right: 16px;
+  background: linear-gradient(135deg, #fbbf24, #f59e0b);
+  color: white;
+  border-radius: 12px;
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  z-index: 200;
+  box-shadow: 0 6px 20px rgba(245, 158, 11, 0.4);
+  cursor: pointer;
+  animation: toastSlideIn 0.3s ease-out;
+}
+
+@keyframes toastSlideIn {
+  from {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.at-icon {
+  font-size: 28px;
+  flex-shrink: 0;
+}
+
+.at-body {
+  flex: 1;
+}
+
+.at-title {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.at-sub {
+  font-size: 11px;
+  opacity: 0.9;
+  margin-top: 2px;
+}
+
+.at-close {
+  font-size: 18px;
+  opacity: 0.7;
+  width: 24px;
+  text-align: center;
+}
+
 /* ----- Entry list pattern (Activity page Hub) ----- */
 .entry-list {
   display: flex;
