@@ -10,6 +10,7 @@ interface Props {
 }
 
 interface ChatMsg {
+  id: number
   role: 'user' | 'agent'
   text: string
   constraint?: any
@@ -18,15 +19,16 @@ interface ChatMsg {
 }
 
 const QUICK = [
-  '走不动了，能少走点吗？',
-  '太阳太晒，换阴凉的路线',
-  '加上考拉馆',
-  '跳过老虎',
-  '帮我多看几个馆',
-  '想看网红动物',
+  '走不动了',
+  '太晒了',
+  '加考拉馆',
+  '跳老虎',
+  '想多逛',
+  '看网红',
 ]
 
 const INITIAL_MSG: ChatMsg = {
+  id: 0,
   role: 'agent',
   text: '嗨，我是你的红山导游 🦒。想逛哪些馆？走累了？想看什么动物？随时告诉我。',
 }
@@ -35,18 +37,22 @@ export function ChatPage({ currentRoute, prefs, onRouteUpdate, onGoPlan, onGoAct
   const [messages, setMessages] = useState<ChatMsg[]>([INITIAL_MSG])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [showQuick, setShowQuick] = useState(true)
   const scrollerRef = useRef<HTMLDivElement>(null)
+  const idRef = useRef(1)
 
   useEffect(() => {
-    scrollerRef.current?.scrollTo({ top: 99999, behavior: 'smooth' })
+    setTimeout(() => {
+      scrollerRef.current?.scrollTo({ top: 999999, behavior: 'smooth' })
+    }, 50)
   }, [messages, loading])
 
   async function send(text?: string) {
     const msg = (text ?? input).trim()
     if (!msg || loading) return
     setInput('')
-    const newMsgs = [...messages, { role: 'user' as const, text: msg }]
-    setMessages(newMsgs)
+    const userMsg: ChatMsg = { id: idRef.current++, role: 'user', text: msg }
+    setMessages((prev) => [...prev, userMsg])
     setLoading(true)
     try {
       const r = await fetch('/api/chat', {
@@ -56,7 +62,7 @@ export function ChatPage({ currentRoute, prefs, onRouteUpdate, onGoPlan, onGoAct
           message: msg,
           current_route: currentRoute,
           prefs,
-          history: newMsgs.slice(-6).map((m) => ({
+          history: messages.slice(-6).map((m) => ({
             role: m.role === 'agent' ? 'assistant' : 'user',
             content: m.text,
           })),
@@ -64,6 +70,7 @@ export function ChatPage({ currentRoute, prefs, onRouteUpdate, onGoPlan, onGoAct
       })
       const d = await r.json()
       const reply: ChatMsg = {
+        id: idRef.current++,
         role: 'agent',
         text: d.reply || '…',
         constraint: d.extracted_constraint,
@@ -71,13 +78,13 @@ export function ChatPage({ currentRoute, prefs, onRouteUpdate, onGoPlan, onGoAct
         route: d.new_route,
       }
       setMessages((prev) => [...prev, reply])
-      if (d.new_route) {
+      if (d.new_route && onRouteUpdate) {
         onRouteUpdate(d.new_route)
       }
     } catch (e) {
       setMessages((prev) => [
         ...prev,
-        { role: 'agent', text: '网络好像出问题了，试试再说一次？' },
+        { id: idRef.current++, role: 'agent', text: '网络好像出问题了，试试再说一次？' },
       ])
     } finally {
       setLoading(false)
@@ -86,161 +93,79 @@ export function ChatPage({ currentRoute, prefs, onRouteUpdate, onGoPlan, onGoAct
 
   function reset() {
     setMessages([INITIAL_MSG])
+    idRef.current = 1
   }
 
   return (
     <div className="chat-page">
-      {/* Context banner - prominent pill button */}
+      {/* Context banner */}
       <div className="chat-context">
         {currentRoute ? (
           <>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
-              <span style={{ fontSize: 22 }}>🧭</span>
-              <div>
-                <div style={{ fontSize: 11, color: 'var(--fg-muted)' }}>当前路线</div>
-                <div
-                  style={{
-                    fontSize: 14,
-                    fontWeight: 700,
-                    color: 'var(--primary-strong)',
-                    lineHeight: 1.2,
-                  }}
-                >
-                  {currentRoute.stops.length} 馆 ·{' '}
-                  {Math.round(currentRoute.total_minutes / 60 * 10) / 10}h
-                </div>
+            <div className="chat-context-info">
+              <div className="chat-context-label">当前路线</div>
+              <div className="chat-context-meta">
+                {currentRoute.stops.length} 馆 ·{' '}
+                {Math.round(currentRoute.total_minutes / 60 * 10) / 10}h
               </div>
             </div>
             <button className="pill-btn primary" onClick={onGoPlan}>
-              打开完整路线
-              <span style={{ marginLeft: 4 }}>→</span>
+              打开路线
             </button>
           </>
         ) : (
           <>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
-              <span style={{ fontSize: 22 }}>💡</span>
-              <div style={{ fontSize: 13, color: 'var(--fg-muted)', lineHeight: 1.4 }}>
-                你还没有规划路线
-              </div>
+            <div className="chat-context-info">
+              <div className="chat-context-label">💡 还没有路线</div>
             </div>
             <button className="pill-btn primary" onClick={onGoPlan}>
               去规划
-              <span style={{ marginLeft: 4 }}>→</span>
             </button>
           </>
         )}
       </div>
 
-      {/* Messages */}
+      {/* Messages (scrollable) */}
       <div ref={scrollerRef} className="chat-messages">
-        {messages.map((m, i) => (
-          <div
-            key={i}
-            style={{
-              display: 'flex',
-              justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start',
-              marginBottom: 10,
-            }}
-          >
-            <div
-              style={{
-                maxWidth: '85%',
-                padding: '10px 14px',
-                borderRadius: 12,
-                fontSize: 14,
-                background: m.role === 'user' ? 'var(--primary)' : 'var(--bg-elev)',
-                color: m.role === 'user' ? 'white' : 'var(--fg)',
-                border: m.role === 'agent' ? '1px solid var(--border)' : 'none',
-                lineHeight: 1.55,
-              }}
-            >
-              {m.text}
-              {m.constraint && (
-                <div style={{ marginTop: 6, fontSize: 11, opacity: 0.85 }}>
-                  💡 {m.constraint.type}
-                  {m.constraint.venue_name && ` → ${m.constraint.venue_name}`}
-                </div>
-              )}
-              {m.questions && m.questions.length > 0 && (
-                <div
-                  style={{
-                    marginTop: 6,
-                    fontSize: 12,
-                    background: 'var(--primary-soft)',
-                    padding: '6px 10px',
-                    borderRadius: 8,
-                    color: 'var(--primary-strong)',
-                  }}
-                >
-                  🤔 {m.questions[0]}
-                </div>
-              )}
-              {m.route && (
-                <div
-                  style={{
-                    marginTop: 8,
-                    padding: '10px 12px',
-                    background: 'var(--bg)',
-                    borderRadius: 10,
-                    border: '1px solid var(--primary)',
-                  }}
-                >
-                  <div
-                    style={{
-                      fontSize: 12,
-                      fontWeight: 700,
-                      color: 'var(--primary-strong)',
-                      marginBottom: 4,
-                    }}
-                  >
-                    🧭 新路线已生成
-                  </div>
-                  <div
-                    style={{
-                      fontSize: 11,
-                      color: 'var(--fg-muted)',
-                      lineHeight: 1.4,
-                      marginBottom: 8,
-                    }}
-                  >
-                    {m.route.summary?.slice(0, 60)}...
-                    <br />
-                    <strong style={{ color: 'var(--primary-strong)' }}>
-                      {m.route.stops.length} 馆 ·{' '}
-                      {Math.round(m.route.total_minutes / 60 * 10) / 10}h
-                    </strong>
-                  </div>
-                  <button
-                    className="pill-btn primary"
-                    style={{ width: '100%', justifyContent: 'center' }}
-                    onClick={onGoPlan}
-                  >
-                    📍 查看完整路线 →
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
+        {messages.map((m) => (
+          <MessageBubble key={m.id} msg={m} />
         ))}
-        {loading && (
-          <div style={{ fontSize: 12, color: 'var(--fg-muted)', padding: '4px 10px' }}>
-            思考中…
-          </div>
+        {loading && <TypingBubble />}
+        {!currentRoute && messages.length <= 1 && (
+          <button
+            className="chat-suggest-btn"
+            onClick={onGoActivity}
+          >
+            📍 没规划？先去拍张照/逛逛 →
+          </button>
         )}
       </div>
 
-      {/* Quick replies */}
-      <div className="quick-feedback">
-        {QUICK.map((q) => (
-          <button key={q} onClick={() => send(q)} disabled={loading}>
-            {q}
+      {/* Quick replies (collapsible) */}
+      {showQuick && (
+        <div className="chat-quick-row">
+          {QUICK.map((q) => (
+            <button key={q} className="chat-quick-chip" onClick={() => send(q)} disabled={loading}>
+              {q}
+            </button>
+          ))}
+          <button
+            className="chat-quick-toggle"
+            onClick={() => setShowQuick(false)}
+            title="收起"
+          >
+            −
           </button>
-        ))}
-      </div>
+        </div>
+      )}
+      {!showQuick && (
+        <button className="chat-quick-show" onClick={() => setShowQuick(true)}>
+          快捷回复 ▾
+        </button>
+      )}
 
-      {/* Input */}
-      <div className="chat-input">
+      {/* Input (sticky bottom) */}
+      <div className="chat-composer">
         <input
           type="text"
           value={input}
@@ -249,46 +174,90 @@ export function ChatPage({ currentRoute, prefs, onRouteUpdate, onGoPlan, onGoAct
           placeholder="说点什么…"
           disabled={loading}
         />
-        <button className="btn btn-primary" onClick={() => send()} disabled={loading || !input.trim()}>
-          发送
+        <button
+          className="chat-send-btn"
+          onClick={() => send()}
+          disabled={loading || !input.trim()}
+        >
+          {loading ? '⏳' : '➤'}
         </button>
       </div>
 
-      {messages.length > 1 && (
-        <button
-          onClick={reset}
-          style={{
-            fontSize: 11,
-            color: 'var(--fg-muted)',
-            background: 'transparent',
-            border: 'none',
-            textAlign: 'center',
-            width: '100%',
-            padding: 8,
-          }}
-        >
-          🗑 清空对话
+      {messages.length > 2 && (
+        <button className="chat-clear-link" onClick={reset}>
+          清空对话
         </button>
       )}
+    </div>
+  )
+}
 
-      {!currentRoute && (
-        <button
-          onClick={onGoActivity}
-          style={{
-            fontSize: 12,
-            color: 'var(--primary-strong)',
-            background: 'var(--primary-soft)',
-            border: 'none',
-            textAlign: 'center',
-            width: '100%',
-            padding: 10,
-            borderRadius: 10,
-            marginTop: 4,
-          }}
-        >
-          📍 没规划？先去附近逛逛 / 📸 拍张照
-        </button>
-      )}
+function MessageBubble({ msg }: { msg: ChatMsg }) {
+  const isUser = msg.role === 'user'
+  return (
+    <div
+      style={{
+        display: 'flex',
+        justifyContent: isUser ? 'flex-end' : 'flex-start',
+        marginBottom: 12,
+      }}
+    >
+      <div
+        style={{
+          maxWidth: '78%',
+          padding: '10px 14px',
+          borderRadius: isUser ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
+          fontSize: 15,
+          lineHeight: 1.5,
+          background: isUser ? 'var(--primary)' : 'var(--bg-elev)',
+          color: isUser ? 'white' : 'var(--fg)',
+          border: isUser ? 'none' : '1px solid var(--border)',
+          boxShadow: isUser ? '0 1px 4px rgba(45,106,79,0.25)' : '0 1px 2px rgba(0,0,0,0.04)',
+        }}
+      >
+        {msg.text}
+        {msg.constraint && (
+          <div style={{ marginTop: 6, fontSize: 11, opacity: 0.85 }}>
+            💡 {msg.constraint.type}
+            {msg.constraint.venue_name && ` → ${msg.constraint.venue_name}`}
+          </div>
+        )}
+        {msg.questions && msg.questions.length > 0 && (
+          <div
+            style={{
+              marginTop: 6,
+              fontSize: 12,
+              background: 'var(--primary-soft)',
+              padding: '6px 10px',
+              borderRadius: 8,
+              color: 'var(--primary-strong)',
+            }}
+          >
+            🤔 {msg.questions[0]}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function TypingBubble() {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 12 }}>
+      <div
+        style={{
+          padding: '12px 16px',
+          borderRadius: '18px 18px 18px 4px',
+          background: 'var(--bg-elev)',
+          border: '1px solid var(--border)',
+          display: 'flex',
+          gap: 4,
+        }}
+      >
+        <span className="typing-dot" />
+        <span className="typing-dot" style={{ animationDelay: '0.2s' }} />
+        <span className="typing-dot" style={{ animationDelay: '0.4s' }} />
+      </div>
     </div>
   )
 }
