@@ -47,6 +47,45 @@ export function saveVisited(ids: Set<string>) {
   window.dispatchEvent(new Event('zooguide:visitedChanged'))
 }
 
+// Recent photo evaluations (capped)
+const PHOTO_LOG_KEY = 'zooguide:photoLog:v1'
+const PHOTO_LOG_MAX = 30
+
+export interface PhotoLogEntry {
+  evaluation_id: string
+  animal_guess: string
+  matched_venue_id: string
+  matched_venue_name: string
+  badge: string
+  vibe_score: number
+  caption: string
+  ts: string
+}
+
+export function loadPhotoLog(): PhotoLogEntry[] {
+  try {
+    const raw = localStorage.getItem(PHOTO_LOG_KEY)
+    return raw ? JSON.parse(raw) : []
+  } catch {
+    return []
+  }
+}
+
+export function appendPhotoLog(entry: PhotoLogEntry) {
+  const log = loadPhotoLog()
+  log.unshift(entry) // newest first
+  if (log.length > PHOTO_LOG_MAX) log.pop()
+  try {
+    localStorage.setItem(PHOTO_LOG_KEY, JSON.stringify(log))
+  } catch {}
+  window.dispatchEvent(new Event('zooguide:photoLogChanged'))
+}
+
+export function clearPhotoLog() {
+  localStorage.removeItem(PHOTO_LOG_KEY)
+  window.dispatchEvent(new Event('zooguide:photoLogChanged'))
+}
+
 const TOKEN_KEY = 'zooguide:token:v1'
 const USER_KEY = 'zooguide:user:v1'
 

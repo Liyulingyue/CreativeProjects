@@ -1,7 +1,94 @@
 # ZooGuide 设计文档
 
-> 南京红山森林动物园「省力 Agent」
-> 后端 FastAPI + 前端 PWA (React + Vite + TypeScript)
+> 南京红山森林动物园「省力 Agent」设计文档
+
+## 1. 产品定位
+
+**核心命题**：让每位游客按自己的方式逛出趟只属于自己的红山。
+
+**目标用户**：南京红山森林动物园的真实游客。
+
+**核心价值**：
+- **游前**：根据用户偏好（时间、体力、带没带娃、怕不怕晒、动物兴趣）生成高度定制的游园路线
+- **游中**：拍照打卡、定位、动物贴士
+- **游后**：查看历史与个人数据
+
+## 2. LLM 是否必需？
+
+**答案：不是。**
+
+LLM 用于**增强**，但**全部核心功能在无 LLM 情况下也能工作**：
+
+| 功能 | 不开 LLM 的实现 | 效果 |
+|------|----------------|------|
+| 路线规划 | 规则引擎 + 30+ 候选筛选 | 1-2 秒出可用方案 |
+| 聊天 | Regex 快路径（10+ 常见意图） | "走不动"/"加场馆"/"跳老虎" 等 |
+| 拍照评价 | 规则匹配 + 红山专属梗库 | 徽章 / 讲解 / 拍照建议 |
+| 地点定位 | 浏览器 Geolocation + haversine | 最近 3 馆 + 距离 |
+| 场馆信息 | venues.json 静态数据 | 23 馆详情 + 馆数统计 |
+| 打卡 | localStorage + DB | 跨设备（登录后）同步 |
+
+**LLM 提升的体验**：
+- 个性化讲解（针对用户画像）
+- 自然语言理解（复杂多轮对话）
+- 拍照动物识别（多模态）
+
+**配置方法**：`.env` 中 `OPENAI_API_KEY` 留空 / `USE_LLM=false` → 全功能降级，**仍可演示**。
+
+## 3. 数据模型
+
+### Venue（场馆）
+```python
+class Venue:
+    id: str              # 唯一标识 (e.g., "panda")
+    name: str            # 中文名
+    area: str            # 所属片区
+    near_gate: str       # 邻近入口
+    animals: list[str]   # 主要动物
+    tags: list[str]      # 标签: 明星动物/亲子/有遮阴/网红...
+    themes: list[str]    # 主题: 中国本土/非洲/澳洲/异域/科普
+    description: str     # 场馆描述
+    recommended_visit_minutes: int  # 建议参观时长
+    rest_spots: bool     # 是否有休息点
+    shaded: bool         # 是否有遮阴
+    kid_friendly: int    # 亲子友好度 1-5
+    photo_op: int        # 出片指数 1-5
+    must_see: bool       # 是否必看
+    lat: float           # 估算经度
+    lon: float           # 估算纬度
+```
+
+### UserPreference
+```python
+class UserPreference:
+    available_hours: float
+    party_type: PartyType       # solo/couple/family_young/family_teen/seniors
+    with_kids: bool
+    kids_age: Optional[int]
+    stamina: int                # 1-5
+    sun_tolerance: int          # 1-5
+    willing_to_hike: bool
+    animal_interests: list[InterestTag]
+    entry_gate: Gate            # north/south/east
+    start_time: str             # HH:MM
+    fast: bool                  # 跳过 LLM
+    strict_hours: bool          # 硬剔除闭馆
+    style: str                  # balanced/must_see/hidden_gem
+```
+
+### Route / RouteStop / RouteVariant
+```python
+class RouteStop:
+    venue_id: str
+    venue_name: str
+    arrive_time: str
+    leave_time: str
+    visit_minutes: int
+    walk_to_next_minutes: int
+    narration: str
+    tips: list[str]
+    rest_here: bool
+```
 
 ---
 

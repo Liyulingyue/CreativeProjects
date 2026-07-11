@@ -97,6 +97,20 @@ export function PhotoEvalDialog({ onClose, onPickVenue }: Props) {
     try {
       const result = await api.evaluatePhoto(file, file.name)
       setEvaluation(result)
+      // Append to local log so Activity page "我的出片" updates immediately
+      try {
+        const { appendPhotoLog } = await import('../lib/storage')
+        appendPhotoLog({
+          evaluation_id: result.evaluation_id,
+          animal_guess: result.animal_guess,
+          matched_venue_id: result.matched_venue_id,
+          matched_venue_name: result.matched_venue_name,
+          badge: result.badge,
+          vibe_score: result.vibe_score,
+          caption: result.caption,
+          ts: result.ts,
+        })
+      } catch {}
       setPhase('result')
     } catch (e) {
       setError(e instanceof Error ? e.message : '评价失败')
