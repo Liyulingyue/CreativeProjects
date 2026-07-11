@@ -12,9 +12,10 @@ interface Props {
   onReset: () => void
   onChat?: () => void
   onVariants?: () => void
+  isFullscreen?: boolean
 }
 
-export function RouteView({ route, prefs, onRouteUpdate, onReset, onChat, onVariants }: Props) {
+export function RouteView({ route, prefs, onRouteUpdate, onReset, onChat, onVariants, isFullscreen }: Props) {
   const [visited, setVisited] = useState<Set<string>>(loadVisited())
   const [replanOpen, setReplanOpen] = useState(false)
   const [photoOpen, setPhotoOpen] = useState(false)
@@ -206,16 +207,18 @@ export function RouteView({ route, prefs, onRouteUpdate, onReset, onChat, onVari
         </div>
       )}
 
-      <div className="bottom-bar">
+      <div className={isFullscreen ? 'bottom-bar fullscreen-bar' : 'bottom-bar'}>
         <button className="btn btn-outline" onClick={onReset}>
           🔄 重新规划
         </button>
         <button className="btn btn-ghost" onClick={onVariants}>
           🧭 对比
         </button>
-        <button className="btn btn-ghost" onClick={onChat}>
-          💬 聊天
-        </button>
+        {isFullscreen && (
+          <button className="btn btn-ghost" onClick={onChat}>
+            💬 聊天
+          </button>
+        )}
         <button className="btn btn-primary" onClick={() => setReplanOpen(true)}>
           ✨ 调整
         </button>

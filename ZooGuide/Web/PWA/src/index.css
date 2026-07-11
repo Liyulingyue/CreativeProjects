@@ -680,6 +680,11 @@ textarea {
   pointer-events: auto;
 }
 
+/* In fullscreen mode, there's no TabBar above */
+.fullscreen-bar {
+  bottom: 0;
+}
+
 .bottom-bar .btn {
   flex: 1;
 }
@@ -848,6 +853,310 @@ textarea {
   padding: 8px 10px;
   background: var(--bg);
   border-radius: 8px;
+}
+
+/* ----- HomePage quick actions ----- */
+.quick-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.qa-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  transition: transform 0.1s;
+}
+
+.qa-card:active {
+  transform: scale(0.97);
+}
+
+.qa-icon {
+  font-size: 24px;
+  margin-bottom: 2px;
+}
+
+.qa-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--primary-strong);
+}
+
+.qa-desc {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+/* ----- PlanFlow (fullscreen overlay) ----- */
+.fullscreen-flow {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  animation: slideUp 0.25s ease-out;
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.flow-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  background: linear-gradient(180deg, var(--primary-strong), var(--primary));
+  color: white;
+  flex-shrink: 0;
+}
+
+.flow-back {
+  background: rgba(255, 255, 255, 0.18);
+  color: white;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  font-size: 18px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.flow-back:active {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.flow-title {
+  font-size: 17px;
+  font-weight: 600;
+  flex: 1;
+}
+
+.flow-settings {
+  background: rgba(255, 255, 255, 0.18);
+  color: white;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.flow-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 18px 80px;
+}
+
+.flow-home {
+  text-align: center;
+  padding: 24px 12px;
+}
+
+.flow-hero {
+  font-size: 64px;
+}
+
+/* ----- ChatPage (full-tab chat) ----- */
+.chat-page {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 130px - 60px); /* header + tabbar */
+}
+
+.chat-context {
+  display: flex;
+  align-items: center;
+  background: var(--primary-soft);
+  padding: 8px 14px;
+  border-radius: 10px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.link-btn {
+  background: transparent;
+  border: none;
+  color: var(--primary-strong);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 4px;
+  background: var(--bg);
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  margin-bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  min-height: 200px;
+}
+
+.chat-input {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-shrink: 0;
+}
+
+.chat-input input {
+  flex: 1;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  font-size: 14px;
+}
+
+.chat-input .btn {
+  padding: 10px 16px;
+}
+
+/* ----- ActivityPage ----- */
+.activity-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px;
+  text-align: left;
+  transition: transform 0.1s;
+}
+
+.activity-card:active {
+  transform: scale(0.98);
+}
+
+.activity-card:disabled {
+  opacity: 0.6;
+}
+
+.activity-icon {
+  font-size: 32px;
+  flex-shrink: 0;
+}
+
+.activity-body {
+  flex: 1;
+}
+
+.activity-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--primary-strong);
+  margin-bottom: 2px;
+}
+
+.activity-desc {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.activity-arrow {
+  font-size: 24px;
+  color: var(--primary);
+  font-weight: 700;
+}
+
+/* Quick checkin tiles */
+.checkin-tile {
+  background: var(--bg-elev);
+  border: 2px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  text-align: left;
+  position: relative;
+  transition: all 0.15s;
+  min-height: 70px;
+}
+
+.checkin-tile.on {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.checkin-tile:active {
+  transform: scale(0.97);
+}
+
+.checkin-tile-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--primary-strong);
+  padding-right: 24px;
+}
+
+.checkin-tile-meta {
+  font-size: 11px;
+  color: var(--fg-muted);
+  margin-top: 2px;
+}
+
+.checkin-tile-mark {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--border);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.checkin-tile.on .checkin-tile-mark {
+  background: var(--primary);
+}
+
+.checkin-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.checkin-btn.on {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: white;
 }
 
 /* App body needs bottom padding so content isn't covered */
