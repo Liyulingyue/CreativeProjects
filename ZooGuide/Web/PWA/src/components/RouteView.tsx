@@ -207,20 +207,24 @@ export function RouteView({ route, prefs, onRouteUpdate, onReset, onChat, onVari
         </div>
       )}
 
-      <div className={isFullscreen ? 'bottom-bar fullscreen-bar' : 'bottom-bar'}>
-        <button className="btn btn-outline" onClick={onReset}>
-          🔄 重新规划
+      <div className={isFullscreen ? 'action-toolbar' : 'bottom-bar'}>
+        <button className="at-btn ghost" onClick={onReset} title="重新规划">
+          <span className="at-icon">🔄</span>
+          <span className="at-label">重做</span>
         </button>
-        <button className="btn btn-ghost" onClick={onVariants}>
-          🧭 对比
+        <button className="at-btn ghost" onClick={onVariants} title="对比方案">
+          <span className="at-icon">🧭</span>
+          <span className="at-label">对比</span>
         </button>
         {isFullscreen && (
-          <button className="btn btn-ghost" onClick={onChat}>
-            💬 聊天
+          <button className="at-btn ghost" onClick={onChat} title="和 Agent 聊">
+            <span className="at-icon">💬</span>
+            <span className="at-label">聊天</span>
           </button>
         )}
-        <button className="btn btn-primary" onClick={() => setReplanOpen(true)}>
-          ✨ 调整
+        <button className="at-btn primary" onClick={() => setReplanOpen(true)} title="动态调整">
+          <span className="at-icon">✨</span>
+          <span className="at-label">调整</span>
         </button>
       </div>
 
