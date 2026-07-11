@@ -1,95 +1,41 @@
-import { useEffect, useState } from 'react'
-import type { Venue } from '../types'
-import { api } from '../api/client'
-import { PhotoEvalDialog } from '../components/PhotoEvalDialog'
+import { useState } from 'react'
+import { PhotoFlow } from '../components/flows/PhotoFlow'
+import { PhotoWallFlow } from '../components/flows/PhotoWallFlow'
+import { GpsFlow } from '../components/flows/GpsFlow'
 import { useVisitedVenues } from '../hooks/useVisitedVenues'
 import { saveVisited, loadPhotoLog, type PhotoLogEntry } from '../lib/storage'
 
-export function ActivityPage() {
-  const [venues, setVenues] = useState<Venue[]>([])
-  const [photoOpen, setPhotoOpen] = useState(false)
-  const [photoLog, setPhotoLog] = useState<PhotoLogEntry[]>(loadPhotoLog())
-  const [gpsState, setGpsState] = useState<{
-    nearest?: any
-    locating?: boolean
-    error?: string | null
-  }>({})
-  const [achievements, setAchievements] = useState<{ new: string[]; lastEval: number }>({
-    new: [],
-    lastEval: 0,
-  })
-  const { visited: checkedIn } = useVisitedVenues()
+type FlowKind = 'photo' | 'wall' | 'gps' | null
 
-  useEffect(() => {
-    api.venues().then((d) => setVenues(d.venues)).catch(console.error)
-    function onPhotoLogChanged() {
-      setPhotoLog(loadPhotoLog())
-    }
-    window.addEventListener('zooguide:photoLogChanged', onPhotoLogChanged)
-    return () => window.removeEventListener('zooguide:photoLogChanged', onPhotoLogChanged)
-  }, [])
+export function ActivityPage() {
+  const [flow, setFlow] = useState<FlowKind>(null)
+  const [photoLog] = useState<PhotoLogEntry[]>(loadPhotoLog())
+  const { visited: checkedIn } = useVisitedVenues()
 
   function quickCheckin(venueId: string) {
     const next = new Set(checkedIn)
     if (next.has(venueId)) next.delete(venueId)
     else next.add(venueId)
     saveVisited(next)
-    // POST to backend too (may trigger achievement)
     fetch('/api/checkin', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ venue_id: venueId }),
-    })
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.new_achievements && d.new_achievements.length > 0) {
-          setAchievements({ new: d.new_achievements, lastEval: Date.now() })
-        }
-      })
-      .catch(() => {})
+    }).catch(() => {})
   }
 
-  function locate() {
-    setGpsState({ locating: true, error: null })
-    if (!navigator.geolocation) {
-      setGpsState({ locating: false, error: '浏览器不支持定位' })
-      return
-    }
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        try {
-          const r = await api.nearest(pos.coords.latitude, pos.coords.longitude, 5)
-          setGpsState({ nearest: r, locating: false })
-          // POST GPS checkin (may trigger achievement)
-          fetch('/api/gps-checkin', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              lat: pos.coords.latitude,
-              lon: pos.coords.longitude,
-              in_park: r.in_park_estimate,
-              nearest_venue_id: r.results[0]?.id,
-              nearest_venue_name: r.results[0]?.name,
-            }),
-          })
-            .then((resp) => resp.json())
-            .then((d) => {
-              if (d.new_achievements && d.new_achievements.length > 0) {
-                setAchievements({ new: d.new_achievements, lastEval: Date.now() })
-              }
-            })
-            .catch(() => {})
-        } catch (e) {
-          setGpsState({ locating: false, error: e instanceof Error ? e.message : '查询失败' })
-        }
-      },
-      (err) => {
-        setGpsState({ locating: false, error: `定位失败：${err.message}` })
-      },
-      { enableHighAccuracy: true, timeout: 10000 },
-    )
+  // Full-screen flow overlay
+  if (flow === 'photo') {
+    return <PhotoFlow onClose={() => setFlow(null)} />
+  }
+  if (flow === 'wall') {
+    return <PhotoWallFlow onClose={() => setFlow(null)} onOpenPhoto={() => setFlow('photo')} />
+  }
+  if (flow === 'gps') {
+    return <GpsFlow onClose={() => setFlow(null)} onOpenPlan={() => { /* 跳到 PlanFlow 由上层处理 */ }} />
   }
 
+  // Main activity page (3 cards hub)
   const todayCount = photoLog.filter((p) => {
     const d = new Date(p.ts)
     const now = new Date()
@@ -100,17 +46,10 @@ export function ActivityPage() {
 
   return (
     <div>
-      {achievements.new.length > 0 && (
-        <AchievementToast
-          ids={achievements.new}
-          onClose={() => setAchievements({ new: [], lastEval: 0 })}
-        />
-      )}
-
-      {/* Card 1: 拍照打卡 */}
+      {/* 3 main cards (click to open fullscreen flow) */}
       <div
         className="activity-card-main"
-        onClick={() => setPhotoOpen(true)}
+        onClick={() => setFlow('photo')}
         style={{ background: 'linear-gradient(135deg, #f59e0b, #d97706)' }}
       >
         <div className="acm-icon">📷</div>
@@ -122,11 +61,14 @@ export function ActivityPage() {
             今日 {todayCount} 张 · 总 {photoLog.length} 张
           </div>
         </div>
-        <div className="acm-arrow">📷</div>
+        <div className="acm-arrow">›</div>
       </div>
 
-      {/* Card 2: 出片评分 */}
-      <div className="activity-card-main" style={{ background: 'linear-gradient(135deg, #8b5cf6, #7c3aed)' }}>
+      <div
+        className="activity-card-main"
+        onClick={() => setFlow('wall')}
+        style={{ background: 'linear-gradient(135deg, #8b5cf6, #7c3aed)' }}
+      >
         <div className="acm-icon">🌟</div>
         <div className="acm-body">
           <div className="acm-title">出片评分</div>
@@ -137,93 +79,41 @@ export function ActivityPage() {
             {unlockedBadges.size > 0 && ` · ${unlockedBadges.size} 徽章`}
           </div>
         </div>
-        <div className="acm-arrow">🏅</div>
+        <div className="acm-arrow">›</div>
       </div>
 
-      {/* Card 3: GPS 打卡 */}
       <div
         className="activity-card-main"
-        onClick={locate}
+        onClick={() => setFlow('gps')}
         style={{ background: 'linear-gradient(135deg, #0891b2, #0e7490)' }}
       >
         <div className="acm-icon">📍</div>
         <div className="acm-body">
           <div className="acm-title">GPS 打卡</div>
           <div className="acm-sub">
-            {gpsState.locating
-              ? '🛰️ 定位中…'
-              : gpsState.nearest
-              ? `在 ${gpsState.nearest.results[0]?.name} 附近`
-              : '看看我在园区哪里'}
+            看看我在园区哪里
             <br />
-            {gpsState.nearest && `${gpsState.nearest.results.length} 馆可打卡`}
+            附近有什么馆可以打卡
           </div>
         </div>
-        <div className="acm-arrow">🛰️</div>
+        <div className="acm-arrow">›</div>
       </div>
 
-      {/* GPS result / error */}
-      {gpsState.error && (
-        <div className="error-banner" style={{ marginTop: 10, fontSize: 12 }}>
-          {gpsState.error}
-        </div>
-      )}
-      {gpsState.nearest && (
-        <div className="gps-results">
-          {gpsState.nearest.results.slice(0, 3).map((r: any, i: number) => (
-            <button
-              key={r.id}
-              className="nearest-row"
-              onClick={() => quickCheckin(r.id)}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <div className="nearest-rank">{i + 1}</div>
-                <div style={{ flex: 1, textAlign: 'left' }}>
-                  <div className="nearest-name">{r.name}</div>
-                  <div className="nearest-meta">
-                    {r.area} · {r.animals.slice(0, 2).join('、')}
-                  </div>
-                </div>
-                <div className="nearest-dist">
-                  {r.distance_m >= 1000
-                    ? `${(r.distance_m / 1000).toFixed(1)}km`
-                    : `${Math.round(r.distance_m)}m`}
-                </div>
-                <div
-                  className={`activity-checkin-mark ${
-                    checkedIn.has(r.id) ? 'on' : ''
-                  }`}
-                  style={{ position: 'static' }}
-                >
-                  {checkedIn.has(r.id) ? '✓' : '+'}
-                </div>
-              </div>
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* 备选：必看馆快速打卡 */}
+      {/* 备选：必看馆快速打卡 (折叠) */}
       <details className="activity-alt">
         <summary>不拍照？21 个必看馆一键打卡</summary>
         <div className="activity-checkin-grid">
-          {venues
-            .filter((v) => v.must_see)
-            .map((v) => (
-              <button
-                key={v.id}
-                className={`activity-checkin-tile ${checkedIn.has(v.id) ? 'on' : ''}`}
-                onClick={() => quickCheckin(v.id)}
-              >
-                <div className="activity-checkin-name">{v.name}</div>
-                <div
-                  className={`activity-checkin-mark ${
-                    checkedIn.has(v.id) ? 'on' : ''
-                  }`}
-                >
-                  {checkedIn.has(v.id) ? '✓' : '+'}
-                </div>
-              </button>
+          {Array.from({ length: 21 })
+            .map((_, i) => MUST_SEE_IDS[i])
+            .filter(Boolean)
+            .map((vid) => (
+              <MustSeeTile
+                key={vid.id}
+                venueId={vid.id}
+                name={vid.name}
+                checkedIn={checkedIn}
+                onClick={() => quickCheckin(vid.id)}
+              />
             ))}
         </div>
       </details>
@@ -238,26 +128,56 @@ export function ActivityPage() {
       >
         💡 拍照 / GPS / 打卡 都可能解锁活动成就（Profile 查看）
       </div>
-
-      {photoOpen && <PhotoEvalDialog onClose={() => setPhotoOpen(false)} />}
     </div>
   )
 }
 
-function AchievementToast({ ids, onClose }: { ids: string[]; onClose: () => void }) {
-  useEffect(() => {
-    const t = setTimeout(onClose, 4000)
-    return () => clearTimeout(t)
-  }, [onClose])
+// Hardcoded must-see list (synced with backend venues.json must_see)
+const MUST_SEE_IDS = [
+  { id: 'panda', name: '大熊猫馆' },
+  { id: 'gorilla', name: '大猩猩馆' },
+  { id: 'tiger', name: '虎馆' },
+  { id: 'giraffe', name: '长颈鹿馆' },
+  { id: 'koala', name: '考拉馆' },
+  { id: 'meerkat', name: '细尾獴馆' },
+  { id: 'red_panda', name: '小熊猫馆' },
+  { id: 'tangjiahe', name: '唐家河展区' },
+  { id: 'asian_elephant', name: '亚洲象馆' },
+  { id: 'orangutan', name: '猩猩馆' },
+  { id: 'kangaroo', name: '澳洲袋鼠角' },
+  { id: 'lemur', name: '马岛客厅' },
+  { id: 'rhino', name: '犀牛领地' },
+  { id: 'china_cat', name: '中国猫科馆' },
+  { id: 'cat_planet', name: '猫科星球' },
+  { id: 'asian_primates', name: '亚洲灵长区' },
+  { id: 'wolf', name: '狼馆' },
+  { id: 'bear', name: '熊馆' },
+  { id: 'monkey_mountain', name: '猴山' },
+  { id: 'hornbill', name: '犀鸟馆' },
+  { id: 'crane', name: '鹤园' },
+]
+
+function MustSeeTile({
+  venueId,
+  name,
+  checkedIn,
+  onClick,
+}: {
+  venueId: string
+  name: string
+  checkedIn: Set<string>
+  onClick: () => void
+}) {
   return (
-    <div className="achievement-toast" onClick={onClose}>
-      <div className="at-icon">🏆</div>
-      <div className="at-body">
-        <div className="at-title">解锁新成就 ×{ids.length}</div>
-        <div className="at-sub">查看 Profile 了解详情</div>
+    <button
+      className={`activity-checkin-tile ${checkedIn.has(venueId) ? 'on' : ''}`}
+      onClick={onClick}
+    >
+      <div className="activity-checkin-name">{name}</div>
+      <div className={`activity-checkin-mark ${checkedIn.has(venueId) ? 'on' : ''}`}>
+        {checkedIn.has(venueId) ? '✓' : '+'}
       </div>
-      <div className="at-close">×</div>
-    </div>
+    </button>
   )
 }
 
