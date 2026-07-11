@@ -1,16 +1,23 @@
 import { useState, useEffect, useCallback } from "react";
-import { startDedup, getDedupJob, resolveDedupGroups } from "@/api/dedup";
-import { listDirs } from "@/api/files";
-import type { DirEntry, DedupJob, DedupGroup } from "@/api/types";
+import { startDedupFolder, startDedupPaths, getDedupJob, resolveDedupGroups } from "@/api/dedup";
+import { listDirs, addDir, browseFiles } from "@/api/files";
+import type { DirEntry, DedupJob, DedupGroup, BrowseResult, FileNode } from "@/api/types";
 import { apiUrl } from "@/api/client";
+import { PathInput } from "@/components/PathInput";
+import { FolderPicker } from "@/components/FolderPicker";
+import { PhotoGrid } from "@/components/PhotoGrid";
 
 export function Dedup() {
   const [dirs, setDirs] = useState<DirEntry[]>([]);
-  const [selectedDir, setSelectedDir] = useState<DirEntry | null>(null);
+  const [pathValue, setPathValue] = useState("");
+  const [currentDir, setCurrentDir] = useState<DirEntry | null>(null);
+  const [browse, setBrowse] = useState<BrowseResult | null>(null);
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
   const [job, setJob] = useState<DedupJob | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [keepSelections, setKeepSelections] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
+  const [showPicker, setShowPicker] = useState(false);
 
   useEffect(() => {
     listDirs().then(setDirs).catch(() => {});
@@ -28,15 +35,85 @@ export function Dedup() {
     }
   }, []);
 
-  const handleStart = async () => {
-    if (!selectedDir) return;
+  const handleBrowsePath = async (path: string) => {
+    let dir = dirs.find((d) => d.path === path);
+    if (!dir) {
+      try {
+        dir = await addDir(path);
+        setDirs((prev) => [...prev, dir!]);
+      } catch {
+        return;
+      }
+    }
+    setCurrentDir(dir);
+    setSelectedPaths(new Set());
+    try {
+      const result = await browseFiles(dir!.id);
+      setBrowse(result);
+    } catch {
+      setBrowse(null);
+    }
+  };
+
+  const handleSelectPath = (path: string) => {
+    setPathValue(path);
+    handleBrowsePath(path);
+  };
+
+  const handlePickFolder = (path: string, _name: string) => {
+    setPathValue(path);
+    handleBrowsePath(path);
+  };
+
+  const handleNavigate = (item: FileNode) => {
+    if (item.is_dir && currentDir) {
+      browseFiles(currentDir.id, item.path).then(setBrowse).catch(() => {});
+    }
+  };
+
+  const toggleSelect = (path: string) => {
+    setSelectedPaths((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+
+  const selectAll = () => {
+    if (!browse) return;
+    const images = browse.items.filter((i) => !i.is_dir);
+    const allSelected = images.every((i) => selectedPaths.has(i.path));
+    if (allSelected) {
+      setSelectedPaths(new Set());
+    } else {
+      setSelectedPaths(new Set(images.map((i) => i.path)));
+    }
+  };
+
+  const handleStartAll = async () => {
+    if (!currentDir) return;
     setLoading(true);
     try {
-      const result = await startDedup(selectedDir.id);
+      const result = await startDedupFolder(currentDir.id);
       setJob(result);
       pollJob(result.job_id);
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Failed to start dedup");
+      alert(e instanceof Error ? e.message : "启动去重失败");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleStartSelected = async () => {
+    if (selectedPaths.size === 0) return;
+    setLoading(true);
+    try {
+      const result = await startDedupPaths(Array.from(selectedPaths));
+      setJob(result);
+      pollJob(result.job_id);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "启动去重失败");
     } finally {
       setLoading(false);
     }
@@ -76,35 +153,74 @@ export function Dedup() {
     }
   };
 
+  const imageCount = browse?.items.filter((i) => !i.is_dir).length ?? 0;
+
   return (
     <div className="page">
       <h1>照片去重</h1>
 
       <div className="card">
-        <h3>启动去重</h3>
-        <div className="form-group">
-          <label>选择目录</label>
-          <select
-            value={selectedDir?.id ?? ""}
-            onChange={(e) => {
-              const dir = dirs.find((d) => d.id === e.target.value);
-              setSelectedDir(dir ?? null);
-            }}
-          >
-            <option value="">-- 选择目录 --</option>
-            {dirs.map((d) => (
-              <option key={d.id} value={d.id}>{d.name || d.path}</option>
-            ))}
-          </select>
-        </div>
-        <button
-          className="btn btn--primary"
-          onClick={handleStart}
-          disabled={loading || !selectedDir || job?.status === "running"}
-        >
-          {job?.status === "running" ? "去重进行中..." : "开始去重"}
-        </button>
+        <h3>选择目录</h3>
+        <PathInput
+          value={pathValue}
+          onChange={setPathValue}
+          onSelect={handleSelectPath}
+          onBrowse={() => setShowPicker(true)}
+          placeholder="输入路径，如 /home 或 /mnt/nas"
+        />
       </div>
+
+      {browse && (
+        <div className="card">
+          <div className="file-browser__header">
+            <div className="file-browser__info">
+              <span className="file-browser__count">{imageCount} 张图片</span>
+              {selectedPaths.size > 0 && (
+                <span className="file-browser__selected">已选 {selectedPaths.size} 张</span>
+              )}
+            </div>
+            <div className="file-browser__actions">
+              <button className="btn btn--sm" onClick={selectAll}>
+                {imageCount > 0 && browse.items.filter((i) => !i.is_dir).every((i) => selectedPaths.has(i.path))
+                  ? "取消全选"
+                  : "全选"}
+              </button>
+              <button
+                className="btn btn--sm btn--primary"
+                onClick={handleStartSelected}
+                disabled={loading || selectedPaths.size === 0}
+              >
+                去重选中 ({selectedPaths.size})
+              </button>
+              <button
+                className="btn btn--sm"
+                onClick={handleStartAll}
+                disabled={loading || imageCount === 0}
+              >
+                去重全部
+              </button>
+            </div>
+          </div>
+
+          {browse.items.filter((i) => i.is_dir).length > 0 && (
+            <div className="folder-list">
+              {browse.items.filter((i) => i.is_dir).map((item) => (
+                <div key={item.path} className="folder-item" onClick={() => handleNavigate(item)}>
+                  <span>📁</span>
+                  <span>{item.name}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <PhotoGrid
+            items={browse.items}
+            onSelect={handleNavigate}
+            selectedPaths={selectedPaths}
+            onToggleSelect={toggleSelect}
+          />
+        </div>
+      )}
 
       {job && job.status === "running" && (
         <div className="card dedup-progress">
@@ -127,10 +243,7 @@ export function Dedup() {
 
           {job.groups.map((group: DedupGroup) => (
             <div key={group.group_id} className="dedup-group">
-              <div
-                className="dedup-group__header"
-                onClick={() => toggleGroup(group.group_id)}
-              >
+              <div className="dedup-group__header" onClick={() => toggleGroup(group.group_id)}>
                 <span>
                   组 {group.group_id.slice(0, 8)} — {group.items.length} 张相似
                   {group.stage && ` (${group.stage})`}
@@ -177,6 +290,8 @@ export function Dedup() {
           <p>未发现重复照片</p>
         </div>
       )}
+
+      <FolderPicker open={showPicker} onClose={() => setShowPicker(false)} onSelect={handlePickFolder} />
     </div>
   );
 }

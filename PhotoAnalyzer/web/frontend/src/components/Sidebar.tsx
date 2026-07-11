@@ -2,10 +2,10 @@ import { useState, useEffect } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 
 const NAV_ITEMS = [
-  { to: "/", icon: "◎", label: "概览" },
-  { to: "/explorer", icon: "📁", label: "浏览" },
-  { to: "/analysis", icon: "🔍", label: "分析" },
-  { to: "/dedup", icon: "⊞", label: "去重" },
+  { to: "/", icon: "○", label: "概览" },
+  { to: "/explorer", icon: "▷", label: "浏览" },
+  { to: "/analysis", icon: "◎", label: "分析" },
+  { to: "/dedup", icon: "⊡", label: "去重" },
   { to: "/settings", icon: "⚙", label: "设置" },
 ];
 
@@ -27,9 +27,9 @@ export function Sidebar() {
   return (
     <aside className={`sidebar ${collapsed ? "sidebar--collapsed" : ""}`}>
       <div className="sidebar__header">
-        {!collapsed && <span className="sidebar__logo">📷 PhotoAnalyzer</span>}
+        {!collapsed && <span className="sidebar__logo">PhotoAnalyzer</span>}
         <button className="sidebar__toggle" onClick={toggle} aria-label="Toggle sidebar">
-          {collapsed ? "→" : "←"}
+          {collapsed ? "›" : "‹"}
         </button>
       </div>
       <nav className="sidebar__nav">

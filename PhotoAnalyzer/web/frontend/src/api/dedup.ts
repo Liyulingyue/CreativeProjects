@@ -1,7 +1,7 @@
 import { request } from "./client";
 import type { DedupJob, DedupStageConfig } from "./types";
 
-export async function startDedup(
+export async function startDedupFolder(
   dirId: string,
   options?: {
     subPath?: string;
@@ -15,6 +15,21 @@ export async function startDedup(
       dir_id: dirId,
       sub_path: options?.subPath,
       recursive: options?.recursive ?? true,
+      stages: options?.stages,
+    }),
+  });
+}
+
+export async function startDedupPaths(
+  filePaths: string[],
+  options?: {
+    stages?: DedupStageConfig[];
+  }
+): Promise<DedupJob> {
+  return request<DedupJob>("/dedup", {
+    method: "POST",
+    body: JSON.stringify({
+      file_paths: filePaths,
       stages: options?.stages,
     }),
   });

@@ -97,3 +97,22 @@ export interface Stats {
   duplicate_groups: number;
   directories: number;
 }
+
+export interface FsEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  children_count: number | null;
+}
+
+export interface FsBrowseResult {
+  current_path: string;
+  parent_path: string | null;
+  entries: FsEntry[];
+  home: string;
+}
+
+export interface FsSuggestResult {
+  suggestions: FsEntry[];
+  partial: string;
+}
