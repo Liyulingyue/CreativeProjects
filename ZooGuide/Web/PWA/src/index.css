@@ -1484,13 +1484,6 @@ textarea {
 
 .avc-header {
   padding: 14px 16px 12px;
-  cursor: pointer;
-  transition: background 0.1s;
-  user-select: none;
-}
-
-.avc-header:active {
-  background: var(--bg);
 }
 
 .avc-header-top {
@@ -1515,7 +1508,6 @@ textarea {
   color: var(--primary-strong);
   line-height: 1.5;
   white-space: normal;
-  /* Allow full display, no truncation */
 }
 
 .avc-quickstats {
@@ -1542,25 +1534,9 @@ textarea {
   line-height: 1;
 }
 
-.avc-toggle {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: var(--bg);
-  color: var(--fg-muted);
-  font-size: 16px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
 .avc-body {
   border-top: 1px solid var(--border);
 }
-
-
 
 .area-section:last-child {
   border-bottom: none;

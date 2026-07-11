@@ -46,8 +46,8 @@ export function CurrentRouteTab({
   })
   const areaGroups = Object.values(areaMap)
 
-  // Area view collapse state (default expanded)
-  const [areaViewOpen, setAreaViewOpen] = useState(true)
+  // Area view is always expanded (per user preference)
+  const AREA_VIEW_OPEN = true
 
   return (
     <div className="current-tab">
@@ -135,11 +135,8 @@ export function CurrentRouteTab({
 
       {/* ===== Section 2 (merged): 总览+按区域 ===== */}
       <div className="area-view-card">
-        {/* Header: 总览 + collapse toggle */}
-        <div
-          className="avc-header"
-          onClick={() => setAreaViewOpen(!areaViewOpen)}
-        >
+        {/* Header: 总览（永远展开，不需要折叠） */}
+        <div className="avc-header">
           <div className="avc-header-top">
             <span style={{ fontSize: 20 }}>🧭</span>
             <div className="avc-label">总览 · 按区域查看</div>
@@ -153,41 +150,37 @@ export function CurrentRouteTab({
                 <span>h</span>
               </span>
             </div>
-            <div className="avc-toggle">{areaViewOpen ? '−' : '+'}</div>
           </div>
-          <div className="avc-summary">
-            {route.summary || '今天逛这些'}
-          </div>
+          <div className="avc-summary">{route.summary || '今天逛这些'}</div>
         </div>
 
-        {areaViewOpen && (
-          <div className="avc-body">
-            {areaGroups.map((group) => (
-              <div key={group.area} className="area-section">
-                <div className="area-section-header">
-                  <span className="area-section-icon">📍</span>
-                  <span className="area-section-name">{group.area}</span>
-                  <span className="area-section-count">{group.stops.length} 馆</span>
-                </div>
-                {group.stops.map(({ stop, idx }) => {
-                  const isVisited = visited.has(stop.venue_id)
-                  const isCurrent = idx === currentStopIdx
-                  return (
-                    <AreaStopCard
-                      key={`${stop.venue_id}-${idx}`}
-                      stop={stop}
-                      idx={idx}
-                      isVisited={isVisited}
-                      isCurrent={isCurrent}
-                      onMarkCurrent={() => onMarkCurrent(idx)}
-                      onToggleVisited={() => handleVisitedAndAdvance(stop.venue_id)}
-                    />
-                  )
-                })}
+        {/* 区域分组 - 永远展开 */}
+        <div className="avc-body">
+          {areaGroups.map((group) => (
+            <div key={group.area} className="area-section">
+              <div className="area-section-header">
+                <span className="area-section-icon">📍</span>
+                <span className="area-section-name">{group.area}</span>
+                <span className="area-section-count">{group.stops.length} 馆</span>
               </div>
-            ))}
-          </div>
-        )}
+              {group.stops.map(({ stop, idx }) => {
+                const isVisited = visited.has(stop.venue_id)
+                const isCurrent = idx === currentStopIdx
+                return (
+                  <AreaStopCard
+                    key={`${stop.venue_id}-${idx}`}
+                    stop={stop}
+                    idx={idx}
+                    isVisited={isVisited}
+                    isCurrent={isCurrent}
+                    onMarkCurrent={() => onMarkCurrent(idx)}
+                    onToggleVisited={() => handleVisitedAndAdvance(stop.venue_id)}
+                  />
+                )
+              })}
+            </div>
+          ))}
+        </div>
       </div>
 
       {remainingCount === 0 && (
