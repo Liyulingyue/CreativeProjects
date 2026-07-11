@@ -342,16 +342,41 @@ function ActiveRouteCard({
     }
   })()
 
-  const visitedInRoute = route.stops.filter((s) => visited.has(s.venue_id)).length
-  const total = route.stops.length
-  const progress = total > 0 ? visitedInRoute / total : 0
+  // 找当前所在馆（优先从 localStorage 读取，否则第一个未游览的）
+  let currentIdx: number
+  try {
+    const saved = localStorage.getItem(`zooguide:currentStop:${route.id}`)
+    if (saved) {
+      const idx = parseInt(saved, 10)
+      if (!isNaN(idx) && idx >= 0 && idx < route.stops.length) {
+        currentIdx = idx
+      } else {
+        currentIdx = route.stops.findIndex((s) => !visited.has(s.venue_id))
+        currentIdx = currentIdx === -1 ? 0 : currentIdx
+      }
+    } else {
+      currentIdx = route.stops.findIndex((s) => !visited.has(s.venue_id))
+      currentIdx = currentIdx === -1 ? 0 : currentIdx
+    }
+  } catch {
+    currentIdx = 0
+  }
+
+  const stops = route.stops
+  const total = stops.length
+  const currentStop = stops[Math.min(currentIdx, total - 1)]
+  const nextStop = stops[currentIdx + 1]
+  const visitedCount = stops.filter((s) => visited.has(s.venue_id)).length
+  const remainingCount = total - visitedCount
+  const progress = total > 0 ? visitedCount / total : 0
 
   return (
     <div className="active-route-card">
+      {/* Header */}
       <div className="arc-header">
         <div className="arc-pulse" />
         <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--primary-strong)', letterSpacing: 0.5 }}>
-          路线进行中
+          路线进行中 · 第 {currentIdx + 1}/{total} 馆
         </span>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
           <button
@@ -379,52 +404,48 @@ function ActiveRouteCard({
         </div>
       </div>
 
-      <div className="arc-summary" onClick={onContinue}>
-        <div className="arc-icon">🧭</div>
-        <div style={{ flex: 1 }}>
-          <div
-            style={{
-              fontSize: 14,
-              fontWeight: 600,
-              color: 'var(--primary-strong)',
-              lineHeight: 1.4,
-            }}
-          >
-            {route.summary?.slice(0, 50) || '当前路线'}
+      {/* 当前馆 - 高亮 */}
+      {currentStop && (
+        <div className="arc-current-stop" onClick={onContinue}>
+          <div className="arc-cs-label">📍 当前</div>
+          <div className="arc-cs-name">{currentStop.venue_name}</div>
+          <div className="arc-cs-time">
+            🕐 {currentStop.arrive_time} – {currentStop.leave_time} ·{' '}
+            {currentStop.visit_minutes}min
           </div>
-          <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 4 }}>
-            {total} 馆 · {Math.round(route.total_minutes / 60 * 10) / 10}h
-            {visitedInRoute > 0 && ` · 已打卡 ${visitedInRoute}`}
-          </div>
-        </div>
-        <div className="arc-cta">查看 →</div>
-      </div>
-
-      {visitedInRoute > 0 && (
-        <div className="arc-progress">
-          <div className="arc-progress-bar" style={{ width: `${progress * 100}%` }} />
         </div>
       )}
 
-      <div className="arc-stops">
-        {route.stops.slice(0, 5).map((s, i) => (
-          <div
-            key={`${s.venue_id}-${i}`}
-            className={`arc-stop ${visited.has(s.venue_id) ? 'visited' : ''}`}
-            onClick={onContinue}
-          >
-            <span className="arc-stop-num">{i + 1}</span>
-            <span className="arc-stop-name">{s.venue_name}</span>
-            <span className="arc-stop-time">{s.arrive_time?.slice(0, 5) || ''}</span>
-            {visited.has(s.venue_id) && <span className="arc-stop-mark">✓</span>}
-          </div>
-        ))}
-        {route.stops.length > 5 && (
-          <div className="arc-stops-more">…还有 {route.stops.length - 5} 馆</div>
-        )}
+      {/* 下一站预览 */}
+      {nextStop && (
+        <div className="arc-next-stop" onClick={onContinue}>
+          <span className="arc-ns-label">↓ 下一站 · 步行 {nextStop.walk_to_next_minutes}min</span>
+          <span className="arc-ns-name">{nextStop.venue_name}</span>
+          <span className="arc-ns-time"> {nextStop.arrive_time}</span>
+        </div>
+      )}
+
+      {!nextStop && remainingCount === 0 && (
+        <div className="arc-next-stop finish">
+          🎉 全部游览完
+        </div>
+      )}
+      {!nextStop && remainingCount > 0 && (
+        <div className="arc-next-stop finish">
+          最后一站·{currentStop.venue_name}
+        </div>
+      )}
+
+      {/* 进度条 */}
+      <div className="arc-progress" onClick={onContinue}>
+        <div className="arc-progress-bar" style={{ width: `${progress * 100}%` }} />
+        <div className="arc-progress-label">
+          {visitedCount}/{total} 已游览{remainingCount > 0 && ` · 还剩 ${remainingCount} 馆`}
+        </div>
       </div>
 
-      <button className="btn btn-primary btn-full" style={{ marginTop: 12 }} onClick={onContinue}>
+      {/* 主 CTA */}
+      <button className="btn btn-primary btn-full" onClick={onContinue}>
         📍 打开完整路线
       </button>
     </div>
