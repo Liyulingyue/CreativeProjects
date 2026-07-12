@@ -1,5 +1,6 @@
 from .base import ImageItem, ImageGroup
 from .deduplicator import Deduplicator, Grouper
+from .cache import FeatureCache, cache
 from .image_hash import (
     PHashDeduplicator,
     AverageHashDeduplicator,
@@ -19,6 +20,8 @@ __all__ = [
     "ImageGroup",
     "Deduplicator",
     "Grouper",
+    "FeatureCache",
+    "cache",
     "PHashDeduplicator",
     "AverageHashDeduplicator",
     "DHashDeduplicator",

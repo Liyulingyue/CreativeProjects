@@ -116,3 +116,15 @@ export interface FsSuggestResult {
   suggestions: FsEntry[];
   partial: string;
 }
+
+export interface CacheStats {
+  [featureType: string]: number;
+}
+
+export interface CacheEntry {
+  cache_key: string;
+  feature_type: string;
+  file_path: string;
+  mtime: number;
+  data: Record<string, unknown>;
+}

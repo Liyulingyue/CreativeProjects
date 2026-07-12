@@ -10,7 +10,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   dedup_stages: [
     { type: "exif", enabled: true, params: { time_window: 5 } },
     { type: "phash", enabled: true, params: { threshold: 8 } },
-    { type: "embedding", enabled: true, params: { model: "clip", threshold: 0.9 } },
+    { type: "embedding", enabled: false, params: { model: "clip", threshold: 0.9 } },
   ],
 };
 

@@ -5,6 +5,7 @@ import { Explorer } from "./pages/Explorer";
 import { Analysis } from "./pages/Analysis";
 import { Dedup } from "./pages/Dedup";
 import { Settings } from "./pages/Settings";
+import { Cache } from "./pages/Cache";
 
 export default function App() {
   return (
@@ -14,6 +15,7 @@ export default function App() {
         <Route path="/explorer" element={<Explorer />} />
         <Route path="/analysis" element={<Analysis />} />
         <Route path="/dedup" element={<Dedup />} />
+        <Route path="/cache" element={<Cache />} />
         <Route path="/settings" element={<Settings />} />
       </Route>
     </Routes>

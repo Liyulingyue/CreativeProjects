@@ -1,9 +1,11 @@
+import os
 import numpy as np
 from pathlib import Path
 from typing import Optional, Literal
 from PIL import Image
 from .base import ImageItem, ImageGroup
 from .deduplicator import Grouper
+from .cache import cache
 
 
 class EmbeddingGrouper(Grouper):
@@ -36,6 +38,12 @@ class EmbeddingGrouper(Grouper):
         self._load_model()
 
         try:
+            mtime = os.path.getmtime(item.path)
+            cached = cache.get_embedding(str(item.path), mtime, self.model_name)
+            if cached is not None:
+                item.embedding = cached
+                return item.embedding
+
             img = Image.open(item.path).convert("RGB")
 
             if self.model_name == "clip":
@@ -43,9 +51,11 @@ class EmbeddingGrouper(Grouper):
                 with torch.no_grad():
                     features = self._model.get_image_features(**inputs)
                 item.embedding = features[0].numpy()
-                return item.embedding
             else:
                 raise ValueError(f"不支持的模型: {self.model_name}")
+
+            cache.set_embedding(str(item.path), mtime, self.model_name, item.embedding)
+            return item.embedding
         except Exception:
             return None
 
@@ -133,6 +143,12 @@ class ResNetGrouper(Grouper):
         try:
             import torch
 
+            mtime = os.path.getmtime(item.path)
+            cached = cache.get_embedding(str(item.path), mtime, self.model_name)
+            if cached is not None:
+                item.embedding = cached
+                return item.embedding
+
             img = Image.open(item.path).convert("RGB")
             tensor = self._transform(img).unsqueeze(0)
 
@@ -140,6 +156,7 @@ class ResNetGrouper(Grouper):
                 features = self._model(tensor)
                 item.embedding = features.squeeze().numpy()
 
+            cache.set_embedding(str(item.path), mtime, self.model_name, item.embedding)
             return item.embedding
         except Exception:
             return None

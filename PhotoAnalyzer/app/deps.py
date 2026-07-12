@@ -13,6 +13,7 @@ DATA_DIR.mkdir(exist_ok=True)
 _DIRS_FILE = DATA_DIR / "dirs.json"
 _SETTINGS_FILE = DATA_DIR / "settings.json"
 _RESULTS_FILE = DATA_DIR / "results.json"
+_DEDUP_JOBS_FILE = DATA_DIR / "dedup_jobs.json"
 
 
 def _load_json(path: Path, default=None):
@@ -49,6 +50,10 @@ class AppState:
         results_data = _load_json(_RESULTS_FILE, [])
         self._results = [AnalysisResult(**r) for r in results_data]
 
+        dedup_jobs_data = _load_json(_DEDUP_JOBS_FILE, {})
+        for k, v in dedup_jobs_data.items():
+            self._dedup_jobs[k] = DedupJob(**v)
+
     def _persist_dirs(self):
         _save_json(_DIRS_FILE, {k: v.model_dump() for k, v in self._dirs.items()})
 
@@ -57,6 +62,9 @@ class AppState:
 
     def _persist_results(self):
         _save_json(_RESULTS_FILE, [r.model_dump() for r in self._results])
+
+    def _persist_dedup_jobs(self):
+        _save_json(_DEDUP_JOBS_FILE, {k: v.model_dump() for k, v in self._dedup_jobs.items()})
 
     # --- Dirs ---
     def list_dirs(self) -> list[DirEntry]:
@@ -148,6 +156,7 @@ class AppState:
             created_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
         )
         self._dedup_jobs[job_id] = job
+        self._persist_dedup_jobs()
         return job
 
     def get_dedup_job(self, job_id: str) -> Optional[DedupJob]:
@@ -160,6 +169,7 @@ class AppState:
                 for k, v in kwargs.items():
                     if hasattr(job, k):
                         setattr(job, k, v)
+                self._persist_dedup_jobs()
 
     # --- Stats ---
     def get_stats(self) -> dict:

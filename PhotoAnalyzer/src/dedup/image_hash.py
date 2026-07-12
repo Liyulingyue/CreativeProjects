@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 from .base import ImageItem, ImageGroup
 from .deduplicator import Deduplicator
+from .cache import cache
 
 
 class PHashDeduplicator(Deduplicator):
@@ -18,8 +19,15 @@ class PHashDeduplicator(Deduplicator):
 
     def compute_signature(self, item: ImageItem) -> str:
         try:
+            mtime = os.path.getmtime(item.path)
+            cached = cache.get_hash(str(item.path), mtime, "phash")
+            if cached and "phash" in cached:
+                item.hash_value = cached["phash"]
+                return item.hash_value
+
             img = Image.open(item.path)
             item.hash_value = str(imagehash.phash(img, hash_size=self.hash_size))
+            cache.set_hash(str(item.path), mtime, "phash", {"phash": item.hash_value})
             return item.hash_value
         except Exception:
             return ""
@@ -69,8 +77,15 @@ class AverageHashDeduplicator(Deduplicator):
 
     def compute_signature(self, item: ImageItem) -> str:
         try:
+            mtime = os.path.getmtime(item.path)
+            cached = cache.get_hash(str(item.path), mtime, "ahash")
+            if cached and "ahash" in cached:
+                item.hash_value = cached["ahash"]
+                return item.hash_value
+
             img = Image.open(item.path)
             item.hash_value = str(imagehash.average_hash(img, hash_size=self.hash_size))
+            cache.set_hash(str(item.path), mtime, "ahash", {"ahash": item.hash_value})
             return item.hash_value
         except Exception:
             return ""
@@ -93,8 +108,15 @@ class DHashDeduplicator(Deduplicator):
 
     def compute_signature(self, item: ImageItem) -> str:
         try:
+            mtime = os.path.getmtime(item.path)
+            cached = cache.get_hash(str(item.path), mtime, "dhash")
+            if cached and "dhash" in cached:
+                item.hash_value = cached["dhash"]
+                return item.hash_value
+
             img = Image.open(item.path)
             item.hash_value = str(imagehash.dhash(img, hash_size=self.hash_size))
+            cache.set_hash(str(item.path), mtime, "dhash", {"dhash": item.hash_value})
             return item.hash_value
         except Exception:
             return ""
@@ -123,6 +145,14 @@ class MultiHashDeduplicator(Deduplicator):
 
     def compute_signature(self, item: ImageItem) -> dict[str, str]:
         try:
+            mtime = os.path.getmtime(item.path)
+            cached = cache.get_hash(str(item.path), mtime, "multihash")
+            if cached:
+                missing = [h for h in self.hash_funcs if h not in cached]
+                if not missing:
+                    item.hash_value = cached
+                    return signatures if (signatures := {k: v for k, v in cached.items() if k in self.hash_funcs}) else cached
+
             img = Image.open(item.path)
             signatures = {}
             if "phash" in self.hash_funcs:
@@ -134,6 +164,7 @@ class MultiHashDeduplicator(Deduplicator):
             if "whash" in self.hash_funcs:
                 signatures["whash"] = str(imagehash.whash(img, hash_size=self.hash_size))
             item.hash_value = signatures
+            cache.set_hash(str(item.path), mtime, "multihash", signatures)
             return signatures
         except Exception:
             return {}

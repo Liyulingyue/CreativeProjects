@@ -95,7 +95,7 @@ class AppSettings(BaseModel):
     dedup_stages: list[DedupStageConfig] = [
         DedupStageConfig(type="exif", enabled=True, params={"time_window": 5}),
         DedupStageConfig(type="phash", enabled=True, params={"threshold": 5}),
-        DedupStageConfig(type="embedding", enabled=True, params={"model": "clip", "threshold": 0.85}),
+        DedupStageConfig(type="embedding", enabled=False, params={"model": "clip", "threshold": 0.85}),
     ]
 
 
