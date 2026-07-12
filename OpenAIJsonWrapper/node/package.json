@@ -1,6 +1,6 @@
 {
   "name": "openaijsonwrapper",
-  "version": "0.2.1",
+  "version": "0.2.0",
   "description": "JSON wrapper for OpenAI-style multi-modal API with structured output",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
