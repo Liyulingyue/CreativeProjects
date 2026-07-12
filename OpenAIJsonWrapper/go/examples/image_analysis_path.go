@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 
+	openai "github.com/sashabaranov/go-openai"
 	openaijsonwrapper "openaijsonwrapper/src"
 )
 
@@ -36,9 +37,9 @@ func main() {
 		"reason": "string (简短理由)",
 	}
 
-	client := openaijsonwrapper.NewOpenAIClientBuilder(apiKey).
-		BaseURL(baseURL).
-		Build()
+	config := openai.DefaultConfig(apiKey)
+	config.BaseURL = baseURL
+	client := openai.NewClientWithConfig(config)
 
 	wrapper := openaijsonwrapper.New(
 		client,

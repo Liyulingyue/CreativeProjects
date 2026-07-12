@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 
+	openai "github.com/sashabaranov/go-openai"
 	openaijsonwrapper "openaijsonwrapper/src"
 )
 
@@ -27,16 +28,16 @@ func main() {
 
 	targetStructure := map[string]any{
 		"analysis": map[string]any{
-			"sentiment":        "string (Positive/Negative/Neutral)",
-			"key_entities":     []string{"string"},
+			"sentiment":         "string (Positive/Negative/Neutral)",
+			"key_entities":      []string{"string"},
 			"confidence_score": "float (0-1)",
 		},
 		"response_suggestion": "string",
 	}
 
-	client := openaijsonwrapper.NewOpenAIClientBuilder(apiKey).
-		BaseURL(baseURL).
-		Build()
+	config := openai.DefaultConfig(apiKey)
+	config.BaseURL = baseURL
+	client := openai.NewClientWithConfig(config)
 
 	wrapper := openaijsonwrapper.New(
 		client,

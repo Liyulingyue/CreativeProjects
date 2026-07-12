@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 
+	openai "github.com/sashabaranov/go-openai"
 	openaijsonwrapper "openaijsonwrapper/src"
 )
 
@@ -32,18 +33,18 @@ func main() {
 	}
 
 	targetStructure := map[string]any{
-		"score":             "int, 0-100, 代表照片质量评分",
-		"style":             "str, 照片风格描述",
-		"caption":           "str, 用中文写一句话，不超过30字",
-		"main_objects":      "list[str], 至少2个主要物体",
-		"blurry":            "str, 照片是否模糊，'模糊'、'略微模糊'、'清晰'三选一",
-		"comments":          "str, 对照片的详细评价，至少50字",
-		"recommendations":   "str, 对拍摄者的改进建议，至少30字",
+		"score":           "int, 0-100, 代表照片质量评分",
+		"style":           "str, 照片风格描述",
+		"caption":         "str, 用中文写一句话，不超过30字",
+		"main_objects":    "list[str], 至少2个主要物体",
+		"blurry":          "str, 照片是否模糊，'模糊'、'略微模糊'、'清晰'三选一",
+		"comments":        "str, 对照片的详细评价，至少50字",
+		"recommendations": "str, 对拍摄者的改进建议，至少30字",
 	}
 
-	client := openaijsonwrapper.NewOpenAIClientBuilder(apiKey).
-		BaseURL(baseURL).
-		Build()
+	config := openai.DefaultConfig(apiKey)
+	config.BaseURL = baseURL
+	client := openai.NewClientWithConfig(config)
 
 	wrapper := openaijsonwrapper.New(
 		client,
