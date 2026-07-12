@@ -126,3 +126,16 @@ class ChatResponse(BaseModel):
     suggested_replan: bool = False
     extracted_constraint: Optional[dict] = None
     new_route: Optional[dict] = None
+
+
+class Facility(BaseModel):
+    id: str
+    name: str
+    category: str
+    area: str
+    near_venue_id: Optional[str] = None
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    description: str = ""
+    tags: list[str] = Field(default_factory=list)
+    open_time: str = ""

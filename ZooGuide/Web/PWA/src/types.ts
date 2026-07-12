@@ -156,5 +156,19 @@ export interface PhotoEvaluation {
   fallback_reason?: string
   image_path?: string
   ts: string
-  auto_checkin?: AutoCheckin  // 新增：自动打卡结果
+  auto_checkin?: AutoCheckin
+}
+
+export interface Facility {
+  id: string
+  name: string
+  category: string
+  area: string
+  near_venue_id?: string
+  lat?: number
+  lon?: number
+  description: string
+  tags: string[]
+  open_time: string
+  near_venue_name?: string
 }

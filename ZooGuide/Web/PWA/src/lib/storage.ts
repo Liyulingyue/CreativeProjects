@@ -124,6 +124,36 @@ export function clearAuth() {
   localStorage.removeItem(USER_KEY)
 }
 
+export interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+  toolCalls?: { name: string; result: string }[]
+  newRoute?: any
+}
+
+const CHAT_HISTORY_KEY = 'zooguide:chatHistory:v1'
+const CHAT_HISTORY_MAX = 100
+
+export function loadChatHistory(): ChatMessage[] {
+  try {
+    const raw = localStorage.getItem(CHAT_HISTORY_KEY)
+    return raw ? JSON.parse(raw) : []
+  } catch {
+    return []
+  }
+}
+
+export function saveChatHistory(messages: ChatMessage[]) {
+  try {
+    const trimmed = messages.slice(-CHAT_HISTORY_MAX)
+    localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(trimmed))
+  } catch {}
+}
+
+export function clearChatHistory() {
+  localStorage.removeItem(CHAT_HISTORY_KEY)
+}
+
 export function getStoredUser(): AuthUser | null {
   try {
     const raw = localStorage.getItem(USER_KEY)

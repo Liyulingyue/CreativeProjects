@@ -17,6 +17,7 @@ from . import auth, chat as chat_mod, config, data_loader, db, geo, photo, plann
 from .models import (
     ChatRequest,
     ChatResponse,
+    Facility,
     PlanRequest,
     ReplanRequest,
     Route,
@@ -147,6 +148,32 @@ def get_venue(venue_id: str):
     if not v:
         raise HTTPException(status_code=404, detail="venue not found")
     return v.model_dump()
+
+
+# ---------------------------------------------------------------------------
+# Facilities
+# ---------------------------------------------------------------------------
+
+@app.get("/api/facilities")
+def list_facilities(category: Optional[str] = None):
+    facilities = data_loader.get_all_facilities()
+    if category:
+        facilities = [f for f in facilities if f.category == category]
+    categories = data_loader.get_facility_categories()
+    return {"facilities": [f.model_dump() for f in facilities], "categories": categories}
+
+
+@app.get("/api/facilities/{facility_id}")
+def get_facility(facility_id: str):
+    f = data_loader.get_facility_by_id(facility_id)
+    if not f:
+        raise HTTPException(status_code=404, detail="facility not found")
+    result = f.model_dump()
+    if f.near_venue_id:
+        v = data_loader.get_venue_dict_by_id(f.near_venue_id)
+        if v:
+            result["near_venue_name"] = v["name"]
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -325,24 +352,7 @@ def replan(req: ReplanRequest):
 
 @app.post("/api/chat")
 async def chat_endpoint(req: ChatRequest):
-    """Conversational replan. Returns reply + optional new route."""
-    import copy
-    # Deep copy current_route to avoid mutation
-    current_route_copy = copy.deepcopy(req.current_route) if req.current_route else None
     reply = await chat_mod.chat(req)
-    # chat() may have already called apply_chat_constraint internally (rule path)
-    # Only call it again if no new_route yet
-    if "new_route" not in reply and current_route_copy and reply.get("suggested_replan") and reply.get("extracted_constraint"):
-        try:
-            new_route = chat_mod.apply_chat_constraint(
-                current_route_copy,
-                reply["extracted_constraint"],
-                req.prefs or {},
-            )
-            if new_route:
-                reply["new_route"] = new_route.model_dump()
-        except Exception as e:
-            print(f"[warn] chat apply_constraint failed: {e}", flush=True)
     return reply
 
 
@@ -359,19 +369,6 @@ class CheckinRecord(BaseModel):
     venue_id: str
     venue_name: str
     ts: str
-
-
-class ChatRequest(BaseModel):
-    message: str
-    current_route: Optional[dict] = None
-    prefs: Optional[dict] = None
-    history: list = []
-
-
-class ChatResponse(BaseModel):
-    reply: str
-    suggested_replan: bool = False
-    extracted_constraint: Optional[dict] = None  # e.g. {"type":"skip","venue_id":"..."}
 
 
 @app.post("/api/checkin")
