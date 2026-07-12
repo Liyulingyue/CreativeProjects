@@ -1,6 +1,6 @@
 [project]
 name = "openaijsonwrapper"
-version = "0.2.1"
+version = "0.2.0"
 description = "小型 JSON 封装，适配 OpenAI 风格的数据与自定义类型序列化，支持多模态图片输入"
 authors = [ { name = "Liyulingyue" } ]
 readme = "README.md"

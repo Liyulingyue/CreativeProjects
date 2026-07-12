@@ -1,0 +1,18 @@
+[package]
+name = "openai-json-wrapper"
+version = "0.2.0"
+edition = "2021"
+description = "A lightweight OpenAI response parsing wrapper for structured JSON output"
+authors = ["Liyulingyue"]
+license = "MIT"
+repository = "https://github.com/Liyulingyue/OpenAIJsonWrapper"
+keywords = ["openai", "json", "wrapper", "gpt", "llm"]
+categories = ["api-bindings", "parsing"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+regex = "1.10"
+reqwest = { version = "0.12", features = ["blocking"] }
+base64 = "0.22"
+thiserror = "1.0"

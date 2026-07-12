@@ -4,3 +4,14 @@ build/
 __pycache__/
 .venv/
 .env
+
+# Rust
+rust/target/
+
+# Node
+node_modules/
+node/dist/
+
+# Go
+.idea/
+.vscode/
