@@ -38,6 +38,20 @@ def cache_delete_entry(cache_key: str):
     return {"deleted": cache_key}
 
 
+@router.post("/cache/export-to-folder")
+def cache_export_to_folder(body: dict | None = None):
+    from src.dedup.cache import cache as feature_cache
+    dir_paths = (body or {}).get("dir_paths")
+    return feature_cache.export_to_folder(dir_paths)
+
+
+@router.post("/cache/import-from-folder")
+def cache_import_from_folder(body: dict | None = None):
+    from src.dedup.cache import cache as feature_cache
+    dir_paths = (body or {}).get("dir_paths")
+    return feature_cache.import_from_folder(dir_paths)
+
+
 @router.post("", response_model=DedupJob)
 def start_dedup(body: dict):
     file_paths = body.get("file_paths")

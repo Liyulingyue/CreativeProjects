@@ -54,6 +54,9 @@ class AppState:
         for k, v in dedup_jobs_data.items():
             self._dedup_jobs[k] = DedupJob(**v)
 
+        from src.dedup.cache import cache as feature_cache
+        feature_cache.mode = self._settings.storage_mode
+
     def _persist_dirs(self):
         _save_json(_DIRS_FILE, {k: v.model_dump() for k, v in self._dirs.items()})
 
@@ -103,6 +106,9 @@ class AppState:
             for k, v in updates.items():
                 if hasattr(self._settings, k):
                     setattr(self._settings, k, v)
+            if "storage_mode" in updates:
+                from src.dedup.cache import cache as feature_cache
+                feature_cache.mode = updates["storage_mode"]
             self._persist_settings()
             return self._settings
 

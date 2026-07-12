@@ -23,6 +23,24 @@ export async function deleteCacheEntry(cacheKey: string): Promise<{ deleted: str
   });
 }
 
+export async function exportCacheToFolder(
+  dirPaths?: string[]
+): Promise<{ migrated: number; directories: number }> {
+  return request<{ migrated: number; directories: number }>("/dedup/cache/export-to-folder", {
+    method: "POST",
+    body: JSON.stringify({ dir_paths: dirPaths || null }),
+  });
+}
+
+export async function importCacheFromFolder(
+  dirPaths?: string[]
+): Promise<{ migrated: number; directories: number }> {
+  return request<{ migrated: number; directories: number }>("/dedup/cache/import-from-folder", {
+    method: "POST",
+    body: JSON.stringify({ dir_paths: dirPaths || null }),
+  });
+}
+
 export async function startDedupFolder(
   dirId: string,
   options?: {

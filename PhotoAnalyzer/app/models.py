@@ -92,6 +92,7 @@ class AppSettings(BaseModel):
     base_url: str = "https://api.minimaxi.com/v1"
     model: str = "MiniMax-M3"
     delay: int = 1000
+    storage_mode: str = "project"
     dedup_stages: list[DedupStageConfig] = [
         DedupStageConfig(type="exif", enabled=True, params={"time_window": 5}),
         DedupStageConfig(type="phash", enabled=True, params={"threshold": 5}),
