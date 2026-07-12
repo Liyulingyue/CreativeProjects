@@ -1,7 +1,18 @@
 use openai_json_wrapper::{OpenAIClientBuilder, OpenAIJsonWrapper, Message, MessageContent, ContentPart, ImageUrlValue, ChatOptions};
 use serde_json::json;
+use std::env;
 
 fn main() {
+    for path in [".env", "../.env", "../../.env"] {
+        if dotenvy::from_filename(path).is_ok() {
+            break;
+        }
+    }
+
+    let api_key = env::var("OPENAI_API_KEY").unwrap_or_else(|_| "your-api-key-here".to_string());
+    let base_url = env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.minimaxi.com/v1".to_string());
+    let model_name = env::var("OPENAI_VISION_MODEL_NAME").unwrap_or_else(|_| "MiniMax-M3".to_string());
+
     let target_structure = json!({
         "score": "int, 0-100, 代表照片质量评分",
         "style": "str, 照片风格描述",
@@ -12,13 +23,13 @@ fn main() {
         "recommendations": "str, 对拍摄者的改进建议，至少30字"
     });
 
-    let client = OpenAIClientBuilder::new("your-api-key")
-        .base_url("https://api.minimaxi.com/v1")
+    let client = OpenAIClientBuilder::new(&api_key)
+        .base_url(&base_url)
         .build();
 
     let wrapper = OpenAIJsonWrapper::new(
         Box::new(client),
-        "MiniMax-M3",
+        &model_name,
         Some(target_structure),
         None,
         Some("You are a professional travel photo analyst."),

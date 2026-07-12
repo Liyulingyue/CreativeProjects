@@ -38,7 +38,7 @@ impl OpenAIClient for ReqwestOpenAIClient {
         request: ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, String> {
         let client = reqwest::blocking::Client::new();
-        let url = format!("{}/v1/chat/completions", self.base_url);
+        let url = format!("{}/chat/completions", self.base_url);
 
         let body = serde_json::to_string(&request)
             .map_err(|e| format!("Failed to serialize request: {}", e))?;
