@@ -1,8 +1,9 @@
 [package]
-name = "openai-json-wrapper"
+name = "openaijsonwrapper"
 version = "0.2.0"
 edition = "2021"
 description = "A lightweight OpenAI response parsing wrapper for structured JSON output"
+readme = "README.md"
 authors = ["Liyulingyue"]
 license = "MIT"
 repository = "https://github.com/Liyulingyue/OpenAIJsonWrapper"
