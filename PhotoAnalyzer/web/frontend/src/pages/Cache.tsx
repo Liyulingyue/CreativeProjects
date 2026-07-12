@@ -4,8 +4,11 @@ import {
   getCacheEntries,
   clearCache,
   deleteCacheEntry,
+  exportCacheToFolder,
+  importCacheFromFolder,
 } from "@/api/dedup";
-import type { CacheStats, CacheEntry } from "@/api/types";
+import { getSettings } from "@/api/settings";
+import type { CacheStats, CacheEntry, AppSettings } from "@/api/types";
 
 const TYPE_LABELS: Record<string, string> = {
   hash_phash: "pHash 哈希",
@@ -35,6 +38,15 @@ export function Cache() {
   const [selectedType, setSelectedType] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [clearing, setClearing] = useState(false);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [converting, setConverting] = useState(false);
+
+  const loadSettings = useCallback(async () => {
+    try {
+      const s = await getSettings();
+      setSettings(s);
+    } catch {}
+  }, []);
 
   const loadStats = useCallback(async () => {
     try {
@@ -56,8 +68,9 @@ export function Cache() {
   }, [selectedType]);
 
   useEffect(() => {
+    loadSettings();
     loadStats();
-  }, [loadStats]);
+  }, [loadSettings, loadStats]);
 
   useEffect(() => {
     loadEntries();
@@ -113,6 +126,53 @@ export function Cache() {
             <span className="cache-overview__label">特征类型</span>
           </div>
           <div className="cache-overview__actions">
+            {settings && (
+              <>
+                {settings.storage_mode === "project" ? (
+                  <button
+                    className="btn"
+                    onClick={async () => {
+                      if (!confirm("将项目缓存导出到各图片目录的 .photoanalyzer/ 文件夹？")) return;
+                      setConverting(true);
+                      try {
+                        const r = await exportCacheToFolder();
+                        alert(`已导出 ${r.migrated} 条缓存到 ${r.directories} 个目录`);
+                        await loadStats();
+                        await loadEntries();
+                      } catch (e) {
+                        alert(e instanceof Error ? e.message : "导出失败");
+                      } finally {
+                        setConverting(false);
+                      }
+                    }}
+                    disabled={converting || totalCount === 0}
+                  >
+                    导出到文件夹
+                  </button>
+                ) : (
+                  <button
+                    className="btn"
+                    onClick={async () => {
+                      if (!confirm("将各 .photoanalyzer/ 缓存导入到项目缓存？")) return;
+                      setConverting(true);
+                      try {
+                        const r = await importCacheFromFolder();
+                        alert(`已导入 ${r.migrated} 条缓存`);
+                        await loadStats();
+                        await loadEntries();
+                      } catch (e) {
+                        alert(e instanceof Error ? e.message : "导入失败");
+                      } finally {
+                        setConverting(false);
+                      }
+                    }}
+                    disabled={converting}
+                  >
+                    导入到项目
+                  </button>
+                )}
+              </>
+            )}
             <button
               className="btn btn--danger"
               onClick={handleClearAll}

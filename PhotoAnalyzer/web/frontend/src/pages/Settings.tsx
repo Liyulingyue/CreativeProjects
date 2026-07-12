@@ -7,6 +7,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   base_url: "https://api.minimaxi.com/v1",
   model: "MiniMax-M3",
   delay: 1000,
+  storage_mode: "project",
   dedup_stages: [
     { type: "exif", enabled: true, params: { time_window: 5 } },
     { type: "phash", enabled: true, params: { threshold: 8 } },
@@ -104,6 +105,36 @@ export function Settings() {
             min={0}
             step={100}
           />
+        </div>
+      </div>
+
+      <div className="card">
+        <h3>缓存存储模式</h3>
+        <div className="storage-mode">
+          <div
+            className={`storage-mode__option ${settings.storage_mode === "project" ? "storage-mode__option--active" : ""}`}
+            onClick={() => handleChange("storage_mode", "project")}
+          >
+            <div className="storage-mode__header">
+              <span className="storage-mode__name">项目模式</span>
+              {settings.storage_mode === "project" && <span className="storage-mode__badge">当前</span>}
+            </div>
+            <div className="storage-mode__desc">
+              缓存数据集中存储在 PhotoAnalyzer/data/ 目录下，与程序绑定。换机器需重新计算。
+            </div>
+          </div>
+          <div
+            className={`storage-mode__option ${settings.storage_mode === "folder" ? "storage-mode__option--active" : ""}`}
+            onClick={() => handleChange("storage_mode", "folder")}
+          >
+            <div className="storage-mode__header">
+              <span className="storage-mode__name">文件夹模式</span>
+              {settings.storage_mode === "folder" && <span className="storage-mode__badge">当前</span>}
+            </div>
+            <div className="storage-mode__desc">
+              缓存数据存储在图片目录下的 .photoanalyzer/ 隐藏文件夹中，与图片绑定。移动文件夹后缓存仍有效。
+            </div>
+          </div>
         </div>
       </div>
 

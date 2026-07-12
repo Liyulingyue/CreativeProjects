@@ -82,6 +82,7 @@ export interface AppSettings {
   base_url: string;
   model: string;
   delay: number;
+  storage_mode: "project" | "folder";
   dedup_stages: DedupStageConfig[];
 }
 
