@@ -7,7 +7,8 @@ import { AnalysisDetail } from "@/components/AnalysisDetail";
 import { ProgressModal } from "@/components/ProgressModal";
 import { PathInput } from "@/components/PathInput";
 import { FolderPicker } from "@/components/FolderPicker";
-import { PhotoGrid } from "@/components/PhotoGrid";
+import { ImagePreview } from "@/components/ImagePreview";
+import { FileBrowser } from "@/components/FileBrowser";
 
 export function Analysis() {
   const location = useLocation();
@@ -18,16 +19,19 @@ export function Analysis() {
   const [currentDir, setCurrentDir] = useState<DirEntry | null>(null);
   const [browse, setBrowse] = useState<BrowseResult | null>(null);
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
-  const [results, setResults] = useState<AnalysisResult[]>([]);
+  const [allResults, setAllResults] = useState<AnalysisResult[]>([]);
   const [activeJob, setActiveJob] = useState<AnalysisJob | null>(null);
   const [detailResult, setDetailResult] = useState<AnalysisResult | null>(null);
   const [filter, setFilter] = useState<"all" | "success" | "failed">("all");
   const [loading, setLoading] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
+  const [previewItem, setPreviewItem] = useState<FileNode | null>(null);
+  const [showBrowser, setShowBrowser] = useState(true);
+  const [showLog, setShowLog] = useState(true);
 
   useEffect(() => {
     listDirs().then(setDirs).catch(() => {});
-    listResults().then(setResults).catch(() => {});
+    listResults().then(setAllResults).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -44,7 +48,7 @@ export function Analysis() {
       if (job.status === "running" || job.status === "pending") {
         setTimeout(() => pollJob(jobId), 2000);
       } else {
-        listResults().then(setResults).catch(() => {});
+        listResults().then(setAllResults).catch(() => {});
       }
     } catch {
       setTimeout(() => pollJob(jobId), 3000);
@@ -84,6 +88,8 @@ export function Analysis() {
   const handleNavigate = (item: FileNode) => {
     if (item.is_dir && currentDir) {
       browseFiles(currentDir.id, item.path).then(setBrowse).catch(() => {});
+    } else {
+      setPreviewItem(item);
     }
   };
 
@@ -135,17 +141,21 @@ export function Analysis() {
     }
   };
 
-  const filteredResults = results.filter((r) => {
+  const currentResults = currentDir
+    ? allResults.filter((r) => r.file_path.startsWith(currentDir.path))
+    : [];
+
+  const filteredResults = currentResults.filter((r) => {
     if (filter === "success") return r.success;
     if (filter === "failed") return !r.success;
     return true;
   });
 
   const avgScore =
-    results.filter((r) => r.success && r.data).length > 0
+    currentResults.filter((r) => r.success && r.data).length > 0
       ? Math.round(
-          results.filter((r) => r.success && r.data).reduce((sum, r) => sum + (r.data?.score ?? 0), 0) /
-          results.filter((r) => r.success && r.data).length
+          currentResults.filter((r) => r.success && r.data).reduce((sum, r) => sum + (r.data?.score ?? 0), 0) /
+          currentResults.filter((r) => r.success && r.data).length
         )
       : null;
 
@@ -157,6 +167,25 @@ export function Analysis() {
 
       <div className="card">
         <h3>选择目录</h3>
+        {dirs.length > 0 && (
+          <div className="dir-select">
+            <select
+              value={currentDir?.id ?? ""}
+              onChange={(e) => {
+                const dir = dirs.find((d) => d.id === e.target.value);
+                if (dir) {
+                  setPathValue(dir.path);
+                  handleBrowsePath(dir.path);
+                }
+              }}
+            >
+              <option value="">-- 选择已添加目录 --</option>
+              {dirs.map((d) => (
+                <option key={d.id} value={d.id}>{d.name || d.path}</option>
+              ))}
+            </select>
+          </div>
+        )}
         <PathInput
           value={pathValue}
           onChange={setPathValue}
@@ -167,55 +196,19 @@ export function Analysis() {
       </div>
 
       {browse && (
-        <div className="card">
-          <div className="file-browser__header">
-            <div className="file-browser__info">
-              <span className="file-browser__count">{imageCount} 张图片</span>
-              {selectedPaths.size > 0 && (
-                <span className="file-browser__selected">已选 {selectedPaths.size} 张</span>
-              )}
-            </div>
-            <div className="file-browser__actions">
-              <button className="btn btn--sm" onClick={selectAll}>
-                {imageCount > 0 && browse.items.filter((i) => !i.is_dir).every((i) => selectedPaths.has(i.path))
-                  ? "取消全选"
-                  : "全选"}
-              </button>
-              <button
-                className="btn btn--sm btn--primary"
-                onClick={handleStartSelected}
-                disabled={loading || selectedPaths.size === 0}
-              >
-                分析选中 ({selectedPaths.size})
-              </button>
-              <button
-                className="btn btn--sm"
-                onClick={handleStartAll}
-                disabled={loading || imageCount === 0}
-              >
-                分析全部
-              </button>
-            </div>
-          </div>
-
-          {browse.items.filter((i) => i.is_dir).length > 0 && (
-            <div className="folder-list">
-              {browse.items.filter((i) => i.is_dir).map((item) => (
-                <div key={item.path} className="folder-item" onClick={() => handleNavigate(item)}>
-                  <span>📁</span>
-                  <span>{item.name}</span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <PhotoGrid
-            items={browse.items}
-            onSelect={handleNavigate}
-            selectedPaths={selectedPaths}
-            onToggleSelect={toggleSelect}
-          />
-        </div>
+        <FileBrowser
+          browse={browse}
+          selectedPaths={selectedPaths}
+          onToggleSelect={toggleSelect}
+          onSelect={handleNavigate}
+          onSelectAll={selectAll}
+          onAction={handleStartSelected}
+          onActionAll={handleStartAll}
+          imageCount={imageCount}
+          loading={loading}
+          actionLabel="分析选中 ({n})"
+          actionAllLabel="分析全部"
+        />
       )}
 
       <ProgressModal
@@ -227,41 +220,57 @@ export function Analysis() {
         onClose={() => setActiveJob(null)}
       />
 
-      <div className="analysis-results">
-        <div className="section-header">
-          <h2>分析结果</h2>
-          {avgScore !== null && <span className="avg-score">平均分: {avgScore}</span>}
-          <div className="filter-tabs">
-            {(["all", "success", "failed"] as const).map((f) => (
-              <button
-                key={f}
-                className={`filter-tab ${filter === f ? "filter-tab--active" : ""}`}
-                onClick={() => setFilter(f)}
-              >
-                {f === "all" ? "全部" : f === "success" ? "成功" : "失败"} ({f === "all" ? results.length : results.filter((r) => f === "success" ? r.success : !r.success).length})
-              </button>
-            ))}
+      <div className="card card--collapsible">
+        <div className="card__header" onClick={() => setShowLog((v) => !v)}>
+          <div className="file-browser__info">
+            <span>{showLog ? "▼" : "▶"}</span>
+            <h3 style={{ margin: 0 }}>分析日志</h3>
+            {currentDir && (
+              <span className="file-browser__count">
+                {currentResults.length} 条结果
+                {avgScore !== null && ` · 平均分 ${avgScore}`}
+              </span>
+            )}
           </div>
+          {showLog && (
+            <div className="filter-tabs" onClick={(e) => e.stopPropagation()}>
+              {(["all", "success", "failed"] as const).map((f) => (
+                <button
+                  key={f}
+                  className={`filter-tab ${filter === f ? "filter-tab--active" : ""}`}
+                  onClick={() => setFilter(f)}
+                >
+                  {f === "all" ? "全部" : f === "success" ? "成功" : "失败"} ({f === "all" ? currentResults.length : currentResults.filter((r) => f === "success" ? r.success : !r.success).length})
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
-        {filteredResults.length === 0 ? (
-          <div className="empty-state">暂无分析结果</div>
-        ) : (
-          <div className="result-list">
-            {filteredResults.map((r) => (
-              <div key={r.file_path} className="result-item" onClick={() => setDetailResult(r)}>
-                <div className="result-item__score" data-level={r.data && r.data.score >= 70 ? "good" : r.data && r.data.score >= 40 ? "mid" : "low"}>
-                  {r.success && r.data ? r.data.score : "✕"}
-                </div>
-                <div className="result-item__info">
-                  <div className="result-item__name">{r.file_name}</div>
-                  {r.success && r.data && (
-                    <div className="result-item__meta">{r.data.style} · {r.data.blurry} · {r.data.caption}</div>
-                  )}
-                  {!r.success && <div className="result-item__error">{r.error}</div>}
-                </div>
+        {showLog && (
+          <div className="analysis-log">
+            {!currentDir ? (
+              <div className="empty-hint">请先选择一个目录</div>
+            ) : filteredResults.length === 0 ? (
+              <div className="empty-hint">暂无分析结果</div>
+            ) : (
+              <div className="result-list">
+                {filteredResults.map((r) => (
+                  <div key={r.file_path} className="result-item" onClick={() => setDetailResult(r)}>
+                    <div className="result-item__score" data-level={r.data && r.data.score >= 70 ? "good" : r.data && r.data.score >= 40 ? "mid" : "low"}>
+                      {r.success && r.data ? r.data.score : "✕"}
+                    </div>
+                    <div className="result-item__info">
+                      <div className="result-item__name">{r.file_name}</div>
+                      {r.success && r.data && (
+                        <div className="result-item__meta">{r.data.style} · {r.data.blurry} · {r.data.caption}</div>
+                      )}
+                      {!r.success && <div className="result-item__error">{r.error}</div>}
+                    </div>
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
           </div>
         )}
       </div>
@@ -269,6 +278,14 @@ export function Analysis() {
       {detailResult && <AnalysisDetail result={detailResult} onClose={() => setDetailResult(null)} />}
 
       <FolderPicker open={showPicker} onClose={() => setShowPicker(false)} onSelect={handlePickFolder} />
+
+      <ImagePreview
+        item={previewItem}
+        onClose={() => setPreviewItem(null)}
+        onAnalysisComplete={() => {
+          listResults().then(setAllResults).catch(() => {});
+        }}
+      />
     </div>
   );
 }

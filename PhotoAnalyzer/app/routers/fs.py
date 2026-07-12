@@ -24,15 +24,26 @@ class FsBrowseResult(BaseModel):
 
 HOME = str(Path.home())
 COMMON_ROOTS: list[str] = []
+PATH_SEP = "\\" if os.name == "nt" else "/"
 
-if Path("/mnt").exists():
-    COMMON_ROOTS.append("/mnt")
-if Path("/media").exists():
-    COMMON_ROOTS.append("/media")
-if Path("/Volumes").exists():
-    COMMON_ROOTS.append("/Volumes")
-if Path("/home").exists():
-    COMMON_ROOTS.append("/home")
+if os.name == "nt":
+    for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+        drive = f"{letter}:\\"
+        if Path(drive).exists():
+            COMMON_ROOTS.append(drive)
+    if Path(HOME).drive:
+        drive_root = Path(HOME).drive + "\\"
+        if drive_root not in COMMON_ROOTS:
+            COMMON_ROOTS.insert(0, drive_root)
+else:
+    if Path("/mnt").exists():
+        COMMON_ROOTS.append("/mnt")
+    if Path("/media").exists():
+        COMMON_ROOTS.append("/media")
+    if Path("/Volumes").exists():
+        COMMON_ROOTS.append("/Volumes")
+    if Path("/home").exists():
+        COMMON_ROOTS.append("/home")
 
 
 def _is_readable(p: Path) -> bool:

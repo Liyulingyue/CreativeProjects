@@ -15,6 +15,26 @@ _SETTINGS_FILE = DATA_DIR / "settings.json"
 _RESULTS_FILE = DATA_DIR / "results.json"
 _DEDUP_JOBS_FILE = DATA_DIR / "dedup_jobs.json"
 
+FOLDER_CACHE_DIR_NAME = ".photoanalyzer"
+RESULTS_FILE_NAME = "results.json"
+
+
+def _find_base_dir(file_path: str) -> Optional[Path]:
+    p = Path(file_path).resolve()
+    for parent in [p.parent] + list(p.parents):
+        if (parent / FOLDER_CACHE_DIR_NAME).exists():
+            return parent
+    return None
+
+
+def _get_results_folder(file_path: str) -> tuple[str, Path]:
+    base = _find_base_dir(file_path)
+    if base:
+        rel = str(Path(file_path).resolve().relative_to(base))
+        return rel, base / FOLDER_CACHE_DIR_NAME
+    p = Path(file_path).resolve()
+    return str(p), DATA_DIR / "orphan_results"
+
 
 def _load_json(path: Path, default=None):
     if not path.exists():
@@ -24,6 +44,7 @@ def _load_json(path: Path, default=None):
 
 
 def _save_json(path: Path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
@@ -48,7 +69,10 @@ class AppState:
             self._settings = AppSettings(**settings_data)
 
         results_data = _load_json(_RESULTS_FILE, [])
-        self._results = [AnalysisResult(**r) for r in results_data]
+        if self._settings.storage_mode == "folder":
+            self._results = []
+        else:
+            self._results = [AnalysisResult(**r) for r in results_data]
 
         dedup_jobs_data = _load_json(_DEDUP_JOBS_FILE, {})
         for k, v in dedup_jobs_data.items():
@@ -64,6 +88,8 @@ class AppState:
         _save_json(_SETTINGS_FILE, self._settings.model_dump())
 
     def _persist_results(self):
+        if self._settings.storage_mode == "folder":
+            return
         _save_json(_RESULTS_FILE, [r.model_dump() for r in self._results])
 
     def _persist_dedup_jobs(self):
@@ -114,10 +140,36 @@ class AppState:
 
     # --- Results ---
     def list_results(self) -> list[AnalysisResult]:
+        if self._settings.storage_mode == "folder":
+            all_results: list[AnalysisResult] = []
+            for d in self._dirs.values():
+                p = Path(d.path)
+                if p.exists():
+                    cache_dir = p / FOLDER_CACHE_DIR_NAME
+                    results_file = cache_dir / RESULTS_FILE_NAME
+                    if results_file.exists():
+                        data = _load_json(results_file, {})
+                        for r_data in data.values():
+                            try:
+                                all_results.append(AnalysisResult(**r_data))
+                            except Exception:
+                                pass
+            return all_results
         return self._results
 
     def add_results(self, results: list[AnalysisResult]):
         with self._lock:
+            if self._settings.storage_mode == "folder":
+                folder_results: dict[Path, dict[str, dict]] = {}
+                for r in results:
+                    rel, folder = _get_results_folder(r.file_path)
+                    if folder not in folder_results:
+                        folder_results[folder] = _load_json(folder / RESULTS_FILE_NAME, {})
+                    folder_results[folder][rel] = r.model_dump()
+                for folder, data in folder_results.items():
+                    _save_json(folder / RESULTS_FILE_NAME, data)
+                return
+
             existing_paths = {r.file_path for r in self._results}
             for r in results:
                 if r.file_path in existing_paths:
@@ -151,7 +203,7 @@ class AppState:
                         setattr(job, k, v)
 
     # --- Dedup Jobs ---
-    def create_dedup_job(self, total_files: int) -> DedupJob:
+    def create_dedup_job(self, total_files: int, dir_id: Optional[str] = None, dir_path: Optional[str] = None) -> DedupJob:
         job_id = uuid.uuid4().hex[:12]
         job = DedupJob(
             job_id=job_id,
@@ -159,6 +211,8 @@ class AppState:
             total_files=total_files,
             groups_count=0,
             groups=[],
+            dir_id=dir_id,
+            dir_path=dir_path,
             created_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
         )
         self._dedup_jobs[job_id] = job
@@ -167,6 +221,40 @@ class AppState:
 
     def get_dedup_job(self, job_id: str) -> Optional[DedupJob]:
         return self._dedup_jobs.get(job_id)
+
+    def get_dedup_jobs_by_dir(self, dir_id: str) -> list[DedupJob]:
+        return [j for j in self._dedup_jobs.values() if j.dir_id == dir_id and j.status == "completed"]
+
+    def get_dedup_jobs_by_path(self, dir_path: str) -> list[DedupJob]:
+        return [j for j in self._dedup_jobs.values() if j.dir_path == dir_path and j.status == "completed"]
+
+    def get_latest_dedup_job(self, dir_id: Optional[str] = None, dir_path: Optional[str] = None) -> Optional[DedupJob]:
+        jobs: list[DedupJob] = []
+        if dir_id:
+            jobs = self.get_dedup_jobs_by_dir(dir_id)
+        if not jobs and dir_path:
+            jobs = self.get_dedup_jobs_by_path(dir_path)
+        if not jobs and dir_path:
+            import os
+            norm_target = os.path.normcase(os.path.normpath(dir_path))
+            for j in self._dedup_jobs.values():
+                if j.status != "completed":
+                    continue
+                if j.dir_id == dir_id or (j.dir_path and os.path.normcase(os.path.normpath(j.dir_path)) == norm_target):
+                    jobs.append(j)
+                    continue
+                for g in j.groups:
+                    for item in g.items:
+                        item_norm = os.path.normcase(os.path.normpath(os.path.dirname(item.path)))
+                        if item_norm == norm_target or item_norm.startswith(norm_target + os.sep):
+                            jobs.append(j)
+                            break
+                    else:
+                        continue
+                    break
+        if not jobs:
+            return None
+        return max(jobs, key=lambda j: j.created_at)
 
     def update_dedup_job(self, job_id: str, **kwargs):
         with self._lock:

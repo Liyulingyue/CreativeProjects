@@ -1,14 +1,14 @@
-import type { FileNode } from "@/api/types";
-import { apiUrl } from "@/api/client";
+import type { FileNode, AnalysisResult } from "@/api/types";
 
 interface PhotoGridProps {
   items: FileNode[];
   onSelect: (item: FileNode) => void;
   selectedPaths: Set<string>;
   onToggleSelect: (path: string) => void;
+  scores?: Map<string, AnalysisResult>;
 }
 
-export function PhotoGrid({ items, onSelect, selectedPaths, onToggleSelect }: PhotoGridProps) {
+export function PhotoGrid({ items, onSelect, selectedPaths, onToggleSelect, scores }: PhotoGridProps) {
   const imageItems = items.filter((i) => !i.is_dir);
 
   if (imageItems.length === 0) {
@@ -19,6 +19,7 @@ export function PhotoGrid({ items, onSelect, selectedPaths, onToggleSelect }: Ph
     <div className="photo-grid">
       {imageItems.map((item) => {
         const isSelected = selectedPaths.has(item.path);
+        const score = scores?.get(item.path)?.data?.score;
         return (
           <div
             key={item.path}
@@ -30,9 +31,16 @@ export function PhotoGrid({ items, onSelect, selectedPaths, onToggleSelect }: Ph
             </div>
             <div className="photo-card__image">
               {item.thumbnail_url ? (
-                <img src={apiUrl(item.thumbnail_url)} alt={item.name} loading="lazy" />
+                <img src={item.thumbnail_url} alt={item.name} loading="lazy" />
               ) : (
                 <div className="photo-card__placeholder">📷</div>
+              )}
+              {score !== undefined && score >= 0 && (
+                <div
+                  className={`photo-card__score ${score >= 70 ? "photo-card__score--good" : score >= 40 ? "photo-card__score--mid" : "photo-card__score--low"}`}
+                >
+                  {score}
+                </div>
               )}
             </div>
             <div className="photo-card__info">

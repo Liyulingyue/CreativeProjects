@@ -64,6 +64,7 @@ export interface DedupItem {
   file_size: number;
   similarity: number;
   metadata: Record<string, unknown>;
+  siblings: string[];
 }
 
 export interface DedupJob {

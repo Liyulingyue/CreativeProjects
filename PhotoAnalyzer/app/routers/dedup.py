@@ -88,7 +88,7 @@ def start_dedup(body: dict):
     if stages_config:
         stages = [s for s in stages_config if s.get("enabled", True)] if isinstance(stages_config, list) else None
 
-    job = state.create_dedup_job(len(paths))
+    job = state.create_dedup_job(len(paths), dir_id, str(base))
     t = threading.Thread(target=_run_dedup, args=(job.job_id, paths, stages), daemon=True)
     t.start()
     return job
@@ -102,6 +102,16 @@ def get_dedup_job(job_id: str):
     return job
 
 
+@router.get("/by-dir/{dir_id}", response_model=DedupJob)
+def get_dedup_job_by_dir(dir_id: str):
+    entry = state.get_dir(dir_id)
+    dir_path = entry.path if entry else None
+    job = state.get_latest_dedup_job(dir_id, dir_path)
+    if not job:
+        raise HTTPException(404, "该目录暂无去重结果")
+    return job
+
+
 @router.post("/{job_id}/resolve")
 def resolve_dedup_groups(job_id: str, body: dict):
     job = state.get_dedup_job(job_id)
@@ -109,15 +119,23 @@ def resolve_dedup_groups(job_id: str, body: dict):
         raise HTTPException(404, "任务不存在")
 
     actions = body.get("actions", [])
-    removed = []
+    all_removed_paths = set()
+
     for action in actions:
         for r_path in action.get("remove", []):
-            p = Path(r_path)
-            if p.exists():
-                p.unlink()
-                removed.append(r_path)
+            all_removed_paths.add(r_path)
 
-    return {"removed": removed, "count": len(removed)}
+    if all_removed_paths:
+        updated_groups = []
+        for group in job.groups:
+            updated_items = [item for item in group.items if item.path not in all_removed_paths]
+            if len(updated_items) > 1:
+                g = group.model_copy(deep=True)
+                g.items = updated_items
+                updated_groups.append(g)
+        state.update_dedup_job(job_id, groups=updated_groups, groups_count=len(updated_groups))
+
+    return {"removed": list(all_removed_paths), "count": len(all_removed_paths)}
 
 
 def _run_dedup(job_id: str, paths: list[str], stages_config: list | None):
@@ -129,13 +147,17 @@ def _run_dedup(job_id: str, paths: list[str], stages_config: list | None):
 
     settings = state.get_settings()
 
+    path_objs = [Path(p) for p in paths]
+    families = _build_file_families(path_objs)
+    family_paths = _families_to_paths(families)
+
     try:
         if stages_config:
             from src.dedup.composite import HierarchicalDeduplicator
             dedup = HierarchicalDeduplicator(stages=stages_config)
             state.update_dedup_job(job_id, stage="层次化去重")
-            result = dedup.deduplicate(paths)
-            groups = _convert_hierarchical(result)
+            result = dedup.deduplicate(family_paths)
+            groups = _convert_hierarchical(result, families)
         else:
             from src.dedup.composite import CompositeDeduplicator
             enabled_stages = [s for s in settings.dedup_stages if s.enabled]
@@ -145,8 +167,8 @@ def _run_dedup(job_id: str, paths: list[str], stages_config: list | None):
                 use_embedding=any(s.type == "embedding" for s in enabled_stages),
             )
             state.update_dedup_job(job_id, stage="组合去重")
-            raw_groups = dedup.group_all(paths)
-            groups = _convert_groups(raw_groups)
+            raw_groups = dedup.group_all(family_paths)
+            groups = _convert_groups(raw_groups, families)
 
         state.update_dedup_job(
             job_id,
@@ -165,17 +187,19 @@ def _run_dedup(job_id: str, paths: list[str], stages_config: list | None):
         )
 
 
-def _convert_groups(raw_groups) -> list[DedupGroup]:
+def _convert_groups(raw_groups, families: dict[str, list[Path]] | None = None) -> list[DedupGroup]:
     result = []
     for i, g in enumerate(raw_groups):
         items = []
         for item in g.items:
+            siblings = _get_all_siblings(item.path, families) if families else []
             items.append(DedupItem(
                 path=str(item.path),
                 file_name=item.path.name,
                 thumbnail_url=f"/api/thumbnails?path={_encode_path(str(item.path))}",
                 file_size=item.file_size or (item.path.stat().st_size if item.path.exists() else 0),
                 similarity=0.0,
+                siblings=siblings,
             ))
         result.append(DedupGroup(
             group_id=g.group_id if hasattr(g, "group_id") and g.group_id else f"g_{i}",
@@ -186,19 +210,21 @@ def _convert_groups(raw_groups) -> list[DedupGroup]:
     return result
 
 
-def _convert_hierarchical(result: dict) -> list[DedupGroup]:
+def _convert_hierarchical(result: dict, families: dict[str, list[Path]] | None = None) -> list[DedupGroup]:
     groups = []
     for entry in result.get("groups", []):
         raw_group = entry["group"]
         stage_name = entry["stage"]
         items = []
         for item in raw_group.items:
+            siblings = _get_all_siblings(item.path, families) if families else []
             items.append(DedupItem(
                 path=str(item.path),
                 file_name=item.path.name,
                 thumbnail_url=f"/api/thumbnails?path={_encode_path(str(item.path))}",
                 file_size=item.file_size or (item.path.stat().st_size if item.path.exists() else 0),
                 similarity=0.0,
+                siblings=siblings,
             ))
         groups.append(DedupGroup(
             group_id=raw_group.group_id if hasattr(raw_group, "group_id") and raw_group.group_id else f"h_{entry['stage']}_{len(groups)}",
@@ -212,3 +238,31 @@ def _convert_hierarchical(result: dict) -> list[DedupGroup]:
 def _encode_path(p: str) -> str:
     import urllib.parse
     return urllib.parse.quote(p, safe="")
+
+
+RAW_FORMATS = {".cr2", ".cr3", ".arw", ".dng", ".nef", ".orf", ".rw2", ".pef"}
+
+
+def _get_stem(path: Path) -> str:
+    return path.stem
+
+
+def _build_file_families(paths: list[Path]) -> dict[str, list[Path]]:
+    families: dict[str, list[Path]] = {}
+    for p in paths:
+        stem = _get_stem(p)
+        if stem not in families:
+            families[stem] = []
+        families[stem].append(p)
+    for stem in families:
+        families[stem].sort(key=lambda x: (0 if x.suffix.lower() == ".jpg" else 1, x.suffix.lower()))
+    return families
+
+
+def _families_to_paths(families: dict[str, list[Path]]) -> list[Path]:
+    return [family[0] for family in families.values()]
+
+
+def _get_all_siblings(path: Path, families: dict[str, list[Path]]) -> list[str]:
+    stem = _get_stem(path)
+    return [str(p) for p in families.get(stem, [])]

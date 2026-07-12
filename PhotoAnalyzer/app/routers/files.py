@@ -12,6 +12,8 @@ router = APIRouter(prefix="/api", tags=["files"])
 THUMB_SIZE = (200, 200)
 _thumb_cache: dict[str, str] = {}
 
+RAW_FORMATS = {".cr2", ".cr3", ".arw", ".dng", ".nef", ".orf", ".rw2", ".pef", ".raf", ".3fr", ".ai", ".eps"}
+
 
 @router.get("/files", response_model=BrowseResult)
 def browse_files(dir_id: str = Query(...), path: str | None = Query(None)):
@@ -41,19 +43,40 @@ def browse_files(dir_id: str = Query(...), path: str | None = Query(None)):
 
     items: list[FileNode] = []
     try:
-        for child in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+        stem_map: dict[str, list[Path]] = {}
+
+        for child in sorted(target.iterdir(), key=lambda p: p.name.lower()):
             if child.name.startswith("."):
                 continue
-            thumb_url = None
-            if not child.is_dir() and is_image_file(child):
-                thumb_url = f"/api/thumbnails?path={_encode_path(str(child))}"
+            if child.is_dir():
+                items.append(FileNode(
+                    name=child.name,
+                    path=str(child),
+                    is_dir=True,
+                    size=0,
+                    modified="",
+                    thumbnail_url=None,
+                ))
+                continue
 
+            stem = child.stem
+            suffix = child.suffix.lower()
+
+            if is_image_file(child) or suffix in RAW_FORMATS:
+                if stem not in stem_map:
+                    stem_map[stem] = []
+                stem_map[stem].append(child)
+
+        for stem, paths in stem_map.items():
+            paths.sort(key=lambda p: (0 if p.suffix.lower() == ".jpg" else 1, p.suffix.lower(), p.name.lower()))
+            best = paths[0]
+            thumb_url = f"/api/thumbnails?path={_encode_path(str(best))}" if best.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"} else None
             items.append(FileNode(
-                name=child.name,
-                path=str(child),
-                is_dir=child.is_dir(),
-                size=child.stat().st_size if child.is_file() else 0,
-                modified=_format_time(child.stat().st_mtime),
+                name=best.name,
+                path=str(best),
+                is_dir=False,
+                size=best.stat().st_size,
+                modified=_format_time(best.stat().st_mtime),
                 thumbnail_url=thumb_url,
             ))
     except PermissionError:
@@ -67,18 +90,23 @@ def browse_files(dir_id: str = Query(...), path: str | None = Query(None)):
 
 
 @router.get("/thumbnails")
-def get_thumbnail(path: str = Query(...)):
+def get_thumbnail(path: str = Query(...), full: bool = Query(False)):
     img_path = Path(path)
     if not img_path.exists() or not is_image_file(img_path):
         raise HTTPException(404, "文件不存在")
 
-    cached = _thumb_cache.get(path)
+    if full:
+        return FileResponse(img_path, media_type=f"image/{img_path.suffix.lstrip('.').lower()}")
+
+    cache_key = f"thumb_{path}"
+    cached = _thumb_cache.get(cache_key)
     if cached and Path(cached).exists():
         return FileResponse(cached, media_type="image/jpeg")
 
     try:
-        from PIL import Image
+        from PIL import Image, ImageOps
         img = Image.open(img_path)
+        img = ImageOps.exif_transpose(img)
         img.thumbnail(THUMB_SIZE)
         img = img.convert("RGB")
 
@@ -86,7 +114,7 @@ def get_thumbnail(path: str = Query(...)):
         thumb_dir.mkdir(parents=True, exist_ok=True)
         thumb_path = thumb_dir / f"{img_path.stem}_{img_path.stat().st_size}.jpg"
         img.save(thumb_path, "JPEG", quality=75)
-        _thumb_cache[path] = str(thumb_path)
+        _thumb_cache[cache_key] = str(thumb_path)
         return FileResponse(thumb_path, media_type="image/jpeg")
     except Exception:
         raise HTTPException(500, "生成缩略图失败")
@@ -94,6 +122,86 @@ def get_thumbnail(path: str = Query(...)):
 def _encode_path(p: str) -> str:
     import urllib.parse
     return urllib.parse.quote(p, safe="")
+
+
+@router.delete("/files")
+def delete_file(path: str = Query(...)):
+    p = Path(path)
+    if not p.exists():
+        raise HTTPException(404, "文件不存在")
+    if not p.is_file():
+        raise HTTPException(400, "不是文件")
+    try:
+        p.unlink()
+        return {"deleted": [str(p)], "count": 1}
+    except Exception as e:
+        raise HTTPException(500, f"删除失败: {e}")
+
+
+@router.get("/files/siblings")
+def get_file_siblings(path: str = Query(...)):
+    p = Path(path)
+    if not p.exists():
+        raise HTTPException(404, "文件不存在")
+    parent = p.parent
+    stem = p.stem
+    siblings = []
+    for f in parent.iterdir():
+        if f.is_file() and f.stem == stem and f != p:
+            siblings.append(str(f))
+    return {"siblings": siblings, "count": len(siblings)}
+
+
+RAW_EXTENSIONS = {".cr2", ".arw", ".dng", ".nef", ".orf", ".rw2", ".pef", ".srw", ".raf"}
+
+
+@router.get("/files/orphaned-raws")
+def get_orphaned_raws(dir_id: str = Query(...)):
+    from ..deps import state
+    entry = state.get_dir(dir_id)
+    if not entry:
+        raise HTTPException(404, "目录不存在")
+    target = Path(entry.path)
+    orphaned = []
+    for f in target.rglob("*"):
+        if not f.is_file():
+            continue
+        ext = f.suffix.lower()
+        if ext not in RAW_EXTENSIONS:
+            continue
+        stem = f.stem
+        jpg_path = f.parent / f"{stem}.jpg"
+        jpg_path_upper = f.parent / f"{stem}.JPG"
+        if not jpg_path.exists() and not jpg_path_upper.exists():
+            orphaned.append(str(f))
+    return {"orphaned": orphaned, "count": len(orphaned)}
+
+
+@router.delete("/files/orphaned-raws")
+def delete_orphaned_raws(dir_id: str = Query(...)):
+    from ..deps import state
+    entry = state.get_dir(dir_id)
+    if not entry:
+        raise HTTPException(404, "目录不存在")
+    target = Path(entry.path)
+    deleted = []
+    not_found = []
+    for f in target.rglob("*"):
+        if not f.is_file():
+            continue
+        ext = f.suffix.lower()
+        if ext not in RAW_EXTENSIONS:
+            continue
+        stem = f.stem
+        jpg_path = f.parent / f"{stem}.jpg"
+        jpg_path_upper = f.parent / f"{stem}.JPG"
+        if not jpg_path.exists() and not jpg_path_upper.exists():
+            if f.exists():
+                f.unlink()
+                deleted.append(str(f))
+            else:
+                not_found.append(str(f))
+    return {"deleted": deleted, "not_found": not_found, "count": len(deleted)}
 
 
 def _format_time(mtime: float) -> str:

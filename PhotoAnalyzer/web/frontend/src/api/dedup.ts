@@ -79,6 +79,10 @@ export async function getDedupJob(jobId: string): Promise<DedupJob> {
   return request<DedupJob>(`/dedup/${jobId}`);
 }
 
+export async function getDedupJobByDir(dirId: string): Promise<DedupJob> {
+  return request<DedupJob>(`/dedup/by-dir/${dirId}`);
+}
+
 export async function resolveDedupGroups(
   jobId: string,
   actions: { group_id: string; keep: string; remove: string[] }[]
