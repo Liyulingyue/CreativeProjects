@@ -11,6 +11,8 @@ import { PhotoActivityPage } from './pages/PhotoActivityPage'
 import { PhotoWallPage } from './pages/PhotoWallPage'
 import { GpsFlowPage } from './pages/GpsFlowPage'
 import { ProfilePage } from './pages/ProfilePage'
+import { FacilityListPage } from './pages/FacilityListPage'
+import { FacilityDetailPage } from './pages/FacilityDetailPage'
 import { getStoredUser, loadPrefs } from './lib/storage'
 import type { AuthUser } from './lib/storage'
 
@@ -55,7 +57,7 @@ export default function App() {
   }, [route])
 
   function handleTabChange(t: string) {
-    const pathMap: Record<string, string> = { home: '/', chat: '/chat', activity: '/activity', me: '/me' }
+    const pathMap: Record<string, string> = { home: '/', chat: '/chat', activity: '/activity', me: '/me', facility: '/facility' }
     navigate(pathMap[t] || '/')
   }
 
@@ -74,11 +76,12 @@ export default function App() {
     setPlanInitialStage(undefined)
   }
 
-  const isActivitySubPage = location.pathname !== '/activity' && location.pathname.startsWith('/activity/')
+  const isSubPage = (location.pathname !== '/activity' && location.pathname.startsWith('/activity/'))
+    || location.pathname.startsWith('/facility')
 
   return (
     <div className="app">
-      {!isActivitySubPage && (
+      {!isSubPage && (
         <header className="app-header">
           <h1>🦒 ZooGuide</h1>
           <span className="badge">红山省力 Agent</span>
@@ -115,6 +118,8 @@ export default function App() {
           <Route path="/activity/photo" element={<PhotoActivityPage />} />
           <Route path="/activity/wall" element={<PhotoWallPage />} />
           <Route path="/activity/gps" element={<GpsFlowPage />} />
+          <Route path="/facility" element={<FacilityListPage />} />
+          <Route path="/facility/:id" element={<FacilityDetailPage />} />
           <Route path="/me" element={
             <ProfilePage user={user} onUserChange={setUser} />
           } />
@@ -132,7 +137,7 @@ export default function App() {
         />
       )}
 
-      {!isActivitySubPage && <TabBar active={tab} onChange={handleTabChange} />}
+      {!isSubPage && <TabBar active={tab} onChange={handleTabChange} />}
     </div>
   )
 }

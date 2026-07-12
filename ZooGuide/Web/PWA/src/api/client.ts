@@ -1,5 +1,6 @@
 import type {
   CheckinResponse,
+  Facility,
   Meta,
   NearestResponse,
   PhotoEvaluation,
@@ -44,6 +45,11 @@ export const api = {
   quizOptions: () => request<QuizOptions>('/api/quiz-options'),
   venues: () => request<{ venues: Venue[] }>('/api/venues'),
   venue: (id: string) => request<Venue>(`/api/venues/${id}`),
+  facilities: (category?: string) =>
+    request<{ facilities: Facility[]; categories: string[] }>(
+      `/api/facilities${category ? `?category=${encodeURIComponent(category)}` : ''}`,
+    ),
+  facility: (id: string) => request<Facility>(`/api/facilities/${id}`),
   plan: (prefs: UserPreference) =>
     request<Route>('/api/plan', {
       method: 'POST',

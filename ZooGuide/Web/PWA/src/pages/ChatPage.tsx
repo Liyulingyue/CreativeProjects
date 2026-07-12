@@ -1,5 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import type { Route, UserPreference } from '../types'
+import {
+  loadChatHistory,
+  saveChatHistory,
+  clearChatHistory as clearStorageChat,
+  type ChatMessage,
+} from '../lib/storage'
 
 interface Props {
   currentRoute: Route | null
@@ -9,13 +15,12 @@ interface Props {
   onGoActivity: () => void
 }
 
-interface ChatMsg {
+interface DisplayMsg {
   id: number
   role: 'user' | 'agent'
   text: string
-  constraint?: any
-  questions?: string[]
-  route?: any
+  toolCalls?: { name: string; result: string }[]
+  routeChanged?: boolean
 }
 
 const QUICK = [
@@ -27,33 +32,67 @@ const QUICK = [
   '看网红',
 ]
 
-const INITIAL_MSG: ChatMsg = {
+const WELCOME: DisplayMsg = {
   id: 0,
   role: 'agent',
-  text: '嗨，我是你的红山导游 🦒。想逛哪些馆？走累了？想看什么动物？随时告诉我。',
+  text: '嗨，我是你的红山导游。想逛哪些馆？走累了？想看什么动物？随时告诉我。',
 }
 
 export function ChatPage({ currentRoute, prefs, onRouteUpdate, onGoPlan, onGoActivity }: Props) {
-  const [messages, setMessages] = useState<ChatMsg[]>([INITIAL_MSG])
+  const [messages, setMessages] = useState<DisplayMsg[]>(() => {
+    const stored = loadChatHistory()
+    if (stored.length === 0) return [WELCOME]
+    return stored.map((m, i) => ({
+      id: i,
+      role: m.role === 'assistant' ? 'agent' : 'user',
+      text: m.content,
+      toolCalls: m.toolCalls,
+      routeChanged: !!m.newRoute,
+    }))
+  })
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [agentSteps, setAgentSteps] = useState<string[]>([])
   const [showQuick, setShowQuick] = useState(true)
   const scrollerRef = useRef<HTMLDivElement>(null)
-  const idRef = useRef(1)
+  const idRef = useRef(messages.length + 1)
 
   useEffect(() => {
     setTimeout(() => {
       scrollerRef.current?.scrollTo({ top: 999999, behavior: 'smooth' })
     }, 50)
-  }, [messages, loading])
+  }, [messages, loading, agentSteps])
+
+  const persistMessages = useCallback((msgs: DisplayMsg[]) => {
+    const chatMsgs: ChatMessage[] = msgs
+      .filter((m) => m.id !== 0)
+      .map((m) => ({
+        role: m.role === 'agent' ? 'assistant' : ('user' as const),
+        content: m.text,
+        toolCalls: m.toolCalls,
+        newRoute: m.routeChanged ? {} : undefined,
+      }))
+    saveChatHistory(chatMsgs)
+  }, [])
 
   async function send(text?: string) {
     const msg = (text ?? input).trim()
     if (!msg || loading) return
     setInput('')
-    const userMsg: ChatMsg = { id: idRef.current++, role: 'user', text: msg }
-    setMessages((prev) => [...prev, userMsg])
+
+    const userMsg: DisplayMsg = { id: idRef.current++, role: 'user', text: msg }
+    const nextMsgs = [...messages, userMsg]
+    setMessages(nextMsgs)
     setLoading(true)
+    setAgentSteps([])
+
+    const history: ChatMessage[] = nextMsgs
+      .filter((m) => m.id !== 0)
+      .map((m) => ({
+        role: m.role === 'agent' ? 'assistant' : ('user' as const),
+        content: m.text,
+      }))
+
     try {
       const r = await fetch('/api/chat', {
         method: 'POST',
@@ -62,43 +101,47 @@ export function ChatPage({ currentRoute, prefs, onRouteUpdate, onGoPlan, onGoAct
           message: msg,
           current_route: currentRoute,
           prefs,
-          history: messages.slice(-6).map((m) => ({
-            role: m.role === 'agent' ? 'assistant' : 'user',
-            content: m.text,
-          })),
+          history,
         }),
       })
       const d = await r.json()
-      const reply: ChatMsg = {
+
+      const agentMsg: DisplayMsg = {
         id: idRef.current++,
         role: 'agent',
         text: d.reply || '…',
-        constraint: d.extracted_constraint,
-        questions: d.questions || [],
-        route: d.new_route,
+        routeChanged: !!d.new_route,
       }
-      setMessages((prev) => [...prev, reply])
+      const updated = [...nextMsgs, agentMsg]
+      setMessages(updated)
+      persistMessages(updated)
+
       if (d.new_route && onRouteUpdate) {
         onRouteUpdate(d.new_route)
       }
-    } catch (e) {
-      setMessages((prev) => [
-        ...prev,
-        { id: idRef.current++, role: 'agent', text: '网络好像出问题了，试试再说一次？' },
-      ])
+    } catch {
+      const errMsg: DisplayMsg = {
+        id: idRef.current++,
+        role: 'agent',
+        text: '网络好像出问题了，试试再说一次？',
+      }
+      const updated = [...nextMsgs, errMsg]
+      setMessages(updated)
+      persistMessages(updated)
     } finally {
       setLoading(false)
+      setAgentSteps([])
     }
   }
 
   function reset() {
-    setMessages([INITIAL_MSG])
+    setMessages([WELCOME])
     idRef.current = 1
+    clearStorageChat()
   }
 
   return (
     <div className="chat-page">
-      {/* Context banner */}
       <div className="chat-context">
         {currentRoute ? (
           <>
@@ -106,7 +149,7 @@ export function ChatPage({ currentRoute, prefs, onRouteUpdate, onGoPlan, onGoAct
               <div className="chat-context-label">当前路线</div>
               <div className="chat-context-meta">
                 {currentRoute.stops.length} 馆 ·{' '}
-                {Math.round(currentRoute.total_minutes / 60 * 10) / 10}h
+                {Math.round((currentRoute.total_minutes / 60) * 10) / 10}h
               </div>
             </div>
             <button className="pill-btn primary" onClick={onGoPlan}>
@@ -125,25 +168,32 @@ export function ChatPage({ currentRoute, prefs, onRouteUpdate, onGoPlan, onGoAct
         )}
       </div>
 
-      {/* Messages (scrollable) */}
       <div ref={scrollerRef} className="chat-messages">
         {messages.map((m) => (
           <MessageBubble key={m.id} msg={m} />
         ))}
+        {loading && agentSteps.length > 0 && (
+          <div className="chat-agent-steps">
+            {agentSteps.map((s, i) => (
+              <div key={i} className="chat-agent-step">{s}</div>
+            ))}
+          </div>
+        )}
         {loading && <TypingBubble />}
         {!currentRoute && messages.length <= 1 && (
-          <button
-            className="chat-suggest-btn"
-            onClick={onGoActivity}
-          >
+          <button className="chat-suggest-btn" onClick={onGoActivity}>
             📍 没规划？先去拍张照/逛逛 →
           </button>
         )}
       </div>
 
-      {/* Quick replies (collapsible) */}
       {showQuick && (
         <div className="chat-quick-row">
+          {messages.length > 2 && (
+            <button className="chat-quick-chip chat-quick-new" onClick={reset} disabled={loading}>
+              新对话
+            </button>
+          )}
           {QUICK.map((q) => (
             <button key={q} className="chat-quick-chip" onClick={() => send(q)} disabled={loading}>
               {q}
@@ -164,7 +214,6 @@ export function ChatPage({ currentRoute, prefs, onRouteUpdate, onGoPlan, onGoAct
         </button>
       )}
 
-      {/* Input (sticky bottom) */}
       <div className="chat-composer">
         <input
           type="text"
@@ -182,17 +231,11 @@ export function ChatPage({ currentRoute, prefs, onRouteUpdate, onGoPlan, onGoAct
           {loading ? '⏳' : '➤'}
         </button>
       </div>
-
-      {messages.length > 2 && (
-        <button className="chat-clear-link" onClick={reset}>
-          清空对话
-        </button>
-      )}
     </div>
   )
 }
 
-function MessageBubble({ msg }: { msg: ChatMsg }) {
+function MessageBubble({ msg }: { msg: DisplayMsg }) {
   const isUser = msg.role === 'user'
   return (
     <div
@@ -212,28 +255,22 @@ function MessageBubble({ msg }: { msg: ChatMsg }) {
           background: isUser ? 'var(--primary)' : 'var(--bg-elev)',
           color: isUser ? 'white' : 'var(--fg)',
           border: isUser ? 'none' : '1px solid var(--border)',
-          boxShadow: isUser ? '0 1px 4px rgba(45,106,79,0.25)' : '0 1px 2px rgba(0,0,0,0.04)',
+          boxShadow: isUser
+            ? '0 1px 4px rgba(45,106,79,0.25)'
+            : '0 1px 2px rgba(0,0,0,0.04)',
         }}
       >
         {msg.text}
-        {msg.constraint && (
-          <div style={{ marginTop: 6, fontSize: 11, opacity: 0.85 }}>
-            💡 {msg.constraint.type}
-            {msg.constraint.venue_name && ` → ${msg.constraint.venue_name}`}
-          </div>
-        )}
-        {msg.questions && msg.questions.length > 0 && (
+        {msg.routeChanged && (
           <div
             style={{
               marginTop: 6,
               fontSize: 12,
-              background: 'var(--primary-soft)',
-              padding: '6px 10px',
-              borderRadius: 8,
               color: 'var(--primary-strong)',
+              fontWeight: 600,
             }}
           >
-            🤔 {msg.questions[0]}
+            ✓ 路线已更新
           </div>
         )}
       </div>

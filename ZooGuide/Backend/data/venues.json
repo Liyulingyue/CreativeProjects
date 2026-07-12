@@ -478,5 +478,183 @@
     "有遮阴": "场馆有遮阴避晒设施",
     "亲子": "适合家长带孩子观看",
     "沉浸式": "参观体验设计感强"
-  }
+  },
+  "facilities": [
+    {
+      "id": "wc_north",
+      "name": "北门卫生间",
+      "category": "卫生间",
+      "area": "大红山片区",
+      "near_venue_id": "panda",
+      "lat": 32.1030, "lon": 118.8102,
+      "description": "北门入口右侧，靠近大熊猫馆方向。设有无障碍卫生间。",
+      "tags": ["无障碍", "有母婴台"],
+      "open_time": "08:30–17:00"
+    },
+    {
+      "id": "wc_center",
+      "name": "中心广场卫生间",
+      "category": "卫生间",
+      "area": "大红山片区",
+      "near_venue_id": "giraffe",
+      "lat": 32.1002, "lon": 118.8103,
+      "description": "大红山片区中心位置，长颈鹿馆附近。园区内使用频率最高的卫生间之一。",
+      "tags": ["无障碍"],
+      "open_time": "08:30–17:00"
+    },
+    {
+      "id": "wc_south",
+      "name": "南门卫生间",
+      "category": "卫生间",
+      "area": "南门新区",
+      "near_venue_id": "gorilla",
+      "lat": 32.0955, "lon": 118.8132,
+      "description": "南门新区入口处，大猩猩馆旁。2025年新建，设施较新。",
+      "tags": ["无障碍", "有母婴台", "新建"],
+      "open_time": "08:00–17:00"
+    },
+    {
+      "id": "wc_east",
+      "name": "小红山卫生间",
+      "category": "卫生间",
+      "area": "小红山片区",
+      "near_venue_id": "hornbill",
+      "lat": 32.1012, "lon": 118.8072,
+      "description": "小红山片区，犀鸟馆附近。",
+      "tags": [],
+      "open_time": "08:30–17:00"
+    },
+    {
+      "id": "food_north",
+      "name": "北门小食站",
+      "category": "餐饮",
+      "area": "大红山片区",
+      "near_venue_id": "panda",
+      "lat": 32.1032, "lon": 118.8096,
+      "description": "北门入口旁，提供简餐、饮料、冰淇淋。价格适中。",
+      "tags": ["饮料", "简餐", "冰淇淋"],
+      "open_time": "09:00–16:00"
+    },
+    {
+      "id": "food_center",
+      "name": "中心餐厅",
+      "category": "餐饮",
+      "area": "大红山片区",
+      "near_venue_id": "giraffe",
+      "lat": 32.1000, "lon": 118.8105,
+      "description": "园区内主要餐厅，提供中式快餐、面条、饮料。有室内座位和遮阳棚。",
+      "tags": ["中式快餐", "室内座位", "遮阳"],
+      "open_time": "09:00–15:30"
+    },
+    {
+      "id": "food_south",
+      "name": "南门咖啡站",
+      "category": "餐饮",
+      "area": "南门新区",
+      "near_venue_id": "lemur",
+      "lat": 32.0962, "lon": 118.8138,
+      "description": "2025年新建，提供咖啡、甜品、轻食。环境舒适，适合歇脚。",
+      "tags": ["咖啡", "甜品", "轻食", "新建"],
+      "open_time": "09:00–16:00"
+    },
+    {
+      "id": "ticket_north",
+      "name": "北门售票处",
+      "category": "售票",
+      "area": "大红山片区",
+      "near_venue_id": "panda",
+      "lat": 32.1038, "lon": 118.8098,
+      "description": "北门主入口售票窗口，支持现金、微信、支付宝。也支持线上购票扫码入园。",
+      "tags": ["现金", "微信", "支付宝", "线上购票"],
+      "open_time": "08:00–16:30"
+    },
+    {
+      "id": "ticket_south",
+      "name": "南门售票处",
+      "category": "售票",
+      "area": "南门新区",
+      "near_venue_id": "gorilla",
+      "lat": 32.0948, "lon": 118.8130,
+      "description": "南门新区售票窗口，2025年开放。人流量相对北门较少。",
+      "tags": ["微信", "支付宝", "线上购票"],
+      "open_time": "08:00–16:30"
+    },
+    {
+      "id": "shop_north",
+      "name": "北门纪念品商店",
+      "category": "商店",
+      "area": "大红山片区",
+      "near_venue_id": "panda",
+      "lat": 32.1035, "lon": 118.8095,
+      "description": "北门入口旁，售卖红山IP周边、毛绒玩具、明信片等。",
+      "tags": ["纪念品", "毛绒玩具", "明信片"],
+      "open_time": "09:00–16:30"
+    },
+    {
+      "id": "shop_south",
+      "name": "南门文创店",
+      "category": "商店",
+      "area": "南门新区",
+      "near_venue_id": "tangjiahe",
+      "lat": 32.0952, "lon": 118.8136,
+      "description": "南门新区文创店，2025年新开。特色唐家河主题文创、大猩猩IP周边。",
+      "tags": ["文创", "IP周边", "新建"],
+      "open_time": "09:00–16:30"
+    },
+    {
+      "id": "parking_north",
+      "name": "北门停车场",
+      "category": "停车",
+      "area": "大红山片区",
+      "near_venue_id": "panda",
+      "lat": 32.1045, "lon": 118.8095,
+      "description": "北门主停车场，约200个车位。节假日非常紧张，建议早到或绿色出行。地铁1号线红山动物园站步行5分钟。",
+      "tags": ["约200车位", "节假日紧张"],
+      "open_time": "07:30–18:00"
+    },
+    {
+      "id": "parking_south",
+      "name": "南门停车场",
+      "category": "停车",
+      "area": "南门新区",
+      "near_venue_id": "gorilla",
+      "lat": 32.0940, "lon": 118.8125,
+      "description": "南门新区停车场，2025年新建，约150个车位。相对北门压力小。",
+      "tags": ["约150车位", "新建"],
+      "open_time": "07:30–18:00"
+    },
+    {
+      "id": "medical",
+      "name": "医务室",
+      "category": "医疗",
+      "area": "大红山片区",
+      "near_venue_id": "giraffe",
+      "lat": 32.0998, "lon": 118.8108,
+      "description": "园区医务室，提供基础急救处理。如遇紧急情况请拨打120。",
+      "tags": ["急救", "基础医疗"],
+      "open_time": "08:30–17:00"
+    },
+    {
+      "id": "storage_north",
+      "name": "北门寄存处",
+      "category": "寄存",
+      "area": "大红山片区",
+      "near_venue_id": "panda",
+      "lat": 32.1036, "lon": 118.8097,
+      "description": "北门入口旁行李寄存柜，扫码使用。小柜5元/次，大柜10元/次。",
+      "tags": ["扫码", "自助"],
+      "open_time": "08:00–17:30"
+    },
+    {
+      "id": "nursery",
+      "name": "母婴室",
+      "category": "母婴",
+      "area": "大红山片区",
+      "near_venue_id": "giraffe",
+      "lat": 32.1001, "lon": 118.8106,
+      "description": "中心餐厅旁，提供哺乳空间、婴儿打理台、温奶器等。",
+      "tags": ["哺乳", "婴儿打理台", "温奶器"],
+      "open_time": "09:00–16:30"
+    }
+  ]
 }

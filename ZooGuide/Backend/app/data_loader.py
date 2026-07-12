@@ -4,7 +4,7 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
-from .models import Venue
+from .models import Facility, Venue
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
@@ -43,3 +43,23 @@ def get_all_venue_dicts() -> list[dict]:
 
 def get_tags_glossary() -> dict:
     return _load_raw().get("tags_glossary", {})
+
+
+def get_all_facilities() -> list[Facility]:
+    return [Facility(**f) for f in _load_raw().get("facilities", [])]
+
+
+def get_facility_by_id(fid: str) -> Facility | None:
+    for f in get_all_facilities():
+        if f.id == fid:
+            return f
+    return None
+
+
+def get_facility_categories() -> list[str]:
+    seen = []
+    for f in _load_raw().get("facilities", []):
+        cat = f.get("category", "")
+        if cat and cat not in seen:
+            seen.append(cat)
+    return seen

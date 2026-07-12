@@ -1,4 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
+import {
+  loadChatHistory,
+  saveChatHistory,
+  clearChatHistory as clearStorageChat,
+  type ChatMessage,
+} from '../lib/storage'
 
 interface Props {
   onClose: () => void
@@ -10,18 +16,21 @@ interface Props {
 interface ChatMsg {
   role: 'user' | 'agent'
   text: string
-  constraint?: any
-  questions?: string[]
-  route?: any
+  routeChanged?: boolean
 }
 
 export function ChatDialog({ onClose, onNewRoute, currentRoute, prefs }: Props) {
-  const [messages, setMessages] = useState<ChatMsg[]>([
-    {
-      role: 'agent',
-      text: '嗨，我是你的红山导游。走累了？晒了？想换路线？随时告诉我。',
-    },
-  ])
+  const [messages, setMessages] = useState<ChatMsg[]>(() => {
+    const stored = loadChatHistory()
+    if (stored.length === 0) {
+      return [{ role: 'agent', text: '嗨，我是你的红山导游。走累了？晒了？想换路线？随时告诉我。' }]
+    }
+    return stored.map((m) => ({
+      role: m.role === 'assistant' ? 'agent' : ('user' as const),
+      text: m.content,
+      routeChanged: !!m.newRoute,
+    }))
+  })
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const scrollerRef = useRef<HTMLDivElement>(null)
@@ -39,6 +48,15 @@ export function ChatDialog({ onClose, onNewRoute, currentRoute, prefs }: Props) 
     '想看网红动物',
   ]
 
+  function persistMessages(msgs: ChatMsg[]) {
+    const chatMsgs: ChatMessage[] = msgs.map((m) => ({
+      role: m.role === 'agent' ? 'assistant' : ('user' as const),
+      content: m.text,
+      newRoute: m.routeChanged ? {} : undefined,
+    }))
+    saveChatHistory(chatMsgs)
+  }
+
   async function send(text?: string) {
     const msg = (text ?? input).trim()
     if (!msg || loading) return
@@ -46,6 +64,12 @@ export function ChatDialog({ onClose, onNewRoute, currentRoute, prefs }: Props) 
     const newMsgs = [...messages, { role: 'user' as const, text: msg }]
     setMessages(newMsgs)
     setLoading(true)
+
+    const history: ChatMessage[] = newMsgs.map((m) => ({
+      role: m.role === 'agent' ? 'assistant' : ('user' as const),
+      content: m.text,
+    }))
+
     try {
       const r = await fetch('/api/chat', {
         method: 'POST',
@@ -54,29 +78,25 @@ export function ChatDialog({ onClose, onNewRoute, currentRoute, prefs }: Props) 
           message: msg,
           current_route: currentRoute,
           prefs,
-          history: newMsgs.slice(-6).map((m) => ({
-            role: m.role === 'agent' ? 'assistant' : 'user',
-            content: m.text,
-          })),
+          history,
         }),
       })
       const d = await r.json()
       const reply: ChatMsg = {
         role: 'agent',
         text: d.reply || '…',
-        constraint: d.extracted_constraint,
-        questions: d.questions || [],
-        route: d.new_route,
+        routeChanged: !!d.new_route,
       }
-      setMessages((prev) => [...prev, reply])
+      const updated = [...newMsgs, reply]
+      setMessages(updated)
+      persistMessages(updated)
       if (d.new_route && onNewRoute) {
         onNewRoute(d.new_route)
       }
-    } catch (e) {
-      setMessages((prev) => [
-        ...prev,
-        { role: 'agent', text: '网络好像出问题了，试试再说一次？' },
-      ])
+    } catch {
+      const updated = [...newMsgs, { role: 'agent' as const, text: '网络好像出问题了，试试再说一次？' }]
+      setMessages(updated)
+      persistMessages(updated)
     } finally {
       setLoading(false)
     }
@@ -125,33 +145,7 @@ export function ChatDialog({ onClose, onNewRoute, currentRoute, prefs }: Props) 
                 }}
               >
                 {m.text}
-                {m.constraint && (
-                  <div
-                    style={{
-                      marginTop: 6,
-                      fontSize: 11,
-                      opacity: 0.85,
-                    }}
-                  >
-                    💡 已识别：{m.constraint.type}
-                    {m.constraint.venue_name && ` → ${m.constraint.venue_name}`}
-                  </div>
-                )}
-                {m.questions && m.questions.length > 0 && (
-                  <div
-                    style={{
-                      marginTop: 6,
-                      fontSize: 12,
-                      background: 'var(--primary-soft)',
-                      padding: '6px 10px',
-                      borderRadius: 8,
-                      color: 'var(--primary-strong)',
-                    }}
-                  >
-                    🤔 {m.questions[0]}
-                  </div>
-                )}
-                {m.route && (
+                {m.routeChanged && (
                   <div
                     style={{
                       marginTop: 6,
@@ -160,7 +154,7 @@ export function ChatDialog({ onClose, onNewRoute, currentRoute, prefs }: Props) 
                       fontWeight: 600,
                     }}
                   >
-                    ✓ 后半段已重新规划
+                    ✓ 路线已更新
                   </div>
                 )}
               </div>

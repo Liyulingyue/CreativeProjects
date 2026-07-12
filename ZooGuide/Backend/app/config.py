@@ -17,6 +17,8 @@ MODEL_NAME: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 USE_LLM: bool = os.getenv("USE_LLM", "true").lower() in ("1", "true", "yes")
 
+CHAT_REGEX_FAST_PATH: bool = os.getenv("CHAT_REGEX_FAST_PATH", "false").lower() in ("1", "true", "yes")
+
 CORS_ORIGINS: list[str] = [
     o.strip()
     for o in os.getenv(

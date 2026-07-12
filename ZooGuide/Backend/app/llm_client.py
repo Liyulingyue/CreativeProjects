@@ -21,9 +21,13 @@ def _get_client() -> OpenAI:
         _client = OpenAI(
             api_key=config.API_KEY,
             base_url=config.BASE_URL,
-            timeout=180.0,  # cap any single HTTP call (glm-5 can be slow)
+            timeout=180.0,
         )
     return _client
+
+
+def get_client() -> OpenAI:
+    return _get_client()
 
 
 def get_wrapper(

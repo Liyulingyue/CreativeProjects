@@ -109,10 +109,10 @@ export function HomePage({
           <div className="qa-title">跟 Agent 聊聊</div>
           <div className="qa-desc">{hasRoute ? '调当前路线' : '说"想看熊猫"'}</div>
         </button>
-        <button className="qa-card" onClick={() => onSwitchTab('activity')}>
-          <div className="qa-icon">📍</div>
-          <div className="qa-title">附近场馆</div>
-          <div className="qa-desc">定位看周围</div>
+        <button className="qa-card" onClick={() => onSwitchTab('facility')}>
+          <div className="qa-icon">🚻</div>
+          <div className="qa-title">设施信息</div>
+          <div className="qa-desc">卫生间/餐厅等</div>
         </button>
         <button className="qa-card" onClick={() => onSwitchTab('activity')}>
           <div className="qa-icon">📸</div>
@@ -174,6 +174,9 @@ export function HomePage({
 
       {/* Park quick facts (always shown - useful even with active route) */}
       {meta && <ParkFacts meta={meta} venues={venues} />}
+
+      {/* Quick external links */}
+      <QuickLinks />
     </div>
   )
 }
@@ -493,6 +496,38 @@ function StatBlock({ label, value }: { label: string; value: number }) {
     >
       <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--primary-strong)' }}>{value}</div>
       <div style={{ fontSize: 11, color: 'var(--fg-muted)' }}>{label}</div>
+    </div>
+  )
+}
+
+const EXTERNAL_LINKS = [
+  { icon: '🌐', label: '红山官网', url: 'https://www.njzoo.cn' },
+  { icon: '🎫', label: '在线购票', url: 'https://www.njzoo.cn/ticket' },
+  { icon: '🚇', label: '交通指南', url: 'https://www.njzoo.cn/traffic' },
+  { icon: '📱', label: '官方公众号', url: 'https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz=MzA3MDAyMzEwMQ==&scene=124' },
+  { icon: '📖', label: '动物科普', url: 'https://www.njzoo.cn/education' },
+  { icon: '📢', label: '游园须知', url: 'https://www.njzoo.cn/notice' },
+]
+
+function QuickLinks() {
+  return (
+    <div className="card">
+      <h3 className="card-title">🔗 快速链接</h3>
+      <div className="quick-links-grid">
+        {EXTERNAL_LINKS.map((link) => (
+          <a
+            key={link.url}
+            className="quick-link-item"
+            href={link.url}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <span className="quick-link-icon">{link.icon}</span>
+            <span className="quick-link-label">{link.label}</span>
+            <span className="quick-link-external">↗</span>
+          </a>
+        ))}
+      </div>
     </div>
   )
 }
