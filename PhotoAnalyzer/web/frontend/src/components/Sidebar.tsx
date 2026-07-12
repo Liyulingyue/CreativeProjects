@@ -6,6 +6,7 @@ const NAV_ITEMS = [
   { to: "/explorer", icon: "▷", label: "浏览" },
   { to: "/analysis", icon: "◎", label: "分析" },
   { to: "/dedup", icon: "⊡", label: "去重" },
+  { to: "/cache", icon: "◈", label: "缓存" },
   { to: "/settings", icon: "⚙", label: "设置" },
 ];
 

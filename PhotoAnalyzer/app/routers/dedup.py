@@ -9,6 +9,35 @@ from src.config import is_image_file, get_image_files
 router = APIRouter(prefix="/api/dedup", tags=["dedup"])
 
 
+@router.get("/cache/stats")
+def cache_stats():
+    from src.dedup.cache import cache as feature_cache
+    return feature_cache.stats()
+
+
+@router.get("/cache/entries")
+def cache_entries(feature_type: str | None = None):
+    from src.dedup.cache import cache as feature_cache
+    return feature_cache.list_entries(feature_type)
+
+
+@router.post("/cache/clear")
+def cache_clear(body: dict | None = None):
+    from src.dedup.cache import cache as feature_cache
+    feature_type = (body or {}).get("feature_type")
+    feature_cache.clear(feature_type)
+    return {"cleared": feature_type or "all"}
+
+
+@router.delete("/cache/entries/{cache_key:path}")
+def cache_delete_entry(cache_key: str):
+    from src.dedup.cache import cache as feature_cache
+    ok = feature_cache.delete_entry(cache_key)
+    if not ok:
+        raise HTTPException(404, "缓存条目不存在")
+    return {"deleted": cache_key}
+
+
 @router.post("", response_model=DedupJob)
 def start_dedup(body: dict):
     file_paths = body.get("file_paths")

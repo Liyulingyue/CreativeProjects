@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -5,6 +6,7 @@ from PIL import Image
 from PIL.ExifTags import TAGS
 from .base import ImageItem, ImageGroup
 from .deduplicator import Grouper
+from .cache import cache
 
 
 class ExifGrouper(Grouper):
@@ -18,6 +20,13 @@ class ExifGrouper(Grouper):
 
     def extract_feature(self, item: ImageItem) -> Optional[datetime]:
         try:
+            mtime = os.path.getmtime(item.path)
+            cached = cache.get_exif(str(item.path), mtime)
+            if cached is not None:
+                if cached.get("datetime"):
+                    item.exif_datetime = cached["datetime"].strftime("%Y:%m:%d %H:%M:%S") if isinstance(cached["datetime"], datetime) else str(cached["datetime"])
+                return cached.get("datetime")
+
             img = Image.open(item.path)
             exif = img._getexif()
             if not exif:
@@ -27,10 +36,14 @@ class ExifGrouper(Grouper):
                 tag = TAGS.get(tag_id, tag_id)
                 if tag == "DateTimeOriginal":
                     item.exif_datetime = value
-                    return datetime.strptime(value, "%Y:%m:%d %H:%M:%S")
+                    dt = datetime.strptime(value, "%Y:%m:%d %H:%M:%S")
+                    cache.set_exif(str(item.path), mtime, {"datetime": dt})
+                    return dt
                 elif tag == "DateTime":
                     item.exif_datetime = value
-                    return datetime.strptime(value, "%Y:%m:%d %H:%M:%S")
+                    dt = datetime.strptime(value, "%Y:%m:%d %H:%M:%S")
+                    cache.set_exif(str(item.path), mtime, {"datetime": dt})
+                    return dt
             return None
         except Exception:
             return None
@@ -92,6 +105,13 @@ class SequentialGrouper(Grouper):
 
     def extract_feature(self, item: ImageItem) -> Optional[dict]:
         try:
+            mtime = os.path.getmtime(item.path)
+            cached = cache.get_exif(str(item.path), mtime)
+            if cached is not None:
+                if cached.get("datetime") and isinstance(cached["datetime"], datetime):
+                    item.exif_datetime = cached["datetime"].strftime("%Y:%m:%d %H:%M:%S")
+                return cached
+
             img = Image.open(item.path)
             exif = img._getexif()
             if not exif:
@@ -109,6 +129,8 @@ class SequentialGrouper(Grouper):
                 elif tag == "Model":
                     feature["camera_model"] = str(value).strip()
 
+            if feature["datetime"] is not None:
+                cache.set_exif(str(item.path), mtime, feature)
             return feature
         except Exception:
             return None
