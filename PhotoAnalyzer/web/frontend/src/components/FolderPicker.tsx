@@ -13,6 +13,7 @@ export function FolderPicker({ open, onClose, onSelect }: FolderPickerProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  const [pathInput, setPathInput] = useState("");
 
   const load = useCallback(async (path?: string) => {
     setLoading(true);
@@ -21,6 +22,7 @@ export function FolderPicker({ open, onClose, onSelect }: FolderPickerProps) {
     try {
       const result = await browseFs(path, false);
       setData(result);
+      if (path !== undefined) setPathInput(path);
     } catch (e) {
       setError(e instanceof Error ? e.message : "加载失败");
     } finally {
@@ -29,7 +31,10 @@ export function FolderPicker({ open, onClose, onSelect }: FolderPickerProps) {
   }, []);
 
   useEffect(() => {
-    if (open) load();
+    if (open) {
+      setPathInput("");
+      load();
+    }
   }, [open, load]);
 
   if (!open) return null;
@@ -44,7 +49,8 @@ export function FolderPicker({ open, onClose, onSelect }: FolderPickerProps) {
     if (data?.parent_path !== undefined && data?.parent_path !== null) {
       load(data.parent_path);
     } else if (data?.current_path) {
-      const parent = data.current_path.split("/").slice(0, -1).join("/");
+      const sep = data.current_path.includes("\\") ? "\\" : "/";
+      const parent = data.current_path.split(sep).slice(0, -1).join(sep);
       if (parent) load(parent);
     }
   };
@@ -52,14 +58,16 @@ export function FolderPicker({ open, onClose, onSelect }: FolderPickerProps) {
   const handleConfirm = () => {
     if (selected) {
       const entry = data?.entries.find((e) => e.path === selected);
-      onSelect(selected, entry?.name ?? selected.split("/").pop() ?? selected);
+      const sep = selected.includes("\\") ? "\\" : "/";
+      onSelect(selected, entry?.name ?? selected.split(sep).pop() ?? selected);
       onClose();
     }
   };
 
   const handleUseCurrent = () => {
     if (data?.current_path) {
-      const name = data.current_path.split("/").pop() ?? data.current_path;
+      const sep = data.current_path.includes("\\") ? "\\" : "/";
+      const name = data.current_path.split(sep).pop() ?? data.current_path;
       onSelect(data.current_path, name);
       onClose();
     }
@@ -74,9 +82,24 @@ export function FolderPicker({ open, onClose, onSelect }: FolderPickerProps) {
         </div>
 
         <div className="folder-picker__breadcrumb">
-          <span className="breadcrumb__path" title={data?.current_path}>
-            {data?.current_path || "选择起始位置"}
-          </span>
+          <input
+            type="text"
+            className="folder-picker__path-input"
+            value={pathInput}
+            onChange={(e) => setPathInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && pathInput.trim()) {
+                load(pathInput.trim());
+              }
+            }}
+            placeholder="输入路径后回车跳转，如 C:\Photos"
+            spellCheck={false}
+          />
+          {pathInput.trim() && (
+            <button className="btn btn--sm" onClick={() => load(pathInput.trim())}>
+              跳转
+            </button>
+          )}
         </div>
 
         <div className="folder-picker__actions">

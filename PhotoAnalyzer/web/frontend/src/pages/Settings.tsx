@@ -7,7 +7,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   base_url: "https://api.minimaxi.com/v1",
   model: "MiniMax-M3",
   delay: 1000,
-  storage_mode: "project",
+  storage_mode: "folder",
   dedup_stages: [
     { type: "exif", enabled: true, params: { time_window: 5 } },
     { type: "phash", enabled: true, params: { threshold: 8 } },

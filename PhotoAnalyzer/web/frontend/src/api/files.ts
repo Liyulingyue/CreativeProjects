@@ -25,3 +25,15 @@ export async function browseFiles(
   if (subPath) params.set("path", subPath);
   return request<BrowseResult>(`/files?${params.toString()}`);
 }
+
+export async function getFileSiblings(path: string): Promise<{ siblings: string[]; count: number }> {
+  return request<{ siblings: string[]; count: number }>(`/files/siblings?path=${encodeURIComponent(path)}`);
+}
+
+export async function getOrphanedRaws(dirId: string): Promise<{ orphaned: string[]; count: number }> {
+  return request<{ orphaned: string[]; count: number }>(`/files/orphaned-raws?dir_id=${encodeURIComponent(dirId)}`);
+}
+
+export async function deleteOrphanedRaws(dirId: string): Promise<{ deleted: string[]; not_found: string[]; count: number }> {
+  return request<{ deleted: string[]; not_found: string[]; count: number }>(`/files/orphaned-raws?dir_id=${encodeURIComponent(dirId)}`, { method: "DELETE" });
+}

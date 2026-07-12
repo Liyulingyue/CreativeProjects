@@ -61,6 +61,7 @@ class DedupItem(BaseModel):
     file_size: int
     similarity: float = 0.0
     metadata: dict = {}
+    siblings: list[str] = []
 
 
 class DedupGroup(BaseModel):
@@ -77,6 +78,8 @@ class DedupJob(BaseModel):
     groups_count: int
     groups: list[DedupGroup] = []
     stage: Optional[str] = None
+    dir_id: Optional[str] = None
+    dir_path: Optional[str] = None
     created_at: str
     finished_at: Optional[str] = None
 
@@ -92,7 +95,7 @@ class AppSettings(BaseModel):
     base_url: str = "https://api.minimaxi.com/v1"
     model: str = "MiniMax-M3"
     delay: int = 1000
-    storage_mode: str = "project"
+    storage_mode: str = "folder"
     dedup_stages: list[DedupStageConfig] = [
         DedupStageConfig(type="exif", enabled=True, params={"time_window": 5}),
         DedupStageConfig(type="phash", enabled=True, params={"threshold": 5}),
