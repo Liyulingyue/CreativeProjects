@@ -6,7 +6,11 @@ use openaijsonwrapper::{
 use serde_json::json;
 
 use crate::models::{AnalysisJob, AnalysisResult, PhotoAnalysis};
+use crate::paths::FOLDER_CACHE_DIR_NAME;
 use crate::services::{AnalysisJobUpdate, AppState};
+
+const MAX_RETRIES: usize = 3;
+const RETRY_DELAY_MS: u64 = 5000;
 
 #[derive(serde::Deserialize)]
 pub struct StartAnalysisRequest {
@@ -40,7 +44,8 @@ pub async fn start_analysis(
     let job = state.create_analysis_job(valid_paths.len());
     let state_clone = state.clone();
     let job_id = job.job_id.clone();
-    let delay_ms = body.delay.unwrap_or(0);
+    let settings = state.get_settings();
+    let delay_ms = body.delay.unwrap_or(settings.delay as u64);
     tokio::spawn(async move {
         run_analysis(state_clone, job_id, valid_paths, delay_ms).await;
     });
@@ -93,10 +98,15 @@ pub async fn start_folder_analysis(
         return Err((axum::http::StatusCode::BAD_REQUEST, "目录下没有图片"));
     }
 
+    if state.get_settings().storage_mode == "folder" {
+        let _ = std::fs::create_dir_all(target.join(FOLDER_CACHE_DIR_NAME));
+    }
+
     let job = state.create_analysis_job(paths.len());
     let state_clone = state.clone();
     let job_id = job.job_id.clone();
-    let delay_ms = body.delay.unwrap_or(0);
+    let settings = state.get_settings();
+    let delay_ms = body.delay.unwrap_or(settings.delay as u64);
     tokio::spawn(async move {
         run_analysis(state_clone, job_id, paths, delay_ms).await;
     });
@@ -146,26 +156,13 @@ async fn run_analysis(state: Arc<AppState>, job_id: String, paths: Vec<String>, 
     );
 
     let settings = state.get_settings();
-    let wrapper = if !settings.api_key.is_empty() {
-        let client = OpenAIClientBuilder::new(settings.api_key.clone())
-            .base_url(settings.base_url.clone())
-            .build();
-        Some(OpenAIJsonWrapper::new(
-            Box::new(client),
-            &settings.model,
-            Some(build_target_structure()),
-            Some(vec![
-                "照片的评价评分需要基于照片的清晰度、构图、色彩和主题等因素综合评定。",
-                "请确保输出的 JSON 严格符合指定的结构和类型要求。",
-            ]),
-            Some("你是一名专业的旅行照片分析师，擅长从图片中分析出丰富的细节和信息。"),
-        ))
-    } else {
-        None
-    };
 
     let mut all_results = Vec::new();
     for (idx, path) in paths.iter().enumerate() {
+        let abs_path = std::fs::canonicalize(path)
+            .map(|p| p.to_string_lossy().to_string())
+            .map(|p| strip_windows_verbatim_prefix(&p))
+            .unwrap_or_else(|_| path.clone());
         let file_name = Path::new(path)
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
@@ -183,21 +180,47 @@ async fn run_analysis(state: Arc<AppState>, job_id: String, paths: Vec<String>, 
         );
 
         let result = if Path::new(path).exists() {
-            if let Some(w) = &wrapper {
-                analyze_with_wrapper(w, path, &file_name)
-            } else {
+            if settings.api_key.is_empty() {
                 AnalysisResult {
-                    file_path: path.clone(),
+                    file_path: abs_path.clone(),
                     file_name,
                     success: false,
                     error: Some("未配置 API Key，请先在设置页保存 api_key/base_url/model".to_string()),
                     data: None,
                     reasoning: None,
                 }
+            } else {
+                let api_key = settings.api_key.clone();
+                let base_url = settings.base_url.clone();
+                let model = settings.model.clone();
+                let path_owned = abs_path.clone();
+                let file_name_owned = file_name.clone();
+
+                match tokio::task::spawn_blocking(move || {
+                    analyze_with_wrapper_with_settings(
+                        &api_key,
+                        &base_url,
+                        &model,
+                        &path_owned,
+                        &file_name_owned,
+                    )
+                })
+                .await
+                {
+                    Ok(result) => result,
+                    Err(e) => AnalysisResult {
+                        file_path: abs_path.clone(),
+                        file_name,
+                        success: false,
+                        error: Some(format!("分析任务执行失败: {}", e)),
+                        data: None,
+                        reasoning: None,
+                    },
+                }
             }
         } else {
             AnalysisResult {
-                file_path: path.clone(),
+                file_path: abs_path,
                 file_name,
                 success: false,
                 error: Some("文件不存在".to_string()),
@@ -225,7 +248,27 @@ async fn run_analysis(state: Arc<AppState>, job_id: String, paths: Vec<String>, 
     );
 }
 
-fn analyze_with_wrapper(wrapper: &OpenAIJsonWrapper, path: &str, file_name: &str) -> AnalysisResult {
+fn analyze_with_wrapper_with_settings(
+    api_key: &str,
+    base_url: &str,
+    model: &str,
+    path: &str,
+    file_name: &str,
+) -> AnalysisResult {
+    let client = OpenAIClientBuilder::new(api_key.to_string())
+        .base_url(base_url.to_string())
+        .build();
+    let wrapper = OpenAIJsonWrapper::new(
+        Box::new(client),
+        model,
+        Some(build_target_structure()),
+        Some(vec![
+            "照片的评价评分需要基于照片的清晰度、构图、色彩和主题等因素综合评定。",
+            "请确保输出的 JSON 严格符合指定的结构和类型要求。",
+        ]),
+        Some("你是一名专业的旅行照片分析师，擅长从图片中分析出丰富的细节和信息。"),
+    );
+
     let messages = vec![Message {
         role: "user".to_string(),
         content: MessageContent::Array(vec![
@@ -240,70 +283,95 @@ fn analyze_with_wrapper(wrapper: &OpenAIJsonWrapper, path: &str, file_name: &str
         ]),
     }];
 
-    match wrapper.chat(messages, ChatOptions::default()) {
-        Ok(chat_result) => {
-            if let Some(data_value) = chat_result.data {
-                match serde_json::from_value::<PhotoAnalysis>(data_value) {
-                    Ok(data) => AnalysisResult {
-                        file_path: path.to_string(),
-                        file_name: file_name.to_string(),
-                        success: true,
-                        error: None,
-                        data: Some(data),
-                        reasoning: if chat_result.reasoning.is_empty() {
-                            None
-                        } else {
-                            Some(chat_result.reasoning)
-                        },
-                    },
-                    Err(e) => AnalysisResult {
+    let mut last_error: Option<String> = None;
+
+    for attempt in 0..MAX_RETRIES {
+        match wrapper.chat(messages.clone(), ChatOptions::default()) {
+            Ok(chat_result) => {
+                if let Some(err) = chat_result.error.clone() {
+                    last_error = Some(err);
+                    if attempt + 1 < MAX_RETRIES {
+                        std::thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
+                        continue;
+                    }
+                    return AnalysisResult {
                         file_path: path.to_string(),
                         file_name: file_name.to_string(),
                         success: false,
-                        error: Some(format!("模型返回结构解析失败: {}", e)),
+                        error: last_error.or(Some("模型未返回结构化 JSON".to_string())),
                         data: None,
                         reasoning: if chat_result.reasoning.is_empty() {
                             None
                         } else {
                             Some(chat_result.reasoning)
                         },
-                    },
+                    };
                 }
-            } else {
-                AnalysisResult {
-                    file_path: path.to_string(),
-                    file_name: file_name.to_string(),
-                    success: false,
-                    error: Some(chat_result.error.unwrap_or_else(|| "模型未返回结构化 JSON".to_string())),
-                    data: None,
-                    reasoning: if chat_result.reasoning.is_empty() {
-                        None
-                    } else {
-                        Some(chat_result.reasoning)
-                    },
+
+                if let Some(data_value) = chat_result.data {
+                    return match serde_json::from_value::<PhotoAnalysis>(data_value) {
+                        Ok(data) => AnalysisResult {
+                            file_path: path.to_string(),
+                            file_name: file_name.to_string(),
+                            success: true,
+                            error: None,
+                            data: Some(data),
+                            reasoning: if chat_result.reasoning.is_empty() {
+                                None
+                            } else {
+                                Some(chat_result.reasoning)
+                            },
+                        },
+                        Err(e) => AnalysisResult {
+                            file_path: path.to_string(),
+                            file_name: file_name.to_string(),
+                            success: false,
+                            error: Some(format!("模型返回结构解析失败: {}", e)),
+                            data: None,
+                            reasoning: if chat_result.reasoning.is_empty() {
+                                None
+                            } else {
+                                Some(chat_result.reasoning)
+                            },
+                        },
+                    };
+                }
+
+                last_error = Some("模型未返回结构化 JSON".to_string());
+                if attempt + 1 < MAX_RETRIES {
+                    std::thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
+                    continue;
+                }
+            }
+            Err(e) => {
+                last_error = Some(e);
+                if attempt + 1 < MAX_RETRIES {
+                    std::thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
+                    continue;
                 }
             }
         }
-        Err(e) => AnalysisResult {
-            file_path: path.to_string(),
-            file_name: file_name.to_string(),
-            success: false,
-            error: Some(e),
-            data: None,
-            reasoning: None,
-        },
+    }
+
+    AnalysisResult {
+        file_path: path.to_string(),
+        file_name: file_name.to_string(),
+        success: false,
+        error: last_error,
+        data: None,
+        reasoning: None,
     }
 }
 
 fn build_target_structure() -> serde_json::Value {
     json!({
-        "score": 0,
-        "style": "",
-        "caption": "",
-        "main_objects": ["", ""],
-        "blurry": "",
-        "comments": "",
-        "recommendations": ""
+        "score": "int, 0-100, 代表照片质量评分",
+        "style": "str, 照片风格描述",
+        "caption": "str, 用中文写一句话，不超过 30 字",
+        "main_objects": "list[str], 至少 2 个主要物体",
+        "blurry": "str, 照片是否模糊，'模糊'、'略微模糊'、'清晰' 三选一",
+        "comments": "str, 对照片的详细评价，至少 50 字",
+        "recommendations": "str, 对拍摄者的改进建议，至少 30 字"
     })
 }
 
@@ -319,7 +387,7 @@ fn is_image_file(path: &str) -> bool {
 }
 
 fn normalize_path(path: &str) -> String {
-    let replaced = path.replace('/', "\\");
+    let replaced = strip_windows_verbatim_prefix(path).replace('/', "\\");
     #[cfg(windows)]
     {
         replaced.to_lowercase()
@@ -328,4 +396,14 @@ fn normalize_path(path: &str) -> String {
     {
         replaced
     }
+}
+
+fn strip_windows_verbatim_prefix(path: &str) -> String {
+    if let Some(stripped) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{}", stripped);
+    }
+    if let Some(stripped) = path.strip_prefix(r"\\?\") {
+        return stripped.to_string();
+    }
+    path.to_string()
 }
