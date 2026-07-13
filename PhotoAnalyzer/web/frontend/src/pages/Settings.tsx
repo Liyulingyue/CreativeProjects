@@ -63,6 +63,15 @@ export function Settings() {
     setSaved(false);
   };
 
+  const renderSectionHeader = (title: string) => (
+    <div className="settings-section__header">
+      <h3>{title}</h3>
+      <button className="btn btn--sm" onClick={handleSave}>
+        {saved ? "已保存全部 ✓" : "保存全部"}
+      </button>
+    </div>
+  );
+
   if (loading) {
     return (
       <div className="page">
@@ -79,7 +88,7 @@ export function Settings() {
       {saved && <div className="success-message" style={{ marginBottom: '1rem' }}>保存成功！</div>}
 
       <div className="card">
-        <h3>API 配置</h3>
+        {renderSectionHeader("API 配置")}
 
         <div className="form-group">
           <label>API Key</label>
@@ -130,7 +139,7 @@ export function Settings() {
       </div>
 
       <div className="card">
-        <h3>缓存存储模式</h3>
+        {renderSectionHeader("缓存存储模式")}
         <div className="storage-mode">
           <div
             className={`storage-mode__option ${settings.storage_mode === "project" ? "storage-mode__option--active" : ""}`}
@@ -160,7 +169,7 @@ export function Settings() {
       </div>
 
       <div className="card">
-        <h3>去重阶段配置</h3>
+        {renderSectionHeader("去重阶段配置")}
         {settings.dedup_stages.map((stage: DedupStageConfig, i: number) => (
           <div key={stage.type} className="stage-config">
             <label className="stage-config__label">
@@ -169,7 +178,7 @@ export function Settings() {
                 checked={stage.enabled}
                 onChange={() => toggleStage(i)}
               />
-              <span>{stage.type === "exif" ? "EXIF 时间分组" : stage.type === "phash" ? "感知哈希去重" : "嵌入特征去重"}</span>
+              <span>{stage.type === "exif" ? "EXIF 时间分组" : stage.type === "phash" ? "感知哈希去重" : "嵌入特征去重【暂未实现】"}</span>
             </label>
             <span className="stage-config__desc">
               {stage.type === "exif"
@@ -184,7 +193,7 @@ export function Settings() {
 
       <div className="settings-actions">
         <button className="btn btn--primary" onClick={handleSave}>
-          {saved ? "已保存 ✓" : "保存设置"}
+          {saved ? "已保存全部 ✓" : "保存全部"}
         </button>
         {error && <span className="error-msg">{error}</span>}
       </div>

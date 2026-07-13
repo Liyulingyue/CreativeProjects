@@ -207,8 +207,35 @@ class FeatureCache:
         result: dict[str, int] = {}
 
         if self._mode == "folder":
-            for d in self._scan_folder_caches():
-                result["folder"] = result.get("folder", 0) + 1
+            hash_types: dict[str, int] = {}
+            emb_types: dict[str, int] = {}
+            exif_count = 0
+
+            for cache_dir in self._scan_folder_cache_dirs():
+                hashes = _load_json(cache_dir / "hashes.json", {})
+                for entry in hashes.values():
+                    t = entry.get("type", "unknown")
+                    hash_types[t] = hash_types.get(t, 0) + 1
+
+                exif_data = _load_json(cache_dir / "exif.json", {})
+                exif_count += len(exif_data)
+
+                emb_dir = cache_dir / "embeddings"
+                if emb_dir.exists():
+                    for f in emb_dir.glob("*.json"):
+                        data = _load_json(f)
+                        model = "unknown"
+                        if isinstance(data, dict) and data.get("model"):
+                            model = str(data.get("model"))
+                        elif "_" in f.stem:
+                            model = f.stem.split("_", 1)[-1]
+                        emb_key = f"emb_{model}"
+                        emb_types[emb_key] = emb_types.get(emb_key, 0) + 1
+
+            result.update(hash_types)
+            result.update(emb_types)
+            if exif_count:
+                result["exif"] = exif_count
             return result
 
         hash_types: dict[str, int] = {}

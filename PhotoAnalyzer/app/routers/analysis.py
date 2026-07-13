@@ -1,8 +1,9 @@
 import threading
 import time
+import os
 from pathlib import Path
 from fastapi import APIRouter, HTTPException
-from ..deps import state
+from ..deps import state, FOLDER_CACHE_DIR_NAME
 from ..models import AnalysisResult, AnalysisJob, PhotoAnalysis
 from src.config import is_image_file, get_image_files
 
@@ -48,8 +49,12 @@ def start_folder_analysis(body: dict):
     if not paths:
         raise HTTPException(400, "目录下没有图片")
 
+    # In folder mode, ensure this analysis target has a local cache directory.
+    if state.get_settings().storage_mode == "folder":
+        (target / FOLDER_CACHE_DIR_NAME).mkdir(parents=True, exist_ok=True)
+
     job = state.create_analysis_job(len(paths))
-    t = threading.Thread(target=_run_analysis, args=(job.job_id, paths, delay), daemon=True)
+    t = threading.Thread(target=_run_analysis, args=(job.job_id, paths, delay, str(target)), daemon=True)
     t.start()
     return job
 
@@ -69,13 +74,15 @@ def list_results():
 
 @router.get("/results/{file_path:path}", response_model=AnalysisResult)
 def get_result(file_path: str):
+    target = os.path.normcase(os.path.normpath(file_path))
     for r in state.list_results():
-        if r.file_path == file_path:
+        current = os.path.normcase(os.path.normpath(r.file_path))
+        if current == target:
             return r
     raise HTTPException(404, "结果不存在")
 
 
-def _run_analysis(job_id: str, paths: list[str], delay: float):
+def _run_analysis(job_id: str, paths: list[str], delay: float, base_dir: str | None = None):
     from src.analyzer import PhotoAnalyzer as _PhotoAnalyzer
 
     job = state.get_analysis_job(job_id)
@@ -115,7 +122,7 @@ def _run_analysis(job_id: str, paths: list[str], delay: float):
         results=all_results,
         finished_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
     )
-    state.add_results(all_results)
+    state.add_results(all_results, base_dir=base_dir)
 
 
 def _convert_result(raw) -> AnalysisResult:
