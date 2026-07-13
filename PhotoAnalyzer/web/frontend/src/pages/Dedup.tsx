@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { startDedupFolder, startDedupPaths, getDedupJob, getDedupJobByDir, resolveDedupGroups } from "@/api/dedup";
-import { listDirs, addDir, browseFiles, getFileSiblings } from "@/api/files";
+import { listDirs, addDir, browseFiles } from "@/api/files";
 import { listResults } from "@/api/analysis";
 import type { DirEntry, DedupJob, DedupGroup, BrowseResult, FileNode, AnalysisResult } from "@/api/types";
 import { PathInput } from "@/components/PathInput";

@@ -31,7 +31,6 @@ export function Analysis() {
   const [loading, setLoading] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
   const [previewItem, setPreviewItem] = useState<FileNode | null>(null);
-  const [showBrowser, setShowBrowser] = useState(true);
   const [showLog, setShowLog] = useState(true);
 
   const hasAutoStarted = useRef(false);
