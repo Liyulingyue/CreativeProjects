@@ -50,7 +50,6 @@ pub struct AnalysisResult {
     #[serde(rename = "file_name")]
     pub file_name: String,
     pub success: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub data: Option<PhotoAnalysis>,
     #[serde(skip_serializing_if = "Option::is_none")]

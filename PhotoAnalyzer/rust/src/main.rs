@@ -1,6 +1,7 @@
 mod models;
 mod services;
 mod handlers;
+mod paths;
 
 use axum::{
     routing::{get, post, delete},
@@ -47,6 +48,8 @@ async fn main() {
         .route("/api/files/siblings", get(handlers::get_siblings))
         .route("/api/files/orphaned-raws", get(handlers::get_orphaned_raws))
         .route("/api/files/orphaned-raws", delete(handlers::delete_orphaned_raws))
+        .route("/api/fs/browse", get(handlers::browse_fs))
+        .route("/api/fs/suggest", get(handlers::suggest_path))
         .route("/api/thumbnails", get(handlers::get_thumbnail))
         .route("/api/analysis", post(handlers::start_analysis))
         .route("/api/analysis/folder", post(handlers::start_folder_analysis))
@@ -70,7 +73,7 @@ async fn main() {
         .with_state(state);
 
     let port: u16 = std::env::var("PORT")
-        .unwrap_or_else(|_| "3000".to_string())
+        .unwrap_or_else(|_| "8001".to_string())
         .parse()
         .expect("PORT must be a valid port");
 

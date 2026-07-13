@@ -8,12 +8,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-const FOLDER_CACHE_DIR_NAME: &str = ".photoanalyzer";
-const RESULTS_FILE_NAME: &str = "results.json";
+use crate::paths::{data_dir, FOLDER_CACHE_DIR_NAME};
 
-fn data_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../data")
-}
+const RESULTS_FILE_NAME: &str = "results.json";
 
 fn dirs_file() -> PathBuf {
     data_dir().join("dirs.json")

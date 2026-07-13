@@ -9,10 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::models::{DedupGroup, DedupJob};
+use crate::paths::{features_dir, FOLDER_CACHE_DIR_NAME};
 use crate::services::{AppState, DedupJobUpdate};
-
-const FOLDER_CACHE_DIR_NAME: &str = ".photoanalyzer";
-const FEATURES_DIR_NAME: &str = "features";
 
 pub async fn start_dedup(
     State(state): State<Arc<AppState>>,
@@ -182,6 +180,8 @@ pub struct CacheEntry {
     file_path: String,
     mtime: f64,
     data: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base_dir: Option<String>,
 }
 
 pub async fn clear_cache(
@@ -351,7 +351,7 @@ async fn run_dedup_job(state: Arc<AppState>, job_id: String, paths: Vec<String>)
 }
 
 fn project_cache_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../data").join(FEATURES_DIR_NAME)
+    features_dir()
 }
 
 fn load_json(path: &StdPath) -> serde_json::Value {
@@ -464,6 +464,7 @@ fn list_entries_project_mode(feature_type: Option<&str>) -> Vec<CacheEntry> {
                     file_path: v.get("file_path").and_then(|x| x.as_str()).unwrap_or("").to_string(),
                     mtime: v.get("mtime").and_then(|x| x.as_f64()).unwrap_or(0.0),
                     data: v.get("data").cloned().unwrap_or(serde_json::json!({})),
+                    base_dir: None,
                 });
             }
         }
@@ -479,6 +480,7 @@ fn list_entries_project_mode(feature_type: Option<&str>) -> Vec<CacheEntry> {
                     file_path: v.get("file_path").and_then(|x| x.as_str()).unwrap_or("").to_string(),
                     mtime: v.get("mtime").and_then(|x| x.as_f64()).unwrap_or(0.0),
                     data: v.get("data").cloned().unwrap_or(serde_json::json!({})),
+                    base_dir: None,
                 });
             }
         }
@@ -510,6 +512,7 @@ fn list_entries_project_mode(feature_type: Option<&str>) -> Vec<CacheEntry> {
                             "model": model,
                             "dim": v.get("embedding").and_then(|x| x.as_array()).map(|a| a.len()).unwrap_or(0)
                         }),
+                        base_dir: None,
                     });
                 }
             }
@@ -540,6 +543,7 @@ fn list_entries_folder_mode(state: &AppState, feature_type: Option<&str>) -> Vec
                     file_path: base.join(rel).to_string_lossy().to_string(),
                     mtime: v.get("mtime").and_then(|x| x.as_f64()).unwrap_or(0.0),
                     data: v.get("data").cloned().unwrap_or(serde_json::json!({})),
+                    base_dir: Some(base.to_string_lossy().to_string()),
                 });
             }
         }
@@ -559,6 +563,7 @@ fn list_entries_folder_mode(state: &AppState, feature_type: Option<&str>) -> Vec
                     file_path: base.join(rel).to_string_lossy().to_string(),
                     mtime: v.get("mtime").and_then(|x| x.as_f64()).unwrap_or(0.0),
                     data: v.get("data").cloned().unwrap_or(serde_json::json!({})),
+                    base_dir: Some(base.to_string_lossy().to_string()),
                 });
             }
         }
@@ -589,6 +594,7 @@ fn list_entries_folder_mode(state: &AppState, feature_type: Option<&str>) -> Vec
                             "model": model,
                             "dim": v.get("embedding").and_then(|x| x.as_array()).map(|a| a.len()).unwrap_or(0)
                         }),
+                        base_dir: Some(base.to_string_lossy().to_string()),
                     });
                 }
             }
