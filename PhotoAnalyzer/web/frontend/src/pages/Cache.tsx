@@ -72,9 +72,26 @@ export function Cache() {
     loadStats();
   }, [loadSettings, loadStats]);
 
+  const legacyFolderCount = Number(stats.folder || 0);
+  const normalizedStats = Object.fromEntries(
+    Object.entries(stats).filter(([k]) => k !== "folder")
+  ) as CacheStats;
+  const totalCount = Object.values(normalizedStats).reduce((a, b) => a + b, 0);
+  const types = Object.keys(normalizedStats);
+  const storageModeText = settings?.storage_mode === "project" ? "项目模式" : settings?.storage_mode === "folder" ? "文件夹模式" : "未读取";
+  const migrationHint = settings?.storage_mode === "project"
+    ? "当前统计的是项目缓存。可手动导出到各图片目录的 .photoanalyzer/，用于迁移。"
+    : "当前统计的是文件夹缓存。可手动导入到项目缓存，用于迁移。";
+
   useEffect(() => {
     loadEntries();
   }, [loadEntries]);
+
+  useEffect(() => {
+    if (selectedType && !Object.prototype.hasOwnProperty.call(normalizedStats, selectedType)) {
+      setSelectedType(null);
+    }
+  }, [selectedType, normalizedStats]);
 
   const handleClearAll = async () => {
     if (!confirm("确定要清除所有缓存吗？此操作不可恢复。")) return;
@@ -108,9 +125,6 @@ export function Cache() {
     } catch {}
   };
 
-  const totalCount = Object.values(stats).reduce((a, b) => a + b, 0);
-  const types = Object.keys(stats);
-
   return (
     <div className="page">
       <h1>缓存管理</h1>
@@ -124,6 +138,10 @@ export function Cache() {
           <div className="cache-overview__stat">
             <span className="cache-overview__value">{types.length}</span>
             <span className="cache-overview__label">特征类型</span>
+          </div>
+          <div className="cache-overview__stat">
+            <span className="cache-overview__value">{storageModeText}</span>
+            <span className="cache-overview__label">当前存储模式</span>
           </div>
           <div className="cache-overview__actions">
             {settings && (
@@ -147,7 +165,7 @@ export function Cache() {
                     }}
                     disabled={converting || totalCount === 0}
                   >
-                    导出到文件夹
+                    迁移到文件夹缓存
                   </button>
                 ) : (
                   <button
@@ -168,7 +186,7 @@ export function Cache() {
                     }}
                     disabled={converting}
                   >
-                    导入到项目
+                    迁移到项目缓存
                   </button>
                 )}
               </>
@@ -182,6 +200,14 @@ export function Cache() {
             </button>
           </div>
         </div>
+        <div className="cache-overview__hint">
+          {migrationHint}
+        </div>
+        {legacyFolderCount > 0 && (
+          <div className="cache-overview__hint">
+            检测到旧版统计字段 folder={legacyFolderCount}。该字段表示目录容器数量，不是可筛选的特征类型，已在页面中自动忽略。
+          </div>
+        )}
       </div>
 
       <div className="card">
@@ -200,7 +226,7 @@ export function Cache() {
                 <span className="cache-type-card__name">
                   {TYPE_LABELS[type] || type}
                 </span>
-                <span className="cache-type-card__count">{stats[type]}</span>
+                <span className="cache-type-card__count">{normalizedStats[type]}</span>
               </div>
               <div className="cache-type-card__desc">
                 {TYPE_DESC[type] || type}
@@ -235,8 +261,8 @@ export function Cache() {
           <div className="empty-hint">暂无缓存条目</div>
         ) : (
           <div className="cache-entry-list">
-            {entries.map((entry) => (
-              <div key={entry.cache_key} className="cache-entry">
+            {entries.map((entry, idx) => (
+              <div key={`${entry.feature_type}:${entry.cache_key}:${entry.file_path}:${entry.mtime}:${idx}`} className="cache-entry">
                 <div className="cache-entry__info">
                   <div className="cache-entry__path" title={entry.file_path}>
                     {entry.file_path}

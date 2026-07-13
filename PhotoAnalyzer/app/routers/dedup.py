@@ -1,5 +1,6 @@
 import threading
 import time
+import os
 from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from ..deps import state
@@ -59,9 +60,19 @@ def start_dedup(body: dict):
     sub_path = body.get("sub_path")
     recursive = body.get("recursive", True)
     stages_config = body.get("stages")
+    base: Path | None = None
+    dedup_dir_path: str | None = None
 
     if file_paths:
         paths = [p for p in file_paths if Path(p).exists() and is_image_file(p)]
+        if paths:
+            try:
+                common_parent = Path(paths[0]).resolve().parent
+                for p in paths[1:]:
+                    common_parent = Path(os.path.commonpath([str(common_parent), str(Path(p).resolve().parent)]))
+                dedup_dir_path = str(common_parent)
+            except Exception:
+                dedup_dir_path = None
     else:
         if not dir_id:
             raise HTTPException(400, "需要 dir_id 或 file_paths")
@@ -80,6 +91,7 @@ def start_dedup(body: dict):
             f for f in target.iterdir() if f.is_file() and is_image_file(f)
         ]
         paths = [str(f) for f in image_files]
+        dedup_dir_path = str(base)
 
     if not paths:
         raise HTTPException(400, "目录下没有图片")
@@ -88,7 +100,7 @@ def start_dedup(body: dict):
     if stages_config:
         stages = [s for s in stages_config if s.get("enabled", True)] if isinstance(stages_config, list) else None
 
-    job = state.create_dedup_job(len(paths), dir_id, str(base))
+    job = state.create_dedup_job(len(paths), dir_id, dedup_dir_path)
     t = threading.Thread(target=_run_dedup, args=(job.job_id, paths, stages), daemon=True)
     t.start()
     return job

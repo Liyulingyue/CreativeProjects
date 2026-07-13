@@ -2,6 +2,7 @@ import json
 import uuid
 import time
 import threading
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -19,6 +20,10 @@ FOLDER_CACHE_DIR_NAME = ".photoanalyzer"
 RESULTS_FILE_NAME = "results.json"
 
 
+def _normalize_dir_path(path: str) -> str:
+    return os.path.normcase(os.path.normpath(str(Path(path).resolve())))
+
+
 def _find_base_dir(file_path: str) -> Optional[Path]:
     p = Path(file_path).resolve()
     for parent in [p.parent] + list(p.parents):
@@ -34,6 +39,16 @@ def _get_results_folder(file_path: str) -> tuple[str, Path]:
         return rel, base / FOLDER_CACHE_DIR_NAME
     p = Path(file_path).resolve()
     return str(p), DATA_DIR / "orphan_results"
+
+
+def _get_results_folder_with_base(file_path: str, base_dir: str) -> tuple[str, Path]:
+    base = Path(base_dir).resolve()
+    p = Path(file_path).resolve()
+    try:
+        rel = str(p.relative_to(base))
+    except ValueError:
+        rel = str(p)
+    return rel, base / FOLDER_CACHE_DIR_NAME
 
 
 def _load_json(path: Path, default=None):
@@ -61,8 +76,18 @@ class AppState:
 
     def _load(self):
         dirs_data = _load_json(_DIRS_FILE, {})
+        normalized_seen: set[str] = set()
+        deduped_dirs: dict[str, DirEntry] = {}
         for k, v in dirs_data.items():
-            self._dirs[k] = DirEntry(**v)
+            entry = DirEntry(**v)
+            norm = _normalize_dir_path(entry.path)
+            if norm in normalized_seen:
+                continue
+            normalized_seen.add(norm)
+            deduped_dirs[k] = entry
+        self._dirs = deduped_dirs
+        if len(self._dirs) != len(dirs_data):
+            self._persist_dirs()
 
         settings_data = _load_json(_SETTINGS_FILE, None)
         if settings_data:
@@ -101,6 +126,11 @@ class AppState:
 
     def add_dir(self, path: str, name: Optional[str] = None) -> DirEntry:
         with self._lock:
+            normalized_target = _normalize_dir_path(path)
+            for existing in self._dirs.values():
+                if _normalize_dir_path(existing.path) == normalized_target:
+                    return existing
+
             dir_id = uuid.uuid4().hex[:12]
             entry = DirEntry(
                 id=dir_id,
@@ -142,27 +172,69 @@ class AppState:
     def list_results(self) -> list[AnalysisResult]:
         if self._settings.storage_mode == "folder":
             all_results: list[AnalysisResult] = []
+
+            def _append_results_from_file(results_file: Path):
+                data = _load_json(results_file, {})
+                if isinstance(data, dict):
+                    iterable = data.values()
+                elif isinstance(data, list):
+                    iterable = data
+                else:
+                    iterable = []
+                for r_data in iterable:
+                    try:
+                        all_results.append(AnalysisResult(**r_data))
+                    except Exception:
+                        pass
+
             for d in self._dirs.values():
                 p = Path(d.path)
                 if p.exists():
                     cache_dir = p / FOLDER_CACHE_DIR_NAME
                     results_file = cache_dir / RESULTS_FILE_NAME
                     if results_file.exists():
-                        data = _load_json(results_file, {})
-                        for r_data in data.values():
-                            try:
-                                all_results.append(AnalysisResult(**r_data))
-                            except Exception:
-                                pass
-            return all_results
+                        _append_results_from_file(results_file)
+
+            # Also include standalone-file results that are saved under data/orphan_results.
+            orphan_results_file = DATA_DIR / "orphan_results" / RESULTS_FILE_NAME
+            if orphan_results_file.exists():
+                _append_results_from_file(orphan_results_file)
+
+            # De-duplicate by normalized file path to avoid repeated items.
+            deduped: dict[str, AnalysisResult] = {}
+            for r in all_results:
+                normalized = os.path.normcase(os.path.normpath(r.file_path))
+                deduped[normalized] = r
+            return list(deduped.values())
         return self._results
 
-    def add_results(self, results: list[AnalysisResult]):
+    def add_results(self, results: list[AnalysisResult], base_dir: Optional[str] = None):
         with self._lock:
             if self._settings.storage_mode == "folder":
                 folder_results: dict[Path, dict[str, dict]] = {}
+
+                def _match_registered_base(file_path: str) -> Optional[str]:
+                    p = Path(file_path).resolve()
+                    candidates: list[Path] = []
+                    for d in self._dirs.values():
+                        try:
+                            base = Path(d.path).resolve()
+                            p.relative_to(base)
+                            candidates.append(base)
+                        except Exception:
+                            continue
+                    if not candidates:
+                        return None
+                    # Prefer the most specific registered directory.
+                    best = max(candidates, key=lambda x: len(str(x)))
+                    return str(best)
+
                 for r in results:
-                    rel, folder = _get_results_folder(r.file_path)
+                    effective_base_dir = base_dir or _match_registered_base(r.file_path)
+                    if effective_base_dir:
+                        rel, folder = _get_results_folder_with_base(r.file_path, effective_base_dir)
+                    else:
+                        rel, folder = _get_results_folder(r.file_path)
                     if folder not in folder_results:
                         folder_results[folder] = _load_json(folder / RESULTS_FILE_NAME, {})
                     folder_results[folder][rel] = r.model_dump()

@@ -1727,10 +1727,24 @@ select {
 .settings-actions {
   display: flex;
   align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
   gap: var(--space-4);
   margin-top: var(--space-6);
   padding-top: var(--space-4);
   border-top: 1px solid var(--c-border);
+}
+
+.settings-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.settings-section__header h3 {
+  margin: 0;
 }
 
 .stage-config {
@@ -1850,6 +1864,7 @@ select {
 .cache-overview {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-8);
 }
 
@@ -1877,8 +1892,17 @@ select {
 .cache-overview__actions {
   margin-left: auto;
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-2);
   align-items: center;
+}
+
+.cache-overview__hint {
+  width: 100%;
+  margin-top: var(--space-2);
+  font-size: 12px;
+  color: var(--c-text-3);
+  line-height: 1.6;
 }
 
 /* Storage Mode */
