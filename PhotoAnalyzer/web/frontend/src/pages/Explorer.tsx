@@ -134,7 +134,13 @@ export function Explorer() {
 
   const goToAnalysis = () => {
     const paths = Array.from(selectedPaths);
-    navigate("/analysis", { state: { filePaths: paths } });
+    navigate("/analysis", { 
+      state: { 
+        filePaths: paths, 
+        dirPath: browse?.current_path,
+        autoStart: true 
+      } 
+    });
   };
 
   const handleDeleteSelected = async () => {

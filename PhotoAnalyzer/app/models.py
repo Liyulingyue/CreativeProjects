@@ -98,8 +98,8 @@ class AppSettings(BaseModel):
     storage_mode: str = "folder"
     dedup_stages: list[DedupStageConfig] = [
         DedupStageConfig(type="exif", enabled=True, params={"time_window": 5}),
-        DedupStageConfig(type="phash", enabled=True, params={"threshold": 5}),
-        DedupStageConfig(type="embedding", enabled=False, params={"model": "clip", "threshold": 0.85}),
+        DedupStageConfig(type="phash", enabled=True, params={"threshold": 8}),
+        DedupStageConfig(type="embedding", enabled=False, params={"model": "clip", "threshold": 0.9}),
     ]
 
 
