@@ -124,6 +124,16 @@ pub async fn get_analysis_job(
         .ok_or((axum::http::StatusCode::NOT_FOUND, "任务不存在"))
 }
 
+pub async fn cancel_analysis_job(
+    State(state): State<Arc<AppState>>,
+    AxumPath(job_id): AxumPath<String>,
+) -> Result<Json<AnalysisJob>, (axum::http::StatusCode, &'static str)> {
+    state
+        .cancel_analysis_job(&job_id)
+        .map(Json)
+        .ok_or((axum::http::StatusCode::NOT_FOUND, "任务不存在"))
+}
+
 pub async fn list_results(
     State(state): State<Arc<AppState>>,
 ) -> Json<Vec<AnalysisResult>> {
@@ -144,6 +154,12 @@ pub async fn get_result(
 }
 
 async fn run_analysis(state: Arc<AppState>, job_id: String, paths: Vec<String>, delay_ms: u64) {
+    if let Some(job) = state.get_analysis_job(&job_id) {
+        if job.status == "canceled" {
+            return;
+        }
+    }
+
     state.update_analysis_job(
         &job_id,
         AnalysisJobUpdate {
@@ -159,6 +175,23 @@ async fn run_analysis(state: Arc<AppState>, job_id: String, paths: Vec<String>, 
 
     let mut all_results = Vec::new();
     for (idx, path) in paths.iter().enumerate() {
+        if let Some(job) = state.get_analysis_job(&job_id) {
+            if job.status == "canceled" {
+                state.add_results(all_results.clone());
+                state.update_analysis_job(
+                    &job_id,
+                    AnalysisJobUpdate {
+                        status: Some("canceled".to_string()),
+                        progress: Some(idx),
+                        current_file: None,
+                        results: Some(all_results),
+                        finished_at: Some(chrono::Utc::now().to_rfc3339()),
+                    },
+                );
+                return;
+            }
+        }
+
         let abs_path = std::fs::canonicalize(path)
             .map(|p| p.to_string_lossy().to_string())
             .map(|p| strip_windows_verbatim_prefix(&p))
@@ -232,6 +265,23 @@ async fn run_analysis(state: Arc<AppState>, job_id: String, paths: Vec<String>, 
         all_results.push(result);
         if delay_ms > 0 {
             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+    }
+
+    if let Some(job) = state.get_analysis_job(&job_id) {
+        if job.status == "canceled" {
+            state.add_results(all_results.clone());
+            state.update_analysis_job(
+                &job_id,
+                AnalysisJobUpdate {
+                    status: Some("canceled".to_string()),
+                    progress: Some(all_results.len()),
+                    current_file: None,
+                    results: Some(all_results),
+                    finished_at: Some(chrono::Utc::now().to_rfc3339()),
+                },
+            );
+            return;
         }
     }
 
