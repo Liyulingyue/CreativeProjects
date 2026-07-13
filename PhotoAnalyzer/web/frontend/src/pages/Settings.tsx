@@ -17,14 +17,24 @@ const DEFAULT_SETTINGS: AppSettings = {
 
 export function Settings() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [loading, setLoading] = useState(true);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showApiKey, setShowApiKey] = useState(false);
 
   useEffect(() => {
+    setLoading(true);
     getSettings()
-      .then((s) => setSettings({ ...DEFAULT_SETTINGS, ...s }))
-      .catch(() => {});
+      .then((s) => {
+        setSettings({ ...DEFAULT_SETTINGS, ...s });
+        setError(null);
+      })
+      .catch((e) => {
+        setError(e instanceof Error ? e.message : "无法加载配置");
+      })
+      .finally(() => {
+        setLoading(false);
+      });
   }, []);
 
   const handleChange = (key: keyof AppSettings, value: unknown) => {
@@ -53,9 +63,20 @@ export function Settings() {
     setSaved(false);
   };
 
+  if (loading) {
+    return (
+      <div className="page">
+        <div className="loading">加载设置中...</div>
+      </div>
+    );
+  }
+
   return (
     <div className="page">
       <h1>设置</h1>
+      
+      {error && <div className="error-message" style={{ marginBottom: '1rem' }}>{error}</div>}
+      {saved && <div className="success-message" style={{ marginBottom: '1rem' }}>保存成功！</div>}
 
       <div className="card">
         <h3>API 配置</h3>

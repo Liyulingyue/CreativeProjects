@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useLocation } from "react-router-dom";
 import { startAnalysis, startFolderAnalysis, getAnalysisJob, listResults } from "@/api/analysis";
 import { listDirs, addDir, browseFiles } from "@/api/files";
@@ -12,7 +12,11 @@ import { FileBrowser } from "@/components/FileBrowser";
 
 export function Analysis() {
   const location = useLocation();
-  const initialPaths = (location.state as { filePaths?: string[] })?.filePaths;
+  const { 
+    filePaths: initialPaths, 
+    dirPath: initialDirPath,
+    autoStart 
+  } = (location.state as { filePaths?: string[]; dirPath?: string; autoStart?: boolean }) || {};
 
   const [dirs, setDirs] = useState<DirEntry[]>([]);
   const [pathValue, setPathValue] = useState("");
@@ -29,17 +33,36 @@ export function Analysis() {
   const [showBrowser, setShowBrowser] = useState(true);
   const [showLog, setShowLog] = useState(true);
 
+  const hasAutoStarted = useRef(false);
+
   useEffect(() => {
     listDirs().then(setDirs).catch(() => {});
     listResults().then(setAllResults).catch(() => {});
   }, []);
 
   useEffect(() => {
-    if (initialPaths && initialPaths.length > 0) {
-      setPathValue(initialPaths[0]);
-      handleBrowsePath(initialPaths[0]);
+    const preSelected = initialPaths ? new Set(initialPaths) : undefined;
+    
+    if (initialDirPath) {
+      setPathValue(initialDirPath);
+      handleBrowsePath(initialDirPath, preSelected);
+    } else if (initialPaths && initialPaths.length > 0) {
+      // 如果只有文件路径，尝试获取其所在目录
+      const firstPath = initialPaths[0];
+      const lastSlash = Math.max(firstPath.lastIndexOf("/"), firstPath.lastIndexOf("\\"));
+      const folderPath = lastSlash !== -1 ? firstPath.substring(0, lastSlash) : firstPath;
+      
+      setPathValue(folderPath);
+      handleBrowsePath(folderPath, preSelected);
     }
-  }, [initialPaths]);
+  }, [initialPaths, initialDirPath]);
+
+  useEffect(() => {
+    if (autoStart && initialPaths && initialPaths.length > 0 && !hasAutoStarted.current) {
+      hasAutoStarted.current = true;
+      handleStartSelectedInternal(initialPaths);
+    }
+  }, [autoStart, initialPaths]);
 
   const pollJob = useCallback(async (jobId: string) => {
     try {
@@ -55,20 +78,43 @@ export function Analysis() {
     }
   }, []);
 
-  const handleBrowsePath = async (path: string) => {
+  const handleBrowsePath = async (path: string, preSelected?: Set<string>) => {
     let dir = dirs.find((d) => d.path === path);
+    const isWindows = path.includes(":\\") || path.startsWith("\\\\");
     if (!dir) {
-      try {
-        dir = await addDir(path);
-        setDirs((prev) => [...prev, dir!]);
-      } catch {
-        return;
+      // 检查路径是否已经是某个已添加目录的子目录
+      const existingParent = dirs.find((d) => {
+        const p = d.path;
+        if (isWindows) {
+          return path.toLowerCase().startsWith(p.toLowerCase()) && 
+                 (path.length === p.length || path[p.length] === "\\" || path[p.length] === "/");
+        }
+        return path.startsWith(p) && (path.length === p.length || path[p.length] === "/");
+      });
+
+      if (existingParent) {
+        dir = existingParent;
+      } else {
+        try {
+          dir = await addDir(path);
+          setDirs((prev) => [...prev, dir!]);
+        } catch {
+          return;
+        }
       }
     }
+    
     setCurrentDir(dir);
-    setSelectedPaths(new Set());
+    setSelectedPaths(preSelected || new Set());
+    
+    // 如果 path 是 dir.path 的子目录，需要计算相对路径
+    let subPath: string | undefined = undefined;
+    if (path !== dir.path) {
+      subPath = path.substring(dir.path.length).replace(/^[\\\/]+/, "");
+    }
+
     try {
-      const result = await browseFiles(dir!.id);
+      const result = await browseFiles(dir.id, subPath);
       setBrowse(result);
     } catch {
       setBrowse(null);
@@ -127,11 +173,10 @@ export function Analysis() {
     }
   };
 
-  const handleStartSelected = async () => {
-    if (selectedPaths.size === 0) return;
+  const handleStartSelectedInternal = async (paths: string[]) => {
     setLoading(true);
     try {
-      const job = await startAnalysis(Array.from(selectedPaths));
+      const job = await startAnalysis(paths);
       setActiveJob(job);
       pollJob(job.job_id);
     } catch (e) {
@@ -139,6 +184,11 @@ export function Analysis() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleStartSelected = () => {
+    if (selectedPaths.size === 0) return;
+    handleStartSelectedInternal(Array.from(selectedPaths));
   };
 
   const currentResults = currentDir
