@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useLocation } from "react-router-dom";
-import { startAnalysis, startFolderAnalysis, getAnalysisJob, listResults } from "@/api/analysis";
+import { startAnalysis, startFolderAnalysis, getAnalysisJob, listResults, cancelAnalysisJob } from "@/api/analysis";
 import { listDirs, addDir, browseFiles } from "@/api/files";
 import type { AnalysisJob, AnalysisResult, DirEntry, BrowseResult, FileNode } from "@/api/types";
 import { AnalysisDetail } from "@/components/AnalysisDetail";
@@ -191,6 +191,17 @@ export function Analysis() {
     handleStartSelectedInternal(Array.from(selectedPaths));
   };
 
+  const handleCancelAnalysis = async () => {
+    if (!activeJob) return;
+    try {
+      const job = await cancelAnalysisJob(activeJob.job_id);
+      setActiveJob(job);
+      listResults().then(setAllResults).catch(() => {});
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "取消分析失败");
+    }
+  };
+
   const currentResults = currentDir
     ? allResults.filter((r) => r.file_path.startsWith(currentDir.path))
     : [];
@@ -268,6 +279,7 @@ export function Analysis() {
         currentFile={activeJob?.current_file ?? null}
         status={(activeJob?.status === "running" || activeJob?.status === "pending") ? "running" : activeJob?.status ?? "running"}
         onClose={() => setActiveJob(null)}
+        onCancel={handleCancelAnalysis}
       />
 
       <div className="card card--collapsible">
