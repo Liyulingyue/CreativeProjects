@@ -6,6 +6,7 @@ import type { DirEntry, BrowseResult, FileNode, AnalysisResult } from "@/api/typ
 import { PhotoGrid } from "@/components/PhotoGrid";
 import { FolderPicker } from "@/components/FolderPicker";
 import { ImagePreview } from "@/components/ImagePreview";
+import { appendDirUnique, reportDuplicateDirs } from "@/utils/dirGuard";
 
 type SortKey = "name" | "time" | "score";
 type SortDir = "asc" | "desc";
@@ -28,6 +29,7 @@ export function Explorer() {
   const loadDirs = useCallback(async () => {
     try {
       const result = await listDirs();
+      reportDuplicateDirs("Explorer:listDirs", result);
       setDirs(result);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load dirs");
@@ -86,7 +88,7 @@ export function Explorer() {
   const handlePickFolder = async (path: string, name: string) => {
     try {
       const dir = await addDir(path, name);
-      setDirs((prev) => [...prev, dir]);
+      setDirs((prev) => appendDirUnique(prev, dir, "Explorer:addDir"));
       setActiveDir(dir);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to add dir");

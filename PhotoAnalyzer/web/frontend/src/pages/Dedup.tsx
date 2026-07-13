@@ -7,6 +7,7 @@ import { PathInput } from "@/components/PathInput";
 import { FolderPicker } from "@/components/FolderPicker";
 import { ImagePreview } from "@/components/ImagePreview";
 import { FileBrowser } from "@/components/FileBrowser";
+import { appendDirUnique, reportDuplicateDirs } from "@/utils/dirGuard";
 
 function getFileName(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;
@@ -33,7 +34,12 @@ export function Dedup() {
   const [results, setResults] = useState<Map<string, AnalysisResult>>(new Map());
 
   useEffect(() => {
-    listDirs().then(setDirs).catch(() => {});
+    listDirs()
+      .then((result) => {
+        reportDuplicateDirs("Dedup:listDirs", result);
+        setDirs(result);
+      })
+      .catch(() => {});
     listResults().then((res) => {
       const map = new Map<string, AnalysisResult>();
       for (const r of res) {
@@ -60,7 +66,10 @@ export function Dedup() {
     if (!dir) {
       try {
         dir = await addDir(path);
-        setDirs((prev) => [...prev, dir!]);
+          setDirs((prev) => {
+            if (!dir) return prev;
+            return appendDirUnique(prev, dir!, "Dedup:addDir");
+          });
       } catch {
         return;
       }

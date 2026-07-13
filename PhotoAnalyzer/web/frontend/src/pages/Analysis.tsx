@@ -9,6 +9,7 @@ import { PathInput } from "@/components/PathInput";
 import { FolderPicker } from "@/components/FolderPicker";
 import { ImagePreview } from "@/components/ImagePreview";
 import { FileBrowser } from "@/components/FileBrowser";
+import { appendDirUnique, reportDuplicateDirs } from "@/utils/dirGuard";
 
 export function Analysis() {
   const location = useLocation();
@@ -36,7 +37,12 @@ export function Analysis() {
   const hasAutoStarted = useRef(false);
 
   useEffect(() => {
-    listDirs().then(setDirs).catch(() => {});
+    listDirs()
+      .then((result) => {
+        reportDuplicateDirs("Analysis:listDirs", result);
+        setDirs(result);
+      })
+      .catch(() => {});
     listResults().then(setAllResults).catch(() => {});
   }, []);
 
@@ -97,7 +103,10 @@ export function Analysis() {
       } else {
         try {
           dir = await addDir(path);
-          setDirs((prev) => [...prev, dir!]);
+          setDirs((prev) => {
+            if (!dir) return prev;
+            return appendDirUnique(prev, dir!, "Analysis:addDir");
+          });
         } catch {
           return;
         }

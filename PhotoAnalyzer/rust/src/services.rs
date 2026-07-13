@@ -56,6 +56,12 @@ fn normalize_path_for_compare(path: &str) -> String {
     }
 }
 
+fn normalize_dir_path_for_compare(path: &str) -> String {
+    let path_buf = PathBuf::from(path);
+    let normalized = path_buf.canonicalize().unwrap_or(path_buf);
+    normalize_path_for_compare(&normalized.to_string_lossy())
+}
+
 fn find_base_dir(file_path: &str) -> Option<PathBuf> {
     let p = Path::new(file_path).canonicalize().ok()?;
     let mut current = p.parent().map(|x| x.to_path_buf());
@@ -102,7 +108,19 @@ impl AppState {
         let _ = fs::create_dir_all(data_dir());
 
         let settings = load_json::<AppSettings>(&settings_file()).unwrap_or_default();
-        let dirs = load_json::<HashMap<String, DirEntry>>(&dirs_file()).unwrap_or_default();
+        let loaded_dirs = load_json::<HashMap<String, DirEntry>>(&dirs_file()).unwrap_or_default();
+        let mut dirs: HashMap<String, DirEntry> = HashMap::new();
+        let mut seen_dir_paths: HashMap<String, String> = HashMap::new();
+        let mut deduped = false;
+        for (id, dir) in loaded_dirs {
+            let key = normalize_dir_path_for_compare(&dir.path);
+            if seen_dir_paths.contains_key(&key) {
+                deduped = true;
+                continue;
+            }
+            seen_dir_paths.insert(key, id.clone());
+            dirs.insert(id, dir);
+        }
 
         let mut results_map: HashMap<String, AnalysisResult> = HashMap::new();
         if settings.storage_mode != "folder" {
@@ -112,13 +130,19 @@ impl AppState {
             }
         }
 
-        Self {
+        let app = Self {
             dirs: RwLock::new(dirs),
             results: RwLock::new(results_map),
             analysis_jobs: RwLock::new(HashMap::new()),
             dedup_jobs: RwLock::new(HashMap::new()),
             settings: RwLock::new(settings),
+        };
+
+        if deduped {
+            app.persist_dirs();
         }
+
+        app
     }
 
     fn persist_dirs(&self) {
@@ -168,6 +192,17 @@ impl AppState {
     }
 
     pub fn add_dir(&self, path: &str, name: Option<&str>) -> DirEntry {
+        let normalized_target = normalize_dir_path_for_compare(path);
+        if let Some(existing) = self
+            .dirs
+            .read()
+            .values()
+            .find(|d| normalize_dir_path_for_compare(&d.path) == normalized_target)
+            .cloned()
+        {
+            return existing;
+        }
+
         let id = Uuid::new_v4().to_string()[..12].to_string();
         let now = chrono::Utc::now().to_rfc3339();
         let path_buf = std::path::PathBuf::from(path);
@@ -332,6 +367,16 @@ impl AppState {
                 job.finished_at = Some(finished_at);
             }
         }
+    }
+
+    pub fn cancel_analysis_job(&self, job_id: &str) -> Option<AnalysisJob> {
+        let mut jobs = self.analysis_jobs.write();
+        let job = jobs.get_mut(job_id)?;
+        if !matches!(job.status.as_str(), "completed" | "failed" | "canceled") {
+            job.status = "canceled".to_string();
+            job.finished_at = Some(chrono::Utc::now().to_rfc3339());
+        }
+        Some(job.clone())
     }
 
     pub fn create_dedup_job(&self, total_files: usize, dir_id: Option<&str>, dir_path: Option<&str>) -> DedupJob {

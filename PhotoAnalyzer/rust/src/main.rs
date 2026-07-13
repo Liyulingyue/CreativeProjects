@@ -54,6 +54,7 @@ async fn main() {
         .route("/api/analysis", post(handlers::start_analysis))
         .route("/api/analysis/folder", post(handlers::start_folder_analysis))
         .route("/api/analysis/:job_id", get(handlers::get_analysis_job))
+        .route("/api/analysis/:job_id/cancel", post(handlers::cancel_analysis_job))
         .route("/api/results", get(handlers::list_results))
         .route("/api/results/*file_path", get(handlers::get_result))
         .route("/api/dedup", post(handlers::start_dedup))
