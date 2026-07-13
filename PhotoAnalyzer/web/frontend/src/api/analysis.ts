@@ -31,6 +31,12 @@ export async function getAnalysisJob(jobId: string): Promise<AnalysisJob> {
   return request<AnalysisJob>(`/analysis/${jobId}`);
 }
 
+export async function cancelAnalysisJob(jobId: string): Promise<AnalysisJob> {
+  return request<AnalysisJob>(`/analysis/${jobId}/cancel`, {
+    method: "POST",
+  });
+}
+
 export async function listResults(): Promise<AnalysisResult[]> {
   return request<AnalysisResult[]>("/results");
 }

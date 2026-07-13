@@ -67,6 +67,14 @@ def get_analysis_job(job_id: str):
     return job
 
 
+@router.post("/analysis/{job_id}/cancel", response_model=AnalysisJob)
+def cancel_analysis_job(job_id: str):
+    job = state.cancel_analysis_job(job_id)
+    if not job:
+        raise HTTPException(404, "任务不存在")
+    return job
+
+
 @router.get("/results", response_model=list[AnalysisResult])
 def list_results():
     return state.list_results()
@@ -89,6 +97,9 @@ def _run_analysis(job_id: str, paths: list[str], delay: float, base_dir: str | N
     if not job:
         return
 
+    if job.status == "canceled":
+        return
+
     state.update_analysis_job(job_id, status="running")
 
     settings = state.get_settings()
@@ -105,6 +116,18 @@ def _run_analysis(job_id: str, paths: list[str], delay: float, base_dir: str | N
 
     all_results: list[AnalysisResult] = []
     for i, p in enumerate(paths):
+        current = state.get_analysis_job(job_id)
+        if not current or current.status == "canceled":
+            state.update_analysis_job(
+                job_id,
+                status="canceled",
+                progress=i,
+                results=all_results,
+                finished_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
+            )
+            state.add_results(all_results, base_dir=base_dir)
+            return
+
         state.update_analysis_job(
             job_id,
             progress=i,
@@ -114,6 +137,18 @@ def _run_analysis(job_id: str, paths: list[str], delay: float, base_dir: str | N
         raw = analyzer.analyze_image(p)
         result = _convert_result(raw)
         all_results.append(result)
+
+    latest = state.get_analysis_job(job_id)
+    if latest and latest.status == "canceled":
+        state.update_analysis_job(
+            job_id,
+            status="canceled",
+            progress=len(all_results),
+            results=all_results,
+            finished_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
+        )
+        state.add_results(all_results, base_dir=base_dir)
+        return
 
     state.update_analysis_job(
         job_id,

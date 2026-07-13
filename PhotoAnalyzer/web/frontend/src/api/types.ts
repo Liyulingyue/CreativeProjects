@@ -41,7 +41,7 @@ export interface BrowseResult {
 
 export interface AnalysisJob {
   job_id: string;
-  status: "pending" | "running" | "completed" | "failed";
+  status: "pending" | "running" | "completed" | "failed" | "canceled";
   total: number;
   progress: number;
   current_file: string | null;

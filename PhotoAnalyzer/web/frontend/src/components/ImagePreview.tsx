@@ -1,6 +1,7 @@
-import { useState, useEffect } from "react";
-import type { FileNode, AnalysisResult } from "@/api/types";
-import { startAnalysis } from "@/api/analysis";
+import { useState, useEffect, useRef, useCallback } from "react";
+import type { FileNode, AnalysisJob, AnalysisResult } from "@/api/types";
+import { cancelAnalysisJob, getAnalysisJob, getResult, startAnalysis } from "@/api/analysis";
+import { ProgressModal } from "@/components/ProgressModal";
 
 interface ImagePreviewProps {
   item: FileNode | null;
@@ -11,7 +12,52 @@ interface ImagePreviewProps {
 export function ImagePreview({ item, onClose, onAnalysisComplete }: ImagePreviewProps) {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [loading, setLoading] = useState(false);
-  const [analyzing, setAnalyzing] = useState(false);
+  const [activeJob, setActiveJob] = useState<AnalysisJob | null>(null);
+  const pollTimerRef = useRef<number | null>(null);
+
+  const clearPollTimer = useCallback(() => {
+    if (pollTimerRef.current !== null) {
+      window.clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  }, []);
+
+  const refreshResult = useCallback(async (path: string) => {
+    setLoading(true);
+    try {
+      const data = await getResult(path);
+      setResult(data);
+    } catch {
+      setResult(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const pollJob = useCallback(
+    async (jobId: string, path: string) => {
+      try {
+        const job = await getAnalysisJob(jobId);
+        setActiveJob(job);
+
+        if (job.status === "running" || job.status === "pending") {
+          pollTimerRef.current = window.setTimeout(() => {
+            void pollJob(jobId, path);
+          }, 1000);
+          return;
+        }
+
+        setActiveJob(null);
+        await refreshResult(path);
+        onAnalysisComplete?.();
+      } catch {
+        pollTimerRef.current = window.setTimeout(() => {
+          void pollJob(jobId, path);
+        }, 2000);
+      }
+    },
+    [onAnalysisComplete, refreshResult]
+  );
 
   useEffect(() => {
     if (!item) return;
@@ -24,42 +70,47 @@ export function ImagePreview({ item, onClose, onAnalysisComplete }: ImagePreview
 
   useEffect(() => {
     if (!item) return;
-    setLoading(true);
     setResult(null);
-    fetch(`/api/results/${encodeURIComponent(item.path)}`)
-      .then((res) => {
-        if (!res.ok) return null;
-        return res.json();
-      })
-      .then((data) => setResult(data))
-      .catch(() => setResult(null))
-      .finally(() => setLoading(false));
-  }, [item]);
+    setActiveJob(null);
+    clearPollTimer();
+    void refreshResult(item.path);
+  }, [item, clearPollTimer, refreshResult]);
+
+  useEffect(() => {
+    return () => {
+      clearPollTimer();
+    };
+  }, [clearPollTimer]);
 
   if (!item) return null;
 
   const fullUrl = `/api/thumbnails?path=${encodeURIComponent(item.path)}&full=1`;
+  const analyzing = activeJob?.status === "running" || activeJob?.status === "pending";
 
   const handleAnalyze = async () => {
     if (!item) return;
-    setAnalyzing(true);
+    clearPollTimer();
     try {
       const job = await startAnalysis([item.path]);
-      const poll = setInterval(async () => {
-        const res = await fetch(`/api/analysis/${job.job_id}`);
-        const data = await res.json();
-        if (data.status === "completed" || data.status === "failed") {
-          clearInterval(poll);
-          setAnalyzing(false);
-          fetch(`/api/results/${encodeURIComponent(item.path)}`)
-            .then((res) => res.ok ? res.json() : null)
-            .then((r) => setResult(r))
-            .catch(() => {});
-          onAnalysisComplete?.();
-        }
-      }, 1000);
+      setActiveJob(job);
+      void pollJob(job.job_id, item.path);
     } catch {
-      setAnalyzing(false);
+      setActiveJob(null);
+    }
+  };
+
+  const handleCancelAnalysis = async () => {
+    if (!activeJob) return;
+    clearPollTimer();
+    try {
+      const job = await cancelAnalysisJob(activeJob.job_id);
+      setActiveJob(job);
+      if (item) {
+        await refreshResult(item.path);
+      }
+      onAnalysisComplete?.();
+    } catch {
+      setActiveJob(null);
     }
   };
 
@@ -140,6 +191,15 @@ export function ImagePreview({ item, onClose, onAnalysisComplete }: ImagePreview
           <span>{item.size ? formatSize(item.size) : ""}</span>
         </div>
       </div>
+      <ProgressModal
+        open={activeJob?.status === "running" || activeJob?.status === "pending" || false}
+        current={activeJob?.progress ?? 0}
+        total={activeJob?.total ?? 0}
+        currentFile={activeJob?.current_file ?? null}
+        status={(activeJob?.status === "running" || activeJob?.status === "pending") ? "running" : activeJob?.status ?? "running"}
+        onClose={() => setActiveJob(null)}
+        onCancel={handleCancelAnalysis}
+      />
     </div>
   );
 }

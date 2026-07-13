@@ -5,11 +5,12 @@ interface ProgressModalProps {
   current: number;
   total: number;
   currentFile: string | null;
-  status: "running" | "completed" | "failed";
+  status: "running" | "completed" | "failed" | "canceled";
   onClose: () => void;
+  onCancel?: () => void;
 }
 
-export function ProgressModal({ open, current, total, currentFile, status, onClose }: ProgressModalProps) {
+export function ProgressModal({ open, current, total, currentFile, status, onClose, onCancel }: ProgressModalProps) {
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
@@ -24,7 +25,7 @@ export function ProgressModal({ open, current, total, currentFile, status, onClo
   return (
     <div className={`overlay ${visible ? "overlay--visible" : ""}`}>
       <div className="progress-modal" onClick={(e) => e.stopPropagation()}>
-        <h3>{status === "completed" ? "分析完成" : status === "failed" ? "分析失败" : "正在分析..."}</h3>
+        <h3>{status === "completed" ? "分析完成" : status === "failed" ? "分析失败" : status === "canceled" ? "分析已取消" : "正在分析..."}</h3>
         <div className="progress-bar">
           <div className="progress-bar__fill" style={{ width: `${pct}%` }} />
         </div>
@@ -32,7 +33,10 @@ export function ProgressModal({ open, current, total, currentFile, status, onClo
           {current} / {total} ({pct}%)
         </p>
         {currentFile && <p className="progress-modal__file">当前: {currentFile}</p>}
-        {status === "completed" && (
+        {(status === "running") && onCancel && (
+          <button className="btn" onClick={onCancel}>取消分析</button>
+        )}
+        {(status === "completed" || status === "failed" || status === "canceled") && (
           <button className="btn btn--primary" onClick={onClose}>确定</button>
         )}
       </div>

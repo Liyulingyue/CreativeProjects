@@ -274,6 +274,17 @@ class AppState:
                     if hasattr(job, k):
                         setattr(job, k, v)
 
+    def cancel_analysis_job(self, job_id: str) -> Optional[AnalysisJob]:
+        with self._lock:
+            job = self._analysis_jobs.get(job_id)
+            if not job:
+                return None
+            if job.status in {"completed", "failed", "canceled"}:
+                return job
+            job.status = "canceled"
+            job.finished_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+            return job
+
     # --- Dedup Jobs ---
     def create_dedup_job(self, total_files: int, dir_id: Optional[str] = None, dir_path: Optional[str] = None) -> DedupJob:
         job_id = uuid.uuid4().hex[:12]
