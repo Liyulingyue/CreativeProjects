@@ -1,4 +1,4 @@
-use axum::{extract::{Path as AxumPath, State}, Json};
+use axum::{extract::{Path as AxumPath, Query, State}, Json};
 use std::collections::HashMap;
 use std::path::Path as StdPath;
 use std::sync::Arc;
@@ -59,23 +59,26 @@ pub async fn get_dedup_by_dir(
 pub async fn resolve_dedup(
     State(state): State<Arc<AppState>>,
     AxumPath(job_id): AxumPath<String>,
-    Json(body): Json<Vec<ResolveAction>>,
+    Json(body): Json<ResolveDedupRequest>,
 ) -> Result<Json<ResolveResponse>, (axum::http::StatusCode, &'static str)> {
-    let mut removed = Vec::new();
+    let actions = body.actions.as_ref();
+    let mut all_removed = Vec::new();
 
-    for action in &body {
-        for path in &action.remove {
-            let p = StdPath::new(path);
-            if p.exists() && p.is_file() {
-                let _ = std::fs::remove_file(p);
-                removed.push(path.clone());
+    if let Some(actions_list) = actions {
+        for action in actions_list {
+            for path in &action.remove {
+                let p = StdPath::new(path);
+                if p.exists() && p.is_file() {
+                    let _ = std::fs::remove_file(p);
+                    all_removed.push(path.clone());
+                }
             }
         }
     }
 
-    if !removed.is_empty() {
+    if !all_removed.is_empty() {
         if let Some(job) = state.get_dedup_job(&job_id) {
-            let removed_set: HashMap<String, ()> = removed.iter().map(|s| (s.clone(), ())).collect();
+            let removed_set: HashMap<String, ()> = all_removed.iter().map(|s| (s.clone(), ())).collect();
             let updated_groups: Vec<DedupGroup> = job.groups.into_iter()
                 .map(|mut g| {
                     g.items.retain(|i| !removed_set.contains_key(&i.path));
@@ -87,20 +90,23 @@ pub async fn resolve_dedup(
             state.update_dedup_job(&job_id, DedupJobUpdate {
                 status: None,
                 stage: None,
-                groups: Some(updated_groups.clone()),
+                groups: Some(updated_groups),
                 finished_at: None,
             });
         }
     }
 
-    let count = removed.len();
-    Ok(Json(ResolveResponse { removed, count }))
+    let count = all_removed.len();
+    Ok(Json(ResolveResponse { removed: all_removed, count }))
+}
+
+#[derive(serde::Deserialize)]
+pub struct ResolveDedupRequest {
+    actions: Option<Vec<ResolveAction>>,
 }
 
 #[derive(serde::Deserialize)]
 pub struct ResolveAction {
-    group_id: String,
-    keep: String,
     remove: Vec<String>,
 }
 
@@ -123,8 +129,84 @@ pub struct CacheStats {
     pub total_size: usize,
 }
 
-pub async fn clear_cache() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "cleared": "cache" }))
+pub async fn get_cache_entries(
+    Query(params): Query<CacheEntriesQuery>,
+) -> Json<Vec<CacheEntry>> {
+    Json(vec![])
+}
+
+#[derive(serde::Deserialize)]
+pub struct CacheEntriesQuery {
+    #[serde(rename = "feature_type")]
+    feature_type: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct CacheEntry {
+    key: String,
+    feature_type: String,
+    size: usize,
+    created_at: String,
+}
+
+pub async fn clear_cache(
+    Json(body): Json<ClearCacheRequest>,
+) -> Json<ClearCacheResponse> {
+    Json(ClearCacheResponse {
+        cleared: body.feature_type.clone().unwrap_or_else(|| "all".to_string()),
+    })
+}
+
+#[derive(serde::Deserialize)]
+pub struct ClearCacheRequest {
+    #[serde(rename = "feature_type")]
+    feature_type: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct ClearCacheResponse {
+    cleared: String,
+}
+
+pub async fn delete_cache_entry(
+    AxumPath(cache_key): AxumPath<String>,
+) -> Result<Json<DeleteCacheEntryResponse>, (axum::http::StatusCode, &'static str)> {
+    Ok(Json(DeleteCacheEntryResponse { deleted: cache_key }))
+}
+
+#[derive(serde::Serialize)]
+pub struct DeleteCacheEntryResponse {
+    deleted: String,
+}
+
+pub async fn export_cache_to_folder(
+    Json(body): Json<ExportImportRequest>,
+) -> Json<ExportImportResponse> {
+    Json(ExportImportResponse {
+        migrated: 0,
+        directories: 0,
+    })
+}
+
+#[derive(serde::Deserialize)]
+pub struct ExportImportRequest {
+    #[serde(rename = "dir_paths")]
+    dir_paths: Option<Vec<String>>,
+}
+
+#[derive(serde::Serialize)]
+pub struct ExportImportResponse {
+    migrated: usize,
+    directories: usize,
+}
+
+pub async fn import_cache_from_folder(
+    Json(body): Json<ExportImportRequest>,
+) -> Json<ExportImportResponse> {
+    Json(ExportImportResponse {
+        migrated: 0,
+        directories: 0,
+    })
 }
 
 fn collect_image_files(dir: &StdPath, recursive: bool) -> Vec<String> {

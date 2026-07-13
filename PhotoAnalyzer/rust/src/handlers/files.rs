@@ -1,4 +1,5 @@
 use axum::{extract::{Query, State}, Json};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::path::Path;
 
@@ -6,7 +7,7 @@ use crate::models::{BrowseResult, FileNode};
 use crate::services::AppState;
 
 const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff"];
-const RAW_EXTENSIONS: &[&str] = &["cr2", "arw", "dng", "nef", "orf", "rw2", "pef", "srw", "raf"];
+const RAW_EXTENSIONS: &[&str] = &["cr2", "cr3", "arw", "dng", "nef", "orf", "rw2", "pef", "srw", "raf", "3fr", "ai", "eps"];
 
 pub async fn browse_files(
     State(state): State<Arc<AppState>>,
@@ -23,64 +24,116 @@ pub async fn browse_files(
         return Err((axum::http::StatusCode::NOT_FOUND, "path not found"));
     }
 
+    let base = Path::new(&dir.path).to_path_buf();
+    let parent_path = if target != base {
+        target.parent().map(|p| p.to_string_lossy().to_string())
+    } else {
+        None
+    };
+
     let mut items = Vec::new();
-    let parent_path = target.parent().map(|p| p.to_string_lossy().to_string());
+    let mut stem_map: HashMap<String, Vec<std::path::PathBuf>> = HashMap::new();
 
-    for entry in walkdir::WalkDir::new(&target)
-        .max_depth(1)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
+    let read_dir = match std::fs::read_dir(&target) {
+        Ok(rd) => rd,
+        Err(_) => return Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, "failed to read directory")),
+    };
+
+    for entry in read_dir.filter_map(|e| e.ok()) {
         let path = entry.path();
-        if path == target {
-            continue;
-        }
-
-        let metadata = match entry.metadata() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-
         let name = path.file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        let modified = metadata.modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| {
-                chrono::DateTime::from_timestamp(d.as_secs() as i64, 0)
-                    .unwrap_or_default()
-                    .to_rfc3339()
-            })
+        if name.starts_with('.') {
+            continue;
+        }
+
+        if path.is_dir() {
+            let modified = path.metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| {
+                    chrono::DateTime::from_timestamp(d.as_secs() as i64, 0)
+                        .unwrap_or_default()
+                        .format("%Y-%m-%d %H:%M:%S")
+                        .to_string()
+                })
+                .unwrap_or_default();
+
+            items.push(FileNode {
+                name,
+                path: path.to_string_lossy().to_string(),
+                is_dir: true,
+                size: 0,
+                modified,
+                thumbnail_url: None,
+            });
+            continue;
+        }
+
+        let ext = path.extension()
+            .map(|s| s.to_string_lossy().to_lowercase())
             .unwrap_or_default();
 
-        let is_dir = metadata.is_dir();
-        let size = if !is_dir { metadata.len() } else { 0 };
+        if is_image_file(&ext) || RAW_EXTENSIONS.contains(&ext.as_str()) {
+            let stem = path.file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            stem_map.entry(stem).or_default().push(path);
+        }
+    }
 
-        let thumbnail_url = if !is_dir && is_image_file(&name) {
-            Some(format!("/api/thumbnails?path={}", encode_uri(&path.to_string_lossy())))
+    let mut stem_keys: Vec<_> = stem_map.keys().cloned().collect();
+    stem_keys.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+
+    for stem in stem_keys {
+        let mut paths = stem_map.get(&stem).unwrap().clone();
+        paths.sort_by(|a, b| {
+            let a_ext = a.extension().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
+            let b_ext = b.extension().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
+            let a_is_jpg = a_ext == "jpg";
+            let b_is_jpg = b_ext == "jpg";
+            if a_is_jpg != b_is_jpg {
+                std::cmp::Ordering::Less
+            } else {
+                a_ext.cmp(&b_ext)
+            }
+        });
+
+        let best = &paths[0];
+        let best_ext = best.extension()
+            .map(|s| s.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        let thumbnail_url = if best_ext == "jpg" || best_ext == "jpeg" || best_ext == "png" || best_ext == "webp" {
+            Some(format!("/api/thumbnails?path={}", encode_uri(&best.to_string_lossy())))
         } else {
             None
         };
 
+        let metadata = best.metadata().ok();
+        let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+        let modified = metadata
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| {
+                chrono::DateTime::from_timestamp(d.as_secs() as i64, 0)
+                    .unwrap_or_default()
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string()
+            })
+            .unwrap_or_default();
+
         items.push(FileNode {
-            name,
-            path: path.to_string_lossy().to_string(),
-            is_dir,
+            name: best.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+            path: best.to_string_lossy().to_string(),
+            is_dir: false,
             size,
             modified,
             thumbnail_url,
         });
     }
-
-    items.sort_by(|a, b| {
-        match (a.is_dir, b.is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-        }
-    });
 
     Ok(Json(BrowseResult {
         current_path: target.to_string_lossy().to_string(),
@@ -143,11 +196,12 @@ pub async fn get_siblings(
 
     let mut siblings = Vec::new();
 
-    for entry in walkdir::WalkDir::new(parent)
-        .max_depth(1)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
+    let read_dir = match std::fs::read_dir(parent) {
+        Ok(rd) => rd,
+        Err(_) => return Ok(Json(SiblingsResponse { siblings: vec![], count: 0 })),
+    };
+
+    for entry in read_dir.filter_map(|e| e.ok()) {
         let path = entry.path();
         if path == p {
             continue;
@@ -191,10 +245,6 @@ pub async fn get_orphaned_raws(
         if path.is_file() {
             if let Some(ext) = path.extension().map(|s| s.to_string_lossy().to_lowercase()) {
                 if RAW_EXTENSIONS.contains(&ext.as_str()) {
-                    let _stem = path.file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_default();
-
                     let jpg_path = path.with_extension("jpg");
                     let jpg_path_upper = path.with_extension("JPG");
 
@@ -232,6 +282,7 @@ pub async fn delete_orphaned_raws(
 
     let target = Path::new(&entry.path);
     let mut deleted = Vec::new();
+    let mut not_found = Vec::new();
 
     for entry in walkdir::WalkDir::new(target)
         .into_iter()
@@ -241,10 +292,6 @@ pub async fn delete_orphaned_raws(
         if path.is_file() {
             if let Some(ext) = path.extension().map(|s| s.to_string_lossy().to_lowercase()) {
                 if RAW_EXTENSIONS.contains(&ext.as_str()) {
-                    let _stem = path.file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_default();
-
                     let jpg_path = path.with_extension("jpg");
                     let jpg_path_upper = path.with_extension("JPG");
 
@@ -252,6 +299,8 @@ pub async fn delete_orphaned_raws(
                         if path.exists() {
                             let _ = std::fs::remove_file(path);
                             deleted.push(path.to_string_lossy().to_string());
+                        } else {
+                            not_found.push(path.to_string_lossy().to_string());
                         }
                     }
                 }
@@ -262,7 +311,7 @@ pub async fn delete_orphaned_raws(
     let count = deleted.len();
     Ok(Json(DeleteOrphanedResponse {
         deleted,
-        not_found: vec![],
+        not_found,
         count,
     }))
 }
@@ -274,9 +323,8 @@ pub struct DeleteOrphanedResponse {
     count: usize,
 }
 
-fn is_image_file(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    IMAGE_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
+fn is_image_file(ext: &str) -> bool {
+    IMAGE_EXTENSIONS.contains(&ext)
 }
 
 fn encode_uri(input: &str) -> String {
