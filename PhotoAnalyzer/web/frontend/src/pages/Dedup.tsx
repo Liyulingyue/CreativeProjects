@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from "react";
 import { startDedupFolder, startDedupPaths, getDedupJob, getDedupJobByDir, resolveDedupGroups } from "@/api/dedup";
-import { listDirs, addDir, browseFiles } from "@/api/files";
+import { listDirs, addDir, browseFiles, deleteFile } from "@/api/files";
 import { listResults } from "@/api/analysis";
-import { apiUrl, resolveApiUrl } from "@/api/client";
+import { resolveThumbnailUrl } from "@/api/client";
 import type { DirEntry, DedupJob, DedupGroup, BrowseResult, FileNode, AnalysisResult } from "@/api/types";
 import { PathInput } from "@/components/PathInput";
 import { FolderPicker } from "@/components/FolderPicker";
@@ -207,7 +207,7 @@ export function Dedup() {
 
     try {
       for (const path of toDelete) {
-        await fetch(apiUrl(`/files?path=${encodeURIComponent(path)}`), { method: "DELETE" });
+        await deleteFile(path);
       }
 
       const actions = job.groups.map((group) => {
@@ -404,7 +404,7 @@ export function Dedup() {
                           onClick={(e) => { e.stopPropagation(); setPreviewItem({ name: item.file_name, path: item.path, size: item.file_size, is_dir: false, modified: "", thumbnail_url: item.thumbnail_url }); }}
                         >
                           {item.thumbnail_url ? (
-                            <img src={resolveApiUrl(item.thumbnail_url)} alt={item.file_name} />
+                            <DedupThumb itemPath={item.path} thumbnailUrl={item.thumbnail_url} alt={item.file_name} />
                           ) : (
                             <span>📷</span>
                           )}
@@ -442,28 +442,7 @@ export function Dedup() {
                               onClick={async (e) => {
                                 e.stopPropagation();
                                 try {
-                                  const res = await fetch(apiUrl(`/files?path=${encodeURIComponent(item.path)}`), { method: "DELETE" });
-                                  if (res.status === 404) {
-                                    alert(`文件不存在或已被删除`);
-                                    const allPaths = [item.path];
-                                    setJob((prev) => {
-                                      if (!prev) return prev;
-                                      return {
-                                        ...prev,
-                                        groups: prev.groups.map((g) =>
-                                          g.group_id === group.group_id
-                                            ? { ...g, items: g.items.filter((i) => !allPaths.includes(i.path)) }
-                                            : g
-                                        ).filter((g) => g.items.length > 1),
-                                      };
-                                    });
-                                    return;
-                                  }
-                                  if (!res.ok) {
-                                    alert("删除失败");
-                                    return;
-                                  }
-                                  const data = await res.json();
+                                  const data = await deleteFile(item.path);
                                   const allPaths: string[] = data.deleted || [item.path];
 
                                   if (job) {
@@ -540,4 +519,28 @@ export function Dedup() {
       />
     </div>
   );
+}
+
+function DedupThumb({ itemPath, thumbnailUrl, alt }: { itemPath: string; thumbnailUrl: string; alt: string }) {
+  const [src, setSrc] = useState<string>("");
+
+  useEffect(() => {
+    let active = true;
+    resolveThumbnailUrl(thumbnailUrl, itemPath)
+      .then((resolved) => {
+        if (active) setSrc(resolved);
+      })
+      .catch(() => {
+        if (active) setSrc("");
+      });
+    return () => {
+      active = false;
+    };
+  }, [thumbnailUrl, itemPath]);
+
+  if (!src) {
+    return <span>📷</span>;
+  }
+
+  return <img src={src} alt={alt} />;
 }

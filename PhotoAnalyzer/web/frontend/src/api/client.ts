@@ -1,5 +1,8 @@
 let apiBase = import.meta.env.DEV ? "/api" : "http://127.0.0.1:8001/api";
 let apiBaseInitialized = false;
+let invokeFn: (<T>(cmd: string, args?: Record<string, unknown>) => Promise<T>) | null = null;
+
+type InProcessResponse = [number, string, string | null];
 
 export async function initApiBase(): Promise<void> {
   if (apiBaseInitialized) return;
@@ -16,13 +19,29 @@ export async function initApiBase(): Promise<void> {
 
   try {
     const { invoke } = await import("@tauri-apps/api/core");
+    invokeFn = invoke;
     const runtimeApiBase = await invoke<string>("get_api_base");
+    if (runtimeApiBase === "inproc") {
+      apiBase = "inproc";
+      return;
+    }
     if (runtimeApiBase && (runtimeApiBase.startsWith("http://") || runtimeApiBase.startsWith("https://"))) {
       apiBase = runtimeApiBase;
     }
   } catch {
     // Keep fallback API base when command is unavailable.
   }
+}
+
+function isInProcessApi(): boolean {
+  return apiBase === "inproc";
+}
+
+async function getInvoke() {
+  if (invokeFn) return invokeFn;
+  const { invoke } = await import("@tauri-apps/api/core");
+  invokeFn = invoke;
+  return invoke;
 }
 
 function apiOrigin(): string {
@@ -36,6 +55,32 @@ async function request<T>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<T> {
+  if (isInProcessApi()) {
+    const [path, query] = endpoint.split("?", 2);
+    const method = options.method ?? "GET";
+    const body = typeof options.body === "string" ? options.body : undefined;
+    const invoke = await getInvoke();
+    const [status, bodyText] = await invoke<InProcessResponse>("api_request", {
+      method,
+      path: `/api${path}`,
+      query: query ?? null,
+      body: body ?? null,
+    });
+
+    if (status < 200 || status >= 300) {
+      const error = (() => {
+        try {
+          return JSON.parse(bodyText || "{}");
+        } catch {
+          return { detail: bodyText || `HTTP ${status}` };
+        }
+      })();
+      throw new Error(error.detail || `HTTP ${status}`);
+    }
+
+    return JSON.parse(bodyText || "null") as T;
+  }
+
   const url = `${apiBase}${endpoint}`;
   const response = await fetch(url, {
     headers: {
@@ -54,6 +99,9 @@ async function request<T>(
 }
 
 export function apiUrl(path: string): string {
+  if (isInProcessApi()) {
+    return `/api${path}`;
+  }
   return `${apiBase}${path}`;
 }
 
@@ -69,4 +117,31 @@ export function resolveApiUrl(pathOrUrl: string): string {
   return pathOrUrl;
 }
 
-export { request };
+function decodePathFromThumbnailUrl(thumbnailUrl: string): string | null {
+  const match = thumbnailUrl.match(/[?&]path=([^&]+)/);
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
+}
+
+export async function getThumbnailSrc(path: string, full = false): Promise<string> {
+  if (isInProcessApi()) {
+    const invoke = await getInvoke();
+    return invoke<string>("get_thumbnail_data_url", { path, full });
+  }
+  return apiUrl(`/thumbnails?path=${encodeURIComponent(path)}${full ? "&full=1" : ""}`);
+}
+
+export async function resolveThumbnailUrl(thumbnailUrl: string, path?: string): Promise<string> {
+  if (isInProcessApi()) {
+    const resolvedPath = path ?? decodePathFromThumbnailUrl(thumbnailUrl);
+    if (!resolvedPath) return "";
+    return getThumbnailSrc(resolvedPath, false);
+  }
+  return resolveApiUrl(thumbnailUrl);
+}
+
+export { request, isInProcessApi };

@@ -6,16 +6,22 @@ mod handlers;
 mod paths;
 
 use axum::{
-    http::{header, HeaderValue, StatusCode},
-    response::{IntoResponse, Response},
+    body::{to_bytes, Body},
+    http::Request,
     routing::{delete, get, post},
     Router,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tower::ServiceExt;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+#[cfg(feature = "embed-frontend")]
+use axum::{
+    http::{header, HeaderValue, StatusCode},
+    response::{IntoResponse, Response},
+};
 #[cfg(feature = "embed-frontend")]
 use rust_embed::RustEmbed;
 
@@ -83,12 +89,12 @@ async fn serve_embedded_asset(axum::extract::Path(path): axum::extract::Path<Str
 }
 
 pub fn build_app() -> Router {
-    tracing_subscriber::registry()
+    let _ = tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
             std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
         ))
         .with(tracing_subscriber::fmt::layer())
-        .init();
+        .try_init();
 
     let state = Arc::new(AppState::new());
 
@@ -166,6 +172,60 @@ pub async fn run_server_from_env() -> Result<(), String> {
         .map_err(|_| "PORT must be a valid port".to_string())?;
 
     run_server(port, should_open_browser()).await
+}
+
+pub struct InProcessApi {
+    runtime: tokio::runtime::Runtime,
+    app: Router,
+}
+
+impl InProcessApi {
+    pub fn new() -> Result<Self, String> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("创建运行时失败: {e}"))?;
+
+        let app = build_app();
+        Ok(Self { runtime, app })
+    }
+
+    pub fn request(
+        &self,
+        method: &str,
+        uri: &str,
+        body: Option<Vec<u8>>,
+        content_type: Option<&str>,
+    ) -> Result<(u16, Vec<u8>, Option<String>), String> {
+        self.runtime.block_on(async {
+            let mut req_builder = Request::builder().method(method).uri(uri);
+            if let Some(ct) = content_type {
+                req_builder = req_builder.header("content-type", ct);
+            }
+            let req = req_builder
+                .body(Body::from(body.unwrap_or_default()))
+                .map_err(|e| format!("构造请求失败: {e}"))?;
+
+            let response = self
+                .app
+                .clone()
+                .oneshot(req)
+                .await
+                .map_err(|e| format!("处理请求失败: {e}"))?;
+
+            let status = response.status().as_u16();
+            let content_type = response
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.to_string());
+            let bytes = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .map_err(|e| format!("读取响应失败: {e}"))?;
+
+            Ok((status, bytes.to_vec(), content_type))
+        })
+    }
 }
 
 pub fn spawn_server(preferred_port: Option<u16>, open_browser: bool) -> std::sync::mpsc::Receiver<Result<u16, String>> {

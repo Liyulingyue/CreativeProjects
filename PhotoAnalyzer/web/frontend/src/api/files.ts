@@ -37,3 +37,7 @@ export async function getOrphanedRaws(dirId: string): Promise<{ orphaned: string
 export async function deleteOrphanedRaws(dirId: string): Promise<{ deleted: string[]; not_found: string[]; count: number }> {
   return request<{ deleted: string[]; not_found: string[]; count: number }>(`/files/orphaned-raws?dir_id=${encodeURIComponent(dirId)}`, { method: "DELETE" });
 }
+
+export async function deleteFile(path: string): Promise<{ deleted: string[]; not_found?: string[]; count?: number }> {
+  return request<{ deleted: string[]; not_found?: string[]; count?: number }>(`/files?path=${encodeURIComponent(path)}`, { method: "DELETE" });
+}

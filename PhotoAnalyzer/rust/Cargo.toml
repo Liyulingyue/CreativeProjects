@@ -10,7 +10,7 @@ embed-frontend = ["dep:rust-embed", "dep:mime_guess"]
 [dependencies]
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
-tower = "0.4"
+tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.5", features = ["fs", "cors", "trace"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
