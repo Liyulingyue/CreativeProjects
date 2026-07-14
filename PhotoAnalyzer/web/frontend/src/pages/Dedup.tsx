@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { startDedupFolder, startDedupPaths, getDedupJob, getDedupJobByDir, resolveDedupGroups } from "@/api/dedup";
 import { listDirs, addDir, browseFiles } from "@/api/files";
 import { listResults } from "@/api/analysis";
-import { apiUrl } from "@/api/client";
+import { apiUrl, resolveApiUrl } from "@/api/client";
 import type { DirEntry, DedupJob, DedupGroup, BrowseResult, FileNode, AnalysisResult } from "@/api/types";
 import { PathInput } from "@/components/PathInput";
 import { FolderPicker } from "@/components/FolderPicker";
@@ -404,7 +404,7 @@ export function Dedup() {
                           onClick={(e) => { e.stopPropagation(); setPreviewItem({ name: item.file_name, path: item.path, size: item.file_size, is_dir: false, modified: "", thumbnail_url: item.thumbnail_url }); }}
                         >
                           {item.thumbnail_url ? (
-                            <img src={item.thumbnail_url} alt={item.file_name} />
+                            <img src={resolveApiUrl(item.thumbnail_url)} alt={item.file_name} />
                           ) : (
                             <span>📷</span>
                           )}
