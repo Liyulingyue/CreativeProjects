@@ -77,6 +77,7 @@ else:
 wrapper = OpenAIJsonWrapper(
     client, 
     model="gpt-4o", 
+    target_structure=target_structure,
     background="你是一个资深的简历分析专家。",
     requirements=["提取内容必须客观", "年龄若未知请填 0"]
 )
