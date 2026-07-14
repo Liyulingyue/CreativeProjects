@@ -20,6 +20,7 @@
 - 脚本通过 Scripts/.. 自动推导项目根目录，所以你从任意当前目录执行都可以。
 - 前端构建必须先成功，否则不会继续 Rust 构建。
 - Rust 构建使用 --features embed-frontend，会把前端 dist 打进二进制。
+- Tauri 桌面版会直接把后端库编进桌面壳进程，不再额外复制 sidecar 可执行文件。
 - 结束时会校验 photo_analyzer.exe 是否存在，并输出文件大小。
 - 任一命令失败会立即退出，不会继续后续步骤。
 
@@ -37,7 +38,8 @@
 - build_embed_release.ps1
   - 适用于 PowerShell 执行。
 - build_tauri_release.ps1
-  - 构建真正的 Tauri 桌面应用（WebView 窗口），并自动打包后端可执行文件为资源。
+  - 构建真正的 Tauri 桌面应用（WebView 窗口），后端代码直接编入同一进程。
+  - Tauri 壳目录位于项目根 `desktop/`。
 
 ## 使用方式
 
@@ -102,10 +104,8 @@ $env:PHOTO_ANALYZER_OPEN_BROWSER = "false"
 
 脚本会执行：
 
-1. 构建后端 `photo_analyzer.exe`
-2. 复制到 `web/frontend/src-tauri/bin/photo_analyzer_backend.exe`
-3. 执行 `npm run tauri:build`
+1. 执行 `npm run tauri:build`
 
 产物目录：
 
-- `web/frontend/src-tauri/target/release/bundle`
+- `desktop/target/release/bundle`

@@ -1,13 +1,13 @@
 {
-  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "$schema": "./node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "PhotoAnalyzer",
   "version": "0.1.0",
   "identifier": "com.photoanalyzer.app",
   "build": {
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm --prefix ../web/frontend run dev",
+    "beforeBuildCommand": "npm --prefix ../web/frontend run build",
     "devUrl": "http://localhost:5173",
-    "frontendDist": "../dist"
+    "frontendDist": "../web/frontend/dist"
   },
   "app": {
     "windows": [
@@ -27,9 +27,6 @@
       "icons/icon.ico",
       "icons/icon.icns",
       "icons/icon.png"
-    ],
-    "resources": [
-      "bin/photo_analyzer_backend.exe"
     ]
   }
 }
