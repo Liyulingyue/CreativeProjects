@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { FileNode, AnalysisJob, AnalysisResult } from "@/api/types";
 import { cancelAnalysisJob, getAnalysisJob, getResult, startAnalysis } from "@/api/analysis";
+import { apiUrl } from "@/api/client";
 import { ProgressModal } from "@/components/ProgressModal";
 
 interface ImagePreviewProps {
@@ -84,7 +85,7 @@ export function ImagePreview({ item, onClose, onAnalysisComplete }: ImagePreview
 
   if (!item) return null;
 
-  const fullUrl = `/api/thumbnails?path=${encodeURIComponent(item.path)}&full=1`;
+  const fullUrl = apiUrl(`/thumbnails?path=${encodeURIComponent(item.path)}&full=1`);
   const analyzing = activeJob?.status === "running" || activeJob?.status === "pending";
 
   const handleAnalyze = async () => {

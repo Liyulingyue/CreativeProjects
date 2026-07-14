@@ -97,7 +97,7 @@ pub fn build_app() -> Router {
         .allow_methods(tower_http::cors::Any)
         .allow_headers(tower_http::cors::Any);
 
-    let mut app = Router::new()
+    let app = Router::new()
         .route("/health", get(health))
         .route("/", get(serve_index))
         .route("/api/dirs", get(handlers::list_dirs))
@@ -132,9 +132,7 @@ pub fn build_app() -> Router {
         .route("/api/stats", get(handlers::get_stats));
 
     #[cfg(feature = "embed-frontend")]
-    {
-        app = app.route("/*path", get(serve_embedded_asset));
-    }
+    let app = app.route("/*path", get(serve_embedded_asset));
 
     app.layer(cors).with_state(state)
 }
@@ -170,7 +168,7 @@ pub async fn run_server_from_env() -> Result<(), String> {
     run_server(port, should_open_browser()).await
 }
 
-pub fn spawn_server(port: u16, open_browser: bool) -> std::sync::mpsc::Receiver<Result<(), String>> {
+pub fn spawn_server(preferred_port: Option<u16>, open_browser: bool) -> std::sync::mpsc::Receiver<Result<u16, String>> {
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
 
     std::thread::spawn(move || {
@@ -187,26 +185,35 @@ pub fn spawn_server(port: u16, open_browser: bool) -> std::sync::mpsc::Receiver<
 
         runtime.block_on(async move {
             let app = build_app();
-            let addr = SocketAddr::from(([0, 0, 0, 0], port));
-            tracing::info!("Starting PhotoAnalyzer server on http://localhost:{}", port);
-
-            if open_browser {
-                let url = format!("http://localhost:{}", port);
-                tokio::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    let _ = webbrowser::open(&url);
-                });
-            }
-
-            let listener = match tokio::net::TcpListener::bind(addr).await {
+            let bind_target = match preferred_port {
+                Some(port) => format!("127.0.0.1:{port}"),
+                None => "127.0.0.1:0".to_string(),
+            };
+            let listener = match tokio::net::TcpListener::bind(&bind_target).await {
                 Ok(listener) => listener,
                 Err(error) => {
                     let _ = ready_tx.send(Err(format!("绑定端口失败: {error}")));
                     return;
                 }
             };
+            let port = match listener.local_addr() {
+                Ok(addr) => addr.port(),
+                Err(error) => {
+                    let _ = ready_tx.send(Err(format!("获取监听端口失败: {error}")));
+                    return;
+                }
+            };
+            tracing::info!("Starting PhotoAnalyzer server on http://127.0.0.1:{}", port);
 
-            let _ = ready_tx.send(Ok(()));
+            if open_browser {
+                let url = format!("http://127.0.0.1:{}", port);
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    let _ = webbrowser::open(&url);
+                });
+            }
+
+            let _ = ready_tx.send(Ok(port));
 
             if let Err(error) = axum::serve(listener, app).await {
                 eprintln!("[photo_analyzer] server error: {error}");

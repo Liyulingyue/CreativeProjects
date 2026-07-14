@@ -1,4 +1,5 @@
 import type { FileNode, AnalysisResult } from "@/api/types";
+import { resolveApiUrl } from "@/api/client";
 
 interface PhotoGridProps {
   items: FileNode[];
@@ -31,7 +32,7 @@ export function PhotoGrid({ items, onSelect, selectedPaths, onToggleSelect, scor
             </div>
             <div className="photo-card__image">
               {item.thumbnail_url ? (
-                <img src={item.thumbnail_url} alt={item.name} loading="lazy" />
+                <img src={resolveApiUrl(item.thumbnail_url)} alt={item.name} loading="lazy" />
               ) : (
                 <div className="photo-card__placeholder">📷</div>
               )}

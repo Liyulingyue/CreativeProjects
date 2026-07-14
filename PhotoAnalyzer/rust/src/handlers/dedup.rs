@@ -321,7 +321,7 @@ async fn run_dedup_job(state: Arc<AppState>, job_id: String, paths: Vec<String>)
             dedup_items.push(crate::models::DedupItem {
                 path: p.clone(),
                 file_name,
-                thumbnail_url: Some(format!("/api/thumbnails?path={}", p)),
+                thumbnail_url: Some(format!("/api/thumbnails?path={}", encode_uri(p))),
                 file_size,
                 similarity: 0.0,
                 metadata: HashMap::new(),
@@ -371,6 +371,21 @@ fn save_json(path: &StdPath, value: &serde_json::Value) {
     if let Ok(content) = serde_json::to_string_pretty(value) {
         let _ = fs::write(path, content);
     }
+}
+
+fn encode_uri(input: &str) -> String {
+    let mut result = String::new();
+    for c in input.chars() {
+        match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => result.push(c),
+            _ => {
+                for byte in c.to_string().as_bytes() {
+                    result.push_str(&format!("%{:02X}", byte));
+                }
+            }
+        }
+    }
+    result
 }
 
 fn stats_project_mode() -> CacheStats {
