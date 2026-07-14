@@ -1,5 +1,6 @@
+import { useEffect, useState } from "react";
 import type { FileNode, AnalysisResult } from "@/api/types";
-import { resolveApiUrl } from "@/api/client";
+import { resolveThumbnailUrl } from "@/api/client";
 
 interface PhotoGridProps {
   items: FileNode[];
@@ -32,7 +33,7 @@ export function PhotoGrid({ items, onSelect, selectedPaths, onToggleSelect, scor
             </div>
             <div className="photo-card__image">
               {item.thumbnail_url ? (
-                <img src={resolveApiUrl(item.thumbnail_url)} alt={item.name} loading="lazy" />
+                <GridThumb path={item.path} thumbnailUrl={item.thumbnail_url} alt={item.name} />
               ) : (
                 <div className="photo-card__placeholder">📷</div>
               )}
@@ -53,6 +54,31 @@ export function PhotoGrid({ items, onSelect, selectedPaths, onToggleSelect, scor
       })}
     </div>
   );
+}
+
+function GridThumb({ path, thumbnailUrl, alt }: { path: string; thumbnailUrl: string; alt: string }) {
+  const [src, setSrc] = useState<string>("");
+
+  useEffect(() => {
+    let active = true;
+    resolveThumbnailUrl(thumbnailUrl, path)
+      .then((resolved) => {
+        if (active) setSrc(resolved);
+      })
+      .catch(() => {
+        if (active) setSrc("");
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [thumbnailUrl, path]);
+
+  if (!src) {
+    return <div className="photo-card__placeholder">📷</div>;
+  }
+
+  return <img src={src} alt={alt} loading="lazy" />;
 }
 
 function formatSize(bytes: number): string {

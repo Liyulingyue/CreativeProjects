@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { FileNode, AnalysisJob, AnalysisResult } from "@/api/types";
 import { cancelAnalysisJob, getAnalysisJob, getResult, startAnalysis } from "@/api/analysis";
-import { apiUrl } from "@/api/client";
+import { getThumbnailSrc } from "@/api/client";
 import { ProgressModal } from "@/components/ProgressModal";
 
 interface ImagePreviewProps {
@@ -14,6 +14,7 @@ export function ImagePreview({ item, onClose, onAnalysisComplete }: ImagePreview
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [activeJob, setActiveJob] = useState<AnalysisJob | null>(null);
+  const [fullSrc, setFullSrc] = useState<string>("");
   const pollTimerRef = useRef<number | null>(null);
 
   const clearPollTimer = useCallback(() => {
@@ -74,7 +75,21 @@ export function ImagePreview({ item, onClose, onAnalysisComplete }: ImagePreview
     setResult(null);
     setActiveJob(null);
     clearPollTimer();
+    setFullSrc("");
     void refreshResult(item.path);
+
+    let active = true;
+    getThumbnailSrc(item.path, true)
+      .then((src) => {
+        if (active) setFullSrc(src);
+      })
+      .catch(() => {
+        if (active) setFullSrc("");
+      });
+
+    return () => {
+      active = false;
+    };
   }, [item, clearPollTimer, refreshResult]);
 
   useEffect(() => {
@@ -85,7 +100,6 @@ export function ImagePreview({ item, onClose, onAnalysisComplete }: ImagePreview
 
   if (!item) return null;
 
-  const fullUrl = apiUrl(`/thumbnails?path=${encodeURIComponent(item.path)}&full=1`);
   const analyzing = activeJob?.status === "running" || activeJob?.status === "pending";
 
   const handleAnalyze = async () => {
@@ -132,7 +146,7 @@ export function ImagePreview({ item, onClose, onAnalysisComplete }: ImagePreview
         </div>
         <div className="image-preview__body">
           <div className="image-preview__image-wrap">
-            <img src={fullUrl} alt={item.name} />
+            {fullSrc ? <img src={fullSrc} alt={item.name} /> : <div className="photo-card__placeholder">📷</div>}
           </div>
           {result || loading || analyzing ? (
             <div className="image-preview__sidebar">
