@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { startDedupFolder, startDedupPaths, getDedupJob, getDedupJobByDir, resolveDedupGroups } from "@/api/dedup";
 import { listDirs, addDir, browseFiles } from "@/api/files";
 import { listResults } from "@/api/analysis";
+import { apiUrl } from "@/api/client";
 import type { DirEntry, DedupJob, DedupGroup, BrowseResult, FileNode, AnalysisResult } from "@/api/types";
 import { PathInput } from "@/components/PathInput";
 import { FolderPicker } from "@/components/FolderPicker";
@@ -206,7 +207,7 @@ export function Dedup() {
 
     try {
       for (const path of toDelete) {
-        await fetch(`/api/files?path=${encodeURIComponent(path)}`, { method: "DELETE" });
+        await fetch(apiUrl(`/files?path=${encodeURIComponent(path)}`), { method: "DELETE" });
       }
 
       const actions = job.groups.map((group) => {
@@ -441,7 +442,7 @@ export function Dedup() {
                               onClick={async (e) => {
                                 e.stopPropagation();
                                 try {
-                                  const res = await fetch(`/api/files?path=${encodeURIComponent(item.path)}`, { method: "DELETE" });
+                                  const res = await fetch(apiUrl(`/files?path=${encodeURIComponent(item.path)}`), { method: "DELETE" });
                                   if (res.status === 404) {
                                     alert(`文件不存在或已被删除`);
                                     const allPaths = [item.path];

@@ -1,4 +1,4 @@
-const API_BASE = "/api";
+const API_BASE = import.meta.env.DEV ? "/api" : "http://127.0.0.1:8001/api";
 
 async function request<T>(
   endpoint: string,

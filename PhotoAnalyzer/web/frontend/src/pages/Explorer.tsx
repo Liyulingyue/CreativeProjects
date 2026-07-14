@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { listDirs, browseFiles, addDir, removeDir, getOrphanedRaws, deleteOrphanedRaws, getFileSiblings } from "@/api/files";
 import { listResults } from "@/api/analysis";
+import { apiUrl } from "@/api/client";
 import type { DirEntry, BrowseResult, FileNode, AnalysisResult } from "@/api/types";
 import { PhotoGrid } from "@/components/PhotoGrid";
 import { FolderPicker } from "@/components/FolderPicker";
@@ -161,7 +162,7 @@ export function Explorer() {
       if (!confirm(`确定删除 ${uniquePaths.length} 个文件？\n${fileNames}`)) return;
 
       for (const path of uniquePaths) {
-        await fetch(`/api/files?path=${encodeURIComponent(path)}`, { method: "DELETE" });
+        await fetch(apiUrl(`/files?path=${encodeURIComponent(path)}`), { method: "DELETE" });
       }
       setSelectedPaths(new Set());
       if (activeDir) {
