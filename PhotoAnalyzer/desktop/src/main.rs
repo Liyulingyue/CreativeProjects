@@ -102,8 +102,8 @@ fn encode_uri_component(input: &str) -> String {
 }
 
 fn main() {
-    if std::env::args().any(|a| a == "--serve") {
-        let args = photo_analyzer::CliArgs::parse();
+    let args = photo_analyzer::CliArgs::parse();
+    if args.serve {
         let rt = tokio::runtime::Runtime::new().expect("创建运行时失败");
         if let Err(error) = rt.block_on(photo_analyzer::run_server(&args.host, args.port, !args.no_open)) {
             eprintln!("[photo_analyzer] server error: {error}");
