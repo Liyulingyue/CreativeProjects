@@ -127,21 +127,36 @@
 
 ### 改动范围
 1. `rust/Cargo.toml`
-   - 增加 `clap` 依赖（可选 feature 或默认）
-2. `rust/src/main.rs`
-   - 解析 CLI 参数：`--port`、`--host`、`--no-open`、`--frontend-dir`
-   - 替代当前环境变量方式
-3. CI / GitHub Actions
+   - 增加 `clap` 依赖
+2. `rust/src/lib.rs`
+   - 新增 `CliArgs` 结构体及 `CliArgs::parse()` 方法（clap 解析逻辑放 lib 共享）
+   - `rust/src/main.rs` 和 `desktop/src/main.rs` 均调用 `CliArgs::parse()`，不重复
+3. `rust/src/main.rs`
+   - 调用 `CliArgs::parse()` 替代当前环境变量方式
+4. `desktop/src/main.rs`
+   - 入口加 `--serve` 参数分发：有 `--serve` → 调 `run_server()` 走 CLI 模式；无 → 走 Tauri GUI
+   - CLI 模式调 `CliArgs::parse()` 复用同一套参数解析
+5. `desktop/Cargo.toml`
+   - 启用 `photo_analyzer = { path = "../rust", features = ["embed-frontend"] }`，让 `--serve` 模式能 serve 前端
+6. CI / GitHub Actions
    - 手动触发（`workflow_dispatch`），可选参数：构建目标（all / cli-only / tauri-only）
    - 跨平台构建矩阵：`x86_64-linux-gnu`、`x86_64-apple-darwin`、`x86_64-pc-windows-msvc`
    - Linux runner 预装 `libwebkit2gtk-4.1-dev`（Tauri 需要）
    - 产物上传至 GitHub Release
-4. 安装脚本
+7. 安装脚本
    - `install.sh`：检测平台 → 下载对应二进制 → 放入 `/usr/local/bin/`
-5. 打包
+8. 打包
    - `cargo deb` 生成 .deb
    - Homebrew formula
    - 可选：`.rpm`、`aur`
+
+### 分发策略
+| 平台 | 产物 | 安装方式 |
+|---|---|---|
+| Windows | Tauri 安装包（含 `--serve` CLI 模式） | 双击安装，能力最全 |
+| macOS | Tauri DMG（含 `--serve` CLI 模式） | 双击安装 |
+| Linux 桌面 | Tauri AppImage（可选） | 下载运行 |
+| Linux 服务器 | 独立 CLI 二进制（`rust/` + `embed-frontend`，无 Tauri 依赖） | `apt`/`curl` 安装 |
 
 ### 验收标准
 - `photoanalyzer` 启动后浏览器自动打开，局域网设备可通过 `http://<ip>:<port>` 访问
