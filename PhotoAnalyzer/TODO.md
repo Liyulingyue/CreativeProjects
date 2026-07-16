@@ -132,7 +132,9 @@
    - 解析 CLI 参数：`--port`、`--host`、`--no-open`、`--frontend-dir`
    - 替代当前环境变量方式
 3. CI / GitHub Actions
+   - 手动触发（`workflow_dispatch`），可选参数：构建目标（all / cli-only / tauri-only）
    - 跨平台构建矩阵：`x86_64-linux-gnu`、`x86_64-apple-darwin`、`x86_64-pc-windows-msvc`
+   - Linux runner 预装 `libwebkit2gtk-4.1-dev`（Tauri 需要）
    - 产物上传至 GitHub Release
 4. 安装脚本
    - `install.sh`：检测平台 → 下载对应二进制 → 放入 `/usr/local/bin/`
@@ -153,7 +155,7 @@
    - `--port`、`--host`、`--no-open` 支持
 
 2. P2
-   - GitHub Actions CI 跨平台构建 + Release
+   - GitHub Actions CI（`workflow_dispatch` 手动触发）跨平台构建 + Release
    - `install.sh` 安装脚本
 
 3. P3
