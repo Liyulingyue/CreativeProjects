@@ -1,0 +1,173 @@
+name: PhotoAnalyzer Release Desktop Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Build target'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - windows
+          - macos
+          - linux
+  push:
+    branches:
+      - master
+      - main
+    paths:
+      - 'PhotoAnalyzer/**'
+  pull_request:
+    paths:
+      - 'PhotoAnalyzer/**'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-windows:
+    if: github.event.inputs.target == 'all' || github.event.inputs.target == 'windows'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './PhotoAnalyzer/desktop/src-tauri/target'
+
+      - name: Install frontend dependencies
+        run: npm install
+        working-directory: ./PhotoAnalyzer/web/frontend
+
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli@2
+        working-directory: ./PhotoAnalyzer/desktop
+
+      - name: Build Tauri app
+        run: npm run tauri:build
+        working-directory: ./PhotoAnalyzer/desktop
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: photo-analyzer-windows
+          path: PhotoAnalyzer/desktop/src-tauri/target/**/release/bundle/**
+          if-no-files-found: error
+
+  build-macos:
+    if: github.event.inputs.target == 'all' || github.event.inputs.target == 'macos'
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './PhotoAnalyzer/desktop/src-tauri/target'
+
+      - name: Install frontend dependencies
+        run: npm install
+        working-directory: ./PhotoAnalyzer/web/frontend
+
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli@2
+        working-directory: ./PhotoAnalyzer/desktop
+
+      - name: Build Tauri app
+        run: npm run tauri:build
+        working-directory: ./PhotoAnalyzer/desktop
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: photo-analyzer-macos
+          path: PhotoAnalyzer/desktop/src-tauri/target/**/release/bundle/**
+          if-no-files-found: error
+
+  build-linux:
+    if: github.event.inputs.target == 'all' || github.event.inputs.target == 'linux'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './PhotoAnalyzer/desktop/src-tauri/target'
+
+      - name: Install frontend dependencies
+        run: npm install
+        working-directory: ./PhotoAnalyzer/web/frontend
+
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli@2
+        working-directory: ./PhotoAnalyzer/desktop
+
+      - name: Build Tauri app
+        run: npm run tauri:build
+        working-directory: ./PhotoAnalyzer/desktop
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: photo-analyzer-linux
+          path: PhotoAnalyzer/desktop/src-tauri/target/**/release/bundle/**
+          if-no-files-found: error
+
+  release:
+    needs: [build-windows, build-macos, build-linux]
+    if: github.event.inputs.target == 'all'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: photo-analyzer-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*.msi artifacts/**/*.dmg artifacts/**/*.deb artifacts/**/*.AppImage
+          draft: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
