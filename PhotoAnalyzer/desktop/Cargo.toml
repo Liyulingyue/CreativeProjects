@@ -9,7 +9,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 base64 = "0.22"
 tauri = { version = "2", features = [] }
-photo_analyzer = { path = "../rust" }
+tokio = { version = "1", features = ["full"] }
+photo_analyzer = { path = "../rust", features = ["embed-frontend"] }
 
 [profile.release]
 panic = "abort"
