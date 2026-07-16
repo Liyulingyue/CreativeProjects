@@ -26,3 +26,4 @@ openaijsonwrapper = "0.2.0"
 rust-embed = { version = "8", optional = true }
 mime_guess = { version = "2", optional = true }
 webbrowser = "1"
+clap = { version = "4", features = ["derive"] }

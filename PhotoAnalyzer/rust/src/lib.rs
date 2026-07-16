@@ -11,6 +11,7 @@ use axum::{
     routing::{delete, get, post},
     Router,
 };
+use clap::Parser;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -26,6 +27,28 @@ use axum::{
 use rust_embed::RustEmbed;
 
 use services::AppState;
+
+#[derive(Parser)]
+#[command(name = "photoanalyzer", about = "Photo Analyzer - AI-powered photo analysis tool")]
+pub struct CliArgs {
+    #[arg(long, default_value = "8001", help = "Port to listen on")]
+    pub port: u16,
+
+    #[arg(long, default_value = "0.0.0.0", help = "Host address to bind")]
+    pub host: String,
+
+    #[arg(long, help = "Do not auto-open browser")]
+    pub no_open: bool,
+
+    #[arg(long, help = "Frontend static files directory (overrides embedded frontend)")]
+    pub frontend_dir: Option<String>,
+}
+
+impl CliArgs {
+    pub fn parse() -> Self {
+        Parser::parse()
+    }
+}
 
 fn should_open_browser() -> bool {
     std::env::var("PHOTO_ANALYZER_OPEN_BROWSER")
@@ -143,10 +166,12 @@ pub fn build_app() -> Router {
     app.layer(cors).with_state(state)
 }
 
-pub async fn run_server(port: u16, open_browser: bool) -> Result<(), String> {
+pub async fn run_server(host: &str, port: u16, open_browser: bool) -> Result<(), String> {
     let app = build_app();
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    tracing::info!("Starting PhotoAnalyzer server on http://localhost:{}", port);
+    let addr: SocketAddr = format!("{}:{}", host, port)
+        .parse()
+        .map_err(|e| format!("无效地址 {host}:{port}: {e}"))?;
+    tracing::info!("Starting PhotoAnalyzer server on http://{}:{}", host, port);
 
     if open_browser {
         let url = format!("http://localhost:{}", port);
@@ -171,7 +196,9 @@ pub async fn run_server_from_env() -> Result<(), String> {
         .parse()
         .map_err(|_| "PORT must be a valid port".to_string())?;
 
-    run_server(port, should_open_browser()).await
+    let host = std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
+
+    run_server(&host, port, should_open_browser()).await
 }
 
 pub struct InProcessApi {

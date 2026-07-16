@@ -102,6 +102,16 @@ fn encode_uri_component(input: &str) -> String {
 }
 
 fn main() {
+    if std::env::args().any(|a| a == "--serve") {
+        let args = photo_analyzer::CliArgs::parse();
+        let rt = tokio::runtime::Runtime::new().expect("创建运行时失败");
+        if let Err(error) = rt.block_on(photo_analyzer::run_server(&args.host, args.port, !args.no_open)) {
+            eprintln!("[photo_analyzer] server error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     tauri::Builder::default()
         .manage(ApiBaseState(Mutex::new("inproc".to_string())))
         .manage(InProcessApiState(Mutex::new(None)))

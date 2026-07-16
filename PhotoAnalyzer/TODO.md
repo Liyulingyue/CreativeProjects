@@ -115,8 +115,9 @@
 `rust/` + `embed-frontend` 编译出的独立 exe 已具备完整能力：启动 HTTP 服务器、内嵌前端、自动打开浏览器、局域网可访问。但当前缺少 CLI 参数支持和分发渠道，无法实现 `curl/apt install photoanalyzer` → 命令行启动 → 浏览器访问的体验。
 
 ### 现状
-- 独立 exe：固定端口 `8001`（`PORT` 环境变量可改），绑定 `0.0.0.0`，自动打开浏览器
-- Tauri HTTP 模式：随机端口（bind `:0`），绑定 `127.0.0.1`，仅本机可达
+- 独立 exe：支持 `--port`、`--host`、`--no-open`、`--frontend-dir` CLI 参数（clap），默认 `0.0.0.0:8001`，自动打开浏览器
+- Tauri exe：支持 `--serve` 进入 CLI 模式（复用 `CliArgs::parse()`），无 `--serve` 则走 Tauri GUI
+- Tauri HTTP 模式（`PHOTO_ANALYZER_EXPOSE_HTTP=1`）：随机端口（bind `:0`），绑定 `127.0.0.1`，仅本机可达（待改为可配置）
 
 ### 目标
 - 支持 `photoanalyzer --port 8080 --host 0.0.0.0 --no-open` 等 CLI 参数
@@ -126,18 +127,11 @@
 - 可选：systemd unit file 实现开机自启
 
 ### 改动范围
-1. `rust/Cargo.toml`
-   - 增加 `clap` 依赖
-2. `rust/src/lib.rs`
-   - 新增 `CliArgs` 结构体及 `CliArgs::parse()` 方法（clap 解析逻辑放 lib 共享）
-   - `rust/src/main.rs` 和 `desktop/src/main.rs` 均调用 `CliArgs::parse()`，不重复
-3. `rust/src/main.rs`
-   - 调用 `CliArgs::parse()` 替代当前环境变量方式
-4. `desktop/src/main.rs`
-   - 入口加 `--serve` 参数分发：有 `--serve` → 调 `run_server()` 走 CLI 模式；无 → 走 Tauri GUI
-   - CLI 模式调 `CliArgs::parse()` 复用同一套参数解析
-5. `desktop/Cargo.toml`
-   - 启用 `photo_analyzer = { path = "../rust", features = ["embed-frontend"] }`，让 `--serve` 模式能 serve 前端
+1. ~~`rust/Cargo.toml`~~ ✅ 已完成：增加 `clap` 依赖
+2. ~~`rust/src/lib.rs`~~ ✅ 已完成：`CliArgs` 结构体 + `CliArgs::parse()`，`run_server()` 加 `host` 参数
+3. ~~`rust/src/main.rs`~~ ✅ 已完成：调用 `CliArgs::parse()` 替代环境变量
+4. ~~`desktop/src/main.rs`~~ ✅ 已完成：`--serve` 分发 + 复用 `CliArgs::parse()`
+5. ~~`desktop/Cargo.toml`~~ ✅ 已完成：启用 `embed-frontend` feature + `tokio`
 6. CI / GitHub Actions
    - 手动触发（`workflow_dispatch`），可选参数：构建目标（all / cli-only / tauri-only）
    - 跨平台构建矩阵：`x86_64-linux-gnu`、`x86_64-apple-darwin`、`x86_64-pc-windows-msvc`
@@ -165,9 +159,11 @@
 - `apt install photoanalyzer` 可用（至少 Ubuntu/Debian）
 
 ### 实施分期
-1. P1
-   - CLI 参数解析（clap）
-   - `--port`、`--host`、`--no-open` 支持
+1. ~~P1~~ ✅ 已完成
+   - ~~CLI 参数解析（clap）~~
+   - ~~`--port`、`--host`、`--no-open` 支持~~
+   - ~~`--serve` 分发（desktop）~~
+   - ~~`embed-frontend` 启用（desktop）~~
 
 2. P2
    - GitHub Actions CI（`workflow_dispatch` 手动触发）跨平台构建 + Release
