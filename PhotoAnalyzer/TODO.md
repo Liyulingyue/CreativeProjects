@@ -56,57 +56,44 @@
 - 并发生成缩略图时要避免重复写入和竞争删除。
 - 清理任务建议限速或分批，避免阻塞主请求。
 
-## 前端交付方式统一：运行时可配置前端来源
+## 前端交付方式：保留双重内嵌与 HTTP 服务
 
 ### 背景
-当前 `rust/` crate 的 `embed-frontend` feature 在编译时将前端 `dist/` 嵌入二进制，Tauri 则通过 `frontendDist` 独立打包前端。若 Tauri 构建同时启用 `embed-frontend`，会导致同一份前端资源被嵌入两次（体积浪费）；若不启用，Tauri 的 HTTP 模式（`PHOTO_ANALYZER_EXPOSE_HTTP=1`）无法 serve 前端给局域网其他用户。
+当前 `rust/` crate 的 `embed-frontend` feature 会在编译时将前端 `dist/` 嵌入二进制，Tauri 也会把 `frontendDist` 打进自己的 bundle。桌面包里会存在两份同源前端资源，但这样可以同时保住 GUI 窗口和 HTTP 服务两条交付路径，且都不依赖额外的本地前端目录。
 
-### 目标
-- 前端来源从编译时决定改为运行时可配置，消除重复嵌入。
-- Tauri HTTP 模式可复用 Tauri 已打包的前端资源，支持局域网分享。
-- 独立 exe（无 Tauri）仍通过 `embed-frontend` 内嵌前端。
+### 最终方案
+- desktop 和 CLI 都保留前端内嵌，不再依赖运行时磁盘目录
+- desktop 继续同时支持 GUI 启动和 HTTP 服务入口
+- `--serve` 模式保持自包含，独立运行时不需要额外前端文件
+- Tauri GUI 继续使用 `frontendDist`，保证桌面窗口路径稳定
+- 代价：桌面发行物会有双重嵌入，但这是为了交付方式一致性和离线可用性
 
-### 方案
-`build_app()` 增加 `frontend_dir: Option<PathBuf>` 参数，运行时决定前端来源：
-
-```
-优先级：
-1. frontend_dir 有值 → ServeDir 从磁盘读（Tauri 场景：指向 Tauri resource_dir）
-2. frontend_dir 为空 + embed-frontend feature → rust-embed 编译时嵌入
-3. frontend_dir 为空 + 无 embed-frontend → 只 serve API
-```
-
-### 改动范围
+### 已完成改动
 1. `rust/src/lib.rs`
-   - `build_app(frontend_dir: Option<PathBuf>)` 加参数
-   - `frontend_dir` 有值时用 `tower_http::services::ServeDir` fallback
-   - `frontend_dir` 为空时走现有 `embed-frontend` / 提示逻辑
-   - `run_server()`、`spawn_server()`、`InProcessApi::new()` 同步更新签名
+   - 保持 `embed-frontend` 内嵌前端
+   - 保持 `run_server()`、`spawn_server()`、`InProcessApi::new()` 的 HTTP 服务能力
 
 2. `desktop/src/main.rs`
-   - `PHOTO_ANALYZER_EXPOSE_HTTP` 分支中，获取 Tauri `resource_dir()` 拼接前端路径，传入 `spawn_server`
-   - `desktop/Cargo.toml` 不再需要 `embed-frontend` feature
+   - `--serve` 模式保留为 CLI 服务入口
+   - `PHOTO_ANALYZER_EXPOSE_HTTP` 保留为桌面内置 HTTP 暴露模式
+   - InProcess 模式保持 Tauri 自管前端
 
-3. `desktop/tauri.conf.json`（可选）
-   - 确认前端资源被打入 Tauri bundle 的 resource 目录
+3. `desktop/Cargo.toml`
+   - 启用 `embed-frontend` feature，确保桌面和 CLI 都能保持前端内嵌
 
 ### 验收标准
 - `cargo build -p photo_analyzer --features embed-frontend`：独立 exe，内嵌前端，可局域网分享
-- `cargo build -p photo_analyzer_tauri`（不带 embed-frontend）：Tauri 桌面窗口 + HTTP 模式复用 Tauri 前端，可局域网分享
-- 两种构建均不出现前端资源重复嵌入
-- `spawn_server` 绑定地址支持 `0.0.0.0`（当前硬编码 `127.0.0.1`，需改为可配置，否则局域网不可达）
+- `cargo build -p photo_analyzer_tauri`：Tauri 桌面窗口 + HTTP 服务入口内嵌前端，可局域网分享
+- 桌面发行物不依赖额外前端目录即可运行
 
 ### 实施分期
 1. P1
-   - `build_app` 加 `frontend_dir` 参数，实现运行时 ServeDir 分支
-   - `spawn_server` 支持配置绑定地址（`0.0.0.0` vs `127.0.0.1`）
+   - 保持现有双重内嵌方案，统一说明与打包脚本
 
 2. P2
-   - Tauri `setup()` 中获取 `resource_dir()` 并传入
-   - 移除 `desktop/Cargo.toml` 对 `embed-frontend` 的依赖
+   - 如需进一步减小体积，再评估是否拆分 GUI 和 CLI 产物
 
 3. P3
-   - CLI 参数 `--host`、`--port`、`--frontend-dir` 替代环境变量
    - 文档更新
 
 ## CLI 分发与安装体验
@@ -115,9 +102,9 @@
 `rust/` + `embed-frontend` 编译出的独立 exe 已具备完整能力：启动 HTTP 服务器、内嵌前端、自动打开浏览器、局域网可访问。但当前缺少 CLI 参数支持和分发渠道，无法实现 `curl/apt install photoanalyzer` → 命令行启动 → 浏览器访问的体验。
 
 ### 现状
-- 独立 exe：支持 `--port`、`--host`、`--no-open`、`--frontend-dir` CLI 参数（clap），默认 `0.0.0.0:8001`，自动打开浏览器
-- Tauri exe：支持 `--serve` 进入 CLI 模式（复用 `CliArgs::parse()`），无 `--serve` 则走 Tauri GUI
-- Tauri HTTP 模式（`PHOTO_ANALYZER_EXPOSE_HTTP=1`）：随机端口（bind `:0`），绑定 `127.0.0.1`，仅本机可达（待改为可配置）
+- 独立 exe：支持 `--port`、`--host`、`--no-open` 等 CLI 参数，默认 `0.0.0.0:8001`，自动打开浏览器
+- Tauri exe：保留 `--serve` 入口，无 `--serve` 则走 Tauri GUI
+- Tauri HTTP 模式（`PHOTO_ANALYZER_EXPOSE_HTTP=1`）：随机端口（bind `:0`），绑定 `127.0.0.1`，仅本机可达
 
 ### 目标
 - 支持 `photoanalyzer --port 8080 --host 0.0.0.0 --no-open` 等 CLI 参数
