@@ -31,6 +31,9 @@ use services::AppState;
 #[derive(Parser)]
 #[command(name = "photoanalyzer", about = "Photo Analyzer - AI-powered photo analysis tool")]
 pub struct CliArgs {
+    #[arg(long, help = "Enable HTTP server mode")]
+    pub serve: bool,
+
     #[arg(long, default_value = "8001", help = "Port to listen on")]
     pub port: u16,
 
@@ -39,9 +42,6 @@ pub struct CliArgs {
 
     #[arg(long, help = "Do not auto-open browser")]
     pub no_open: bool,
-
-    #[arg(long, help = "Frontend static files directory (overrides embedded frontend)")]
-    pub frontend_dir: Option<String>,
 }
 
 impl CliArgs {
