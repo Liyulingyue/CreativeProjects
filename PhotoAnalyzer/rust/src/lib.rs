@@ -1,5 +1,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+pub use clap::Parser;
+
 mod models;
 mod services;
 mod handlers;
@@ -11,7 +13,7 @@ use axum::{
     routing::{delete, get, post},
     Router,
 };
-use clap::Parser;
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -31,9 +33,6 @@ use services::AppState;
 #[derive(Parser)]
 #[command(name = "photoanalyzer", about = "Photo Analyzer - AI-powered photo analysis tool")]
 pub struct CliArgs {
-    #[arg(long, help = "Enable HTTP server mode")]
-    pub serve: bool,
-
     #[arg(long, default_value = "8001", help = "Port to listen on")]
     pub port: u16,
 
@@ -47,6 +46,14 @@ pub struct CliArgs {
 impl CliArgs {
     pub fn parse() -> Self {
         Parser::parse()
+    }
+
+    pub fn parse_from<I, T>(iter: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        Parser::parse_from(iter)
     }
 }
 

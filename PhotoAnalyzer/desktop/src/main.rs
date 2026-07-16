@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use base64::Engine;
+use photo_analyzer::Parser;
 use std::sync::Mutex;
 use tauri::Manager;
 
@@ -102,8 +103,12 @@ fn encode_uri_component(input: &str) -> String {
 }
 
 fn main() {
-    let args = photo_analyzer::CliArgs::parse();
-    if args.serve {
+    let raw_args: Vec<String> = std::env::args().collect();
+    let wants_serve = raw_args.iter().any(|a| a == "--serve");
+
+    if wants_serve {
+        let filtered: Vec<String> = raw_args.into_iter().filter(|a| a != "--serve").collect();
+        let args = photo_analyzer::CliArgs::parse_from(filtered);
         let rt = tokio::runtime::Runtime::new().expect("创建运行时失败");
         if let Err(error) = rt.block_on(photo_analyzer::run_server(&args.host, args.port, !args.no_open)) {
             eprintln!("[photo_analyzer] server error: {error}");
