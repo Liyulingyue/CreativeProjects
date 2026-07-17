@@ -59,11 +59,23 @@ jobs:
         run: npm run tauri:build
         working-directory: ./PhotoAnalyzer/desktop
 
+      - name: Find bundle output
+        shell: pwsh
+        run: |
+          echo "=== target root ==="
+          Get-ChildItem PhotoAnalyzer/desktop/target -ErrorAction SilentlyContinue | Select-Object Name, Mode
+          echo "=== release dir ==="
+          Get-ChildItem PhotoAnalyzer/desktop/target/release -ErrorAction SilentlyContinue | Select-Object Name, Mode
+          echo "=== bundle dirs ==="
+          Get-ChildItem PhotoAnalyzer/desktop/target -Recurse -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq "bundle" } | Select-Object FullName
+          echo "=== installer files ==="
+          Get-ChildItem PhotoAnalyzer/desktop/target -Recurse -Include "*.exe","*.msi" -ErrorAction SilentlyContinue | Select-Object FullName
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: photo-analyzer-windows
-          path: PhotoAnalyzer/desktop/src-tauri/target/**/release/bundle/**
+          path: PhotoAnalyzer/desktop/target/release/bundle/**
           if-no-files-found: error
 
   build-macos:
@@ -98,11 +110,22 @@ jobs:
         run: npm run tauri:build
         working-directory: ./PhotoAnalyzer/desktop
 
+      - name: Find bundle output
+        run: |
+          echo "=== target root ==="
+          ls -la PhotoAnalyzer/desktop/target/
+          echo "=== release dir ==="
+          ls -la PhotoAnalyzer/desktop/target/release/ 2>/dev/null || echo "no release dir"
+          echo "=== bundle dirs ==="
+          find PhotoAnalyzer/desktop/target -type d -name "bundle" 2>/dev/null
+          echo "=== installer files ==="
+          find PhotoAnalyzer/desktop/target -name "*.dmg" -o -name "*.app" 2>/dev/null | head -20
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: photo-analyzer-macos
-          path: PhotoAnalyzer/desktop/target/**/release/bundle/**
+          path: PhotoAnalyzer/desktop/target/release/bundle/**
           if-no-files-found: error
 
   build-linux:
@@ -142,11 +165,22 @@ jobs:
         run: npm run tauri:build
         working-directory: ./PhotoAnalyzer/desktop
 
+      - name: Find bundle output
+        run: |
+          echo "=== target root ==="
+          ls -la PhotoAnalyzer/desktop/target/
+          echo "=== release dir ==="
+          ls -la PhotoAnalyzer/desktop/target/release/ 2>/dev/null || echo "no release dir"
+          echo "=== bundle dirs ==="
+          find PhotoAnalyzer/desktop/target -type d -name "bundle" 2>/dev/null
+          echo "=== installer files ==="
+          find PhotoAnalyzer/desktop/target -name "*.deb" -o -name "*.AppImage" -o -name "*.rpm" 2>/dev/null | head -20
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: photo-analyzer-linux
-          path: PhotoAnalyzer/desktop/src-tauri/target/**/release/bundle/**
+          path: PhotoAnalyzer/desktop/target/release/bundle/**
           if-no-files-found: error
 
   release:
