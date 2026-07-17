@@ -102,7 +102,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: photo-analyzer-macos
-          path: PhotoAnalyzer/desktop/src-tauri/target/**/release/bundle/**
+          path: PhotoAnalyzer/desktop/target/**/release/bundle/**
           if-no-files-found: error
 
   build-linux:
