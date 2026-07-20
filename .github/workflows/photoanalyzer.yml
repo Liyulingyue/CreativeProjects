@@ -13,6 +13,10 @@ on:
           - windows
           - macos
           - linux
+      tag:
+        description: 'Git tag for release (e.g. v0.1.0)'
+        required: true
+        default: 'v0.1.0'
   push:
     branches:
       - master
@@ -174,22 +178,20 @@ jobs:
       - name: List artifacts
         run: find artifacts -type f | sort
 
-      - name: Upload installers
+      - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event.inputs.tag }}
+          name: PhotoAnalyzer ${{ github.event.inputs.tag }}
+          body: |
           files: |
             artifacts/**/PhotoAnalyzer*.msi
             artifacts/**/PhotoAnalyzer*.dmg
             artifacts/**/PhotoAnalyzer*.deb
             artifacts/**/PhotoAnalyzer*.AppImage
-          draft: true
-
-      - name: Upload portable executables
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
             artifacts/**/photo_analyzer_tauri.exe
             artifacts/**/photo_analyzer_tauri
             artifacts/**/PhotoAnalyzer.app
+          draft: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
