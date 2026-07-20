@@ -59,18 +59,6 @@ jobs:
         run: npm run tauri:build
         working-directory: ./PhotoAnalyzer/desktop
 
-      - name: Find bundle output
-        shell: pwsh
-        run: |
-          echo "=== target root ==="
-          Get-ChildItem PhotoAnalyzer/desktop/target -ErrorAction SilentlyContinue | Select-Object Name, Mode
-          echo "=== release dir ==="
-          Get-ChildItem PhotoAnalyzer/desktop/target/release -ErrorAction SilentlyContinue | Select-Object Name, Mode
-          echo "=== bundle dirs ==="
-          Get-ChildItem PhotoAnalyzer/desktop/target -Recurse -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq "bundle" } | Select-Object FullName
-          echo "=== installer files ==="
-          Get-ChildItem PhotoAnalyzer/desktop/target -Recurse -Include "*.exe","*.msi" -ErrorAction SilentlyContinue | Select-Object FullName
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -111,17 +99,6 @@ jobs:
       - name: Build Tauri app
         run: npm run tauri:build
         working-directory: ./PhotoAnalyzer/desktop
-
-      - name: Find bundle output
-        run: |
-          echo "=== target root ==="
-          ls -la PhotoAnalyzer/desktop/target/
-          echo "=== release dir ==="
-          ls -la PhotoAnalyzer/desktop/target/release/ 2>/dev/null || echo "no release dir"
-          echo "=== bundle dirs ==="
-          find PhotoAnalyzer/desktop/target -type d -name "bundle" 2>/dev/null
-          echo "=== installer files ==="
-          find PhotoAnalyzer/desktop/target -name "*.dmg" -o -name "*.app" 2>/dev/null | head -20
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -170,17 +147,6 @@ jobs:
         run: npm run tauri:build
         working-directory: ./PhotoAnalyzer/desktop
 
-      - name: Find bundle output
-        run: |
-          echo "=== target root ==="
-          ls -la PhotoAnalyzer/desktop/target/
-          echo "=== release dir ==="
-          ls -la PhotoAnalyzer/desktop/target/release/ 2>/dev/null || echo "no release dir"
-          echo "=== bundle dirs ==="
-          find PhotoAnalyzer/desktop/target -type d -name "bundle" 2>/dev/null
-          echo "=== installer files ==="
-          find PhotoAnalyzer/desktop/target -name "*.deb" -o -name "*.AppImage" -o -name "*.rpm" 2>/dev/null | head -20
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -205,10 +171,25 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Upload to Release
+      - name: List artifacts
+        run: find artifacts -type f | sort
+
+      - name: Upload installers
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*.msi artifacts/**/*.dmg artifacts/**/*.deb artifacts/**/*.AppImage artifacts/**/*.exe artifacts/**/photo_analyzer_tauri
+          files: |
+            artifacts/**/PhotoAnalyzer*.msi
+            artifacts/**/PhotoAnalyzer*.dmg
+            artifacts/**/PhotoAnalyzer*.deb
+            artifacts/**/PhotoAnalyzer*.AppImage
           draft: true
+
+      - name: Upload portable executables
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/**/photo_analyzer_tauri.exe
+            artifacts/**/photo_analyzer_tauri
+            artifacts/**/PhotoAnalyzer.app
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
