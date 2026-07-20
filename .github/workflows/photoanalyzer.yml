@@ -75,7 +75,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: photo-analyzer-windows
-          path: PhotoAnalyzer/desktop/target/release/bundle/**
+          path: |
+            PhotoAnalyzer/desktop/target/release/bundle/**
+            PhotoAnalyzer/desktop/target/release/*.exe
           if-no-files-found: error
 
   build-macos:
@@ -125,7 +127,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: photo-analyzer-macos
-          path: PhotoAnalyzer/desktop/target/release/bundle/**
+          path: |
+            PhotoAnalyzer/desktop/target/release/bundle/**
+            PhotoAnalyzer/desktop/target/release/photo_analyzer_tauri
+            PhotoAnalyzer/desktop/target/release/*.app
           if-no-files-found: error
 
   build-linux:
@@ -180,7 +185,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: photo-analyzer-linux
-          path: PhotoAnalyzer/desktop/target/release/bundle/**
+          path: |
+            PhotoAnalyzer/desktop/target/release/bundle/**
+            PhotoAnalyzer/desktop/target/release/photo_analyzer_tauri
           if-no-files-found: error
 
   release:
@@ -201,7 +208,7 @@ jobs:
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*.msi artifacts/**/*.dmg artifacts/**/*.deb artifacts/**/*.AppImage
+          files: artifacts/**/*.msi artifacts/**/*.dmg artifacts/**/*.deb artifacts/**/*.AppImage artifacts/**/*.exe artifacts/**/photo_analyzer_tauri
           draft: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
