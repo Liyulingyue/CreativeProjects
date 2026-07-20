@@ -183,7 +183,6 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.tag }}
           name: PhotoAnalyzer ${{ github.event.inputs.tag }}
-          body: |
           files: |
             artifacts/**/PhotoAnalyzer*.msi
             artifacts/**/PhotoAnalyzer*.dmg
