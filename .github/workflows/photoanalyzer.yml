@@ -14,9 +14,9 @@ on:
           - macos
           - linux
       tag:
-        description: 'Git tag for release (e.g. v0.1.0)'
-        required: true
-        default: 'v0.1.0'
+        description: 'Git tag for release (e.g. v0.1.0). Leave empty to skip release creation'
+        required: false
+        default: ''
   push:
     branches:
       - master
@@ -162,7 +162,7 @@ jobs:
 
   release:
     needs: [build-windows, build-macos, build-linux]
-    if: github.event.inputs.target == 'all'
+    if: github.event.inputs.target == 'all' && github.event.inputs.tag != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
