@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { listDirs, browseFiles, addDir, removeDir, getOrphanedRaws, deleteOrphanedRaws, getFileSiblings, deleteFile } from "@/api/files";
+import { listDirs, browseFiles, addDir, removeDir, getOrphanedRaws, deleteOrphanedRaws, getFileSiblings, deleteFile, startThumbnailBatch, getThumbnailJob, cancelThumbnailJob } from "@/api/files";
 import { listResults } from "@/api/analysis";
-import type { DirEntry, BrowseResult, FileNode, AnalysisResult } from "@/api/types";
+import type { DirEntry, BrowseResult, FileNode, AnalysisResult, ThumbnailJob } from "@/api/types";
 import { PhotoGrid } from "@/components/PhotoGrid";
 import { FolderPicker } from "@/components/FolderPicker";
 import { ImagePreview } from "@/components/ImagePreview";
+import { ProgressModal } from "@/components/ProgressModal";
 import { appendDirUnique, reportDuplicateDirs } from "@/utils/dirGuard";
 
 type SortKey = "name" | "time" | "score";
@@ -25,6 +26,8 @@ export function Explorer() {
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [orphanedRaws, setOrphanedRaws] = useState<string[]>([]);
+  const [thumbJob, setThumbJob] = useState<ThumbnailJob | null>(null);
+  const [thumbRefreshKey, setThumbRefreshKey] = useState(0);
 
   const loadDirs = useCallback(async () => {
     try {
@@ -46,7 +49,7 @@ export function Explorer() {
       }
       setResults(map);
     }).catch(() => {});
-  }, []);
+  }, [thumbRefreshKey]);
 
   const getSortedItems = useCallback((items: FileNode[]): FileNode[] => {
     const dirs = items.filter((i) => i.is_dir);
@@ -71,15 +74,56 @@ export function Explorer() {
 
   const loadBrowse = useCallback(async (dir: DirEntry, subPath?: string) => {
     setLoading(true);
+    setThumbJob(null);
     try {
       const result = await browseFiles(dir.id, subPath);
       setBrowse(result);
+
+      const imagePaths = result.items
+        .filter((i) => !i.is_dir && i.thumbnail_url)
+        .map((i) => i.path);
+
+      if (imagePaths.length > 0) {
+        try {
+          const job = await startThumbnailBatch(imagePaths);
+          setThumbJob(job);
+        } catch {
+        }
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to browse");
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const pollThumbJob = useCallback(async (jobId: string) => {
+    try {
+      const job = await getThumbnailJob(jobId);
+      setThumbJob(job);
+      if (job.status === "completed" || job.status === "failed" || job.status === "canceled") {
+        setThumbRefreshKey((k) => k + 1);
+      } else {
+        setTimeout(() => pollThumbJob(jobId), 2000);
+      }
+    } catch {
+      setTimeout(() => pollThumbJob(jobId), 2000);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (thumbJob && (thumbJob.status === "running" || thumbJob.status === "pending")) {
+      pollThumbJob(thumbJob.job_id);
+    }
+  }, [thumbJob?.job_id, pollThumbJob]);
+
+  const handleCancelThumbJob = useCallback(async () => {
+    if (!thumbJob) return;
+    try {
+      await cancelThumbnailJob(thumbJob.job_id);
+    } catch {
+    }
+  }, [thumbJob]);
 
   useEffect(() => {
     if (activeDir) loadBrowse(activeDir);
@@ -328,6 +372,7 @@ export function Explorer() {
                     selectedPaths={selectedPaths}
                     onToggleSelect={toggleSelect}
                     scores={results}
+                    refreshKey={thumbRefreshKey}
                   />
                 </>
               ) : null}
@@ -356,6 +401,20 @@ export function Explorer() {
             setResults(map);
           }).catch(() => {});
         }}
+      />
+
+      <ProgressModal
+        open={thumbJob?.status === "running" || thumbJob?.status === "pending" || false}
+        current={thumbJob?.completed ?? 0}
+        total={thumbJob?.total ?? 0}
+        currentFile={thumbJob?.current_file ?? null}
+        status={thumbJob?.status === "running" || thumbJob?.status === "pending" ? "running" : (thumbJob?.status ?? "running") as "running" | "completed" | "failed" | "canceled"}
+        onClose={() => setThumbJob(null)}
+        onCancel={handleCancelThumbJob}
+        titleRunning="正在生成缩略图..."
+        titleCompleted="缩略图生成完成"
+        titleFailed="缩略图生成失败"
+        titleCanceled="已取消缩略图生成"
       />
     </div>
   );

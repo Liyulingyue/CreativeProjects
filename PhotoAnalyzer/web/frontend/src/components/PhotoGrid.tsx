@@ -8,9 +8,10 @@ interface PhotoGridProps {
   selectedPaths: Set<string>;
   onToggleSelect: (path: string) => void;
   scores?: Map<string, AnalysisResult>;
+  refreshKey?: number;
 }
 
-export function PhotoGrid({ items, onSelect, selectedPaths, onToggleSelect, scores }: PhotoGridProps) {
+export function PhotoGrid({ items, onSelect, selectedPaths, onToggleSelect, scores, refreshKey = 0 }: PhotoGridProps) {
   const imageItems = items.filter((i) => !i.is_dir);
 
   if (imageItems.length === 0) {
@@ -33,7 +34,7 @@ export function PhotoGrid({ items, onSelect, selectedPaths, onToggleSelect, scor
             </div>
             <div className="photo-card__image">
               {item.thumbnail_url ? (
-                <GridThumb path={item.path} thumbnailUrl={item.thumbnail_url} alt={item.name} />
+                <GridThumb path={item.path} thumbnailUrl={item.thumbnail_url} alt={item.name} refreshKey={refreshKey} />
               ) : (
                 <div className="photo-card__placeholder">📷</div>
               )}
@@ -56,11 +57,12 @@ export function PhotoGrid({ items, onSelect, selectedPaths, onToggleSelect, scor
   );
 }
 
-function GridThumb({ path, thumbnailUrl, alt }: { path: string; thumbnailUrl: string; alt: string }) {
+function GridThumb({ path, thumbnailUrl, alt, refreshKey }: { path: string; thumbnailUrl: string; alt: string; refreshKey?: number }) {
   const [src, setSrc] = useState<string>("");
 
   useEffect(() => {
     let active = true;
+    setSrc("");
     resolveThumbnailUrl(thumbnailUrl, path)
       .then((resolved) => {
         if (active) setSrc(resolved);
@@ -72,7 +74,7 @@ function GridThumb({ path, thumbnailUrl, alt }: { path: string; thumbnailUrl: st
     return () => {
       active = false;
     };
-  }, [thumbnailUrl, path]);
+  }, [thumbnailUrl, path, refreshKey]);
 
   if (!src) {
     return <div className="photo-card__placeholder">📷</div>;

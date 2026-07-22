@@ -130,3 +130,15 @@ export interface CacheEntry {
   mtime: number;
   data: Record<string, unknown>;
 }
+
+export interface ThumbnailJob {
+  job_id: string;
+  status: "pending" | "running" | "completed" | "failed" | "canceled";
+  total: number;
+  progress: number;
+  completed: number;
+  failed: number;
+  current_file: string | null;
+  created_at: string;
+  finished_at: string | null;
+}

@@ -1,5 +1,5 @@
 import { request } from "./client";
-import type { DirEntry, BrowseResult } from "./types";
+import type { DirEntry, BrowseResult, ThumbnailJob } from "./types";
 
 export async function listDirs(): Promise<DirEntry[]> {
   return request<DirEntry[]>("/dirs");
@@ -40,4 +40,21 @@ export async function deleteOrphanedRaws(dirId: string): Promise<{ deleted: stri
 
 export async function deleteFile(path: string): Promise<{ deleted: string[]; not_found?: string[]; count?: number }> {
   return request<{ deleted: string[]; not_found?: string[]; count?: number }>(`/files?path=${encodeURIComponent(path)}`, { method: "DELETE" });
+}
+
+export async function startThumbnailBatch(paths: string[]): Promise<ThumbnailJob> {
+  return request<ThumbnailJob>("/thumbnails/batch", {
+    method: "POST",
+    body: JSON.stringify({ paths }),
+  });
+}
+
+export async function getThumbnailJob(jobId: string): Promise<ThumbnailJob> {
+  return request<ThumbnailJob>(`/thumbnails/batch/${jobId}`);
+}
+
+export async function cancelThumbnailJob(jobId: string): Promise<ThumbnailJob> {
+  return request<ThumbnailJob>(`/thumbnails/batch/${jobId}/cancel`, {
+    method: "POST",
+  });
 }

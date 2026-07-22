@@ -84,6 +84,18 @@ class DedupJob(BaseModel):
     finished_at: Optional[str] = None
 
 
+class ThumbnailJob(BaseModel):
+    job_id: str
+    status: str
+    total: int
+    progress: int = 0
+    completed: int = 0
+    failed: int = 0
+    current_file: Optional[str] = None
+    created_at: str
+    finished_at: Optional[str] = None
+
+
 class DedupStageConfig(BaseModel):
     type: str
     enabled: bool = True
