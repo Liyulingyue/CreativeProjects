@@ -205,3 +205,20 @@ pub struct FsSuggestResult {
     pub suggestions: Vec<FsEntry>,
     pub partial: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThumbnailJob {
+    #[serde(rename = "job_id")]
+    pub job_id: String,
+    pub status: String,
+    pub total: usize,
+    pub progress: usize,
+    pub completed: usize,
+    pub failed: usize,
+    #[serde(rename = "current_file", skip_serializing_if = "Option::is_none")]
+    pub current_file: Option<String>,
+    #[serde(rename = "created_at")]
+    pub created_at: String,
+    #[serde(rename = "finished_at", skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+}

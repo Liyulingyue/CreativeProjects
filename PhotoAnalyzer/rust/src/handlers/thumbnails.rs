@@ -1,19 +1,25 @@
 use axum::{
     body::Bytes,
-    extract::Query,
+    extract::{Path as AxumPath, Query},
     http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
+    Json,
 };
 use image::imageops::FilterType;
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-
+use tokio::sync::RwLock as AsyncRwLock;
+use crate::models::ThumbnailJob;
 use crate::paths::thumbs_dir;
 
-static THUMB_CACHE: Lazy<RwLock<std::collections::HashMap<String, String>>> =
-    Lazy::new(|| RwLock::new(std::collections::HashMap::new()));
+static THUMB_CACHE: Lazy<RwLock<HashMap<String, String>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+
+static THUMB_JOBS: Lazy<AsyncRwLock<HashMap<String, ThumbnailJob>>> =
+    Lazy::new(|| AsyncRwLock::new(HashMap::new()));
 
 const THUMBNAIL_SIZE: u32 = 200;
 
@@ -69,37 +75,166 @@ pub async fn get_thumbnail(
             .ok_or((StatusCode::INTERNAL_SERVER_ERROR, "读取缓存缩略图失败"));
     }
 
-    let img = match image::open(path) {
-        Ok(img) => img,
-        Err(_) => return Err((StatusCode::BAD_REQUEST, "无法打开图片")),
-    };
-
-    let thumbnail = img.resize(THUMBNAIL_SIZE, THUMBNAIL_SIZE, FilterType::Triangle);
-
-    let mut bytes = Vec::new();
-    let mut cursor = Cursor::new(&mut bytes);
-    if thumbnail
-        .write_to(&mut cursor, image::ImageFormat::Jpeg)
-        .is_err()
-    {
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, "生成缩略图失败"));
-    }
-
-    let _ = std::fs::write(&thumb_path, &bytes);
-    THUMB_CACHE
-        .write()
-        .insert(cache_key, thumb_path.to_string_lossy().to_string());
-
-    let mut resp = Response::new(Bytes::from(bytes).into());
-    resp.headers_mut()
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
-    Ok(resp)
+    Ok(Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .body(axum::body::Body::empty())
+        .unwrap())
 }
 
 #[derive(serde::Deserialize)]
 pub struct ThumbnailQuery {
     path: String,
     full: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct StartThumbnailBatchRequest {
+    paths: Vec<String>,
+}
+
+pub async fn start_thumbnail_batch(
+    Json(req): Json<StartThumbnailBatchRequest>,
+) -> Result<Json<ThumbnailJob>, (StatusCode, &'static str)> {
+    let valid_paths: Vec<String> = req
+        .paths
+        .into_iter()
+        .filter(|p| Path::new(p).exists() && is_supported_image(Path::new(p)))
+        .collect();
+
+    if valid_paths.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "没有有效的图片路径"));
+    }
+
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let job = ThumbnailJob {
+        job_id: job_id.clone(),
+        status: "pending".to_string(),
+        total: valid_paths.len(),
+        progress: 0,
+        completed: 0,
+        failed: 0,
+        current_file: None,
+        created_at: chrono::Utc::now().to_rfc3339(),
+        finished_at: None,
+    };
+
+    {
+        let mut jobs = THUMB_JOBS.write().await;
+        jobs.insert(job_id.clone(), job.clone());
+    }
+
+    let job_id_clone = job_id.clone();
+    tokio::spawn(async move {
+        run_thumbnail_batch(job_id_clone, valid_paths).await;
+    });
+
+    Ok(Json(job))
+}
+
+async fn run_thumbnail_batch(job_id: String, paths: Vec<String>) {
+    {
+        let mut jobs = THUMB_JOBS.write().await;
+        if let Some(job) = jobs.get_mut(&job_id) {
+            job.status = "running".to_string();
+        }
+    }
+
+    let thumb_dir = thumbs_dir();
+    let _ = std::fs::create_dir_all(&thumb_dir);
+
+    for (i, p) in paths.iter().enumerate() {
+        {
+            let jobs = THUMB_JOBS.read().await;
+            if let Some(job) = jobs.get(&job_id) {
+                if job.status == "canceled" {
+                    break;
+                }
+            }
+        }
+
+        {
+            let mut jobs = THUMB_JOBS.write().await;
+            if let Some(job) = jobs.get_mut(&job_id) {
+                job.progress = i;
+                job.current_file = Some(Path::new(p).file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default());
+            }
+        }
+
+        let img_path = Path::new(p);
+        let cache_key = format!("thumb_{}", p);
+        let size = img_path.metadata().map(|m| m.len()).unwrap_or(0);
+        let stem = img_path.file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let thumb_path = thumb_dir.join(format!("{}_{}.jpg", stem, size));
+
+        match generate_thumbnail_sync(img_path, &thumb_path) {
+            Ok(_) => {
+                THUMB_CACHE
+                    .write()
+                    .insert(cache_key, thumb_path.to_string_lossy().to_string());
+                let mut jobs = THUMB_JOBS.write().await;
+                if let Some(job) = jobs.get_mut(&job_id) {
+                    job.completed += 1;
+                }
+            }
+            Err(_) => {
+                let mut jobs = THUMB_JOBS.write().await;
+                if let Some(job) = jobs.get_mut(&job_id) {
+                    job.failed += 1;
+                }
+            }
+        }
+    }
+
+    let mut jobs = THUMB_JOBS.write().await;
+    if let Some(job) = jobs.get_mut(&job_id) {
+        job.status = "completed".to_string();
+        job.finished_at = Some(chrono::Utc::now().to_rfc3339());
+    }
+}
+
+fn generate_thumbnail_sync(path: &Path, thumb_path: &Path) -> Result<(), String> {
+    if thumb_path.exists() {
+        return Ok(());
+    }
+
+    let img = image::open(path).map_err(|_| "无法打开图片")?;
+    let thumbnail = img.resize(THUMBNAIL_SIZE, THUMBNAIL_SIZE, FilterType::Triangle);
+
+    let mut bytes = Vec::new();
+    let mut cursor = Cursor::new(&mut bytes);
+    thumbnail
+        .write_to(&mut cursor, image::ImageFormat::Jpeg)
+        .map_err(|_| "生成缩略图失败")?;
+
+    std::fs::write(thumb_path, &bytes).map_err(|_| "保存缩略图失败")?;
+    Ok(())
+}
+
+pub async fn get_thumbnail_job(
+    AxumPath(job_id): AxumPath<String>,
+) -> Result<Json<ThumbnailJob>, (StatusCode, &'static str)> {
+    let jobs = THUMB_JOBS.read().await;
+    jobs.get(&job_id)
+        .cloned()
+        .map(Json)
+        .ok_or((StatusCode::NOT_FOUND, "任务不存在"))
+}
+
+pub async fn cancel_thumbnail_job(
+    AxumPath(job_id): AxumPath<String>,
+) -> Result<Json<ThumbnailJob>, (StatusCode, &'static str)> {
+    let mut jobs = THUMB_JOBS.write().await;
+    if let Some(job) = jobs.get_mut(&job_id) {
+        job.status = "canceled".to_string();
+        job.finished_at = Some(chrono::Utc::now().to_rfc3339());
+        Ok(Json(job.clone()))
+    } else {
+        Err((StatusCode::NOT_FOUND, "任务不存在"))
+    }
 }
 
 fn is_truthy_flag(value: &str) -> bool {

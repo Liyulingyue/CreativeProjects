@@ -1,16 +1,22 @@
 import os
+import uuid
+import time
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from datetime import datetime
 from fastapi import APIRouter, Query, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from ..deps import state
-from ..models import FileNode, BrowseResult
+from ..models import FileNode, BrowseResult, ThumbnailJob
 from src.config import SUPPORTED_IMAGE_FORMATS, is_image_file
 
 router = APIRouter(prefix="/api", tags=["files"])
 
 THUMB_SIZE = (200, 200)
 _thumb_cache: dict[str, str] = {}
+_thumb_jobs: dict[str, ThumbnailJob] = {}
+_thumb_executor = ThreadPoolExecutor(max_workers=4)
 
 RAW_FORMATS = {".cr2", ".cr3", ".arw", ".dng", ".nef", ".orf", ".rw2", ".pef", ".raf", ".3fr", ".ai", ".eps"}
 
@@ -103,21 +109,82 @@ def get_thumbnail(path: str = Query(...), full: bool = Query(False)):
     if cached and Path(cached).exists():
         return FileResponse(cached, media_type="image/jpeg")
 
-    try:
-        from PIL import Image, ImageOps
-        img = Image.open(img_path)
-        img = ImageOps.exif_transpose(img)
-        img.thumbnail(THUMB_SIZE)
-        img = img.convert("RGB")
+    thumb_dir = Path(__file__).resolve().parent.parent.parent / "data" / "thumbs"
+    thumb_dir.mkdir(parents=True, exist_ok=True)
+    thumb_path = thumb_dir / f"{img_path.stem}_{img_path.stat().st_size}.jpg"
 
-        thumb_dir = Path(__file__).resolve().parent.parent.parent / "data" / "thumbs"
-        thumb_dir.mkdir(parents=True, exist_ok=True)
-        thumb_path = thumb_dir / f"{img_path.stem}_{img_path.stat().st_size}.jpg"
-        img.save(thumb_path, "JPEG", quality=75)
+    if thumb_path.exists():
         _thumb_cache[cache_key] = str(thumb_path)
         return FileResponse(thumb_path, media_type="image/jpeg")
-    except Exception:
-        raise HTTPException(500, "生成缩略图失败")
+
+    return Response(status_code=204)
+
+
+@router.post("/thumbnails/batch")
+def start_thumbnail_batch(paths: list[str]):
+    valid_paths = [p for p in paths if Path(p).exists() and is_image_file(Path(p))]
+    if not valid_paths:
+        raise HTTPException(400, "没有有效的图片路径")
+
+    job_id = str(uuid.uuid4())
+    job = ThumbnailJob(
+        job_id=job_id,
+        status="pending",
+        total=len(valid_paths),
+        completed=0,
+        failed=0,
+        created_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
+    )
+    _thumb_jobs[job_id] = job
+
+    def generate_thumbnails():
+        _thumb_jobs[job_id].status = "running"
+        for i, p in enumerate(valid_paths):
+            if _thumb_jobs[job_id].status == "canceled":
+                break
+            _thumb_jobs[job_id].current_file = Path(p).name
+            _thumb_jobs[job_id].progress = i
+            try:
+                img_path = Path(p)
+                cache_key = f"thumb_{p}"
+                thumb_dir = Path(__file__).resolve().parent.parent.parent / "data" / "thumbs"
+                thumb_dir.mkdir(parents=True, exist_ok=True)
+                thumb_path = thumb_dir / f"{img_path.stem}_{img_path.stat().st_size}.jpg"
+                if not thumb_path.exists():
+                    from PIL import Image, ImageOps
+                    img = Image.open(img_path)
+                    img = ImageOps.exif_transpose(img)
+                    img.thumbnail(THUMB_SIZE)
+                    img = img.convert("RGB")
+                    img.save(thumb_path, "JPEG", quality=75)
+                _thumb_cache[cache_key] = str(thumb_path)
+                _thumb_jobs[job_id].completed += 1
+            except Exception:
+                _thumb_jobs[job_id].failed += 1
+
+        _thumb_jobs[job_id].status = "completed"
+        _thumb_jobs[job_id].finished_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+
+    _thumb_executor.submit(generate_thumbnails)
+    return job
+
+
+@router.get("/thumbnails/batch/{job_id}")
+def get_thumbnail_job(job_id: str):
+    job = _thumb_jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "任务不存在")
+    return job
+
+
+@router.post("/thumbnails/batch/{job_id}/cancel")
+def cancel_thumbnail_job(job_id: str):
+    job = _thumb_jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "任务不存在")
+    job.status = "canceled"
+    job.finished_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+    return job
 
 def _encode_path(p: str) -> str:
     import urllib.parse
