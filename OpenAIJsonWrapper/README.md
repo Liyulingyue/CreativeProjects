@@ -51,9 +51,17 @@ target_structure = {
     },
     "summary": "string"
 }
+background = "你是一个信息提取助手。" # 背景信息，注入 System Prompt
+requirements = ["提取的信息必须客观准确"] # 特定需求，指导模型行为
 
-# 初始化 Wrapper (指定模型和结构)
-wrapper = OpenAIJsonWrapper(client, model="gpt-4", target_structure=target_structure)
+# 初始化 Wrapper (指定模型、结构和可选的背景/需求)
+wrapper = OpenAIJsonWrapper(
+    client,
+    model="gpt-4",
+    target_structure=target_structure,
+    background=background,
+    requirements=requirements
+)
 
 # 正常传入 messages，框架会自动注入 System Prompt
 messages = [{"role": "user", "content": "你好，我是小明，今年 18 岁，喜欢打篮球和听歌。"}]
@@ -75,8 +83,8 @@ else:
 ```python
 # 在初始化时定义默认配置
 wrapper = OpenAIJsonWrapper(
-    client, 
-    model="gpt-4o", 
+    client,
+    model="gpt-4o",
     target_structure=target_structure,
     background="你是一个资深的简历分析专家。",
     requirements=["提取内容必须客观", "年龄若未知请填 0"]
@@ -84,12 +92,28 @@ wrapper = OpenAIJsonWrapper(
 
 # 在 chat 调用时覆盖或补充配置
 result = wrapper.chat(
-    messages, 
+    messages,
     target_structure=new_structure,      # 覆盖默认结构
-    extra_requirements="补充一项新要求",   # 补充到默认需求中
-    background="覆盖初始化时的背景信息"     # 覆盖默认背景
+    requirements="新的需求描述",          # 覆盖默认需求
+    extra_requirements="补充一项新要求",   # 补充到默认需求中（合并）
+    background="覆盖初始化时的背景信息",   # 覆盖默认背景
+    model="gpt-4o-mini",                 # 覆盖默认模型
+    temperature=0.7,                     # 透传参数，控制随机性
+    max_tokens=1024                      # 透传参数，最大生成长度
 )
 ```
+
+`chat()` 方法完整参数说明：
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `messages` | `List[Dict]` | 对话上下文，content 支持字符串或多模态 list |
+| `target_structure` | `Any` | JSON 结构定义，优先级高于初始化参数 |
+| `requirements` | `str \| List[str]` | 特定需求说明，优先级高于初始化参数 |
+| `extra_requirements` | `str \| List[str]` | 补充需求，与 `requirements` 合并 |
+| `background` | `str` | 背景信息，优先级高于初始化参数 |
+| `model` | `str` | 模型名称，优先级高于初始化参数 |
+| `**kwargs` | - | 透传给 `client.chat.completions.create`（如 `temperature`、`max_tokens` 等） |
 
 ## 特性
 
@@ -126,28 +150,9 @@ messages = [
 result = wrapper.chat(messages)
 ```
 
-### 多模态图片分析
-
 通过 `chat()` + 多模态 `content` 即可让 vision 模型返回结构化 JSON。
 
 ```python
-from openai import OpenAI
-from openaijsonwrapper import OpenAIJsonWrapper
-
-client = OpenAI(api_key="sk-...", base_url="...")
-
-target_structure = {
-    "label": "string (图片分类标签)",
-    "reason": "string (简短理由)"
-}
-
-wrapper = OpenAIJsonWrapper(
-    client,
-    model="gpt-4o",
-    target_structure=target_structure,
-    requirements=["只能从给定选项中选择"]
-)
-
 # 本地图片路径（自动 base64 编码）
 result = wrapper.chat([
     {
