@@ -1,4 +1,6 @@
 import os
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from datetime import datetime
 from fastapi import APIRouter, Query, HTTPException
@@ -11,6 +13,8 @@ router = APIRouter(prefix="/api", tags=["files"])
 
 THUMB_SIZE = (200, 200)
 _thumb_cache: dict[str, str] = {}
+_thumb_pending: dict[str, asyncio.Event] = {}
+_executor = ThreadPoolExecutor(max_workers=4)
 
 RAW_FORMATS = {".cr2", ".cr3", ".arw", ".dng", ".nef", ".orf", ".rw2", ".pef", ".raf", ".3fr", ".ai", ".eps"}
 
@@ -90,7 +94,7 @@ def browse_files(dir_id: str = Query(...), path: str | None = Query(None)):
 
 
 @router.get("/thumbnails")
-def get_thumbnail(path: str = Query(...), full: bool = Query(False)):
+async def get_thumbnail(path: str = Query(...), full: bool = Query(False)):
     img_path = Path(path)
     if not img_path.exists() or not is_image_file(img_path):
         raise HTTPException(404, "文件不存在")
@@ -103,21 +107,44 @@ def get_thumbnail(path: str = Query(...), full: bool = Query(False)):
     if cached and Path(cached).exists():
         return FileResponse(cached, media_type="image/jpeg")
 
-    try:
-        from PIL import Image, ImageOps
-        img = Image.open(img_path)
-        img = ImageOps.exif_transpose(img)
-        img.thumbnail(THUMB_SIZE)
-        img = img.convert("RGB")
+    if path in _thumb_pending:
+        event = _thumb_pending[path]
+        await event.wait()
+        cached = _thumb_cache.get(cache_key)
+        if cached:
+            return FileResponse(cached, media_type="image/jpeg")
 
-        thumb_dir = Path(__file__).resolve().parent.parent.parent / "data" / "thumbs"
-        thumb_dir.mkdir(parents=True, exist_ok=True)
-        thumb_path = thumb_dir / f"{img_path.stem}_{img_path.stat().st_size}.jpg"
-        img.save(thumb_path, "JPEG", quality=75)
-        _thumb_cache[cache_key] = str(thumb_path)
+    event = asyncio.Event()
+    _thumb_pending[path] = event
+    try:
+        loop = asyncio.get_event_loop()
+        thumb_path = await loop.run_in_executor(_executor, _generate_thumbnail_sync, path)
+        _thumb_cache[cache_key] = thumb_path
         return FileResponse(thumb_path, media_type="image/jpeg")
-    except Exception:
-        raise HTTPException(500, "生成缩略图失败")
+    except Exception as e:
+        raise HTTPException(500, f"生成缩略图失败: {e}")
+    finally:
+        event.set()
+        _thumb_pending.pop(path, None)
+
+
+def _generate_thumbnail_sync(path: str) -> str:
+    img_path = Path(path)
+    cache_key = f"thumb_{path}"
+    if cached := _thumb_cache.get(cache_key):
+        return cached
+
+    from PIL import Image, ImageOps
+    img = Image.open(img_path)
+    img = ImageOps.exif_transpose(img)
+    img.thumbnail(THUMB_SIZE)
+    img = img.convert("RGB")
+
+    thumb_dir = Path(__file__).resolve().parent.parent.parent / "data" / "thumbs"
+    thumb_dir.mkdir(parents=True, exist_ok=True)
+    thumb_path = thumb_dir / f"{img_path.stem}_{img_path.stat().st_size}.jpg"
+    img.save(thumb_path, "JPEG", quality=75)
+    return str(thumb_path)
 
 def _encode_path(p: str) -> str:
     import urllib.parse
