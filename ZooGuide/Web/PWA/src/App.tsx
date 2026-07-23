@@ -13,6 +13,10 @@ import { GpsFlowPage } from './pages/GpsFlowPage'
 import { ProfilePage } from './pages/ProfilePage'
 import { FacilityListPage } from './pages/FacilityListPage'
 import { FacilityDetailPage } from './pages/FacilityDetailPage'
+import { VenueIntroPage } from './pages/VenueIntroPage'
+import { VenueDetailPage } from './pages/VenueDetailPage'
+import { SeasonGuidePage } from './pages/SeasonGuidePage'
+import { DownloadsPage } from './pages/DownloadsPage'
 import { getStoredUser, loadPrefs } from './lib/storage'
 import type { AuthUser } from './lib/storage'
 
@@ -78,6 +82,7 @@ export default function App() {
 
   const isSubPage = (location.pathname !== '/activity' && location.pathname.startsWith('/activity/'))
     || location.pathname.startsWith('/facility')
+    || location.pathname.startsWith('/venue')
 
   return (
     <div className="app">
@@ -105,6 +110,10 @@ export default function App() {
               onClearRoute={() => setRoute(null)}
             />
           } />
+          <Route path="/venue" element={<VenueIntroPage venues={venues} />} />
+          <Route path="/venue/:id" element={<VenueDetailPage />} />
+          <Route path="/season" element={<SeasonGuidePage meta={meta} venues={venues} />} />
+          <Route path="/downloads" element={<DownloadsPage meta={meta} />} />
           <Route path="/chat" element={
             <ChatPage
               currentRoute={route}

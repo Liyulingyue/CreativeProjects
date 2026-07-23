@@ -62,6 +62,13 @@ class VenueBrief(BaseModel):
     must_see: bool
     shaded: bool
     rest_spots: bool
+    area: str = ""
+    description: str = ""
+    open_time: str = ""
+    close_time: str = ""
+    narration: Optional[str] = None
+    seasonal_tips: Optional[str] = None
+    keeper_talk: Optional[str] = None
 
 
 class RouteStop(BaseModel):
@@ -105,7 +112,10 @@ class Venue(BaseModel):
     animals: list[str]
     tags: list[str]
     themes: list[str]
-    description: str
+    description: str = ""
+    narration: Optional[str] = None
+    seasonal_tips: Optional[str] = None
+    keeper_talk: Optional[str] = None
     recommended_visit_minutes: int
     rest_spots: bool
     shaded: bool

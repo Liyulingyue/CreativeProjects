@@ -1,16 +1,21 @@
+import type { Meta } from '../types'
+
 interface Props {
   onStart: () => void
+  meta: Meta | null
 }
 
-export function Home({ onStart }: Props) {
+export function Home({ onStart, meta }: Props) {
+  const name = meta?.name || '红山动物园'
+  const slogan = meta?.highlights?.[0] || ''
   return (
     <div>
       <div className="home-hero">
         <div className="emoji">🦒</div>
-        <h2>逛红山，不必人挤人</h2>
+        <h2>逛{name.replace(/森林动物园$/, '')}，不必人挤人</h2>
         <p>
           告诉我你的时间、体力、带没带娃、怕不怕晒，
-          我帮你定制一趟只属于你的红山路线。
+          我帮你定制一趟只属于你的{name.replace(/森林动物园$/, '')}路线。
         </p>
       </div>
 
@@ -19,7 +24,7 @@ export function Home({ onStart }: Props) {
           <span className="icon">🧭</span>
           <div className="text">
             个性化路线
-            <div className="desc">基于你的偏好，从 23 个场馆中精选</div>
+            <div className="desc">基于你的偏好，精选最佳场馆</div>
           </div>
         </li>
         <li>
@@ -40,7 +45,7 @@ export function Home({ onStart }: Props) {
           <span className="icon">🦒</span>
           <div className="text">
             动物打卡
-            <div className="desc">逛完积累成就，记录你的红山之旅</div>
+            <div className="desc">逛完积累成就，记录你的旅程</div>
           </div>
         </li>
       </ul>
@@ -49,9 +54,11 @@ export function Home({ onStart }: Props) {
         开始定制我的路线 ✨
       </button>
 
-      <div className="footer-link">
-        南京红山森林动物园 · 中国第一个取消动物表演的动物园
-      </div>
+      {slogan && (
+        <div className="footer-link">
+          {name} · {slogan}
+        </div>
+      )}
     </div>
   )
 }
