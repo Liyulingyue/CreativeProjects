@@ -1,0 +1,15 @@
+/target
+**/*.rs.bk
+*.gguf
+*.bin
+Cargo.lock
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+references/
+reference/
+models/
+*.txt
