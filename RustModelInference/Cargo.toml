@@ -1,0 +1,16 @@
+[package]
+name = "rust-model-inference"
+version = "0.1.0"
+edition = "2021"
+description = "Zero-allocation, mmap zero-copy LLM inference engine in pure Rust"
+license = "MIT"
+
+[dependencies]
+memmap2 = "0.9"
+half = "2.4"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
