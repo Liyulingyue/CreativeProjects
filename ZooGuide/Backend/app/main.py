@@ -136,6 +136,13 @@ def list_venues():
                 must_see=v.must_see,
                 shaded=v.shaded,
                 rest_spots=v.rest_spots,
+                area=v.area,
+                description=v.description,
+                open_time=v.open_time,
+                close_time=v.close_time,
+                narration=v.narration,
+                seasonal_tips=v.seasonal_tips,
+                keeper_talk=v.keeper_talk,
             ).model_dump()
             for v in venues
         ]
@@ -764,3 +771,9 @@ def me_summary(current_user: dict = Depends(auth.get_current_user)):
 web_dist = Path(__file__).resolve().parent.parent / "Web" / "PWA" / "dist"
 if web_dist.exists():
     app.mount("/", StaticFiles(directory=str(web_dist), html=True))
+
+dl_dir = Path(__file__).resolve().parent.parent / "data" / "downloads"
+if dl_dir.exists():
+    from starlette.routing import Mount
+    from starlette.staticfiles import StaticFiles as StarletteStaticFiles
+    app.routes.insert(0, Mount("/downloads", app=StarletteStaticFiles(directory=str(dl_dir), html=False)))

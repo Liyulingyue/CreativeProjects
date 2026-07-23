@@ -3744,3 +3744,403 @@ textarea {
   font-size: 12px;
   color: var(--fg-muted);
 }
+
+/* ===== Venue Intro Page ===== */
+.venue-intro-summary {
+  font-size: 13px;
+  color: var(--fg-muted);
+  margin-bottom: 14px;
+  text-align: center;
+}
+
+.venue-area-section {
+  margin-bottom: 18px;
+}
+
+.venue-area-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 4px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--primary-strong);
+}
+
+.venue-area-icon {
+  font-size: 18px;
+}
+
+.venue-area-name {
+  flex: 1;
+}
+
+.venue-area-count {
+  font-size: 11px;
+  color: var(--fg-muted);
+  background: var(--bg-elev);
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+.venue-area-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.venue-intro-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 12px;
+  text-align: center;
+  cursor: pointer;
+  transition: transform 0.1s, border-color 0.15s;
+}
+
+.venue-intro-card:active {
+  transform: scale(0.97);
+}
+
+.venue-intro-card.must-see {
+  border-color: var(--primary);
+  background: linear-gradient(135deg, var(--primary-soft), var(--bg-elev));
+}
+
+.vic-emoji {
+  font-size: 28px;
+  margin-bottom: 6px;
+}
+
+.vic-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--primary-strong);
+  margin-bottom: 4px;
+  line-height: 1.3;
+}
+
+.vic-animals {
+  font-size: 11px;
+  color: var(--fg-muted);
+  margin-bottom: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vic-meta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.vic-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: white;
+}
+
+.vic-badge.new {
+  background: var(--accent);
+  color: white;
+}
+
+/* ===== Venue Detail Page ===== */
+.venue-detail-hero-section {
+  text-align: center;
+  padding: 20px 0 10px;
+}
+
+.vdh-emoji {
+  font-size: 56px;
+  margin-bottom: 8px;
+}
+
+.vdh-name {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--primary-strong);
+  margin-bottom: 4px;
+}
+
+.vdh-area {
+  font-size: 13px;
+  color: var(--fg-muted);
+  margin-bottom: 6px;
+}
+
+.vdh-must-see {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: white;
+}
+
+.vd-section-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--primary-strong);
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.vd-text {
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--fg);
+  margin: 0;
+}
+
+.vd-text.narration {
+  background: var(--primary-soft);
+  padding: 12px 14px;
+  border-radius: 10px;
+  border-left: 3px solid var(--primary);
+}
+
+.vd-animal-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.vd-animal-tag {
+  display: inline-block;
+  font-size: 13px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+  font-weight: 600;
+}
+
+.vd-empty {
+  font-size: 13px;
+  color: var(--fg-muted);
+  text-align: center;
+  padding: 8px;
+}
+
+.vd-info-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.vd-info-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.vd-info-item:last-child {
+  border-bottom: none;
+}
+
+.vd-info-label {
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+.vd-info-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.vd-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* ===== Season Guide Page ===== */
+
+.season-card {
+  background: var(--bg-elev);
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  margin-bottom: 14px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+
+.season-header {
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.season-body {
+  padding: 14px 16px;
+}
+
+.season-tips-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--fg);
+}
+
+.season-tips-list li {
+  padding: 3px 0 3px 16px;
+  position: relative;
+}
+
+.season-tips-list li::before {
+  content: '·';
+  position: absolute;
+  left: 4px;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.season-avoid {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: #fef3c7;
+  border-radius: 10px;
+  font-size: 13px;
+  color: #78350f;
+  line-height: 1.6;
+}
+
+.season-best {
+  margin-top: 14px;
+}
+
+.season-best-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--primary-strong);
+  margin-bottom: 8px;
+}
+
+.season-best-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+}
+
+.season-best-tile {
+  background: var(--primary-soft);
+  border-radius: 10px;
+  padding: 8px 6px;
+  text-align: center;
+}
+
+.sbt-emoji {
+  font-size: 22px;
+  display: block;
+  margin-bottom: 2px;
+}
+
+.sbt-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--primary-strong);
+  display: block;
+  line-height: 1.3;
+}
+
+/* ===== Downloads Page ===== */
+
+.downloads-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.download-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  text-decoration: none;
+  color: var(--fg);
+  cursor: pointer;
+  transition: transform 0.1s, border-color 0.15s;
+}
+
+.download-card:active {
+  transform: scale(0.99);
+}
+
+.download-card:hover {
+  border-color: var(--primary);
+}
+
+.dc-icon {
+  font-size: 28px;
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--primary-soft);
+  border-radius: 12px;
+}
+
+.dc-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.dc-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--primary-strong);
+  margin-bottom: 2px;
+}
+
+.dc-desc {
+  font-size: 12px;
+  color: var(--fg-muted);
+  line-height: 1.4;
+}
+
+.dc-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.dc-tag {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg-muted);
+}
+
+.dc-arrow {
+  font-size: 16px;
+  color: var(--primary);
+}

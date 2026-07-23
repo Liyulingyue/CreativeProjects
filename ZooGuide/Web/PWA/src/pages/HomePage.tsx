@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import type { Meta, Route, UserPreference, Venue } from '../types'
 import { api } from '../api/client'
 import { type AuthUser, loadActivityVisited, loadPhotoLog } from '../lib/storage'
@@ -38,6 +39,7 @@ export function HomePage({
   onSwitchTab,
   onClearRoute,
 }: Props) {
+  const navigate = useNavigate()
   const [recentRoute, setRecentRoute] = useState<RouteSummary | null>(null)
   const [stats, setStats] = useState<any>(null)
   const [earnedCount, setEarnedCount] = useState(0)
@@ -104,25 +106,25 @@ export function HomePage({
 
       {/* Quick actions */}
       <div className="quick-actions">
+        <button className="qa-card" onClick={() => navigate('/venue')}>
+          <div className="qa-icon">🗺️</div>
+          <div className="qa-title">场馆导览</div>
+          <div className="qa-desc">23馆介绍讲解</div>
+        </button>
         <button className="qa-card" onClick={() => onSwitchTab('chat')}>
           <div className="qa-icon">💬</div>
           <div className="qa-title">跟 Agent 聊聊</div>
           <div className="qa-desc">{hasRoute ? '调当前路线' : '说"想看熊猫"'}</div>
         </button>
-        <button className="qa-card" onClick={() => onSwitchTab('facility')}>
-          <div className="qa-icon">🚻</div>
-          <div className="qa-title">设施信息</div>
-          <div className="qa-desc">卫生间/餐厅等</div>
+        <button className="qa-card" onClick={() => navigate('/season')}>
+          <div className="qa-icon">🌤️</div>
+          <div className="qa-title">淡旺季攻略</div>
+          <div className="qa-desc">选时机避人潮</div>
         </button>
-        <button className="qa-card" onClick={() => onSwitchTab('activity')}>
-          <div className="qa-icon">📸</div>
-          <div className="qa-title">出片彩蛋</div>
-          <div className="qa-desc">拍照打分</div>
-        </button>
-        <button className="qa-card" onClick={() => onSwitchTab('me')}>
-          <div className="qa-icon">👤</div>
-          <div className="qa-title">我的</div>
-          <div className="qa-desc">{user ? '看历史' : '登录'}</div>
+        <button className="qa-card" onClick={() => navigate('/downloads')}>
+          <div className="qa-icon">📥</div>
+          <div className="qa-title">资料下载</div>
+          <div className="qa-desc">宣传册/讲解稿</div>
         </button>
       </div>
 
@@ -176,7 +178,7 @@ export function HomePage({
       {meta && <ParkFacts meta={meta} venues={venues} />}
 
       {/* Quick external links */}
-      <QuickLinks />
+      <QuickLinks links={meta?.links} />
     </div>
   )
 }
@@ -278,7 +280,7 @@ function ParkFacts({ meta, venues }: { meta: Meta; venues: Venue[] }) {
             letterSpacing: 0.5,
           }}
         >
-          🗺️ 四大片区
+          🗺️ {areaEntries.length} 大片区
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {areaEntries.map(([name, desc]) => (
@@ -291,25 +293,24 @@ function ParkFacts({ meta, venues }: { meta: Meta; venues: Venue[] }) {
       </div>
 
       {/* Tips */}
-      <div
-        style={{
-          marginTop: 14,
-          padding: '10px 12px',
-          background: '#fef9e7',
-          borderRadius: 10,
-          fontSize: 12,
-          color: '#78350f',
-          lineHeight: 1.6,
-        }}
-      >
-        <div style={{ fontWeight: 700, marginBottom: 4 }}>💡 实用小贴士</div>
-        <div>
-          · 上午 9-10 点动物最活跃；下午 2-3 点午睡醒来
+      {meta.tips && meta.tips.length > 0 && (
+        <div
+          style={{
+            marginTop: 14,
+            padding: '10px 12px',
+            background: '#fef9e7',
+            borderRadius: 10,
+            fontSize: 12,
+            color: '#78350f',
+            lineHeight: 1.6,
+          }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>💡 实用小贴士</div>
+          {meta.tips.map((t, i) => (
+            <div key={i}>· {t}</div>
+          ))}
         </div>
-        <div>· 北门最近熊猫馆；南门是 2025 新区主入口</div>
-        <div>· 山地型园区，多上下坡，穿舒适的鞋</div>
-        <div>· 禁止投喂动物、禁止使用闪光灯、禁止无人机</div>
-      </div>
+      )}
 
       {/* Address */}
       {address && (
@@ -500,21 +501,13 @@ function StatBlock({ label, value }: { label: string; value: number }) {
   )
 }
 
-const EXTERNAL_LINKS = [
-  { icon: '🌐', label: '红山官网', url: 'https://www.njzoo.cn' },
-  { icon: '🎫', label: '在线购票', url: 'https://www.njzoo.cn/ticket' },
-  { icon: '🚇', label: '交通指南', url: 'https://www.njzoo.cn/traffic' },
-  { icon: '📱', label: '官方公众号', url: 'https://mp.weixin.qq.com/mp/profile_ext?action=home&__biz=MzA3MDAyMzEwMQ==&scene=124' },
-  { icon: '📖', label: '动物科普', url: 'https://www.njzoo.cn/education' },
-  { icon: '📢', label: '游园须知', url: 'https://www.njzoo.cn/notice' },
-]
-
-function QuickLinks() {
+function QuickLinks({ links }: { links?: { icon: string; label: string; url: string }[] }) {
+  if (!links?.length) return null
   return (
     <div className="card">
       <h3 className="card-title">🔗 快速链接</h3>
       <div className="quick-links-grid">
-        {EXTERNAL_LINKS.map((link) => (
+        {links.map((link) => (
           <a
             key={link.url}
             className="quick-link-item"

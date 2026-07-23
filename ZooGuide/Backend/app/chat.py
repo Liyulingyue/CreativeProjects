@@ -59,7 +59,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "search_venues",
-            "description": "搜索场馆信息，按名称、动物、区域等关键词查找",
+            "description": "搜索场馆信息，按名称、动物、区域等关键词查找。返回场馆ID、名称、区域、动物等基本信息。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -69,6 +69,41 @@ TOOLS = [
                     }
                 },
                 "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_venue_detail",
+            "description": "获取某个场馆的详细信息，包括讲解词、四季贴士、饲养员讲解时间、描述等。需要先通过search_venues获取venue_id后再调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "venue_id": {
+                        "type": "string",
+                        "description": "场馆ID，如'panda'、'koala'、'gorilla'",
+                    }
+                },
+                "required": ["venue_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_zoo_info",
+            "description": "获取园区基础信息，如开放时间、票价、片区介绍、游园贴士、淡旺季攻略、快速链接等。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "topic": {
+                        "type": "string",
+                        "enum": ["basics", "areas", "tips", "seasonal_guide", "links", "highlights"],
+                        "description": "basics=开放时间/票价/地址, areas=片区介绍, tips=游园贴士, seasonal_guide=淡旺季攻略, links=官网/购票等链接, highlights=园区亮点",
+                    }
+                },
+                "required": ["topic"],
             },
         },
     },
@@ -108,19 +143,8 @@ def _load_system_prompt() -> str:
         parts = [cfg["agent_identity"]]
         if cfg.get("rules"):
             parts.append("\n【规则】\n" + "\n".join(f"{i+1}. {r}" for i, r in enumerate(cfg["rules"])))
-        if cfg.get("venue_facts"):
-            lines = []
-            for vid, v in cfg["venue_facts"].items():
-                animals = "、".join(v.get("animals", []))
-                tags = "、".join(v.get("tags", []))
-                lines.append(f"- {vid}({v['name']}，{v.get('area', '')}，动物：{animals}，标签：{tags})")
-            parts.append("\n【场馆速查】\n" + "\n".join(lines))
         if cfg.get("fun_facts"):
             parts.append("\n【红山梗】\n" + "\n".join(f"- {f}" for f in cfg["fun_facts"]))
-        if cfg.get("areas"):
-            parts.append("\n【区域】\n" + "\n".join(f"- {k}：{v}" for k, v in cfg["areas"].items()))
-        if cfg.get("tips"):
-            parts.append("\n【应对建议】\n" + "\n".join(f"- {k}：{v}" for k, v in cfg["tips"].items()))
         AGENT_SYSTEM = "\n".join(parts)
     except Exception as e:
         AGENT_SYSTEM = "你是红山省力Agent，帮助游客规划路线。"
@@ -180,6 +204,79 @@ def _search_venues(query: str) -> str:
     return "\n".join(lines)
 
 
+def _get_venue_detail(venue_id: str) -> str:
+    v = data_loader.get_venue_dict_by_id(venue_id)
+    if not v:
+        return f"未找到场馆「{venue_id}」"
+    parts = [f"【{v['name']}】"]
+    parts.append(f"区域：{v.get('area', '')}")
+    parts.append(f"动物：{'、'.join(v.get('animals', []))}")
+    parts.append(f"标签：{'、'.join(v.get('tags', []))}")
+    parts.append(f"开放时间：{v.get('open_time', '')}-{v.get('close_time', '')}")
+    parts.append(f"建议游览：{v.get('recommended_visit_minutes', '')}分钟")
+    parts.append(f"必看：{'是' if v.get('must_see') else '否'}")
+    parts.append(f"有遮阴：{'是' if v.get('shaded') else '否'}")
+    parts.append(f"适合带娃：{'是' if v.get('kid_friendly', 0) >= 3 else '一般'}")
+    if v.get("description"):
+        parts.append(f"简介：{v['description']}")
+    if v.get("narration"):
+        parts.append(f"讲解词：{v['narration']}")
+    if v.get("seasonal_tips"):
+        parts.append(f"四季贴士：{v['seasonal_tips']}")
+    if v.get("keeper_talk"):
+        parts.append(f"饲养员讲解：{v['keeper_talk']}")
+    return "\n".join(parts)
+
+
+def _get_zoo_info(topic: str) -> str:
+    meta = data_loader.get_meta()
+    if topic == "basics":
+        return (
+            f"园区：{meta.get('name', '')}\n"
+            f"地址：{meta.get('address', '')}\n"
+            f"开放时间：{meta.get('open_time', '')}-{meta.get('close_time', '')}\n"
+            f"票价：{meta.get('ticket', '')}\n"
+            f"面积：{meta.get('area_km2', '')} km²"
+        )
+    if topic == "areas":
+        areas = meta.get("areas", {})
+        if not areas:
+            return "暂无片区信息"
+        return "\n".join(f"- {k}：{v}" for k, v in areas.items())
+    if topic == "tips":
+        tips = meta.get("tips", [])
+        if not tips:
+            return "暂无游园贴士"
+        return "\n".join(f"- {t}" for t in tips)
+    if topic == "seasonal_guide":
+        sg = meta.get("seasonal_guide", {})
+        if not sg:
+            return "暂无淡旺季攻略"
+        parts = []
+        for key in ("peak", "shoulder", "off_peak"):
+            season = sg.get(key, {})
+            if season:
+                parts.append(f"【{season.get('label', key)}】")
+                for tip in season.get("tips", []):
+                    parts.append(f"  · {tip}")
+                if season.get("avoid_tips"):
+                    parts.append(f"  避坑：{season['avoid_tips']}")
+                if season.get("best_venues"):
+                    parts.append(f"  推荐场馆：{', '.join(season['best_venues'])}")
+        return "\n".join(parts)
+    if topic == "links":
+        links = meta.get("links", [])
+        if not links:
+            return "暂无链接信息"
+        return "\n".join(f"- {l['label']}：{l['url']}" for l in links)
+    if topic == "highlights":
+        highlights = meta.get("highlights", [])
+        if not highlights:
+            return "暂无亮点信息"
+        return "\n".join(f"- {h}" for h in highlights)
+    return f"未知主题：{topic}"
+
+
 def _execute_modify_route(action: str, venue_id: str | None, current_route: dict) -> tuple[str, Optional[Route]]:
     action_map = {
         "add_venue": "add_venue",
@@ -208,6 +305,10 @@ def _execute_modify_route(action: str, venue_id: str | None, current_route: dict
 def _execute_tool(name: str, args: dict, current_route: dict | None) -> tuple[str, Optional[Route]]:
     if name == "search_venues":
         return _search_venues(args.get("query", "")), None
+    if name == "get_venue_detail":
+        return _get_venue_detail(args.get("venue_id", "")), None
+    if name == "get_zoo_info":
+        return _get_zoo_info(args.get("topic", "basics")), None
     if name == "modify_route":
         if not current_route:
             return "当前没有路线，请先规划路线", None
