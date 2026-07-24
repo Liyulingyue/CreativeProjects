@@ -16,7 +16,7 @@ function getToken(): string | null {
   return localStorage.getItem('zooguide:token:v1')
 }
 
-function authHeader(): Record<string, string> {
+export function authHeader(): Record<string, string> {
   const t = getToken()
   return t ? { Authorization: `Bearer ${t}` } : {}
 }
@@ -115,6 +115,9 @@ export const api = {
     request<{ id: number; username: string; display_name: string; created_at: string }>('/api/auth/me'),
 
   // User history
+  myVisitedVenueIds: () =>
+    request<{ user_id: number; venue_ids: string[] }>('/api/me/visited-venue-ids'),
+
   mySummary: () =>
     request<{
       user: { id: number; username: string; display_name: string }

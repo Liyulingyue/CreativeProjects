@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { Venue } from '../types'
-import { api } from '../api/client'
-import { loadActivityVisited, saveActivityVisited } from '../lib/storage'
+import { api, authHeader } from '../api/client'
+import { loadVisited, saveVisited } from '../lib/storage'
+import { useVisitedVenues } from '../hooks/useVisitedVenues'
 
 interface CheckinResult {
   distance_m: number
@@ -10,12 +11,10 @@ interface CheckinResult {
   message: string
 }
 
-const ACTIVITY = 'gps'
-
 export function GpsFlowPage() {
   const navigate = useNavigate()
   const [venues, setVenues] = useState<Venue[]>([])
-  const [visited, setVisited] = useState<Set<string>>(loadActivityVisited(ACTIVITY))
+  const { visited, version } = useVisitedVenues()
   const [selectedVenue, setSelectedVenue] = useState<Venue | null>(null)
   const [locating, setLocating] = useState(false)
   const [result, setResult] = useState<CheckinResult | null>(null)
@@ -47,7 +46,7 @@ export function GpsFlowPage() {
 
           fetch('/api/gps-checkin', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...authHeader() },
             body: JSON.stringify({
               lat: pos.coords.latitude,
               lon: pos.coords.longitude,
@@ -59,10 +58,10 @@ export function GpsFlowPage() {
 
           const success = dist <= 200
           if (success) {
-            const next = new Set(loadActivityVisited(ACTIVITY))
+            const next = new Set(loadVisited())
             next.add(v.id)
-            saveActivityVisited(ACTIVITY, next)
-            setVisited(next)
+            saveVisited(next)
+            api.checkin(v.id).catch(() => {})
           }
 
           setResult({

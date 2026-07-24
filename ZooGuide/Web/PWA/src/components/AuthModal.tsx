@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { api } from '../api/client'
-import { setAuth } from '../lib/storage'
+import { setAuth, loadVisited, saveVisited } from '../lib/storage'
 
 interface Props {
   onClose: () => void
@@ -27,6 +27,15 @@ export function AuthModal({ onClose, onAuthed }: Props) {
           : await api.register(username, password, displayName || undefined)
       setAuth(result.token, result.user)
       onAuthed(result.user)
+      // Sync: merge server-side visited venues into local
+      try {
+        const serverData = await api.myVisitedVenueIds()
+        if (serverData.venue_ids?.length) {
+          const local = loadVisited()
+          const merged = new Set([...local, ...serverData.venue_ids])
+          saveVisited(merged)
+        }
+      } catch {}
       onClose()
     } catch (e) {
       setError(e instanceof Error ? e.message : '失败')

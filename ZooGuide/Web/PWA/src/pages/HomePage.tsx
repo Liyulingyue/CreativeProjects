@@ -460,7 +460,6 @@ function ActiveRouteCard({
           className={`btn arc-cta-btn ${visited.has(currentStop.venue_id) ? 'on-arc-secondary' : 'arc-secondary'}`}
           onClick={(e) => {
             e.stopPropagation()
-            // Mark current stop as visited and auto-advance
             const next = new Set(visited)
             if (next.has(currentStop.venue_id)) {
               next.delete(currentStop.venue_id)
@@ -470,12 +469,7 @@ function ActiveRouteCard({
             import('../lib/storage').then(({ saveVisited }) => {
               saveVisited(next)
             })
-            // Optional: POST to backend
-            fetch('/api/checkin', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ venue_id: currentStop.venue_id }),
-            }).catch(() => {})
+            api.checkin(currentStop.venue_id).catch(() => {})
           }}
         >
           {visited.has(currentStop.venue_id) ? '✓ 已游览' : '🦒 已游览'}
