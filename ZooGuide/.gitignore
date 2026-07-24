@@ -21,3 +21,11 @@ coverage/
 
 # User-uploaded photos
 Backend/data/photos/
+
+# Downloadable files (only track .gitkeep and README)
+Backend/data/downloads/*
+!Backend/data/downloads/.gitkeep
+!Backend/data/downloads/README.md
+
+references/
+resources/
