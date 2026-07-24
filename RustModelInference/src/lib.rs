@@ -1,3 +1,4 @@
+pub mod thread_pool;
 pub mod traits;
 pub mod memory;
 pub mod quant;

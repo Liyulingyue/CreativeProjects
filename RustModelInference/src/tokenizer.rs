@@ -8,6 +8,7 @@ pub struct BPETokenizer {
     merge_ranks: HashMap<(String, String), u32>,
     byte_encoder: Vec<String>,
     byte_decoder: HashMap<char, u8>,
+    special_tokens: HashMap<String, u32>,
     bos_id: u32,
     eos_id: u32,
     byte_fallback: bool,
@@ -67,10 +68,42 @@ impl BPETokenizer {
 
         let byte_fallback = tokens.iter().any(|t| t.starts_with("<0x") && t.ends_with('>'));
 
-        Ok(Self { tokens, token_to_id, merge_ranks, byte_encoder, byte_decoder, bos_id, eos_id, byte_fallback })
+        Ok(Self { tokens, token_to_id, merge_ranks, byte_encoder, byte_decoder, special_tokens: HashMap::new(), bos_id, eos_id, byte_fallback })
     }
 
     pub fn encode(&self, text: &str) -> Vec<u32> {
+        if !self.special_tokens.is_empty() {
+            let mut result = Vec::new();
+            let mut remaining = text;
+            while !remaining.is_empty() {
+                let mut best_pos = usize::MAX;
+                let mut best_len = 0;
+                let mut best_id = 0u32;
+                for (token_str, &id) in &self.special_tokens {
+                    if let Some(pos) = remaining.find(token_str.as_str()) {
+                        if pos < best_pos || (pos == best_pos && token_str.len() > best_len) {
+                            best_pos = pos;
+                            best_len = token_str.len();
+                            best_id = id;
+                        }
+                    }
+                }
+                if best_pos == usize::MAX {
+                    result.extend_from_slice(&self.encode_bpe(remaining));
+                    break;
+                }
+                if best_pos > 0 {
+                    result.extend_from_slice(&self.encode_bpe(&remaining[..best_pos]));
+                }
+                result.push(best_id);
+                remaining = &remaining[best_pos + best_len..];
+            }
+            return result;
+        }
+        self.encode_bpe(text)
+    }
+
+    fn encode_bpe(&self, text: &str) -> Vec<u32> {
         let bytes = text.as_bytes();
         let mut symbols: Vec<Symbol> = Vec::with_capacity(bytes.len());
         for &b in bytes {
@@ -173,6 +206,14 @@ impl BPETokenizer {
     pub fn vocab_size(&self) -> usize { self.tokens.len() }
     pub fn token_str(&self, id: u32) -> &str {
         self.tokens.get(id as usize).map(|s| s.as_str()).unwrap_or("")
+    }
+
+    pub fn set_special_tokens(&mut self, specials: HashMap<String, u32>) {
+        self.special_tokens = specials;
+    }
+
+    pub fn special_token_id(&self, name: &str) -> Option<u32> {
+        self.special_tokens.get(name).copied()
     }
 }
 
