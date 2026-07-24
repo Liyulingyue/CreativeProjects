@@ -3,6 +3,7 @@ use std::cell::UnsafeCell;
 use std::sync::atomic::Ordering;
 use std::io::{self, Write};
 use std::time::Instant;
+use thread_pool::ComputePool;
 
 use rust_model_inference::*;
 
@@ -160,6 +161,16 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
     let group_size = n_head / n_head_kv;
     let kq_scale = 1.0f32 / (n_embd_head_k as f32).sqrt();
 
+    let mut t_norm: f64 = 0.0;
+    let mut t_quant: f64 = 0.0;
+    let mut t_qkv: f64 = 0.0;
+    let mut t_attn: f64 = 0.0;
+    let mut t_wo: f64 = 0.0;
+    let mut t_ffn1: f64 = 0.0;
+    let mut t_silu: f64 = 0.0;
+    let mut t_down: f64 = 0.0;
+    let mut t_logits: f64 = 0.0;
+
     print!("Output: ");
     io::stdout().flush().unwrap();
 
@@ -201,16 +212,35 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
             let q8_buf = &mut *q8_buf_ptr;
             let scale_buf = &mut *scale_buf_ptr;
 
+            let t0 = Instant::now();
             rms_norm(x, &lw.attn_norm, normed, eps);
+            t_norm += t0.elapsed().as_secs_f64();
+
+            let t0 = Instant::now();
             quantize_q8_0_into(normed, n_embd, &mut q8_buf[..n_embd], &mut scale_buf[..n_embd / 32]);
+            t_quant += t0.elapsed().as_secs_f64();
 
             let q8 = q8_buf[..n_embd].as_ptr();
             let sc = scale_buf[..n_embd / 32].as_ptr();
             let q_norm = lw.q_norm.as_deref();
             let k_norm = lw.k_norm.as_deref();
+
+            let t0 = Instant::now();
             pool.compute(move |ith: usize, nth: usize| {
                 let q8 = std::slice::from_raw_parts(q8, n_embd);
                 let sc = std::slice::from_raw_parts(sc, n_embd / 32);
+                let q = &mut *q_ptr;
+                let k_new = &mut *k_ptr;
+                let v_new = &mut *v_ptr;
+
+                matmul_q8_0_quantized_parallel_rows(lw.wq, q8, sc, q, n_embd, n_embd_q, ith, nth);
+                matmul_q8_0_quantized_parallel_rows(lw.wk, q8, sc, k_new, n_embd, n_embd_gqa, ith, nth);
+                matmul_q8_0_quantized_parallel_rows(lw.wv, q8, sc, v_new, n_embd, n_embd_gqa, ith, nth);
+            });
+            t_qkv += t0.elapsed().as_secs_f64();
+
+            let t0 = Instant::now();
+            pool.compute(move |ith: usize, nth: usize| {
                 let q = &mut *q_ptr;
                 let k_new = &mut *k_ptr;
                 let v_new = &mut *v_ptr;
@@ -218,10 +248,6 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
                 let scores = &mut *scores_ptr;
                 let k_cache = &mut *k_cache_ptr;
                 let v_cache = &mut *v_cache_ptr;
-
-                matmul_q8_0_quantized_parallel_rows(lw.wq, q8, sc, q, n_embd, n_embd_q, ith, nth);
-                matmul_q8_0_quantized_parallel_rows(lw.wk, q8, sc, k_new, n_embd, n_embd_gqa, ith, nth);
-                matmul_q8_0_quantized_parallel_rows(lw.wv, q8, sc, v_new, n_embd, n_embd_gqa, ith, nth);
 
                 let h_start = ith * n_head / nth;
                 let h_end = (ith + 1) * n_head / nth;
@@ -275,28 +301,40 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
                     }
                 }
             });
+            t_attn += t0.elapsed().as_secs_f64();
 
             let attn_out = &mut *attn_out_ptr;
+            let t0 = Instant::now();
             quantize_q8_0_into(attn_out, n_embd_q, &mut q8_buf[..n_embd_q], &mut scale_buf[..n_embd_q / 32]);
+            t_quant += t0.elapsed().as_secs_f64();
 
             let q8 = q8_buf[..n_embd_q].as_ptr();
             let sc = scale_buf[..n_embd_q / 32].as_ptr();
+            let t0 = Instant::now();
             pool.compute(move |ith: usize, nth: usize| {
                 let q8 = std::slice::from_raw_parts(q8, n_embd_q);
                 let sc = std::slice::from_raw_parts(sc, n_embd_q / 32);
                 let attn_proj = &mut *attn_proj_ptr;
                 matmul_q8_0_quantized_parallel_rows(lw.wo, q8, sc, attn_proj, n_embd_q, n_embd, ith, nth);
             });
+            t_wo += t0.elapsed().as_secs_f64();
 
             let attn_proj = &mut *attn_proj_ptr;
             let x = &mut *x_ptr;
             let normed = &mut *normed_ptr;
             for i in 0..n_embd { x[i] += attn_proj[i]; }
+
+            let t0 = Instant::now();
             rms_norm(x, &lw.ffn_norm, normed, eps);
+            t_norm += t0.elapsed().as_secs_f64();
+
+            let t0 = Instant::now();
             quantize_q8_0_into(normed, n_embd, &mut q8_buf[..n_embd], &mut scale_buf[..n_embd / 32]);
+            t_quant += t0.elapsed().as_secs_f64();
 
             let q8 = q8_buf[..n_embd].as_ptr();
             let sc = scale_buf[..n_embd / 32].as_ptr();
+            let t0 = Instant::now();
             pool.compute(move |ith: usize, nth: usize| {
                 let q8 = std::slice::from_raw_parts(q8, n_embd);
                 let sc = std::slice::from_raw_parts(sc, n_embd / 32);
@@ -312,18 +350,23 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
                     gate_buf[i] = silu(gate_buf[i]) * up_buf[i];
                 }
             });
+            t_ffn1 += t0.elapsed().as_secs_f64();
 
             let gate_buf = &mut *gate_buf_ptr;
+            let t0 = Instant::now();
             quantize_q8_0_into(gate_buf, n_ff, &mut q8_buf[..n_ff], &mut scale_buf[..n_ff / 32]);
+            t_quant += t0.elapsed().as_secs_f64();
 
             let q8 = q8_buf[..n_ff].as_ptr();
             let sc = scale_buf[..n_ff / 32].as_ptr();
+            let t0 = Instant::now();
             pool.compute(move |ith: usize, nth: usize| {
                 let q8 = std::slice::from_raw_parts(q8, n_ff);
                 let sc = std::slice::from_raw_parts(sc, n_ff / 32);
                 let down_buf = &mut *down_buf_ptr;
                 matmul_q8_0_quantized_parallel_rows(lw.w_down, q8, sc, down_buf, n_ff, n_embd, ith, nth);
             });
+            t_down += t0.elapsed().as_secs_f64();
 
             let down_buf = &mut *down_buf_ptr;
             let x = &mut *x_ptr;
@@ -338,17 +381,24 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
         let q8_buf = &mut *q8_buf.get();
         let scale_buf = &mut *scale_buf.get();
 
+        let t0 = Instant::now();
         rms_norm(x, &output_norm, normed, eps);
+        t_norm += t0.elapsed().as_secs_f64();
+
+        let t0 = Instant::now();
         quantize_q8_0_into(normed, n_embd, &mut q8_buf[..n_embd], &mut scale_buf[..n_embd / 32]);
+        t_quant += t0.elapsed().as_secs_f64();
 
         let q8 = q8_buf[..n_embd].as_ptr();
         let sc = scale_buf[..n_embd / 32].as_ptr();
+        let t0 = Instant::now();
         pool.compute(move |ith: usize, nth: usize| {
             let q8 = std::slice::from_raw_parts(q8, n_embd);
             let sc = std::slice::from_raw_parts(sc, n_embd / 32);
             let logits = &mut *logits_ptr;
             matmul_q8_0_quantized_parallel_rows(output_weight, q8, sc, logits, n_embd, vocab, ith, nth);
         });
+        t_logits += t0.elapsed().as_secs_f64();
         }
 
         if step < input_tokens.len() - 1 { continue; }
@@ -386,6 +436,11 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
 
     let infer_ms = t_infer.elapsed().as_millis();
     let tok_s = if infer_ms > 0 { generated_tokens.len() as f64 / infer_ms as f64 * 1000.0 } else { 0.0 };
+    let total = t_norm + t_quant + t_qkv + t_attn + t_wo + t_ffn1 + t_down + t_logits;
+    eprintln!("PROFILE: norm={:.1}% quant={:.1}% qkv={:.1}% attn={:.1}% wo={:.1}% ffn1={:.1}% down={:.1}% logits={:.1}%",
+        t_norm/total*100.0, t_quant/total*100.0, t_qkv/total*100.0, t_attn/total*100.0, t_wo/total*100.0, t_ffn1/total*100.0, t_down/total*100.0, t_logits/total*100.0);
+    eprintln!("PROFILE: norm={:.3}s quant={:.3}s qkv={:.3}s attn={:.3}s wo={:.3}s ffn1={:.3}s down={:.3}s logits={:.3}s",
+        t_norm, t_quant, t_qkv, t_attn, t_wo, t_ffn1, t_down, t_logits);
     println!();
     println!("[{} tokens in {}ms | {:.1} tok/s]", generated_tokens.len(), infer_ms, tok_s);
 }
