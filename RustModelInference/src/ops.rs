@@ -165,14 +165,45 @@ pub fn quantize_q8_0_into(input: &[f32], n: usize, q8: &mut [u8], scales: &mut [
     }
 }
 
+pub fn quantize_q8_0_into_parallel(input: &[f32], n: usize, q8: &mut [u8], scales: &mut [f32], ith: usize, nth: usize) {
+    let blocks = n / 32;
+    let b_start = ith * blocks / nth;
+    let b_end = (ith + 1) * blocks / nth;
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") {
+            unsafe { quantize_q8_0_into_avx2_range(input, q8, scales, b_start, b_end); }
+            return;
+        }
+    }
+    for b in b_start..b_end {
+        let slice = &input[b * 32..(b + 1) * 32];
+        let mut amax = 0.0f32;
+        for &v in slice {
+            let a = v.abs();
+            if a > amax { amax = a; }
+        }
+        let d = if amax == 0.0 { 0.0 } else { amax / 127.0 };
+        scales[b] = d;
+        let id = if d == 0.0 { 0.0 } else { 1.0 / d };
+        for (k, &v) in slice.iter().enumerate() {
+            q8[b * 32 + k] = (v * id).round().clamp(-128.0, 127.0) as i8 as u8;
+        }
+    }
+}
+
 #[cfg(target_arch = "x86_64")]
 unsafe fn quantize_q8_0_into_avx2(input: &[f32], n: usize, q8: &mut [u8], scales: &mut [f32]) {
+    quantize_q8_0_into_avx2_range(input, q8, scales, 0, n / 32);
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn quantize_q8_0_into_avx2_range(input: &[f32], q8: &mut [u8], scales: &mut [f32], b_start: usize, b_end: usize) {
     use std::arch::x86_64::*;
-    let blocks = n / 32;
     let sign_mask = _mm256_set1_ps(-0.0f32);
     let max_i8 = _mm256_set1_ps(127.0);
     let min_i8 = _mm256_set1_ps(-128.0);
-    for b in 0..blocks {
+    for b in b_start..b_end {
         let ptr = input.as_ptr().add(b * 32);
         let v0 = _mm256_loadu_ps(ptr);
         let v1 = _mm256_loadu_ps(ptr.add(8));
@@ -404,6 +435,19 @@ pub fn matmul_q8_0_quantized_parallel_rows(weight: &[u8], input_q8: &[u8], input
     let my_end = (my_start + per_thread).min(n_out);
     if my_start >= my_end { return; }
     matmul_q8_0_quantized_range(weight, input_q8, input_scales, &mut output[my_start..my_end], n_in, my_start, my_end);
+}
+
+pub fn matmul_q8_0_quantized_dynamic(weight: &[u8], input_q8: &[u8], input_scales: &[f32], output: &mut [f32], n_in: usize, n_out: usize, pool: &crate::thread_pool::ComputePool) {
+    if n_out == 0 { return; }
+    let chunk_size = 16.max(n_out / (pool.n_threads() * 4));
+    let n_chunks = (n_out + chunk_size - 1) / chunk_size;
+    loop {
+        let chunk = pool.next_chunk() as usize;
+        if chunk >= n_chunks { break; }
+        let row_start = chunk * chunk_size;
+        let row_end = (row_start + chunk_size).min(n_out);
+        matmul_q8_0_quantized_range(weight, input_q8, input_scales, &mut output[row_start..row_end], n_in, row_start, row_end);
+    }
 }
 
 pub fn matmul_q8_0_quantized_range(weight: &[u8], input_q8: &[u8], input_scales: &[f32], output: &mut [f32], n_in: usize, row_start: usize, row_end: usize) {

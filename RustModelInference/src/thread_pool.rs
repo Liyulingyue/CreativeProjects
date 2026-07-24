@@ -42,13 +42,18 @@ impl ComputePool {
         });
 
         let mut threads = Vec::with_capacity(n_threads - 1);
+        let start_barrier = Arc::new(std::sync::Barrier::new(n_threads));
         for tid in 1..n_threads {
             let inner = inner.clone();
             let nt = n_threads;
+            let barrier = start_barrier.clone();
             threads.push(std::thread::spawn(move || {
+                barrier.wait();
                 worker_loop(tid, nt, &inner);
             }));
         }
+
+        start_barrier.wait();
 
         ComputePool { n_threads, inner, threads }
     }
@@ -86,8 +91,8 @@ impl ComputePool {
         unsafe { drop(Box::from_raw(data_ptr as *mut F)); }
     }
 
-    pub fn barrier(&self) {
-        unreachable!("barrier not supported in completion-counter model");
+    pub fn next_chunk(&self) -> i32 {
+        0
     }
 }
 
