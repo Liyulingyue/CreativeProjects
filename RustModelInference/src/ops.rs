@@ -127,6 +127,82 @@ pub fn dot_f32(a: &[f32], b: &[f32], n: usize) -> f32 {
     dot_f32_scalar(a, b, n)
 }
 
+#[inline(always)]
+pub fn vec_scale_f32(y: &mut [f32], v: f32) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            unsafe { vec_scale_f32_avx2(y, v); }
+            return;
+        }
+    }
+    for y_i in y.iter_mut() { *y_i *= v; }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+unsafe fn vec_scale_f32_avx2(y: &mut [f32], v: f32) {
+    use std::arch::x86_64::*;
+    let vv = _mm256_set1_ps(v);
+    let n = y.len();
+    let mut i = 0;
+    while i + 8 <= n {
+        let yi = _mm256_loadu_ps(y.as_ptr().add(i));
+        _mm256_storeu_ps(y.as_mut_ptr().add(i), _mm256_mul_ps(yi, vv));
+        i += 8;
+    }
+    if i + 4 <= n {
+        let vv128 = _mm256_castps256_ps128(vv);
+        let yi = _mm_loadu_ps(y.as_ptr().add(i));
+        _mm_storeu_ps(y.as_mut_ptr().add(i), _mm_mul_ps(yi, vv128));
+        i += 4;
+    }
+    while i < n {
+        y[i] *= v;
+        i += 1;
+    }
+}
+
+#[inline(always)]
+pub fn vec_mad_f32(y: &mut [f32], x: &[f32], v: f32) {
+    debug_assert_eq!(y.len(), x.len());
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            unsafe { vec_mad_f32_avx2(y, x, v); }
+            return;
+        }
+    }
+    let vv = v;
+    for i in 0..y.len() { y[i] += vv * x[i]; }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+unsafe fn vec_mad_f32_avx2(y: &mut [f32], x: &[f32], v: f32) {
+    use std::arch::x86_64::*;
+    let vv = _mm256_set1_ps(v);
+    let n = y.len();
+    let mut i = 0;
+    while i + 8 <= n {
+        let yi = _mm256_loadu_ps(y.as_ptr().add(i));
+        let xi = _mm256_loadu_ps(x.as_ptr().add(i));
+        _mm256_storeu_ps(y.as_mut_ptr().add(i), _mm256_fmadd_ps(vv, xi, yi));
+        i += 8;
+    }
+    if i + 4 <= n {
+        let vv128 = _mm256_castps256_ps128(vv);
+        let yi = _mm_loadu_ps(y.as_ptr().add(i));
+        let xi = _mm_loadu_ps(x.as_ptr().add(i));
+        _mm_storeu_ps(y.as_mut_ptr().add(i), _mm_fmadd_ps(vv128, xi, yi));
+        i += 4;
+    }
+    while i < n {
+        y[i] += v * x[i];
+        i += 1;
+    }
+}
+
 pub fn softmax(x: &mut [f32]) {
     if x.is_empty() { return; }
     let max_val = x.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
@@ -269,29 +345,92 @@ pub fn quantize_q8_0(input: &[f32], n: usize) -> (Vec<u8>, Vec<f32>) {
     (q8, scales)
 }
 
+#[inline(never)]
 unsafe fn matmul_q8_0_vs_q8_0_avx2(weight: &[u8], input_q8: &[u8], input_scales: &[f32], output: &mut [f32], n_in: usize, row_start: usize, row_end: usize) {
     use std::arch::x86_64::*;
     let blocks_per_row = n_in / 32;
     let row_stride = blocks_per_row * 34;
     let ones = _mm256_set1_epi16(1);
-    for (out_idx, j) in (row_start..row_end).enumerate() {
+    let n_rows = row_end - row_start;
+    let w_ptr = weight.as_ptr();
+    let sc_ptr = input_scales.as_ptr();
+    let out_ptr = output.as_mut_ptr();
+
+    let full4 = n_rows / 4;
+    for tile in 0..full4 {
+        let r0 = row_start + tile * 4;
+        let off0 = r0 * row_stride;
+        let off1 = (r0 + 1) * row_stride;
+        let off2 = (r0 + 2) * row_stride;
+        let off3 = (r0 + 3) * row_stride;
+        let mut cv0 = _mm256_setzero_ps();
+        let mut cv1 = _mm256_setzero_ps();
+        let mut cv2 = _mm256_setzero_ps();
+        let mut cv3 = _mm256_setzero_ps();
+        for b in 0..blocks_per_row {
+            if b + 1 < blocks_per_row {
+                _mm_prefetch(w_ptr.add(off0 + (b + 1) * 34) as *const i8, _MM_HINT_T0);
+                _mm_prefetch(w_ptr.add(off1 + (b + 1) * 34) as *const i8, _MM_HINT_T0);
+                _mm_prefetch(w_ptr.add(off2 + (b + 1) * 34) as *const i8, _MM_HINT_T0);
+                _mm_prefetch(w_ptr.add(off3 + (b + 1) * 34) as *const i8, _MM_HINT_T0);
+            }
+            let qy = _mm256_loadu_si256(input_q8.as_ptr().add(b * 32) as *const __m256i);
+            let bd = *sc_ptr.add(b);
+
+            let p0 = w_ptr.add(off0 + b * 34);
+            let p1 = w_ptr.add(off1 + b * 34);
+            let p2 = w_ptr.add(off2 + b * 34);
+            let p3 = w_ptr.add(off3 + b * 34);
+            let a0_d = u16::from_le_bytes([*p0, *p0.add(1)]);
+            let a1_d = u16::from_le_bytes([*p1, *p1.add(1)]);
+            let a2_d = u16::from_le_bytes([*p2, *p2.add(1)]);
+            let a3_d = u16::from_le_bytes([*p3, *p3.add(1)]);
+            let packed_d = _mm_set_epi16(0, 0, 0, 0, a3_d as i16, a2_d as i16, a1_d as i16, a0_d as i16);
+            let da = _mm_cvtph_ps(packed_d);
+            let dvec = _mm256_insertf128_ps(_mm256_castps128_ps256(_mm_mul_ps(da, _mm_set1_ps(bd))), _mm_mul_ps(da, _mm_set1_ps(bd)), 1);
+
+            let av0 = _mm256_loadu_si256(p0.add(2) as *const __m256i);
+            let av1 = _mm256_loadu_si256(p1.add(2) as *const __m256i);
+            let av2 = _mm256_loadu_si256(p2.add(2) as *const __m256i);
+            let av3 = _mm256_loadu_si256(p3.add(2) as *const __m256i);
+
+            let ax0 = _mm256_sign_epi8(av0, av0);
+            let ax1 = _mm256_sign_epi8(av1, av1);
+            let ax2 = _mm256_sign_epi8(av2, av2);
+            let ax3 = _mm256_sign_epi8(av3, av3);
+            let sy0 = _mm256_sign_epi8(qy, av0);
+            let sy1 = _mm256_sign_epi8(qy, av1);
+            let sy2 = _mm256_sign_epi8(qy, av2);
+            let sy3 = _mm256_sign_epi8(qy, av3);
+
+            cv0 = _mm256_fmadd_ps(_mm256_shuffle_ps(dvec, dvec, 0x00), _mm256_cvtepi32_ps(_mm256_madd_epi16(ones, _mm256_maddubs_epi16(ax0, sy0))), cv0);
+            cv1 = _mm256_fmadd_ps(_mm256_shuffle_ps(dvec, dvec, 0x55), _mm256_cvtepi32_ps(_mm256_madd_epi16(ones, _mm256_maddubs_epi16(ax1, sy1))), cv1);
+            cv2 = _mm256_fmadd_ps(_mm256_shuffle_ps(dvec, dvec, 0xAA), _mm256_cvtepi32_ps(_mm256_madd_epi16(ones, _mm256_maddubs_epi16(ax2, sy2))), cv2);
+            cv3 = _mm256_fmadd_ps(_mm256_shuffle_ps(dvec, dvec, 0xFF), _mm256_cvtepi32_ps(_mm256_madd_epi16(ones, _mm256_maddubs_epi16(ax3, sy3))), cv3);
+        }
+        let base_out = tile * 4;
+        *out_ptr.add(base_out) = hsum_ps(cv0);
+        *out_ptr.add(base_out + 1) = hsum_ps(cv1);
+        *out_ptr.add(base_out + 2) = hsum_ps(cv2);
+        *out_ptr.add(base_out + 3) = hsum_ps(cv3);
+    }
+
+    for (out_idx, j) in (row_start + full4 * 4..row_end).enumerate() {
         let row_off = j * row_stride;
         let mut acc = _mm256_setzero_ps();
         for b in 0..blocks_per_row {
             let w_off = row_off + b * 34;
-            let d = f16_to_f32(u16::from_le_bytes([weight[w_off], weight[w_off + 1]])) * input_scales[b];
+            let d = f16_to_f32(u16::from_le_bytes([*w_ptr.add(w_off), *w_ptr.add(w_off + 1)])) * *sc_ptr.add(b);
             let d_v = _mm256_set1_ps(d);
-            let w_ptr = weight.as_ptr().add(w_off + 2);
-            let i_ptr = input_q8.as_ptr().add(b * 32);
-            let qx = _mm256_loadu_si256(w_ptr as *const __m256i);
-            let qy = _mm256_loadu_si256(i_ptr as *const __m256i);
+            let qx = _mm256_loadu_si256(w_ptr.add(w_off + 2) as *const __m256i);
+            let qy = _mm256_loadu_si256(input_q8.as_ptr().add(b * 32) as *const __m256i);
             let ax = _mm256_sign_epi8(qx, qx);
             let sy = _mm256_sign_epi8(qy, qx);
             let dot = _mm256_maddubs_epi16(ax, sy);
             let summed = _mm256_madd_epi16(ones, dot);
             acc = _mm256_fmadd_ps(d_v, _mm256_cvtepi32_ps(summed), acc);
         }
-        output[out_idx] = hsum_ps(acc);
+        *out_ptr.add(full4 * 4 + out_idx) = hsum_ps(acc);
     }
 }
 
