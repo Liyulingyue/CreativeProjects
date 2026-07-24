@@ -3,7 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import type { Venue } from '../types'
 import { api } from '../api/client'
 import { PhotoFlow } from '../components/flows/PhotoFlow'
-import { loadPhotoLog, loadActivityVisited, saveActivityVisited, type PhotoLogEntry } from '../lib/storage'
+import { loadPhotoLog, loadVisited, saveVisited, type PhotoLogEntry } from '../lib/storage'
+import { useVisitedVenues } from '../hooks/useVisitedVenues'
 
 const ACTIVITY = 'photo'
 
@@ -11,7 +12,7 @@ export function PhotoActivityPage() {
   const navigate = useNavigate()
   const [venues, setVenues] = useState<Venue[]>([])
   const [photoLog, setPhotoLog] = useState<PhotoLogEntry[]>(loadPhotoLog())
-  const [visited, setVisited] = useState<Set<string>>(loadActivityVisited(ACTIVITY))
+  const { visited, version } = useVisitedVenues()
   const [selectedVenue, setSelectedVenue] = useState<Venue | null>(null)
   const [showFlow, setShowFlow] = useState(false)
 
@@ -19,13 +20,16 @@ export function PhotoActivityPage() {
     api.venues().then((d) => setVenues(d.venues)).catch(console.error)
   }, [])
 
+  useEffect(() => {
+    refreshData()
+  }, [version])
+
   function handleVenueClick(v: Venue) {
     setSelectedVenue(v)
     setShowFlow(false)
   }
 
   function refreshData() {
-    setVisited(loadActivityVisited(ACTIVITY))
     setPhotoLog(loadPhotoLog())
   }
 
@@ -164,9 +168,10 @@ export function PhotoActivityPage() {
               refreshData()
             }}
             onCheckinSuccess={(venueId) => {
-              const next = new Set(loadActivityVisited(ACTIVITY))
+              const next = new Set(loadVisited())
               next.add(venueId)
-              saveActivityVisited(ACTIVITY, next)
+              saveVisited(next)
+              api.checkin(venueId).catch(() => {})
               refreshData()
             }}
           />

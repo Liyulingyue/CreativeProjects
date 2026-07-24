@@ -556,6 +556,18 @@ async def photo_evaluate(
         except Exception as e:
             print(f"[warn] achievement eval failed: {e}")
 
+    # Persist photo eval to DB
+    try:
+        db.insert_photo_eval(
+            evaluation_id=result.get("evaluation_id", ""),
+            payload=result,
+            image_path=str(path) if path else None,
+            session_id=sid,
+            user_id=user_id,
+        )
+    except Exception:
+        pass
+
     return result
 
 
@@ -683,6 +695,13 @@ def auth_me(current_user: dict = Depends(auth.get_current_user)):
 def me_checkins(current_user: dict = Depends(auth.get_current_user)):
     items = db.list_checkins_by_user(current_user["id"])
     return {"user_id": current_user["id"], "checkins": items}
+
+
+@app.get("/api/me/visited-venue-ids")
+def me_visited_venue_ids(current_user: dict = Depends(auth.get_current_user)):
+    items = db.list_checkins_by_user(current_user["id"])
+    venue_ids = list({c["venue_id"] for c in items if c.get("venue_id")})
+    return {"user_id": current_user["id"], "venue_ids": venue_ids}
 
 
 @app.get("/api/me/photo-evals")

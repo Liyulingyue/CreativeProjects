@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api } from '../../api/client'
+import { api, authHeader } from '../../api/client'
 import { useVisitedVenues } from '../../hooks/useVisitedVenues'
 import { saveVisited } from '../../lib/storage'
 
@@ -38,7 +38,7 @@ export function GpsFlow({ onClose, onOpenPlan }: Props) {
           // POST GPS checkin (triggers achievement eval)
           fetch('/api/gps-checkin', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...authHeader() },
             body: JSON.stringify({
               lat: pos.coords.latitude,
               lon: pos.coords.longitude,
@@ -63,11 +63,7 @@ export function GpsFlow({ onClose, onOpenPlan }: Props) {
     if (next.has(venueId)) next.delete(venueId)
     else next.add(venueId)
     saveVisited(next)
-    fetch('/api/checkin', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ venue_id: venueId }),
-    }).catch(() => {})
+    api.checkin(venueId).catch(() => {})
   }
 
   // Auto-locate on mount
