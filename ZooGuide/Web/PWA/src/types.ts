@@ -76,8 +76,32 @@ export interface Venue {
   shaded: boolean
   rest_spots: boolean
   description?: string
+  narration?: string
+  seasonal_tips?: string
+  keeper_talk?: string
   open_time?: string
   close_time?: string
+}
+
+export interface SeasonalGuide {
+  peak: {
+    label: string
+    tips: string[]
+    best_venues: string[]
+    avoid_tips: string
+  }
+  shoulder: {
+    label: string
+    tips: string[]
+    best_venues: string[]
+    avoid_tips: string
+  }
+  off_peak: {
+    label: string
+    tips: string[]
+    best_venues: string[]
+    avoid_tips: string
+  }
 }
 
 export interface QuizOption {
@@ -95,6 +119,21 @@ export interface QuizOptions {
   sun_descriptions: Record<string, string>
 }
 
+export interface ExternalLink {
+  icon: string
+  label: string
+  url: string
+}
+
+export interface DownloadItem {
+  id: string
+  title: string
+  desc: string
+  icon: string
+  file: string
+  tag: string
+}
+
 export interface Meta {
   name: string
   name_en?: string
@@ -107,6 +146,10 @@ export interface Meta {
   gates: string[]
   gates_text?: string[]
   areas: Record<string, string>
+  seasonal_guide?: SeasonalGuide
+  links?: ExternalLink[]
+  tips?: string[]
+  downloads?: DownloadItem[]
 }
 
 export interface CheckinResponse {

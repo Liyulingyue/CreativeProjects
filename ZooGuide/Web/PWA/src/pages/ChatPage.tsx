@@ -180,20 +180,13 @@ export function ChatPage({ currentRoute, prefs, onRouteUpdate, onGoPlan, onGoAct
           </div>
         )}
         {loading && <TypingBubble />}
-        {!currentRoute && messages.length <= 1 && (
-          <button className="chat-suggest-btn" onClick={onGoActivity}>
-            📍 没规划？先去拍张照/逛逛 →
-          </button>
-        )}
       </div>
 
       {showQuick && (
         <div className="chat-quick-row">
-          {messages.length > 2 && (
-            <button className="chat-quick-chip chat-quick-new" onClick={reset} disabled={loading}>
-              新对话
-            </button>
-          )}
+          <button className="chat-quick-chip chat-quick-new" onClick={reset} disabled={loading}>
+            新对话
+          </button>
           {QUICK.map((q) => (
             <button key={q} className="chat-quick-chip" onClick={() => send(q)} disabled={loading}>
               {q}
