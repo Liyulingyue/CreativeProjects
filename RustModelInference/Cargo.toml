@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 memmap2 = "0.9"
 half = "2.4"
+rayon = "1.10"
 
 [profile.release]
 opt-level = 3
