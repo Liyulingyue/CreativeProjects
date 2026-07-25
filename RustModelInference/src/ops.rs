@@ -1,5 +1,5 @@
 #[inline]
-fn f16_to_f32(bits: u16) -> f32 {
+pub fn f16_to_f32(bits: u16) -> f32 {
     #[cfg(target_feature = "f16c")]
     {
         unsafe {
@@ -31,20 +31,67 @@ fn f16_to_f32(bits: u16) -> f32 {
 }
 
 #[inline]
-fn f16_to_f32_fast(bits: u16) -> f32 {
-    let sign = (bits >> 15) as u32;
-    let exp = ((bits >> 10) & 0x1F) as u32;
-    let frac = (bits & 0x3FF) as u32;
-    if exp == 0 {
-        if frac == 0 { return f32::from_bits(sign << 31); }
-        let norm = frac << 1;
-        let leading = norm.leading_zeros();
-        let e = leading as u32;
-        f32::from_bits((sign << 31) | ((112 - e) << 23) | ((norm << (e + 1)) & 0x3FF) << 13)
-    } else if exp == 31 {
-        f32::from_bits((sign << 31) | (0xFF << 23) | (frac << 13))
-    } else {
-        f32::from_bits((sign << 31) | ((exp + 112) << 23) | (frac << 13))
+fn f32_to_f16(v: f32) -> u16 {
+    #[cfg(target_feature = "f16c")]
+    {
+        unsafe {
+            use std::arch::x86_64::*;
+            let fv = _mm_set_ss(v);
+            let hv = _mm_cvtps_ph(fv, 0);
+            _mm_extract_epi16(hv, 0) as u16
+        }
+    }
+    #[cfg(not(target_feature = "f16c"))]
+    {
+        let bits = v.to_bits();
+        let sign = (bits >> 31) as u16;
+        let exp = ((bits >> 23) & 0xFF) as i32;
+        let frac = (bits & 0x7FFFFF) as i32;
+        if exp == 0 {
+            sign << 15
+        } else if exp == 255 {
+            sign << 15 | if frac != 0 { 0x0200 } else { 0x7C00 }
+        } else {
+            let new_exp = exp - 127 + 15;
+            if new_exp <= 0 {
+                sign << 15
+            } else if new_exp >= 31 {
+                sign << 15 | 0x7C00
+            } else {
+                sign << 15 | ((new_exp as u16) << 10) | ((frac >> 13) as u16)
+            }
+        }
+    }
+}
+
+pub fn f32_slice_to_f16(src: &[f32], dst: &mut [u16]) {
+    debug_assert_eq!(src.len(), dst.len());
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("f16c") {
+            unsafe { f32_slice_to_f16_avx2(src, dst); }
+            return;
+        }
+    }
+    for i in 0..src.len() {
+        dst[i] = f32_to_f16(src[i]);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn f32_slice_to_f16_avx2(src: &[f32], dst: &mut [u16]) {
+    use std::arch::x86_64::*;
+    let n = src.len();
+    let mut i = 0;
+    while i + 8 <= n {
+        let v = _mm256_loadu_ps(src.as_ptr().add(i));
+        let h = _mm256_cvtps_ph(v, 0);
+        _mm_storeu_si128(dst.as_mut_ptr().add(i) as *mut __m128i, h);
+        i += 8;
+    }
+    while i < n {
+        dst[i] = f32_to_f16(src[i]);
+        i += 1;
     }
 }
 
@@ -114,6 +161,77 @@ fn dot_f32_scalar(a: &[f32], b: &[f32], n: usize) -> f32 {
     let mut s = 0.0f32;
     for i in 0..n { s += a[i] * b[i]; }
     s
+}
+
+pub fn dot_f16_f32(a: &[f32], b_f16: &[u16], n: usize) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") && is_x86_feature_detected!("f16c") {
+            return unsafe { dot_f16_f32_avx2(a, b_f16, n) };
+        }
+    }
+    let mut s = 0.0f32;
+    for i in 0..n { s += a[i] * f16_to_f32(b_f16[i]); }
+    s
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn dot_f16_f32_avx2(a: &[f32], b_f16: &[u16], n: usize) -> f32 {
+    use std::arch::x86_64::*;
+    let mut acc = _mm256_setzero_ps();
+    let mut i = 0;
+    while i + 8 <= n {
+        let va = _mm256_loadu_ps(a.as_ptr().add(i));
+        let hb = _mm_loadu_si128(b_f16.as_ptr().add(i) as *const __m128i);
+        let vb = _mm256_cvtph_ps(hb);
+        acc = _mm256_fmadd_ps(va, vb, acc);
+        i += 8;
+    }
+    let mut sum = hsum_ps(acc);
+    while i < n {
+        sum += a[i] * f16_to_f32(b_f16[i]);
+        i += 1;
+    }
+    sum
+}
+
+pub fn vec_mad_f16_f32(y: &mut [f32], x_f16: &[u16], v: f32) {
+    debug_assert_eq!(y.len(), x_f16.len());
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") && is_x86_feature_detected!("f16c") {
+            unsafe { vec_mad_f16_f32_avx2(y, x_f16, v); }
+            return;
+        }
+    }
+    for i in 0..y.len() { y[i] += v * f16_to_f32(x_f16[i]); }
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn vec_mad_f16_f32_avx2(y: &mut [f32], x_f16: &[u16], v: f32) {
+    use std::arch::x86_64::*;
+    let vv = _mm256_set1_ps(v);
+    let n = y.len();
+    let mut i = 0;
+    while i + 8 <= n {
+        let yi = _mm256_loadu_ps(y.as_ptr().add(i));
+        let hx = _mm_loadu_si128(x_f16.as_ptr().add(i) as *const __m128i);
+        let xf = _mm256_cvtph_ps(hx);
+        _mm256_storeu_ps(y.as_mut_ptr().add(i), _mm256_fmadd_ps(vv, xf, yi));
+        i += 8;
+    }
+    if i + 4 <= n {
+        let vv128 = _mm256_castps256_ps128(vv);
+        let yi = _mm_loadu_ps(y.as_ptr().add(i));
+        let hx = _mm_loadl_epi64(x_f16.as_ptr().add(i) as *const __m128i);
+        let xf = _mm_cvtph_ps(hx);
+        _mm_storeu_ps(y.as_mut_ptr().add(i), _mm_fmadd_ps(vv128, xf, yi));
+        i += 4;
+    }
+    while i < n {
+        y[i] += v * f16_to_f32(x_f16[i]);
+        i += 1;
+    }
 }
 
 #[inline(always)]
@@ -387,7 +505,11 @@ unsafe fn matmul_q8_0_vs_q8_0_avx2(weight: &[u8], input_q8: &[u8], input_scales:
             let a3_d = u16::from_le_bytes([*p3, *p3.add(1)]);
             let packed_d = _mm_set_epi16(0, 0, 0, 0, a3_d as i16, a2_d as i16, a1_d as i16, a0_d as i16);
             let da = _mm_cvtph_ps(packed_d);
-            let dvec = _mm256_insertf128_ps(_mm256_castps128_ps256(_mm_mul_ps(da, _mm_set1_ps(bd))), _mm_mul_ps(da, _mm_set1_ps(bd)), 1);
+            let da = _mm_mul_ps(da, _mm_set1_ps(bd));
+            let s0 = _mm256_broadcastss_ps(da);
+            let s1 = _mm256_broadcastss_ps(_mm_shuffle_ps(da, da, 0x55));
+            let s2 = _mm256_broadcastss_ps(_mm_shuffle_ps(da, da, 0xAA));
+            let s3 = _mm256_broadcastss_ps(_mm_shuffle_ps(da, da, 0xFF));
 
             let av0 = _mm256_loadu_si256(p0.add(2) as *const __m256i);
             let av1 = _mm256_loadu_si256(p1.add(2) as *const __m256i);
@@ -403,10 +525,10 @@ unsafe fn matmul_q8_0_vs_q8_0_avx2(weight: &[u8], input_q8: &[u8], input_scales:
             let sy2 = _mm256_sign_epi8(qy, av2);
             let sy3 = _mm256_sign_epi8(qy, av3);
 
-            cv0 = _mm256_fmadd_ps(_mm256_shuffle_ps(dvec, dvec, 0x00), _mm256_cvtepi32_ps(_mm256_madd_epi16(ones, _mm256_maddubs_epi16(ax0, sy0))), cv0);
-            cv1 = _mm256_fmadd_ps(_mm256_shuffle_ps(dvec, dvec, 0x55), _mm256_cvtepi32_ps(_mm256_madd_epi16(ones, _mm256_maddubs_epi16(ax1, sy1))), cv1);
-            cv2 = _mm256_fmadd_ps(_mm256_shuffle_ps(dvec, dvec, 0xAA), _mm256_cvtepi32_ps(_mm256_madd_epi16(ones, _mm256_maddubs_epi16(ax2, sy2))), cv2);
-            cv3 = _mm256_fmadd_ps(_mm256_shuffle_ps(dvec, dvec, 0xFF), _mm256_cvtepi32_ps(_mm256_madd_epi16(ones, _mm256_maddubs_epi16(ax3, sy3))), cv3);
+            cv0 = _mm256_fmadd_ps(s0, _mm256_cvtepi32_ps(_mm256_madd_epi16(ones, _mm256_maddubs_epi16(ax0, sy0))), cv0);
+            cv1 = _mm256_fmadd_ps(s1, _mm256_cvtepi32_ps(_mm256_madd_epi16(ones, _mm256_maddubs_epi16(ax1, sy1))), cv1);
+            cv2 = _mm256_fmadd_ps(s2, _mm256_cvtepi32_ps(_mm256_madd_epi16(ones, _mm256_maddubs_epi16(ax2, sy2))), cv2);
+            cv3 = _mm256_fmadd_ps(s3, _mm256_cvtepi32_ps(_mm256_madd_epi16(ones, _mm256_maddubs_epi16(ax3, sy3))), cv3);
         }
         let base_out = tile * 4;
         *out_ptr.add(base_out) = hsum_ps(cv0);

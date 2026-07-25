@@ -131,8 +131,8 @@ fn run_dump_logits(model_path: &str, prompt: &str, max_tokens: usize, n_threads_
         bin_out.write_all(unsafe { std::slice::from_raw_parts(pt.as_ptr() as *const u8, pt.len() * 4) }).unwrap();
     }
 
-    let k_cache = vec![0.0f32; n_layer * max_ctx * n_embd_gqa];
-    let v_cache = vec![0.0f32; n_layer * max_ctx * n_embd_gqa];
+    let k_cache = vec![0u16; n_layer * max_ctx * n_embd_gqa];
+    let v_cache = vec![0u16; n_layer * max_ctx * n_embd_gqa];
     let k_cache = UnsafeCell::new(k_cache.into_boxed_slice());
     let v_cache = UnsafeCell::new(v_cache.into_boxed_slice());
 
@@ -251,10 +251,8 @@ fn run_dump_logits(model_path: &str, prompt: &str, max_tokens: usize, n_threads_
                 let kb = layer * max_ctx * n_embd_gqa;
                 for h in kv_h_start..kv_h_end {
                     let off = h * n_embd_head_k;
-                    k_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_k]
-                        .copy_from_slice(&k_new[off..off + n_embd_head_k]);
-                    v_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_v]
-                        .copy_from_slice(&v_new[off..off + n_embd_head_v]);
+                    f32_slice_to_f16(&k_new[off..off + n_embd_head_k], &mut k_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_k]);
+                    f32_slice_to_f16(&v_new[off..off + n_embd_head_v], &mut v_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_v]);
                 }
 
                 for h in h_start..h_end {
@@ -263,7 +261,7 @@ fn run_dump_logits(model_path: &str, prompt: &str, max_tokens: usize, n_threads_
                     let n_cached = pos + 1;
                     let s_off = ith * max_ctx;
                     for t in 0..n_cached {
-                        scores[s_off + t] = dot_f32(
+                        scores[s_off + t] = dot_f16_f32(
                             &q[q_off..q_off + n_embd_head_k],
                             &k_cache[kb + t * n_embd_gqa + kv_h * n_embd_head_v..kb + t * n_embd_gqa + kv_h * n_embd_head_v + n_embd_head_k],
                             n_embd_head_k,
@@ -273,7 +271,7 @@ fn run_dump_logits(model_path: &str, prompt: &str, max_tokens: usize, n_threads_
                     for d in 0..n_embd_head_v {
                         let mut val = 0.0f32;
                         for t in 0..n_cached {
-                            val += scores[s_off + t] * v_cache[kb + t * n_embd_gqa + kv_h * n_embd_head_v + d];
+                            val += scores[s_off + t] * f16_to_f32(v_cache[kb + t * n_embd_gqa + kv_h * n_embd_head_v + d]);
                         }
                         attn_out[h * n_embd_head_v + d] = val;
                     }
@@ -455,11 +453,12 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
         println!("  chat: im_start={} im_end={}", special_tokens["im_start"], special_tokens["im_end"]);
     }
 
-    let k_cache = vec![0.0f32; n_layer * max_ctx * n_embd_gqa];
-    let v_cache = vec![0.0f32; n_layer * max_ctx * n_embd_gqa];
+    let k_cache = vec![0u16; n_layer * max_ctx * n_embd_gqa];
+    let v_cache = vec![0u16; n_layer * max_ctx * n_embd_gqa];
     let k_cache = UnsafeCell::new(k_cache.into_boxed_slice());
     let v_cache = UnsafeCell::new(v_cache.into_boxed_slice());
 
+    let ffn_barrier = UnsafeCell::new(std::sync::atomic::AtomicI32::new(0));
     let x = UnsafeCell::new(vec![0.0f32; n_embd]);
     let normed = UnsafeCell::new(vec![0.0f32; n_embd]);
     let q = UnsafeCell::new(vec![0.0f32; n_embd_q]);
@@ -507,7 +506,6 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
     let mut t_norm: f64 = 0.0;
     let mut t_quant: f64 = 0.0;
     let mut t_qkv: f64 = 0.0;
-    let mut t_attn: f64 = 0.0;
     let mut t_wo: f64 = 0.0;
     let mut t_ffn1: f64 = 0.0;
     let mut t_silu: f64 = 0.0;
@@ -519,7 +517,7 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
 
     let t_infer = Instant::now();
 
-    for step in 0..(input_tokens.len() + max_tokens) {
+        for step in 0..(input_tokens.len() + max_tokens) {
         let token_id = if step < input_tokens.len() {
             input_tokens[step]
         } else {
@@ -542,13 +540,13 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
             let attn_out_ptr = attn_out.get();
             let attn_proj_ptr = attn_proj.get();
             let down_buf_ptr = down_buf.get();
-            let scores_ptr = scores.get();
             let gate_buf_ptr = gate_buf.get();
             let up_buf_ptr = up_buf.get();
             let q8_buf_ptr = q8_buf.get();
             let scale_buf_ptr = scale_buf.get();
             let k_cache_ptr = k_cache.get();
             let v_cache_ptr = v_cache.get();
+            let ffn_barrier_ptr = ffn_barrier.get();
 
             let x = &mut *x_ptr;
             let normed = &mut *normed_ptr;
@@ -569,22 +567,13 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
                 let q = &mut *q_ptr;
                 let k_new = &mut *k_ptr;
                 let v_new = &mut *v_ptr;
+                let attn_out = &mut *attn_out_ptr;
+                let k_cache = &mut *k_cache_ptr;
+                let v_cache = &mut *v_cache_ptr;
 
                 matmul_q8_0_quantized_parallel_rows(lw.wq, q8, sc, q, n_embd, n_embd_q, ith, nth);
                 matmul_q8_0_quantized_parallel_rows(lw.wk, q8, sc, k_new, n_embd, n_embd_gqa, ith, nth);
                 matmul_q8_0_quantized_parallel_rows(lw.wv, q8, sc, v_new, n_embd, n_embd_gqa, ith, nth);
-            });
-            t_qkv += t0.elapsed().as_secs_f64();
-
-            let t0 = Instant::now();
-            pool.compute(move |ith: usize, nth: usize| {
-                let q = &mut *q_ptr;
-                let k_new = &mut *k_ptr;
-                let v_new = &mut *v_ptr;
-                let attn_out = &mut *attn_out_ptr;
-                let scores = &mut *scores_ptr;
-                let k_cache = &mut *k_cache_ptr;
-                let v_cache = &mut *v_cache_ptr;
 
                 let h_start = ith * n_head / nth;
                 let h_end = (ith + 1) * n_head / nth;
@@ -610,10 +599,8 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
                 let kb = layer * max_ctx * n_embd_gqa;
                 for h in kv_h_start..kv_h_end {
                     let off = h * n_embd_head_k;
-                    k_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_k]
-                        .copy_from_slice(&k_new[off..off + n_embd_head_k]);
-                    v_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_v]
-                        .copy_from_slice(&v_new[off..off + n_embd_head_v]);
+                    f32_slice_to_f16(&k_new[off..off + n_embd_head_k], &mut k_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_k]);
+                    f32_slice_to_f16(&v_new[off..off + n_embd_head_v], &mut v_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_v]);
                 }
 
                 for h in h_start..h_end {
@@ -625,7 +612,7 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
                     let mut s_sum = 0.0f32;
                     for d in 0..n_embd_head_v { attn_out[out_base + d] = 0.0; }
                     for t in 0..n_cached {
-                        let score = dot_f32(
+                        let score = dot_f16_f32(
                             &q[q_off..q_off + n_embd_head_k],
                             &k_cache[kb + t * n_embd_gqa + kv_h * n_embd_head_v..kb + t * n_embd_gqa + kv_h * n_embd_head_v + n_embd_head_k],
                             n_embd_head_k,
@@ -638,14 +625,14 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
                         }
                         let vs = (score - ms).exp();
                         let v_base = kb + t * n_embd_gqa + kv_h * n_embd_head_v;
-                        vec_mad_f32(&mut attn_out[out_base..out_base + n_embd_head_v], &v_cache[v_base..v_base + n_embd_head_v], vs);
+                        vec_mad_f16_f32(&mut attn_out[out_base..out_base + n_embd_head_v], &v_cache[v_base..v_base + n_embd_head_v], vs);
                         s_sum += vs;
                     }
                     let inv_sum = 1.0 / s_sum;
                     vec_scale_f32(&mut attn_out[out_base..out_base + n_embd_head_v], inv_sum);
                 }
             });
-            t_attn += t0.elapsed().as_secs_f64();
+            t_qkv += t0.elapsed().as_secs_f64();
 
             let attn_out = &mut *attn_out_ptr;
             let q8_buf = &mut *q8_buf_ptr;
@@ -672,6 +659,10 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
             quantize_q8_0_into(normed, n_embd, &mut q8_buf[..n_embd], &mut scale_buf[..n_embd / 32]);
             let q8 = q8_buf[..n_embd].as_ptr();
             let sc = scale_buf[..n_embd / 32].as_ptr();
+
+            let ffn_barrier_ref = &*ffn_barrier_ptr;
+            ffn_barrier_ref.store(0, Ordering::SeqCst);
+
             pool.compute(move |ith: usize, nth: usize| {
                 let q8 = std::slice::from_raw_parts(q8, n_embd);
                 let sc = std::slice::from_raw_parts(sc, n_embd / 32);
@@ -686,23 +677,23 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
                 for i in r_start..r_end {
                     gate_buf[i] = silu(gate_buf[i]) * up_buf[i];
                 }
-            });
-            t_ffn1 += t0.elapsed().as_secs_f64();
 
-            let gate_buf = &mut *gate_buf_ptr;
-            let q8_buf = &mut *q8_buf_ptr;
-            let scale_buf = &mut *scale_buf_ptr;
-            let t0 = Instant::now();
-            quantize_q8_0_into(gate_buf, n_ff, &mut q8_buf[..n_ff], &mut scale_buf[..n_ff / 32]);
-            let q8 = q8_buf[..n_ff].as_ptr();
-            let sc = scale_buf[..n_ff / 32].as_ptr();
-            pool.compute(move |ith: usize, nth: usize| {
-                let q8 = std::slice::from_raw_parts(q8, n_ff);
-                let sc = std::slice::from_raw_parts(sc, n_ff / 32);
+                ffn_barrier_ref.fetch_add(1, Ordering::SeqCst);
+                while ffn_barrier_ref.load(Ordering::Acquire) < nth as i32 {
+                    std::hint::spin_loop();
+                }
+
+                let gate_buf = &*gate_buf_ptr;
+                let q8_buf = &mut *q8_buf_ptr;
+                let scale_buf = &mut *scale_buf_ptr;
+                quantize_q8_0_into_parallel(gate_buf, n_ff, &mut q8_buf[..n_ff], &mut scale_buf[..n_ff / 32], ith, nth);
+
+                let q8 = std::slice::from_raw_parts(q8_buf[..n_ff].as_ptr(), n_ff);
+                let sc = std::slice::from_raw_parts(scale_buf[..n_ff / 32].as_ptr(), n_ff / 32);
                 let down_buf = &mut *down_buf_ptr;
                 matmul_q8_0_quantized_parallel_rows(lw.w_down, q8, sc, down_buf, n_ff, n_embd, ith, nth);
             });
-            t_down += t0.elapsed().as_secs_f64();
+            t_ffn1 += t0.elapsed().as_secs_f64();
 
             let down_buf = &mut *down_buf_ptr;
             let x = &mut *x_ptr;
@@ -769,12 +760,12 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
 
     let infer_ms = t_infer.elapsed().as_millis();
     let tok_s = if infer_ms > 0 { generated_tokens.len() as f64 / infer_ms as f64 * 1000.0 } else { 0.0 };
-    let total = t_norm + t_quant + t_qkv + t_attn + t_wo + t_ffn1 + t_down + t_logits;
+    let total = t_norm + t_quant + t_qkv + t_wo + t_ffn1 + t_logits;
     if profile {
-        eprintln!("PROFILE: norm={:.1}% quant={:.1}% qkv={:.1}% attn={:.1}% wo={:.1}% ffn1={:.1}% down={:.1}% logits={:.1}%",
-            t_norm/total*100.0, t_quant/total*100.0, t_qkv/total*100.0, t_attn/total*100.0, t_wo/total*100.0, t_ffn1/total*100.0, t_down/total*100.0, t_logits/total*100.0);
-        eprintln!("PROFILE: norm={:.3}s quant={:.3}s qkv={:.3}s attn={:.3}s wo={:.3}s ffn1={:.3}s down={:.3}s logits={:.3}s",
-            t_norm, t_quant, t_qkv, t_attn, t_wo, t_ffn1, t_down, t_logits);
+        eprintln!("PROFILE: norm={:.1}% quant={:.1}% qkv+attn={:.1}% wo={:.1}% ffn={:.1}% logits={:.1}%",
+            t_norm/total*100.0, t_quant/total*100.0, t_qkv/total*100.0, t_wo/total*100.0, t_ffn1/total*100.0, t_logits/total*100.0);
+        eprintln!("PROFILE: norm={:.3}s quant={:.3}s qkv+attn={:.3}s wo={:.3}s ffn={:.3}s logits={:.3}s",
+            t_norm, t_quant, t_qkv, t_wo, t_ffn1, t_logits);
     }
     println!();
     println!("[{} tokens in {}ms | {:.1} tok/s]", generated_tokens.len(), infer_ms, tok_s);
