@@ -74,7 +74,7 @@ impl ComputePool {
             f(ith, nth);
         }
 
-        let call_fn = call_closure::<F> as usize;
+        let call_fn = call_closure::<F> as *const () as usize;
 
         // Wait for all workers to be idle from previous compute
         while self.inner.n_complete.load(Ordering::Acquire) < self.n_threads as i32 {
@@ -126,7 +126,7 @@ impl Drop for ComputePool {
 }
 
 fn worker_loop(tid: usize, n_threads: usize, inner: &Inner) {
-    let mut my_epoch: u32 = inner.epoch.load(Ordering::Acquire);
+    let mut my_epoch: u32 = 0;
     loop {
         // Wait for new epoch
         while inner.epoch.load(Ordering::Acquire) == my_epoch {
