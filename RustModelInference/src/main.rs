@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::cell::UnsafeCell;
 use std::io::{self, Write};
 use std::time::Instant;
 
@@ -64,6 +63,18 @@ struct LayerWeights<'a> {
     w_gate: &'a [u8],
     w_up: &'a [u8],
     w_down: &'a [u8],
+}
+
+macro_rules! slice_from_mut {
+    ($ptr:expr, $len:expr) => { unsafe { std::slice::from_raw_parts_mut($ptr, $len) } };
+}
+
+macro_rules! slice_from_ref {
+    ($ptr:expr, $len:expr) => { unsafe { std::slice::from_raw_parts($ptr, $len) } };
+}
+
+macro_rules! raw_parts {
+    ($ptr:expr, $len:expr) => { unsafe { std::slice::from_raw_parts($ptr, $len) } };
 }
 
 fn run_dump_logits(model_path: &str, prompt: &str, max_tokens: usize, n_threads_arg: usize, kv_format: KvFormat) {
@@ -134,28 +145,14 @@ fn run_dump_logits(model_path: &str, prompt: &str, max_tokens: usize, n_threads_
         bin_out.write_all(unsafe { std::slice::from_raw_parts(pt.as_ptr() as *const u8, pt.len() * 4) }).unwrap();
     }
 
-    let k_cache_f16 = UnsafeCell::new(vec![0u16; n_layer * max_ctx * n_embd_gqa].into_boxed_slice());
-    let v_cache_f16 = UnsafeCell::new(vec![0u16; n_layer * max_ctx * n_embd_gqa].into_boxed_slice());
-    let k_cache_f32 = UnsafeCell::new(vec![0.0f32; n_layer * max_ctx * n_embd_gqa].into_boxed_slice());
-    let v_cache_f32 = UnsafeCell::new(vec![0.0f32; n_layer * max_ctx * n_embd_gqa].into_boxed_slice());
-    let x = UnsafeCell::new(vec![0.0f32; n_embd]);
-    let normed = UnsafeCell::new(vec![0.0f32; n_embd]);
-    let q = UnsafeCell::new(vec![0.0f32; n_embd_q]);
-    let k_new = UnsafeCell::new(vec![0.0f32; n_embd_gqa]);
-    let v_new = UnsafeCell::new(vec![0.0f32; n_embd_gqa]);
-    let attn_out = UnsafeCell::new(vec![0.0f32; n_embd_q]);
-    let attn_proj = UnsafeCell::new(vec![0.0f32; n_embd]);
-    let down_buf = UnsafeCell::new(vec![0.0f32; n_embd]);
-    let gate_buf = UnsafeCell::new(vec![0.0f32; n_ff]);
-    let up_buf = UnsafeCell::new(vec![0.0f32; n_ff]);
-    let logits = UnsafeCell::new(vec![0.0f32; vocab]);
+    let kv_cache = match kv_format {
+        KvFormat::F16 => KvCache::new_f16(n_layer, max_ctx, n_embd_gqa),
+        KvFormat::F32 => KvCache::new_f32(n_layer, max_ctx, n_embd_gqa),
+    };
 
-    let max_n_in = n_embd_q.max(n_ff);
-    let q8_buf = UnsafeCell::new(vec![0u8; max_n_in]);
-    let scale_buf = UnsafeCell::new(vec![0.0f32; max_n_in / 32]);
+    let mut scratch = ExecutionScratchpad::new(n_embd, n_embd_q, n_embd_gqa, n_ff, vocab, n_threads, max_ctx);
 
     let input_tokens = prompt_tokens.clone();
-    let scores = UnsafeCell::new(vec![0.0f32; n_threads * max_ctx]);
     let pool = std::sync::Arc::new(thread_pool::ComputePool::new(n_threads));
 
     let group_size = n_head / n_head_kv;
@@ -173,34 +170,38 @@ fn run_dump_logits(model_path: &str, prompt: &str, max_tokens: usize, n_threads_
 
         let pos = step;
 
-        embedding_lookup_q8_0(embd_weight, token_id, n_embd, unsafe { &mut *x.get() });
+        embedding_lookup_q8_0(embd_weight, token_id, n_embd, &mut scratch.x);
 
         for layer in 0..n_layer {
             let lw = &layers[layer];
 
-            unsafe {
-            let x_ptr = x.get();
-            let normed_ptr = normed.get();
-            let q_ptr = q.get();
-            let k_ptr = k_new.get();
-            let v_ptr = v_new.get();
-            let attn_out_ptr = attn_out.get();
-            let attn_proj_ptr = attn_proj.get();
-            let down_buf_ptr = down_buf.get();
-            let scores_ptr = scores.get();
-            let gate_buf_ptr = gate_buf.get();
-            let up_buf_ptr = up_buf.get();
-            let q8_buf_ptr = q8_buf.get();
-            let scale_buf_ptr = scale_buf.get();
-             let k_cache_f16_ptr = k_cache_f16.get();
-             let v_cache_f16_ptr = v_cache_f16.get();
+            let x_ptr = scratch.x.as_mut_ptr();
+            let normed_ptr = scratch.normed.as_mut_ptr();
+            let q_ptr = scratch.q.as_mut_ptr();
+            let k_ptr = scratch.k_new.as_mut_ptr();
+            let v_ptr = scratch.v_new.as_mut_ptr();
+            let attn_out_ptr = scratch.attn_out.as_mut_ptr();
+            let attn_proj_ptr = scratch.attn_proj.as_mut_ptr();
+            let down_buf_ptr = scratch.down_buf.as_mut_ptr();
+            let scores_ptr = scratch.scores.as_mut_ptr();
+            let gate_buf_ptr = scratch.gate_buf.as_mut_ptr();
+            let up_buf_ptr = scratch.up_buf.as_mut_ptr();
+            let q8_buf_ptr = scratch.q8_buf.as_mut_ptr();
+            let scale_buf_ptr = scratch.scale_buf.as_mut_ptr();
+            let kv_cache_size = n_layer * max_ctx * n_embd_gqa;
+            let (k_cache_f16_ptr, v_cache_f16_ptr) = match &kv_cache {
+                KvCache::F16(c) => (c.k.as_ptr() as *mut u16, c.v.as_ptr() as *mut u16),
+                _ => (std::ptr::null_mut(), std::ptr::null_mut()),
+            };
+            let (k_cache_f32_ptr, v_cache_f32_ptr) = match &kv_cache {
+                KvCache::F32(c) => (c.k.as_ptr() as *mut f32, c.v.as_ptr() as *mut f32),
+                _ => (std::ptr::null_mut(), std::ptr::null_mut()),
+            };
 
-             let k_cache_f32_ptr = k_cache_f32.get();
-             let v_cache_f32_ptr = v_cache_f32.get();
-            let x = &mut *x_ptr;
-            let normed = &mut *normed_ptr;
-            let q8_buf = &mut *q8_buf_ptr;
-            let scale_buf = &mut *scale_buf_ptr;
+            let x = slice_from_mut!(x_ptr, n_embd);
+            let normed = slice_from_mut!(normed_ptr, n_embd);
+            let q8_buf = slice_from_mut!(q8_buf_ptr, n_embd_q.max(n_ff));
+            let scale_buf = slice_from_mut!(scale_buf_ptr, n_embd_q.max(n_ff) / 32);
 
             rms_norm(x, &lw.attn_norm, normed, eps);
             quantize_q8_0_into(normed, n_embd, &mut q8_buf[..n_embd], &mut scale_buf[..n_embd / 32]);
@@ -209,11 +210,11 @@ fn run_dump_logits(model_path: &str, prompt: &str, max_tokens: usize, n_threads_
             let sc = scale_buf[..n_embd / 32].as_ptr();
 
             pool.compute(move |ith: usize, nth: usize| {
-                let q8 = std::slice::from_raw_parts(q8, n_embd);
-                let sc = std::slice::from_raw_parts(sc, n_embd / 32);
-                let q = &mut *q_ptr;
-                let k_new = &mut *k_ptr;
-                let v_new = &mut *v_ptr;
+                let q8 = raw_parts!(q8, n_embd);
+                let sc = raw_parts!(sc, n_embd / 32);
+                let q = slice_from_mut!(q_ptr, n_embd_q);
+                let k_new = slice_from_mut!(k_ptr, n_embd_gqa);
+                let v_new = slice_from_mut!(v_ptr, n_embd_gqa);
 
                 matmul_q8_0_quantized_parallel_rows(lw.wq, q8, sc, q, n_embd, n_embd_q, ith, nth);
                 matmul_q8_0_quantized_parallel_rows(lw.wk, q8, sc, k_new, n_embd, n_embd_gqa, ith, nth);
@@ -221,9 +222,9 @@ fn run_dump_logits(model_path: &str, prompt: &str, max_tokens: usize, n_threads_
             });
 
             {
-                let q = &mut *q_ptr;
-                let k_new = &mut *k_ptr;
-                let v_new = &mut *v_ptr;
+                let q = slice_from_mut!(q_ptr, n_embd_q);
+                let k_new = slice_from_mut!(k_ptr, n_embd_gqa);
+                let v_new = slice_from_mut!(v_ptr, n_embd_gqa);
                 let q_norm = lw.q_norm.as_deref();
                 let k_norm = lw.k_norm.as_deref();
 
@@ -246,16 +247,16 @@ fn run_dump_logits(model_path: &str, prompt: &str, max_tokens: usize, n_threads_
                 let kb = layer * max_ctx * n_embd_gqa;
 
                 if kv_format == KvFormat::F16 {
-                    let k_cache = &mut *k_cache_f16_ptr;
-                    let v_cache = &mut *v_cache_f16_ptr;
+                    let k_cache = slice_from_mut!(k_cache_f16_ptr, kv_cache_size);
+                    let v_cache = slice_from_mut!(v_cache_f16_ptr, kv_cache_size);
                     for h in 0..n_head_kv {
                         let off = h * n_embd_head_k;
                         f32_slice_to_f16(&k_new[off..off + n_embd_head_k], &mut k_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_k]);
                         f32_slice_to_f16(&v_new[off..off + n_embd_head_v], &mut v_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_v]);
                     }
                 } else {
-                    let k_cache = &mut *k_cache_f32_ptr;
-                    let v_cache = &mut *v_cache_f32_ptr;
+                    let k_cache = slice_from_mut!(k_cache_f32_ptr, kv_cache_size);
+                    let v_cache = slice_from_mut!(v_cache_f32_ptr, kv_cache_size);
                     for h in 0..n_head_kv {
                         let off = h * n_embd_head_k;
                         k_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_k]
@@ -267,17 +268,17 @@ fn run_dump_logits(model_path: &str, prompt: &str, max_tokens: usize, n_threads_
             }
 
             pool.compute(move |ith: usize, nth: usize| {
-                let q = &*q_ptr;
-                let attn_out = &mut *attn_out_ptr;
-                let scores = &mut *scores_ptr;
+                let q = slice_from_ref!(q_ptr, n_embd_q);
+                let attn_out = slice_from_mut!(attn_out_ptr, n_embd_q);
+                let scores = slice_from_mut!(scores_ptr, n_threads * max_ctx);
                 let h_start = ith * n_head / nth;
                 let h_end = (ith + 1) * n_head / nth;
 
                 let kb = layer * max_ctx * n_embd_gqa;
 
                 if kv_format == KvFormat::F16 {
-                    let k_cache = &*k_cache_f16_ptr;
-                    let v_cache = &*v_cache_f16_ptr;
+                    let k_cache = slice_from_ref!(k_cache_f16_ptr, kv_cache_size);
+                    let v_cache = slice_from_ref!(v_cache_f16_ptr, kv_cache_size);
                     for h in h_start..h_end {
                         let kv_h = h / group_size;
                         let q_off = h * n_embd_head_k;
@@ -300,8 +301,8 @@ fn run_dump_logits(model_path: &str, prompt: &str, max_tokens: usize, n_threads_
                         }
                     }
                 } else {
-                    let k_cache = &*k_cache_f32_ptr;
-                    let v_cache = &*v_cache_f32_ptr;
+                    let k_cache = slice_from_ref!(k_cache_f32_ptr, kv_cache_size);
+                    let v_cache = slice_from_ref!(v_cache_f32_ptr, kv_cache_size);
                     for h in h_start..h_end {
                         let kv_h = h / group_size;
                         let q_off = h * n_embd_head_k;
@@ -326,21 +327,21 @@ fn run_dump_logits(model_path: &str, prompt: &str, max_tokens: usize, n_threads_
                 }
             });
 
-            let attn_out = &mut *attn_out_ptr;
+            let attn_out = slice_from_mut!(attn_out_ptr, n_embd_q);
             quantize_q8_0_into(attn_out, n_embd_q, &mut q8_buf[..n_embd_q], &mut scale_buf[..n_embd_q / 32]);
 
             let q8 = q8_buf[..n_embd_q].as_ptr();
             let sc = scale_buf[..n_embd_q / 32].as_ptr();
             pool.compute(move |ith: usize, nth: usize| {
-                let q8 = std::slice::from_raw_parts(q8, n_embd_q);
-                let sc = std::slice::from_raw_parts(sc, n_embd_q / 32);
-                let attn_proj = &mut *attn_proj_ptr;
+                let q8 = raw_parts!(q8, n_embd_q);
+                let sc = raw_parts!(sc, n_embd_q / 32);
+                let attn_proj = slice_from_mut!(attn_proj_ptr, n_embd);
                 matmul_q8_0_quantized_parallel_rows(lw.wo, q8, sc, attn_proj, n_embd_q, n_embd, ith, nth);
             });
 
-            let attn_proj = &mut *attn_proj_ptr;
-            let x = &mut *x_ptr;
-            let normed = &mut *normed_ptr;
+            let attn_proj = slice_from_mut!(attn_proj_ptr, n_embd);
+            let x = slice_from_mut!(x_ptr, n_embd);
+            let normed = slice_from_mut!(normed_ptr, n_embd);
             for i in 0..n_embd { x[i] += attn_proj[i]; }
 
             rms_norm(x, &lw.ffn_norm, normed, eps);
@@ -350,10 +351,10 @@ fn run_dump_logits(model_path: &str, prompt: &str, max_tokens: usize, n_threads_
 
             if layer == 0 && pos == 0 { eprintln!("DEBUG: step0 QKV matmul start"); }
             pool.compute(move |ith: usize, nth: usize| {
-                let q8 = std::slice::from_raw_parts(q8, n_embd);
-                let sc = std::slice::from_raw_parts(sc, n_embd / 32);
-                let gate_buf = &mut *gate_buf_ptr;
-                let up_buf = &mut *up_buf_ptr;
+                let q8 = raw_parts!(q8, n_embd);
+                let sc = raw_parts!(sc, n_embd / 32);
+                let gate_buf = slice_from_mut!(gate_buf_ptr, n_ff);
+                let up_buf = slice_from_mut!(up_buf_ptr, n_ff);
                 matmul_q8_0_quantized_parallel_rows(lw.w_gate, q8, sc, gate_buf, n_embd, n_ff, ith, nth);
                 matmul_q8_0_quantized_parallel_rows(lw.w_up, q8, sc, up_buf, n_embd, n_ff, ith, nth);
 
@@ -365,47 +366,46 @@ fn run_dump_logits(model_path: &str, prompt: &str, max_tokens: usize, n_threads_
                 }
             });
 
-            let gate_buf = &mut *gate_buf_ptr;
+            let gate_buf = slice_from_mut!(gate_buf_ptr, n_ff);
             quantize_q8_0_into(gate_buf, n_ff, &mut q8_buf[..n_ff], &mut scale_buf[..n_ff / 32]);
 
             let q8 = q8_buf[..n_ff].as_ptr();
             let sc = scale_buf[..n_ff / 32].as_ptr();
             pool.compute(move |ith: usize, nth: usize| {
-                let q8 = std::slice::from_raw_parts(q8, n_ff);
-                let sc = std::slice::from_raw_parts(sc, n_ff / 32);
-                let down_buf = &mut *down_buf_ptr;
+                let q8 = raw_parts!(q8, n_ff);
+                let sc = raw_parts!(sc, n_ff / 32);
+                let down_buf = slice_from_mut!(down_buf_ptr, n_embd);
                 matmul_q8_0_quantized_parallel_rows(lw.w_down, q8, sc, down_buf, n_ff, n_embd, ith, nth);
             });
 
-            let down_buf = &mut *down_buf_ptr;
-            let x = &mut *x_ptr;
+            let down_buf = slice_from_mut!(down_buf_ptr, n_embd);
+            let x = slice_from_mut!(x_ptr, n_embd);
             for i in 0..n_embd { x[i] += down_buf[i]; }
-            }
         }
 
-        unsafe {
-        let x = &mut *x.get();
-        let normed = &mut *normed.get();
-        let logits_ptr = logits.get();
-        let q8_buf = &mut *q8_buf.get();
-        let scale_buf = &mut *scale_buf.get();
+        {
+            let x = &mut scratch.x;
+            let normed = &mut scratch.normed;
+            let logits_ptr = scratch.logits.as_mut_ptr();
+            let q8_buf = &mut scratch.q8_buf;
+            let scale_buf = &mut scratch.scale_buf;
 
-        rms_norm(x, &output_norm, normed, eps);
-        quantize_q8_0_into(normed, n_embd, &mut q8_buf[..n_embd], &mut scale_buf[..n_embd / 32]);
+            rms_norm(x, &output_norm, normed, eps);
+            quantize_q8_0_into(normed, n_embd, &mut q8_buf[..n_embd], &mut scale_buf[..n_embd / 32]);
 
-        let q8 = q8_buf[..n_embd].as_ptr();
-        let sc = scale_buf[..n_embd / 32].as_ptr();
-        pool.compute(move |ith: usize, nth: usize| {
-            let q8 = std::slice::from_raw_parts(q8, n_embd);
-            let sc = std::slice::from_raw_parts(sc, n_embd / 32);
-            let logits = &mut *logits_ptr;
-            matmul_q8_0_quantized_parallel_rows(output_weight, q8, sc, logits, n_embd, vocab, ith, nth);
-        });
+            let q8 = q8_buf[..n_embd].as_ptr();
+            let sc = scale_buf[..n_embd / 32].as_ptr();
+            pool.compute(move |ith: usize, nth: usize| {
+                let q8 = raw_parts!(q8, n_embd);
+                let sc = raw_parts!(sc, n_embd / 32);
+                let logits = slice_from_mut!(logits_ptr, vocab);
+                matmul_q8_0_quantized_parallel_rows(output_weight, q8, sc, logits, n_embd, vocab, ith, nth);
+            });
         }
 
         if step < input_tokens.len() - 1 { continue; }
 
-        let logits = unsafe { &*logits.get() };
+        let logits = &scratch.logits;
 
         let mut best_idx = 0usize;
         let mut best_val = logits[0];
@@ -502,31 +502,16 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
         println!("  chat: im_start={} im_end={}", special_tokens["im_start"], special_tokens["im_end"]);
     }
 
-    let k_cache_f16 = UnsafeCell::new(vec![0u16; n_layer * max_ctx * n_embd_gqa].into_boxed_slice());
-    let v_cache_f16 = UnsafeCell::new(vec![0u16; n_layer * max_ctx * n_embd_gqa].into_boxed_slice());
-    let k_cache_f32 = UnsafeCell::new(vec![0.0f32; n_layer * max_ctx * n_embd_gqa].into_boxed_slice());
-    let v_cache_f32 = UnsafeCell::new(vec![0.0f32; n_layer * max_ctx * n_embd_gqa].into_boxed_slice());
+    let kv_cache = match kv_format {
+        KvFormat::F16 => KvCache::new_f16(n_layer, max_ctx, n_embd_gqa),
+        KvFormat::F32 => KvCache::new_f32(n_layer, max_ctx, n_embd_gqa),
+    };
 
-    let x = UnsafeCell::new(vec![0.0f32; n_embd]);
-    let normed = UnsafeCell::new(vec![0.0f32; n_embd]);
-    let q = UnsafeCell::new(vec![0.0f32; n_embd_q]);
-    let k_new = UnsafeCell::new(vec![0.0f32; n_embd_gqa]);
-    let v_new = UnsafeCell::new(vec![0.0f32; n_embd_gqa]);
-    let attn_out = UnsafeCell::new(vec![0.0f32; n_embd_q]);
-    let attn_proj = UnsafeCell::new(vec![0.0f32; n_embd]);
-    let down_buf = UnsafeCell::new(vec![0.0f32; n_embd]);
-    let gate_buf = UnsafeCell::new(vec![0.0f32; n_ff]);
-    let up_buf = UnsafeCell::new(vec![0.0f32; n_ff]);
     let vocab = tokenizer.vocab_size();
-    let logits = UnsafeCell::new(vec![0.0f32; vocab]);
-
-    let max_n_in = n_embd_q.max(n_ff);
-    let q8_buf = UnsafeCell::new(vec![0u8; max_n_in]);
-    let scale_buf = UnsafeCell::new(vec![0.0f32; max_n_in / 32]);
-
     let prompt_tokens = tokenizer.encode(prompt);
     let n_threads = if n_threads_arg > 0 { n_threads_arg } else { std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4) };
-    let _scores = UnsafeCell::new(vec![0.0f32; n_threads * max_ctx]);
+
+    let mut scratch = ExecutionScratchpad::new(n_embd, n_embd_q, n_embd_gqa, n_ff, vocab, n_threads, max_ctx);
     let pool = std::sync::Arc::new(thread_pool::ComputePool::new(n_threads));
     eprintln!("compute pool: {} threads", pool.n_threads());
     println!("Prompt: {} ({} tokens)", prompt, prompt_tokens.len());
@@ -565,7 +550,7 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
 
     let t_infer = Instant::now();
 
-        for step in 0..(input_tokens.len() + max_tokens) {
+    for step in 0..(input_tokens.len() + max_tokens) {
         let token_id = if step < input_tokens.len() {
             input_tokens[step]
         } else {
@@ -574,33 +559,38 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
 
         let pos = step;
 
-        embedding_lookup_q8_0(embd_weight, token_id, n_embd, unsafe { &mut *x.get() });
+        embedding_lookup_q8_0(embd_weight, token_id, n_embd, &mut scratch.x);
 
         for layer in 0..n_layer {
             let lw = &layers[layer];
 
-            unsafe {
-            let x_ptr = x.get();
-            let normed_ptr = normed.get();
-            let q_ptr = q.get();
-            let k_ptr = k_new.get();
-            let v_ptr = v_new.get();
-            let attn_out_ptr = attn_out.get();
-            let attn_proj_ptr = attn_proj.get();
-            let down_buf_ptr = down_buf.get();
-            let gate_buf_ptr = gate_buf.get();
-            let up_buf_ptr = up_buf.get();
-            let q8_buf_ptr = q8_buf.get();
-            let scale_buf_ptr = scale_buf.get();
-             let k_cache_f16_ptr = k_cache_f16.get();
-             let v_cache_f16_ptr = v_cache_f16.get();
-             let k_cache_f32_ptr = k_cache_f32.get();
-             let v_cache_f32_ptr = v_cache_f32.get();
+            let x_ptr = scratch.x.as_mut_ptr();
+            let normed_ptr = scratch.normed.as_mut_ptr();
+            let q_ptr = scratch.q.as_mut_ptr();
+            let k_ptr = scratch.k_new.as_mut_ptr();
+            let v_ptr = scratch.v_new.as_mut_ptr();
+            let attn_out_ptr = scratch.attn_out.as_mut_ptr();
+            let attn_proj_ptr = scratch.attn_proj.as_mut_ptr();
+            let down_buf_ptr = scratch.down_buf.as_mut_ptr();
+            let gate_buf_ptr = scratch.gate_buf.as_mut_ptr();
+            let up_buf_ptr = scratch.up_buf.as_mut_ptr();
+            let q8_buf_ptr = scratch.q8_buf.as_mut_ptr();
+            let scale_buf_ptr = scratch.scale_buf.as_mut_ptr();
+            let kv_cache_size = n_layer * max_ctx * n_embd_gqa;
+            let (k_cache_f16_ptr, v_cache_f16_ptr) = match &kv_cache {
+                KvCache::F16(c) => (c.k.as_ptr() as *mut u16, c.v.as_ptr() as *mut u16),
+                _ => (std::ptr::null_mut(), std::ptr::null_mut()),
+            };
+            let (k_cache_f32_ptr, v_cache_f32_ptr) = match &kv_cache {
+                KvCache::F32(c) => (c.k.as_ptr() as *mut f32, c.v.as_ptr() as *mut f32),
+                _ => (std::ptr::null_mut(), std::ptr::null_mut()),
+            };
 
-            let x = &mut *x_ptr;
-            let normed = &mut *normed_ptr;
-            let q8_buf = &mut *q8_buf_ptr;
-            let scale_buf = &mut *scale_buf_ptr;
+            let max_n_in = n_embd_q.max(n_ff);
+            let x = slice_from_mut!(x_ptr, n_embd);
+            let normed = slice_from_mut!(normed_ptr, n_embd);
+            let q8_buf = slice_from_mut!(q8_buf_ptr, max_n_in);
+            let scale_buf = slice_from_mut!(scale_buf_ptr, max_n_in / 32);
 
             let t0 = Instant::now();
             rms_norm(x, &lw.attn_norm, normed, eps);
@@ -609,11 +599,11 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
             let sc = scale_buf[..n_embd / 32].as_ptr();
 
             pool.compute(move |ith: usize, nth: usize| {
-                let q8 = std::slice::from_raw_parts(q8, n_embd);
-                let sc = std::slice::from_raw_parts(sc, n_embd / 32);
-                let q = &mut *q_ptr;
-                let k_new = &mut *k_ptr;
-                let v_new = &mut *v_ptr;
+                let q8 = raw_parts!(q8, n_embd);
+                let sc = raw_parts!(sc, n_embd / 32);
+                let q = slice_from_mut!(q_ptr, n_embd_q);
+                let k_new = slice_from_mut!(k_ptr, n_embd_gqa);
+                let v_new = slice_from_mut!(v_ptr, n_embd_gqa);
 
                 matmul_q8_0_quantized_parallel_rows(lw.wq, q8, sc, q, n_embd, n_embd_q, ith, nth);
                 matmul_q8_0_quantized_parallel_rows(lw.wk, q8, sc, k_new, n_embd, n_embd_gqa, ith, nth);
@@ -621,9 +611,9 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
             });
 
             {
-                let q = &mut *q_ptr;
-                let k_new = &mut *k_ptr;
-                let v_new = &mut *v_ptr;
+                let q = slice_from_mut!(q_ptr, n_embd_q);
+                let k_new = slice_from_mut!(k_ptr, n_embd_gqa);
+                let v_new = slice_from_mut!(v_ptr, n_embd_gqa);
                 let q_norm = lw.q_norm.as_deref();
                 let k_norm = lw.k_norm.as_deref();
 
@@ -646,16 +636,16 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
                 let kb = layer * max_ctx * n_embd_gqa;
 
                 if kv_format == KvFormat::F16 {
-                    let k_cache = &mut *k_cache_f16_ptr;
-                    let v_cache = &mut *v_cache_f16_ptr;
+                    let k_cache = slice_from_mut!(k_cache_f16_ptr, kv_cache_size);
+                    let v_cache = slice_from_mut!(v_cache_f16_ptr, kv_cache_size);
                     for h in 0..n_head_kv {
                         let off = h * n_embd_head_k;
                         f32_slice_to_f16(&k_new[off..off + n_embd_head_k], &mut k_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_k]);
                         f32_slice_to_f16(&v_new[off..off + n_embd_head_v], &mut v_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_v]);
                     }
                 } else {
-                    let k_cache = &mut *k_cache_f32_ptr;
-                    let v_cache = &mut *v_cache_f32_ptr;
+                    let k_cache = slice_from_mut!(k_cache_f32_ptr, kv_cache_size);
+                    let v_cache = slice_from_mut!(v_cache_f32_ptr, kv_cache_size);
                     for h in 0..n_head_kv {
                         let off = h * n_embd_head_k;
                         k_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_k]
@@ -667,16 +657,16 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
             }
 
             pool.compute(move |ith: usize, nth: usize| {
-                let q = &*q_ptr;
-                let attn_out = &mut *attn_out_ptr;
+                let q = slice_from_ref!(q_ptr, n_embd_q);
+                let attn_out = slice_from_mut!(attn_out_ptr, n_embd_q);
                 let h_start = ith * n_head / nth;
                 let h_end = (ith + 1) * n_head / nth;
 
                 let kb = layer * max_ctx * n_embd_gqa;
 
                 if kv_format == KvFormat::F16 {
-                    let k_cache = &*k_cache_f16_ptr;
-                    let v_cache = &*v_cache_f16_ptr;
+                    let k_cache = slice_from_ref!(k_cache_f16_ptr, kv_cache_size);
+                    let v_cache = slice_from_ref!(v_cache_f16_ptr, kv_cache_size);
                     for h in h_start..h_end {
                         let kv_h = h / group_size;
                         let q_off = h * n_embd_head_k;
@@ -706,8 +696,8 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
                         vec_scale_f32(&mut attn_out[out_base..out_base + n_embd_head_v], inv_sum);
                     }
                 } else {
-                    let k_cache = &*k_cache_f32_ptr;
-                    let v_cache = &*v_cache_f32_ptr;
+                    let k_cache = slice_from_ref!(k_cache_f32_ptr, kv_cache_size);
+                    let v_cache = slice_from_ref!(v_cache_f32_ptr, kv_cache_size);
                     for h in h_start..h_end {
                         let kv_h = h / group_size;
                         let q_off = h * n_embd_head_k;
@@ -740,24 +730,24 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
             });
             t_qkv += t0.elapsed().as_secs_f64();
 
-            let attn_out = &mut *attn_out_ptr;
-            let q8_buf = &mut *q8_buf_ptr;
-            let scale_buf = &mut *scale_buf_ptr;
+            let attn_out = slice_from_mut!(attn_out_ptr, n_embd_q);
+            let q8_buf = slice_from_mut!(q8_buf_ptr, max_n_in);
+            let scale_buf = slice_from_mut!(scale_buf_ptr, max_n_in / 32);
             let t0 = Instant::now();
             quantize_q8_0_into(attn_out, n_embd_q, &mut q8_buf[..n_embd_q], &mut scale_buf[..n_embd_q / 32]);
             let q8 = q8_buf[..n_embd_q].as_ptr();
             let sc = scale_buf[..n_embd_q / 32].as_ptr();
             pool.compute(move |ith: usize, nth: usize| {
-                let q8 = std::slice::from_raw_parts(q8, n_embd_q);
-                let sc = std::slice::from_raw_parts(sc, n_embd_q / 32);
-                let attn_proj = &mut *attn_proj_ptr;
+                let q8 = raw_parts!(q8, n_embd_q);
+                let sc = raw_parts!(sc, n_embd_q / 32);
+                let attn_proj = slice_from_mut!(attn_proj_ptr, n_embd);
                 matmul_q8_0_quantized_parallel_rows(lw.wo, q8, sc, attn_proj, n_embd_q, n_embd, ith, nth);
             });
             t_wo += t0.elapsed().as_secs_f64();
 
-            let attn_proj = &mut *attn_proj_ptr;
-            let x = &mut *x_ptr;
-            let normed = &mut *normed_ptr;
+            let attn_proj = slice_from_mut!(attn_proj_ptr, n_embd);
+            let x = slice_from_mut!(x_ptr, n_embd);
+            let normed = slice_from_mut!(normed_ptr, n_embd);
             for i in 0..n_embd { x[i] += attn_proj[i]; }
 
             let t0 = Instant::now();
@@ -767,10 +757,10 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
             let sc = scale_buf[..n_embd / 32].as_ptr();
 
             pool.compute(move |ith: usize, nth: usize| {
-                let q8 = std::slice::from_raw_parts(q8, n_embd);
-                let sc = std::slice::from_raw_parts(sc, n_embd / 32);
-                let gate_buf = &mut *gate_buf_ptr;
-                let up_buf = &mut *up_buf_ptr;
+                let q8 = raw_parts!(q8, n_embd);
+                let sc = raw_parts!(sc, n_embd / 32);
+                let gate_buf = slice_from_mut!(gate_buf_ptr, n_ff);
+                let up_buf = slice_from_mut!(up_buf_ptr, n_ff);
                 matmul_q8_0_quantized_parallel_rows(lw.w_gate, q8, sc, gate_buf, n_embd, n_ff, ith, nth);
                 matmul_q8_0_quantized_parallel_rows(lw.w_up, q8, sc, up_buf, n_embd, n_ff, ith, nth);
 
@@ -783,55 +773,54 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
             });
 
             {
-                let gate_buf = &mut *gate_buf_ptr;
-                let q8_buf = &mut *q8_buf_ptr;
-                let scale_buf = &mut *scale_buf_ptr;
+                let gate_buf = slice_from_mut!(gate_buf_ptr, n_ff);
+                let q8_buf = slice_from_mut!(q8_buf_ptr, max_n_in);
+                let scale_buf = slice_from_mut!(scale_buf_ptr, max_n_in / 32);
                 quantize_q8_0_into(gate_buf, n_ff, &mut q8_buf[..n_ff], &mut scale_buf[..n_ff / 32]);
             }
 
             let q8 = q8_buf[..n_ff].as_ptr();
             let sc = scale_buf[..n_ff / 32].as_ptr();
             pool.compute(move |ith: usize, nth: usize| {
-                let q8 = std::slice::from_raw_parts(q8, n_ff);
-                let sc = std::slice::from_raw_parts(sc, n_ff / 32);
-                let down_buf = &mut *down_buf_ptr;
+                let q8 = raw_parts!(q8, n_ff);
+                let sc = raw_parts!(sc, n_ff / 32);
+                let down_buf = slice_from_mut!(down_buf_ptr, n_embd);
                 matmul_q8_0_quantized_parallel_rows(lw.w_down, q8, sc, down_buf, n_ff, n_embd, ith, nth);
             });
             t_ffn1 += t0.elapsed().as_secs_f64();
 
-            let down_buf = &mut *down_buf_ptr;
-            let x = &mut *x_ptr;
+            let down_buf = slice_from_mut!(down_buf_ptr, n_embd);
+            let x = slice_from_mut!(x_ptr, n_embd);
             for i in 0..n_embd { x[i] += down_buf[i]; }
-            }
         }
 
-        unsafe {
-        let x = &mut *x.get();
-        let normed = &mut *normed.get();
-        let logits_ptr = logits.get();
-        let q8_buf = &mut *q8_buf.get();
-        let scale_buf = &mut *scale_buf.get();
+        {
+            let x = &mut scratch.x;
+            let normed = &mut scratch.normed;
+            let logits_ptr = scratch.logits.as_mut_ptr();
+            let q8_buf = &mut scratch.q8_buf;
+            let scale_buf = &mut scratch.scale_buf;
 
-        let t0 = Instant::now();
-        rms_norm(x, &output_norm, normed, eps);
-        t_norm += t0.elapsed().as_secs_f64();
+            let t0 = Instant::now();
+            rms_norm(x, &output_norm, normed, eps);
+            t_norm += t0.elapsed().as_secs_f64();
 
-        let t0 = Instant::now();
-        quantize_q8_0_into(normed, n_embd, &mut q8_buf[..n_embd], &mut scale_buf[..n_embd / 32]);
-        let q8 = q8_buf[..n_embd].as_ptr();
-        let sc = scale_buf[..n_embd / 32].as_ptr();
-        pool.compute(move |ith: usize, nth: usize| {
-            let q8 = std::slice::from_raw_parts(q8, n_embd);
-            let sc = std::slice::from_raw_parts(sc, n_embd / 32);
-            let logits = &mut *logits_ptr;
-            matmul_q8_0_quantized_parallel_rows(output_weight, q8, sc, logits, n_embd, vocab, ith, nth);
-        });
-        t_logits += t0.elapsed().as_secs_f64();
+            let t0 = Instant::now();
+            quantize_q8_0_into(normed, n_embd, &mut q8_buf[..n_embd], &mut scale_buf[..n_embd / 32]);
+            let q8 = q8_buf[..n_embd].as_ptr();
+            let sc = scale_buf[..n_embd / 32].as_ptr();
+            pool.compute(move |ith: usize, nth: usize| {
+                let q8 = raw_parts!(q8, n_embd);
+                let sc = raw_parts!(sc, n_embd / 32);
+                let logits = slice_from_mut!(logits_ptr, vocab);
+                matmul_q8_0_quantized_parallel_rows(output_weight, q8, sc, logits, n_embd, vocab, ith, nth);
+            });
+            t_logits += t0.elapsed().as_secs_f64();
         }
 
         if step < input_tokens.len() - 1 { continue; }
 
-        let logits = unsafe { &mut *logits.get() };
+        let logits = &mut scratch.logits;
         if temperature > 0.0 {
             for l in logits.iter_mut() { *l /= temperature; }
         }
