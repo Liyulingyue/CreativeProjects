@@ -7,6 +7,9 @@ use thread_pool::ComputePool;
 
 use rust_model_inference::*;
 
+#[derive(Clone, Copy, PartialEq)]
+enum KvFormat { F16, F32 }
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
@@ -19,6 +22,7 @@ fn main() {
     let mut dump_logits = false;
     let mut bench = false;
     let mut profile = false;
+    let mut kv_format = KvFormat::F16;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -31,6 +35,7 @@ fn main() {
             "--dump-logits" => { dump_logits = true; }
             "--bench" => { bench = true; }
             "--profile" => { profile = true; }
+            "--kv-cache" => { if i + 1 < args.len() { kv_format = match args[i + 1].as_str() { "f32" => KvFormat::F32, _ => KvFormat::F16 }; i += 1; } }
             _ => {}
         }
         i += 1;
@@ -38,9 +43,9 @@ fn main() {
 
     if !model_path.is_empty() && !prompt.is_empty() {
         if dump_logits {
-            run_dump_logits(&model_path, &prompt, max_tokens, n_threads);
+            run_dump_logits(&model_path, &prompt, max_tokens, n_threads, kv_format);
         } else {
-            run_inference(&model_path, &prompt, max_tokens, temperature, n_threads, bench, profile);
+            run_inference(&model_path, &prompt, max_tokens, temperature, n_threads, bench, profile, kv_format);
         }
     } else if !model_path.is_empty() {
         run_interactive(&model_path, max_tokens, temperature, n_threads);
@@ -63,7 +68,7 @@ struct LayerWeights<'a> {
     w_down: &'a [u8],
 }
 
-fn run_dump_logits(model_path: &str, prompt: &str, max_tokens: usize, n_threads_arg: usize) {
+fn run_dump_logits(model_path: &str, prompt: &str, max_tokens: usize, n_threads_arg: usize, kv_format: KvFormat) {
     let loader = GGUFLoader::from_file(model_path).expect("Failed to load GGUF");
     let config = loader.model_config().expect("Failed to parse model config");
 
@@ -131,11 +136,10 @@ fn run_dump_logits(model_path: &str, prompt: &str, max_tokens: usize, n_threads_
         bin_out.write_all(unsafe { std::slice::from_raw_parts(pt.as_ptr() as *const u8, pt.len() * 4) }).unwrap();
     }
 
-    let k_cache = vec![0u16; n_layer * max_ctx * n_embd_gqa];
-    let v_cache = vec![0u16; n_layer * max_ctx * n_embd_gqa];
-    let k_cache = UnsafeCell::new(k_cache.into_boxed_slice());
-    let v_cache = UnsafeCell::new(v_cache.into_boxed_slice());
-
+    let k_cache_f16 = UnsafeCell::new(vec![0u16; n_layer * max_ctx * n_embd_gqa].into_boxed_slice());
+    let v_cache_f16 = UnsafeCell::new(vec![0u16; n_layer * max_ctx * n_embd_gqa].into_boxed_slice());
+    let k_cache_f32 = UnsafeCell::new(vec![0.0f32; n_layer * max_ctx * n_embd_gqa].into_boxed_slice());
+    let v_cache_f32 = UnsafeCell::new(vec![0.0f32; n_layer * max_ctx * n_embd_gqa].into_boxed_slice());
     let x = UnsafeCell::new(vec![0.0f32; n_embd]);
     let normed = UnsafeCell::new(vec![0.0f32; n_embd]);
     let q = UnsafeCell::new(vec![0.0f32; n_embd_q]);
@@ -147,6 +151,7 @@ fn run_dump_logits(model_path: &str, prompt: &str, max_tokens: usize, n_threads_
     let gate_buf = UnsafeCell::new(vec![0.0f32; n_ff]);
     let up_buf = UnsafeCell::new(vec![0.0f32; n_ff]);
     let logits = UnsafeCell::new(vec![0.0f32; vocab]);
+    let attn_barrier = UnsafeCell::new(std::sync::atomic::AtomicI32::new(0));
 
     let max_n_in = n_embd_q.max(n_ff);
     let q8_buf = UnsafeCell::new(vec![0u8; max_n_in]);
@@ -190,9 +195,12 @@ fn run_dump_logits(model_path: &str, prompt: &str, max_tokens: usize, n_threads_
             let up_buf_ptr = up_buf.get();
             let q8_buf_ptr = q8_buf.get();
             let scale_buf_ptr = scale_buf.get();
-            let k_cache_ptr = k_cache.get();
-            let v_cache_ptr = v_cache.get();
+             let k_cache_f16_ptr = k_cache_f16.get();
+             let v_cache_f16_ptr = v_cache_f16.get();
+             let attn_barrier_ptr = attn_barrier.get();
 
+             let k_cache_f32_ptr = k_cache_f32.get();
+             let v_cache_f32_ptr = v_cache_f32.get();
             let x = &mut *x_ptr;
             let normed = &mut *normed_ptr;
             let q8_buf = &mut *q8_buf_ptr;
@@ -205,6 +213,9 @@ fn run_dump_logits(model_path: &str, prompt: &str, max_tokens: usize, n_threads_
             let sc = scale_buf[..n_embd / 32].as_ptr();
             let q_norm = lw.q_norm.as_deref();
             let k_norm = lw.k_norm.as_deref();
+
+            let attn_barrier_ref = &*attn_barrier_ptr;
+            attn_barrier_ref.store(0, Ordering::SeqCst);
 
             pool.compute(move |ith: usize, nth: usize| {
                 let q8 = std::slice::from_raw_parts(q8, n_embd);
@@ -224,58 +235,98 @@ fn run_dump_logits(model_path: &str, prompt: &str, max_tokens: usize, n_threads_
                 let v_new = &mut *v_ptr;
                 let attn_out = &mut *attn_out_ptr;
                 let scores = &mut *scores_ptr;
-                let k_cache = &mut *k_cache_ptr;
-                let v_cache = &mut *v_cache_ptr;
+                 let h_start = ith * n_head / nth;
+                 let h_end = (ith + 1) * n_head / nth;
+                 let kv_h_start = h_start / group_size;
+                 let kv_h_end = (h_end + group_size - 1) / group_size;
 
-                let h_start = ith * n_head / nth;
-                let h_end = (ith + 1) * n_head / nth;
-                let kv_h_start = h_start / group_size;
-                let kv_h_end = (h_end + group_size - 1) / group_size;
+                 if let (Some(qn), Some(kn)) = (q_norm, k_norm) {
+                     for h in h_start..h_end {
+                         rms_norm_inplace(&mut q[h * n_embd_head_k..(h + 1) * n_embd_head_k], qn, eps);
+                     }
+                     for h in kv_h_start..kv_h_end {
+                         rms_norm_inplace(&mut k_new[h * n_embd_head_k..(h + 1) * n_embd_head_k], kn, eps);
+                     }
+                 }
 
-                if let (Some(qn), Some(kn)) = (q_norm, k_norm) {
-                    for h in h_start..h_end {
-                        rms_norm_inplace(&mut q[h * n_embd_head_k..(h + 1) * n_embd_head_k], qn, eps);
-                    }
-                    for h in kv_h_start..kv_h_end {
-                        rms_norm_inplace(&mut k_new[h * n_embd_head_k..(h + 1) * n_embd_head_k], kn, eps);
-                    }
-                }
+                 for h in h_start..h_end {
+                     rope_neox(&mut q[h * n_embd_head_k..(h + 1) * n_embd_head_k], pos, n_embd_head_k, freq_base);
+                 }
+                 for h in kv_h_start..kv_h_end {
+                     rope_neox(&mut k_new[h * n_embd_head_k..(h + 1) * n_embd_head_k], pos, n_embd_head_v, freq_base);
+                 }
 
-                for h in h_start..h_end {
-                    rope_neox(&mut q[h * n_embd_head_k..(h + 1) * n_embd_head_k], pos, n_embd_head_k, freq_base);
-                }
-                for h in kv_h_start..kv_h_end {
-                    rope_neox(&mut k_new[h * n_embd_head_k..(h + 1) * n_embd_head_k], pos, n_embd_head_v, freq_base);
-                }
+                 let kb = layer * max_ctx * n_embd_gqa;
 
-                let kb = layer * max_ctx * n_embd_gqa;
-                for h in kv_h_start..kv_h_end {
-                    let off = h * n_embd_head_k;
-                    f32_slice_to_f16(&k_new[off..off + n_embd_head_k], &mut k_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_k]);
-                    f32_slice_to_f16(&v_new[off..off + n_embd_head_v], &mut v_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_v]);
-                }
-
-                for h in h_start..h_end {
-                    let kv_h = h / group_size;
-                    let q_off = h * n_embd_head_k;
-                    let n_cached = pos + 1;
-                    let s_off = ith * max_ctx;
-                    for t in 0..n_cached {
-                        scores[s_off + t] = dot_f16_f32(
-                            &q[q_off..q_off + n_embd_head_k],
-                            &k_cache[kb + t * n_embd_gqa + kv_h * n_embd_head_v..kb + t * n_embd_gqa + kv_h * n_embd_head_v + n_embd_head_k],
-                            n_embd_head_k,
-                        ) * kq_scale;
-                    }
-                    softmax(&mut scores[s_off..s_off + n_cached]);
-                    for d in 0..n_embd_head_v {
-                        let mut val = 0.0f32;
-                        for t in 0..n_cached {
-                            val += scores[s_off + t] * f16_to_f32(v_cache[kb + t * n_embd_gqa + kv_h * n_embd_head_v + d]);
-                        }
-                        attn_out[h * n_embd_head_v + d] = val;
-                    }
-                }
+                if kv_format == KvFormat::F16 {
+                     let k_cache = &mut *k_cache_f16_ptr;
+                     let v_cache = &mut *v_cache_f16_ptr;
+                      for h in kv_h_start..kv_h_end {
+                          let off = h * n_embd_head_k;
+                          f32_slice_to_f16(&k_new[off..off + n_embd_head_k], &mut k_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_k]);
+                          f32_slice_to_f16(&v_new[off..off + n_embd_head_v], &mut v_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_v]);
+                      }
+                      attn_barrier_ref.fetch_add(1, Ordering::SeqCst);
+                      while attn_barrier_ref.load(Ordering::Acquire) < nth as i32 {
+                          std::hint::spin_loop();
+                      }
+                      for h in h_start..h_end {
+                          let kv_h = h / group_size;
+                          let q_off = h * n_embd_head_k;
+                          let n_cached = pos + 1;
+                          let s_off = ith * max_ctx;
+                          for t in 0..n_cached {
+                              scores[s_off + t] = dot_f16_f32(
+                                 &q[q_off..q_off + n_embd_head_k],
+                                 &k_cache[kb + t * n_embd_gqa + kv_h * n_embd_head_v..kb + t * n_embd_gqa + kv_h * n_embd_head_v + n_embd_head_k],
+                                 n_embd_head_k,
+                             ) * kq_scale;
+                         }
+                         softmax(&mut scores[s_off..s_off + n_cached]);
+                         for d in 0..n_embd_head_v {
+                             let mut val = 0.0f32;
+                             for t in 0..n_cached {
+                                 val += scores[s_off + t] * f16_to_f32(v_cache[kb + t * n_embd_gqa + kv_h * n_embd_head_v + d]);
+                             }
+                             attn_out[h * n_embd_head_v + d] = val;
+                         }
+                     }
+                 } else {
+                     let k_cache = &mut *k_cache_f32_ptr;
+                     let v_cache = &mut *v_cache_f32_ptr;
+                      for h in kv_h_start..kv_h_end {
+                          let off = h * n_embd_head_k;
+                          k_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_k]
+                              .copy_from_slice(&k_new[off..off + n_embd_head_k]);
+                          v_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_v]
+                              .copy_from_slice(&v_new[off..off + n_embd_head_v]);
+                      }
+                      attn_barrier_ref.fetch_add(1, Ordering::SeqCst);
+                      while attn_barrier_ref.load(Ordering::Acquire) < nth as i32 {
+                          std::hint::spin_loop();
+                      }
+                      for h in h_start..h_end {
+                         let kv_h = h / group_size;
+                         let q_off = h * n_embd_head_k;
+                         let n_cached = pos + 1;
+                         let s_off = ith * max_ctx;
+                         for t in 0..n_cached {
+                             scores[s_off + t] = dot_f32(
+                                 &q[q_off..q_off + n_embd_head_k],
+                                 &k_cache[kb + t * n_embd_gqa + kv_h * n_embd_head_v..kb + t * n_embd_gqa + kv_h * n_embd_head_v + n_embd_head_k],
+                                 n_embd_head_k,
+                             ) * kq_scale;
+                         }
+                         softmax(&mut scores[s_off..s_off + n_cached]);
+                         for d in 0..n_embd_head_v {
+                             let mut val = 0.0f32;
+                             for t in 0..n_cached {
+                                 val += scores[s_off + t] * v_cache[kb + t * n_embd_gqa + kv_h * n_embd_head_v + d];
+                             }
+                             attn_out[h * n_embd_head_v + d] = val;
+                         }
+                     }
+                 }
             });
 
             let attn_out = &mut *attn_out_ptr;
@@ -393,7 +444,7 @@ fn run_dump_logits(model_path: &str, prompt: &str, max_tokens: usize, n_threads_
     }
 }
 
-fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature: f32, n_threads_arg: usize, bench: bool, profile: bool) {
+fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature: f32, n_threads_arg: usize, bench: bool, profile: bool, kv_format: KvFormat) {
     let t0 = Instant::now();
     println!("Loading {} ...", model_path);
     let loader = GGUFLoader::from_file(model_path).expect("Failed to load GGUF");
@@ -453,12 +504,13 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
         println!("  chat: im_start={} im_end={}", special_tokens["im_start"], special_tokens["im_end"]);
     }
 
-    let k_cache = vec![0u16; n_layer * max_ctx * n_embd_gqa];
-    let v_cache = vec![0u16; n_layer * max_ctx * n_embd_gqa];
-    let k_cache = UnsafeCell::new(k_cache.into_boxed_slice());
-    let v_cache = UnsafeCell::new(v_cache.into_boxed_slice());
+    let k_cache_f16 = UnsafeCell::new(vec![0u16; n_layer * max_ctx * n_embd_gqa].into_boxed_slice());
+    let v_cache_f16 = UnsafeCell::new(vec![0u16; n_layer * max_ctx * n_embd_gqa].into_boxed_slice());
+    let k_cache_f32 = UnsafeCell::new(vec![0.0f32; n_layer * max_ctx * n_embd_gqa].into_boxed_slice());
+    let v_cache_f32 = UnsafeCell::new(vec![0.0f32; n_layer * max_ctx * n_embd_gqa].into_boxed_slice());
 
     let ffn_barrier = UnsafeCell::new(std::sync::atomic::AtomicI32::new(0));
+    let attn_barrier = UnsafeCell::new(std::sync::atomic::AtomicI32::new(0));
     let x = UnsafeCell::new(vec![0.0f32; n_embd]);
     let normed = UnsafeCell::new(vec![0.0f32; n_embd]);
     let q = UnsafeCell::new(vec![0.0f32; n_embd_q]);
@@ -544,9 +596,12 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
             let up_buf_ptr = up_buf.get();
             let q8_buf_ptr = q8_buf.get();
             let scale_buf_ptr = scale_buf.get();
-            let k_cache_ptr = k_cache.get();
-            let v_cache_ptr = v_cache.get();
+            let k_cache_f16_ptr = k_cache_f16.get();
+            let v_cache_f16_ptr = v_cache_f16.get();
             let ffn_barrier_ptr = ffn_barrier.get();
+            let attn_barrier_ptr = attn_barrier.get();
+            let k_cache_f32_ptr = k_cache_f32.get();
+            let v_cache_f32_ptr = v_cache_f32.get();
 
             let x = &mut *x_ptr;
             let normed = &mut *normed_ptr;
@@ -561,6 +616,9 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
             let q_norm = lw.q_norm.as_deref();
             let k_norm = lw.k_norm.as_deref();
 
+            let attn_barrier_ref = &*attn_barrier_ptr;
+            attn_barrier_ref.store(0, Ordering::SeqCst);
+
             pool.compute(move |ith: usize, nth: usize| {
                 let q8 = std::slice::from_raw_parts(q8, n_embd);
                 let sc = std::slice::from_raw_parts(sc, n_embd / 32);
@@ -568,8 +626,6 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
                 let k_new = &mut *k_ptr;
                 let v_new = &mut *v_ptr;
                 let attn_out = &mut *attn_out_ptr;
-                let k_cache = &mut *k_cache_ptr;
-                let v_cache = &mut *v_cache_ptr;
 
                 matmul_q8_0_quantized_parallel_rows(lw.wq, q8, sc, q, n_embd, n_embd_q, ith, nth);
                 matmul_q8_0_quantized_parallel_rows(lw.wk, q8, sc, k_new, n_embd, n_embd_gqa, ith, nth);
@@ -597,39 +653,89 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
                 }
 
                 let kb = layer * max_ctx * n_embd_gqa;
-                for h in kv_h_start..kv_h_end {
-                    let off = h * n_embd_head_k;
-                    f32_slice_to_f16(&k_new[off..off + n_embd_head_k], &mut k_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_k]);
-                    f32_slice_to_f16(&v_new[off..off + n_embd_head_v], &mut v_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_v]);
-                }
 
-                for h in h_start..h_end {
-                    let kv_h = h / group_size;
-                    let q_off = h * n_embd_head_k;
-                    let n_cached = pos + 1;
-                    let out_base = h * n_embd_head_v;
-                    let mut ms = 0.0f32;
-                    let mut s_sum = 0.0f32;
-                    for d in 0..n_embd_head_v { attn_out[out_base + d] = 0.0; }
-                    for t in 0..n_cached {
-                        let score = dot_f16_f32(
-                            &q[q_off..q_off + n_embd_head_k],
-                            &k_cache[kb + t * n_embd_gqa + kv_h * n_embd_head_v..kb + t * n_embd_gqa + kv_h * n_embd_head_v + n_embd_head_k],
-                            n_embd_head_k,
-                        ) * kq_scale;
-                        if score > ms {
-                            let rescale = (ms - score).exp();
-                            vec_scale_f32(&mut attn_out[out_base..out_base + n_embd_head_v], rescale);
-                            s_sum *= rescale;
-                            ms = score;
-                        }
-                        let vs = (score - ms).exp();
-                        let v_base = kb + t * n_embd_gqa + kv_h * n_embd_head_v;
-                        vec_mad_f16_f32(&mut attn_out[out_base..out_base + n_embd_head_v], &v_cache[v_base..v_base + n_embd_head_v], vs);
-                        s_sum += vs;
+                if kv_format == KvFormat::F16 {
+                    let k_cache = &mut *k_cache_f16_ptr;
+                    let v_cache = &mut *v_cache_f16_ptr;
+                    for h in kv_h_start..kv_h_end {
+                        let off = h * n_embd_head_k;
+                        f32_slice_to_f16(&k_new[off..off + n_embd_head_k], &mut k_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_k]);
+                        f32_slice_to_f16(&v_new[off..off + n_embd_head_v], &mut v_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_v]);
                     }
-                    let inv_sum = 1.0 / s_sum;
-                    vec_scale_f32(&mut attn_out[out_base..out_base + n_embd_head_v], inv_sum);
+                    attn_barrier_ref.fetch_add(1, Ordering::SeqCst);
+                    while attn_barrier_ref.load(Ordering::Acquire) < nth as i32 {
+                        std::hint::spin_loop();
+                    }
+                    for h in h_start..h_end {
+                        let kv_h = h / group_size;
+                        let q_off = h * n_embd_head_k;
+                        let n_cached = pos + 1;
+                        let out_base = h * n_embd_head_v;
+                        let mut ms = 0.0f32;
+                        let mut s_sum = 0.0f32;
+                        for d in 0..n_embd_head_v { attn_out[out_base + d] = 0.0; }
+                        for t in 0..n_cached {
+                            let score = dot_f16_f32(
+                                &q[q_off..q_off + n_embd_head_k],
+                                &k_cache[kb + t * n_embd_gqa + kv_h * n_embd_head_v..kb + t * n_embd_gqa + kv_h * n_embd_head_v + n_embd_head_k],
+                                n_embd_head_k,
+                            ) * kq_scale;
+                            if score > ms {
+                                let rescale = (ms - score).exp();
+                                vec_scale_f32(&mut attn_out[out_base..out_base + n_embd_head_v], rescale);
+                                s_sum *= rescale;
+                                ms = score;
+                            }
+                            let vs = (score - ms).exp();
+                            let v_base = kb + t * n_embd_gqa + kv_h * n_embd_head_v;
+                            vec_mad_f16_f32(&mut attn_out[out_base..out_base + n_embd_head_v], &v_cache[v_base..v_base + n_embd_head_v], vs);
+                            s_sum += vs;
+                        }
+                        let inv_sum = 1.0 / s_sum;
+                        vec_scale_f32(&mut attn_out[out_base..out_base + n_embd_head_v], inv_sum);
+                    }
+                } else {
+                    let k_cache = &mut *k_cache_f32_ptr;
+                    let v_cache = &mut *v_cache_f32_ptr;
+                    for h in kv_h_start..kv_h_end {
+                        let off = h * n_embd_head_k;
+                        k_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_k]
+                            .copy_from_slice(&k_new[off..off + n_embd_head_k]);
+                        v_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_v]
+                            .copy_from_slice(&v_new[off..off + n_embd_head_v]);
+                    }
+                    attn_barrier_ref.fetch_add(1, Ordering::SeqCst);
+                    while attn_barrier_ref.load(Ordering::Acquire) < nth as i32 {
+                        std::hint::spin_loop();
+                    }
+                    for h in h_start..h_end {
+                        let kv_h = h / group_size;
+                        let q_off = h * n_embd_head_k;
+                        let n_cached = pos + 1;
+                        let out_base = h * n_embd_head_v;
+                        let mut ms = 0.0f32;
+                        let mut s_sum = 0.0f32;
+                        for d in 0..n_embd_head_v { attn_out[out_base + d] = 0.0; }
+                        for t in 0..n_cached {
+                            let score = dot_f32(
+                                &q[q_off..q_off + n_embd_head_k],
+                                &k_cache[kb + t * n_embd_gqa + kv_h * n_embd_head_v..kb + t * n_embd_gqa + kv_h * n_embd_head_v + n_embd_head_k],
+                                n_embd_head_k,
+                            ) * kq_scale;
+                            if score > ms {
+                                let rescale = (ms - score).exp();
+                                vec_scale_f32(&mut attn_out[out_base..out_base + n_embd_head_v], rescale);
+                                s_sum *= rescale;
+                                ms = score;
+                            }
+                            let vs = (score - ms).exp();
+                            let v_base = kb + t * n_embd_gqa + kv_h * n_embd_head_v;
+                            vec_mad_f32(&mut attn_out[out_base..out_base + n_embd_head_v], &v_cache[v_base..v_base + n_embd_head_v], vs);
+                            s_sum += vs;
+                        }
+                        let inv_sum = 1.0 / s_sum;
+                        vec_scale_f32(&mut attn_out[out_base..out_base + n_embd_head_v], inv_sum);
+                    }
                 }
             });
             t_qkv += t0.elapsed().as_secs_f64();
@@ -811,7 +917,7 @@ fn run_interactive(model_path: &str, max_tokens: usize, temperature: f32, n_thre
         if io::stdin().read_line(&mut line).unwrap() == 0 { break; }
         let line = line.trim();
         if line.is_empty() { continue; }
-        run_inference(model_path, line, max_tokens, temperature, n_threads_arg, false, false);
+        run_inference(model_path, line, max_tokens, temperature, n_threads_arg, false, false, KvFormat::F16);
         println!();
     }
 }
