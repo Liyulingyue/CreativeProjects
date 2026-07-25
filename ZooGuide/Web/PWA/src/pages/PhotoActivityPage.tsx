@@ -1,24 +1,34 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import type { Venue } from '../types'
+import type { Meta, Venue } from '../types'
 import { api } from '../api/client'
 import { PhotoFlow } from '../components/flows/PhotoFlow'
 import { loadPhotoLog, loadVisited, saveVisited, type PhotoLogEntry } from '../lib/storage'
 import { useVisitedVenues } from '../hooks/useVisitedVenues'
+import { venueEmoji } from '../lib/venue-helpers'
 
 const ACTIVITY = 'photo'
 
-export function PhotoActivityPage() {
+interface Props {
+  venues?: Venue[]
+  meta?: Meta | null
+}
+
+export function PhotoActivityPage({ venues: venuesProp, meta }: Props) {
   const navigate = useNavigate()
-  const [venues, setVenues] = useState<Venue[]>([])
+  const [venues, setVenues] = useState<Venue[]>(venuesProp || [])
   const [photoLog, setPhotoLog] = useState<PhotoLogEntry[]>(loadPhotoLog())
   const { visited, version } = useVisitedVenues()
   const [selectedVenue, setSelectedVenue] = useState<Venue | null>(null)
   const [showFlow, setShowFlow] = useState(false)
 
   useEffect(() => {
-    api.venues().then((d) => setVenues(d.venues)).catch(console.error)
-  }, [])
+    if (venuesProp) {
+      setVenues(venuesProp)
+    } else {
+      api.venues().then((d) => setVenues(d.venues)).catch(console.error)
+    }
+  }, [venuesProp])
 
   useEffect(() => {
     refreshData()
@@ -198,22 +208,4 @@ function MiniStat({ value, label, highlight }: { value: number; label: string; h
       <div style={{ fontSize: 10, opacity: 0.8 }}>{label}</div>
     </div>
   )
-}
-
-function venueEmoji(venueId: string): string {
-  const map: Record<string, string> = {
-    panda: '🐼',
-    koala: '🐨',
-    gorilla: '🦍',
-    tiger: '🐯',
-    giraffe: '🦒',
-    meerkat: '🦝',
-    red_panda: '🐾',
-    tangjiahe: '🏔️',
-    hornbill: '🦜',
-    crane: '🦢',
-    monkey_mountain: '🐒',
-    bear: '🐻',
-  }
-  return map[venueId] || '📍'
 }

@@ -10,6 +10,7 @@ interface Props {
   user: AuthUser | null
   onUserChange: (u: AuthUser | null) => void
   onRouteOpen?: (r: Route) => void
+  meta?: Meta | null
 }
 
 interface Summary {
@@ -46,8 +47,7 @@ interface Achievement {
   earned_at: string | null
 }
 
-export function ProfilePage({ user, onUserChange, onRouteOpen }: Props) {
-  const [meta, setMeta] = useState<Meta | null>(null)
+export function ProfilePage({ user, onUserChange, onRouteOpen, meta }: Props) {
   const [summary, setSummary] = useState<Summary | null>(null)
   const [achievements, setAchievements] = useState<Achievement[]>([])
   const [earnedCount, setEarnedCount] = useState(0)
@@ -55,8 +55,6 @@ export function ProfilePage({ user, onUserChange, onRouteOpen }: Props) {
   const [authOpen, setAuthOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [planOpen, setPlanOpen] = useState(false)
-
-  useEffect(() => { api.meta().then(setMeta).catch(() => {}) }, [])
 
   async function load() {
     if (!user) return

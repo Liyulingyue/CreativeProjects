@@ -19,6 +19,7 @@ export function useStreamPlan() {
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
   const startedRef = useRef(false)
+  const doneRef = useRef(false)
 
   async function start(prefs: UserPreference) {
     if (startedRef.current) return
@@ -27,6 +28,7 @@ export function useStreamPlan() {
     setRoute(null)
     setError(null)
     setDone(false)
+    doneRef.current = false
     try {
       const resp = await fetch('/api/plan-stream', {
         method: 'POST',
@@ -34,10 +36,10 @@ export function useStreamPlan() {
         body: JSON.stringify({ ...prefs, fast: prefs.fast }),
       })
       if (!resp.ok || !resp.body) {
-        // Fallback to non-streaming
         const r = await api.plan(prefs)
         setRoute(r)
         setDone(true)
+        doneRef.current = true
         return
       }
       const reader = resp.body.getReader()
@@ -61,13 +63,13 @@ export function useStreamPlan() {
                 if (eventName === 'done' && data.route) {
                   setRoute(data.route)
                   setDone(true)
+                  doneRef.current = true
                 } else if (eventName === 'error') {
                   setError(data.message || 'unknown')
                 } else {
                   setEvents((prev) => [...prev, { type: eventName as any, text: data.text }])
                 }
               } catch {
-                // ignore parse errors
               }
             }
             eventName = ''
@@ -75,12 +77,19 @@ export function useStreamPlan() {
           }
         }
       }
-      if (!done) {
+      if (!doneRef.current) {
         setDone(true)
+        doneRef.current = true
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : '规划失败')
+      const isOffline = !navigator.onLine || (e instanceof TypeError && e.message === 'Failed to fetch')
+      if (isOffline) {
+        setError('网络不可用，请检查网络连接后重试。离线时可查看已有路线和场馆信息。')
+      } else {
+        setError(e instanceof Error ? e.message : '规划失败')
+      }
       setDone(true)
+      doneRef.current = true
     } finally {
       startedRef.current = false
     }

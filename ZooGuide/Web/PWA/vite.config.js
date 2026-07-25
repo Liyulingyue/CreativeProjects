@@ -8,9 +8,9 @@ export default defineConfig({
             registerType: 'autoUpdate',
             includeAssets: ['favicon.svg'],
             manifest: {
-                name: 'ZooGuide - 红山省力Agent',
+                name: 'ZooGuide - 省力Agent',
                 short_name: 'ZooGuide',
-                description: '南京红山森林动物园专属导游',
+                description: '动物园专属省力导游',
                 theme_color: '#2d6a4f',
                 background_color: '#f7faf7',
                 display: 'standalone',

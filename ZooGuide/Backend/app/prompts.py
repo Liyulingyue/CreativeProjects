@@ -27,7 +27,11 @@ def _build_system_background() -> str:
     return template.format(name=name, short_name=short, highlights_block=highlights_block)
 
 
-SYSTEM_BACKGROUND: str = _build_system_background()
+SYSTEM_BACKGROUND: str = ""
+try:
+    SYSTEM_BACKGROUND = _build_system_background()
+except Exception:
+    SYSTEM_BACKGROUND = "你是「动物园省力Agent」，帮助游客规划路线。"
 
 
 PLAN_REQUIREMENTS: list[str] = [

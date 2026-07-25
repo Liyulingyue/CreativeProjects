@@ -93,21 +93,3 @@ def chat_json(
         }
 
     return result_holder["result"]
-
-
-def dump_prompt_for_debug(
-    prefs_dict: dict,
-    candidates: list[dict],
-    walking_matrix: dict,
-) -> str:
-    """Build a human-readable summary of what we're sending to the LLM."""
-    return json.dumps(
-        {
-            "preferences": prefs_dict,
-            "candidates_count": len(candidates),
-            "candidate_ids": [c["id"] for c in candidates],
-            "walking_matrix_size": len(walking_matrix),
-        },
-        ensure_ascii=False,
-        indent=2,
-    )

@@ -133,8 +133,6 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
-    suggested_replan: bool = False
-    extracted_constraint: Optional[dict] = None
     new_route: Optional[dict] = None
 
 

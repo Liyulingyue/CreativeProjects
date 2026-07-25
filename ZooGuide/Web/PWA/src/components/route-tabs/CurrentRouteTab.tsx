@@ -261,12 +261,3 @@ function AreaStopCard({
     </div>
   )
 }
-
-function loadVisitedFn(): Set<string> {
-  try {
-    const raw = localStorage.getItem('zooguide:visited:v1')
-    return new Set(raw ? JSON.parse(raw) : [])
-  } catch {
-    return new Set()
-  }
-}

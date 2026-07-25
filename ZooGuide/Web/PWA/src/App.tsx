@@ -115,7 +115,7 @@ export default function App() {
               onClearRoute={() => setRoute(null)}
             />
           } />
-          <Route path="/venue" element={<VenueIntroPage venues={venues} />} />
+          <Route path="/venue" element={<VenueIntroPage venues={venues} meta={meta} />} />
           <Route path="/venue/:id" element={<VenueDetailPage />} />
           <Route path="/season" element={<SeasonGuidePage meta={meta} venues={venues} />} />
           <Route path="/downloads" element={<DownloadsPage meta={meta} />} />
@@ -130,13 +130,13 @@ export default function App() {
             />
           } />
           <Route path="/activity" element={<ActivityPage />} />
-          <Route path="/activity/photo" element={<PhotoActivityPage />} />
+          <Route path="/activity/photo" element={<PhotoActivityPage venues={venues} meta={meta} />} />
           <Route path="/activity/wall" element={<PhotoWallPage />} />
-          <Route path="/activity/gps" element={<GpsFlowPage />} />
+          <Route path="/activity/gps" element={<GpsFlowPage venues={venues} meta={meta} />} />
           <Route path="/facility" element={<FacilityListPage />} />
           <Route path="/facility/:id" element={<FacilityDetailPage />} />
           <Route path="/me" element={
-            <ProfilePage user={user} onUserChange={setUser} />
+            <ProfilePage user={user} onUserChange={setUser} meta={meta} />
           } />
         </Routes>
       </main>

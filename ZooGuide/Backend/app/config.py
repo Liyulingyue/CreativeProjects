@@ -33,9 +33,6 @@ PORT: int = int(os.getenv("PORT", "8000"))
 
 
 # Universe of warning tips shown on every route (loaded from meta at runtime)
-UNIVERSAL_WARNINGS: list[str] = []
-
-
 def _load_warnings() -> list[str]:
     try:
         from .data_loader import get_meta
@@ -44,7 +41,7 @@ def _load_warnings() -> list[str]:
         return []
 
 
-UNIVERSAL_WARNINGS = _load_warnings()
+UNIVERSAL_WARNINGS: list[str] = _load_warnings()
 
 
 def has_valid_llm_config() -> bool:

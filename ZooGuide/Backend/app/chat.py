@@ -40,7 +40,11 @@ def _build_simple_rules() -> list:
     ]
 
 
-SIMPLE_RULES = _build_simple_rules()
+SIMPLE_RULES: list = []
+try:
+    SIMPLE_RULES = _build_simple_rules()
+except Exception:
+    pass
 
 
 # 实体识别：场馆名/动物名 → venue_id (from config)
@@ -49,7 +53,11 @@ def _build_entity_map() -> dict:
     return meta.get("entity_map", {})
 
 
-ENTITY_MAP = _build_entity_map()
+ENTITY_MAP: dict = {}
+try:
+    ENTITY_MAP = _build_entity_map()
+except Exception:
+    pass
 
 
 TOOLS = [
@@ -138,14 +146,21 @@ def _load_system_prompt() -> str:
     try:
         with (Path(__file__).resolve().parent.parent / "data" / "system.json").open(encoding="utf-8") as f:
             cfg = json.load(f)
-        parts = [cfg["agent_identity"]]
+        identity = cfg["agent_identity"]
+        meta = data_loader.get_meta()
+        identity = identity.format(
+            name=meta.get("name", "动物园"),
+            short_name=meta.get("short_name", meta.get("name", "动物园")[:2]),
+        )
+        parts = [identity]
         if cfg.get("rules"):
             parts.append("\n【规则】\n" + "\n".join(f"{i+1}. {r}" for i, r in enumerate(cfg["rules"])))
         if cfg.get("fun_facts"):
             parts.append("\n【梗】\n" + "\n".join(f"- {f}" for f in cfg["fun_facts"]))
         AGENT_SYSTEM = "\n".join(parts)
     except Exception as e:
-        AGENT_SYSTEM = f"你是{meta.get('short_name', meta.get('name', '动物园'))}省力Agent，帮助游客规划路线。"
+        short = data_loader.get_meta().get("short_name", "动物园")
+        AGENT_SYSTEM = f"你是{short}省力Agent，帮助游客规划路线。"
     return AGENT_SYSTEM
 
 
