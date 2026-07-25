@@ -1,7 +1,9 @@
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import type { Venue } from '../types'
+import type { Venue, Meta } from '../types'
+import { api } from '../api/client'
 
-const AREA_ICONS: Record<string, string> = {
+const DEFAULT_AREA_ICONS: Record<string, string> = {
   '大红山片区': '🏔️',
   '放牛山片区': '🌿',
   '小红山片区': '🦅',
@@ -23,6 +25,13 @@ interface Props {
 
 export function VenueIntroPage({ venues }: Props) {
   const navigate = useNavigate()
+  const [meta, setMeta] = useState<Meta | null>(null)
+
+  useEffect(() => {
+    api.meta().then(setMeta).catch(() => {})
+  }, [])
+
+  const AREA_ICONS = { ...DEFAULT_AREA_ICONS, ...(meta?.area_icons || {}) }
 
   const areas = Object.entries(
     venues.reduce<Record<string, Venue[]>>((acc, v) => {

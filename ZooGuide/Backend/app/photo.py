@@ -36,38 +36,48 @@ PHOTO_TARGET_STRUCTURE: dict = {
     "vibe_score": "int, 0-100, 整体出片指数",
     "vibe_label": "str, 一个词形容这张照片的氛围 (e.g. 可爱、震撼、治愈、爆笑)",
     "comment": "str, 60-100 字的中文评价，有梗、有细节，不要套话",
-    "badge": "str, 一个 4-6 字徽章 (e.g. '野菜F4认证'/'国宝认证'/'最佳拍档')",
+    "badge": "str, 一个{badge_example}",
     "tips": "list[str], 1-2 条拍摄建议（10-25字）",
 }
 
 
-PHOTO_BACKGROUND: str = (
-    "你是一位风趣的动物园'出片点评师'，擅长从一张照片里读出故事。"
-    "用户给你一张在南京红山森林动物园拍的照片，请：\n"
-    "1. 推测照片里的动物（中文名）\n"
-    "2. 推断最可能是在红山哪个场馆拍的（用 matched_venue_id）\n"
-    "3. 给这张照片写一段幽默、有梗的中文评价\n"
-    "\n"
-    "红山的小知识可以点缀进来（不要硬塞）：\n"
-    "- 大熊猫馆有3个户外运动场\n"
-    "- 大猩猩兄弟团：香椿头/马兰头/小蒜头/枸杞头（南京野菜命名）\n"
-    "- 细尾獴网红'站岗'画面\n"
-    "- 小熊猫是趋同进化经典案例（与大熊猫远亲但独立演化）\n"
-    "- 唐家河展区2025年开放，复刻四川唐家河国家级自然保护区\n"
-    "\n"
-    "语气：像朋友在朋友圈下面评论，自带梗，不端架子"
-)
+def _build_photo_background() -> str:
+    meta = data_loader.get_meta()
+    name = meta.get("name", "动物园")
+    short = meta.get("short_name", name[:2])
+    extras = meta.get("prompt_extras", {})
+    template = extras.get("photo_background", "")
+    if not template:
+        return f"你是一位风趣的动物园'出片点评师'。用户给你一张在{name}拍的照片，请识别动物并评价。"
+    fun_facts = meta.get("fun_facts", [])
+    if not fun_facts:
+        with (Path(__file__).resolve().parent.parent / "data" / "system.json").open(encoding="utf-8") as f:
+            sys_cfg = json.load(f)
+        fun_facts = sys_cfg.get("fun_facts", [])
+    fun_facts_block = "\n".join(f"- {f}" for f in fun_facts) if fun_facts else ""
+    return template.format(name=name, short_name=short, fun_facts_block=fun_facts_block)
 
 
-PHOTO_REQUIREMENTS: list[str] = [
-    "animal_guess 用中文常用动物名",
-    "matched_venue_id 必须是候选 ID 之一（红山的实际场馆 ID），否则留空字符串",
-    "caption 不超过 30 字",
-    "comment 60-100 字，要有梗，不要说'这张照片很美'这类空话",
-    "vibe_score 0-100，反映'出片'指数（构图、光线、动物状态综合）",
-    "badge 用 4-6 字网络梗词或形容词",
-    "tips 1-2 条即可",
-]
+PHOTO_BACKGROUND: str = _build_photo_background()
+
+
+def _build_photo_requirements() -> list[str]:
+    meta = data_loader.get_meta()
+    extras = meta.get("prompt_extras", {})
+    venue_rule = extras.get("photo_requirement_venue", "matched_venue_id 必须是候选 ID 之一，否则留空字符串")
+    badge_example = extras.get("photo_badge_examples", "4-6字徽章")
+    return [
+        "animal_guess 用中文常用动物名",
+        venue_rule,
+        "caption 不超过 30 字",
+        "comment 60-100 字，要有梗，不要说'这张照片很美'这类空话",
+        "vibe_score 0-100，反映'出片'指数（构图、光线、动物状态综合）",
+        f"badge 用 {badge_example}",
+        "tips 1-2 条即可",
+    ]
+
+
+PHOTO_REQUIREMENTS: list[str] = _build_photo_requirements()
 
 
 def _venues_brief() -> list[dict]:
@@ -353,19 +363,13 @@ def _fallback_evaluation(image_path: Path, reason: str = "", expected_venue: Opt
             idx = int(hashlib.md5(name.encode()).hexdigest(), 16) % len(must_sees)
             matched_venue = must_sees[idx]
 
-    venue_captions = {
-        "panda": ("圆滚滚的黑眼圈", "你拍到了国民顶流"),
-        "gorilla": ("野菜F4日常出镜", "大猩猩四兄弟同款pose"),
-        "koala": ("睡神本神", "今天又是睡饱的一天"),
-        "giraffe": ("脖子超长预警", "今天脖子又长了一厘米"),
-        "tiger": ("百兽之王的眼神", "虎视眈眈"),
-        "tangjiahe": ("2025新开的唐家河", "原生态保护区的日常"),
-        "meerkat": ("站岗小哨兵", "网红打卡名场面"),
-        "red_panda": ("滚滚本滚不是滚滚", "和小熊猫撞脸"),
-    }
+    meta = data_loader.get_meta()
+    venue_captions_raw = meta.get("photo_venue_captions", {})
+    venue_captions = {k: tuple(v) for k, v in venue_captions_raw.items()}
 
     animal = matched_venue.get("animals", [""])[0] if matched_venue.get("animals") else ""
-    caption_a, caption_b = venue_captions.get(matched_venue["id"], ("定格瞬间", "你在红山的某个角落"))
+    short = meta.get("short_name", meta.get("name", "动物园")[:2])
+    caption_a, caption_b = venue_captions.get(matched_venue["id"], ("定格瞬间", f"你在{short}的某个角落"))
 
     eval_id = uuid.uuid4().hex[:8]
     result = {

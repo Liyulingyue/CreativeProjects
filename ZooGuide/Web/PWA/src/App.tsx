@@ -19,6 +19,7 @@ import { SeasonGuidePage } from './pages/SeasonGuidePage'
 import { DownloadsPage } from './pages/DownloadsPage'
 import { getStoredUser, loadPrefs } from './lib/storage'
 import type { AuthUser } from './lib/storage'
+import { shortName } from './lib/meta-helpers'
 
 type Tab = 'home' | 'chat' | 'activity' | 'me'
 
@@ -93,7 +94,7 @@ export default function App() {
       {!isSubPage && (
         <header className="app-header">
           <h1>🦒 ZooGuide</h1>
-          <span className="badge">红山省力 Agent</span>
+          <span className="badge">{shortName(meta)}省力 Agent</span>
         </header>
       )}
 
@@ -125,6 +126,7 @@ export default function App() {
               onRouteUpdate={setRoute}
               onGoPlan={openPlan}
               onGoActivity={() => navigate('/activity')}
+              meta={meta}
             />
           } />
           <Route path="/activity" element={<ActivityPage />} />
@@ -147,6 +149,7 @@ export default function App() {
           onClose={closePlan}
           onRouteChange={setRoute}
           onOpenChat={() => navigate('/chat')}
+          meta={meta}
         />
       )}
 

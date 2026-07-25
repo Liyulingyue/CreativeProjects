@@ -39,7 +39,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="ZooGuide API",
-    description="南京红山森林动物园省力 Agent",
+    description=f"{data_loader.get_meta().get('name', '动物园')}省力 Agent",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -94,9 +94,8 @@ def quiz_options():
             {"value": "kids_favorite", "label": "孩子最爱"},
         ],
         "gates": [
-            {"value": "north", "label": "北门", "desc": "地铁1号线，最近大熊猫馆"},
-            {"value": "south", "label": "南门", "desc": "2025新馆区，非洲/唐家河/大猩猩"},
-            {"value": "east", "label": "东门", "desc": "高黎贡、冈瓦纳"},
+            {"value": k, "label": v.get("label", k), "desc": v.get("desc", "")}
+            for k, v in data_loader.get_meta().get("gates", {}).items()
         ],
         "stamina_descriptions": {
             "1": "体力一般，不想走太多",

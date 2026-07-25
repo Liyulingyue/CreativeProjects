@@ -127,22 +127,29 @@ CREATE TABLE IF NOT EXISTS gps_checkins (
 """
 
 
-DEFAULT_ACHIEVEMENTS = [
-    # Photo achievements
-    ("photo_first", "拍照新手", "拍下第一张动物照片", "📷", "photo", "photo_count", 1, 1),
-    ("photo_5", "拍照入门", "累计拍 5 张照片", "📸", "photo", "photo_count", 5, 2),
-    ("photo_20", "拍照达人", "累计拍 20 张照片", "🎞️", "photo", "photo_count", 20, 3),
-    ("photo_perfect", "完美出片", "单张照片评分 90+", "🌟", "photo", "best_vibe", 90, 4),
-    ("photo_streak", "连续打卡", "连续 3 天拍照", "🔥", "photo", "consecutive_days", 3, 5),
-    # Checkin achievements
-    ("checkin_first", "初次打卡", "第一次标记已游览", "🦒", "checkin", "checkin_count", 1, 6),
-    ("checkin_5", "小小游客", "游览 5 个不同馆", "🌱", "checkin", "venues_unique", 5, 7),
-    ("checkin_10", "资深游客", "游览 10 个不同馆", "🌳", "checkin", "venues_unique", 10, 8),
-    ("checkin_all", "红山老炮", "游览全部 23 个馆", "🏆", "checkin", "venues_unique", 23, 9),
-    # GPS achievements
-    ("gps_first", "找得到路", "第一次 GPS 定位", "📍", "gps", "checkin_count", 1, 10),
-    ("gps_5", "GPS 高手", "GPS 定位 5 次", "🛰️", "gps", "checkin_count", 5, 11),
-]
+DEFAULT_ACHIEVEMENTS = []
+
+def _load_achievements() -> list:
+    try:
+        from .data_loader import get_meta, get_all_venue_dicts
+        meta = get_meta()
+        ach_cfg = meta.get("achievements", [])
+        venue_count = len(get_all_venue_dicts())
+        result = []
+        for i, a in enumerate(ach_cfg):
+            threshold = a["threshold"]
+            if threshold == -1:
+                threshold = venue_count
+            result.append((
+                a["id"], a["name"], a["desc"], a["icon"],
+                a["category"], a["criteria_type"], threshold, i + 1
+            ))
+        return result
+    except Exception:
+        return []
+
+
+DEFAULT_ACHIEVEMENTS = _load_achievements()
 
 
 @contextmanager

@@ -3,7 +3,8 @@ import { api } from '../api/client'
 import { AuthModal } from '../components/AuthModal'
 import { PlanFlow } from '../components/PlanFlow'
 import { getStoredUser, clearAuth, loadPhotoLog, type AuthUser } from '../lib/storage'
-import type { Route } from '../types'
+import { shortName } from '../lib/meta-helpers'
+import type { Meta, Route } from '../types'
 
 interface Props {
   user: AuthUser | null
@@ -46,6 +47,7 @@ interface Achievement {
 }
 
 export function ProfilePage({ user, onUserChange, onRouteOpen }: Props) {
+  const [meta, setMeta] = useState<Meta | null>(null)
   const [summary, setSummary] = useState<Summary | null>(null)
   const [achievements, setAchievements] = useState<Achievement[]>([])
   const [earnedCount, setEarnedCount] = useState(0)
@@ -53,6 +55,8 @@ export function ProfilePage({ user, onUserChange, onRouteOpen }: Props) {
   const [authOpen, setAuthOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [planOpen, setPlanOpen] = useState(false)
+
+  useEffect(() => { api.meta().then(setMeta).catch(() => {}) }, [])
 
   async function load() {
     if (!user) return
@@ -347,7 +351,7 @@ export function ProfilePage({ user, onUserChange, onRouteOpen }: Props) {
                 <div style={{ fontSize: 32, marginBottom: 8 }}>🌱</div>
                 还没有数据
                 <div style={{ fontSize: 12, marginTop: 4 }}>
-                  去「规划」逛一次红山，留下第一条记录
+                  去「规划」逛一次{shortName(meta)}，留下第一条记录
                 </div>
               </div>
             )}

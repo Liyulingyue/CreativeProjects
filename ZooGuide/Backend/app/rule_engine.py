@@ -8,22 +8,15 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from .data_loader import get_all_venue_dicts
+from .data_loader import get_all_venue_dicts, get_meta
 from .models import UserPreference
 
 
-# Interest -> venue themes/tags/animals mapping
-INTEREST_MAP = {
-    "panda": {"themes": ["中国本土"], "animals": ["大熊猫"], "tags": ["明星动物"]},
-    "ape": {"themes": ["亚洲", "非洲"], "tags": ["灵长类"]},
-    "cat": {"animals": ["东北虎", "孟加拉虎", "豹", "豹猫", "猞猁", "薮猫", "狞猫", "美洲豹"], "tags": ["猫科", "大型猫科"]},
-    "bird": {"tags": ["鸟类"]},
-    "australian": {"themes": ["澳洲", "异域"], "animals": ["考拉", "袋鼠", "鸸鹋", "食火鸡"]},
-    "african": {"themes": ["非洲"], "animals": ["犀牛", "长颈鹿", "细尾獴"]},
-    "local": {"themes": ["中国本土"]},
-    "exotic": {"themes": ["异域", "非洲", "澳洲"]},
-    "kids_favorite": {"tags": ["亲子", "明星动物", "网红", "2025新馆"]},
-}
+def _get_interest_map() -> dict:
+    return get_meta().get("interest_map", {})
+
+
+INTEREST_MAP = _get_interest_map()
 
 
 def _venue_matches_interest(venue: dict, interest: str) -> bool:

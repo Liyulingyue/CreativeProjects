@@ -355,7 +355,11 @@ def _fallback_summary(venues: list[dict], prefs: PlanRequest, style: str = "bala
         return "时间太紧张啦，建议把可用时间调到 1.5 小时以上，再来一次。"
     names = " → ".join(v["name"] for v in venues)
     prefix = {"must_see": "【必看精选】", "hidden_gem": "【小众探索】", "balanced": ""}.get(style, "")
-    return f"{prefix}为你选了 {len(venues)} 个场馆：{names}。红山的故事，由这些场馆串起来。"
+    meta = data_loader.get_meta()
+    short = meta.get("short_name", meta.get("name", "动物园")[:2])
+    defaults = meta.get("planner_defaults", {})
+    template = defaults.get("summary_template", "{prefix}为你选了 {count} 个场馆：{names}。{short_name}的故事，由这些场馆串起来。")
+    return template.format(prefix=prefix, count=len(venues), names=names, short_name=short)
 
 
 def _fallback_narration(v: dict, prefs: PlanRequest) -> str:
@@ -369,7 +373,11 @@ def _fallback_narration(v: dict, prefs: PlanRequest) -> str:
         "family_teen": f"{name}的{animal_str}值得多停留一会儿，可以聊聊它的野外生存与保护现状。",
         "seniors": f"{name}里的{animal_str}是我们这代人的老朋友，慢慢看，慢慢聊。",
     }
-    return base_intros.get(prefs.party_type, f"{name}是红山不可错过的场馆之一，{animal_str}在这里生活得很自在。")
+    meta = data_loader.get_meta()
+    short = meta.get("short_name", meta.get("name", "动物园")[:2])
+    defaults = meta.get("planner_defaults", {})
+    fallback = defaults.get("narration_fallback", "{name}是不可错过的场馆之一，{animals}在这里生活得很自在。")
+    return base_intros.get(prefs.party_type, fallback.format(name=name, animals=animal_str, short_name=short))
 
 
 def _fallback_tips(v: dict, prefs: PlanRequest) -> list[str]:
@@ -394,11 +402,19 @@ def _fallback_general_tips(prefs: PlanRequest) -> list[str]:
     if prefs.sun_tolerance <= 2:
         tips.append("防晒优先：尽量选有遮阴的场馆停留")
     if not prefs.willing_to_hike:
-        tips.append("少爬坡：南门新区地形起伏大，建议平地为主")
+        meta = data_loader.get_meta()
+        short = meta.get("short_name", meta.get("name", "动物园")[:2])
+        defaults = meta.get("planner_defaults", {})
+        steep = defaults.get("steep_tip", "少爬坡：部分片区地形起伏大，建议平地为主")
+        tips.append(steep)
     if prefs.stamina <= 2:
         tips.append("体力保留：每两个场馆间坐下来休息一下")
     if not tips:
-        tips.append("红山是国内少见的山地型森林动物园，慢慢逛最有味道")
+        meta = data_loader.get_meta()
+        short = meta.get("short_name", meta.get("name", "动物园")[:2])
+        defaults = meta.get("planner_defaults", {})
+        terrain = defaults.get("terrain_tip", "慢慢逛最有味道")
+        tips.append(terrain)
     return tips[:3]
 
 
@@ -407,7 +423,11 @@ def _fallback_summary_legacy(venues: list[dict], prefs: PlanRequest) -> str:
     if not venues:
         return "时间太紧张啦，建议把可用时间调到 1.5 小时以上，再来一次。"
     names = " → ".join(v["name"] for v in venues)
-    return f"为你选了 {len(venues)} 个场馆：{names}。红山的故事，由这些场馆串起来。"
+    meta = data_loader.get_meta()
+    short = meta.get("short_name", meta.get("name", "动物园")[:2])
+    defaults = meta.get("planner_defaults", {})
+    template = defaults.get("summary_template", "为你选了 {count} 个场馆：{names}。{short_name}的故事，由这些场馆串起来。")
+    return template.format(prefix="", count=len(venues), names=names, short_name=short)
 
 
 def plan_route(prefs: PlanRequest, force_fast: bool = False) -> tuple[Route, bool]:

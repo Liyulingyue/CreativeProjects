@@ -5,6 +5,9 @@ import {
   clearChatHistory as clearStorageChat,
   type ChatMessage,
 } from '../lib/storage'
+import { shortName } from '../lib/meta-helpers'
+import { api } from '../api/client'
+import type { Meta } from '../types'
 
 interface Props {
   onClose: () => void
@@ -20,10 +23,12 @@ interface ChatMsg {
 }
 
 export function ChatDialog({ onClose, onNewRoute, currentRoute, prefs }: Props) {
+  const [meta, setMeta] = useState<Meta | null>(null)
+  useEffect(() => { api.meta().then(setMeta).catch(() => {}) }, [])
   const [messages, setMessages] = useState<ChatMsg[]>(() => {
     const stored = loadChatHistory()
     if (stored.length === 0) {
-      return [{ role: 'agent', text: '嗨，我是你的红山导游。走累了？晒了？想换路线？随时告诉我。' }]
+      return [{ role: 'agent', text: `嗨，我是你的${shortName(meta)}导游。走累了？晒了？想换路线？随时告诉我。` }]
     }
     return stored.map((m) => ({
       role: m.role === 'assistant' ? 'agent' : ('user' as const),
@@ -109,7 +114,7 @@ export function ChatDialog({ onClose, onNewRoute, currentRoute, prefs }: Props) 
         onClick={(e) => e.stopPropagation()}
         style={{ maxWidth: 460, height: '80vh', display: 'flex', flexDirection: 'column' }}
       >
-        <h3 style={{ margin: '0 0 8px' }}>💬 红山导游（在线）</h3>
+        <h3 style={{ margin: '0 0 8px' }}>💬 {shortName(meta)}导游（在线）</h3>
 
         <div
           ref={scrollerRef}
