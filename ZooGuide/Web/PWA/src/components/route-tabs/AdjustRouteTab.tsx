@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { api } from '../../api/client'
 import type { Route } from '../../types'
-import { saveVisited } from '../../lib/storage'
+import { removeVisitedSourceAll } from '../../lib/storage'
 
 interface Props {
   currentRoute: Route | null
@@ -157,7 +157,7 @@ export function AdjustRouteTab({
           className="btn btn-ghost btn-full"
           style={{ marginTop: 8 }}
           onClick={() => {
-            saveVisited(new Set())
+            removeVisitedSourceAll('route')
             onResetProgress?.()
           }}
         >

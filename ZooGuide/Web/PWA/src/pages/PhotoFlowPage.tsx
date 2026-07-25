@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import type { Venue } from '../types'
 import { api } from '../api/client'
 import { PhotoFlow } from '../components/flows/PhotoFlow'
-import { loadVisited, saveVisited } from '../lib/storage'
+import { addVisitedSource } from '../lib/storage'
 
 export function PhotoFlowPage() {
   const { venueId } = useParams<{ venueId: string }>()
@@ -46,9 +46,7 @@ export function PhotoFlowPage() {
       venue={venue}
       onClose={() => navigate('/activity')}
       onCheckinSuccess={(id) => {
-        const next = new Set(loadVisited())
-        next.add(id)
-        saveVisited(next)
+        addVisitedSource(id, 'photo')
       }}
     />
   )

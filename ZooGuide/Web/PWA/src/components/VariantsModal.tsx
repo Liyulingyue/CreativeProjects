@@ -22,8 +22,8 @@ export function VariantsModal({ prefs, onClose, onPick }: Props) {
   }, [])
 
   return (
-    <div className="modal-mask" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 460 }}>
+    <div className="modal-mask" onClick={onClose} role="presentation">
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 460 }} role="dialog" aria-modal="true">
         <h3>🧭 三种逛法，你选哪条？</h3>
         {loading && (
           <div className="loading">

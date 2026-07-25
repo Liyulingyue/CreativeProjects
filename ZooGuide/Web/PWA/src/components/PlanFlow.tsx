@@ -154,6 +154,29 @@ export function PlanFlow({
           />
         )}
 
+        {stage === 'route' && route && !prefs && (
+          <div className="card" style={{ textAlign: 'center', padding: 32 }}>
+            <div style={{ fontSize: 40, marginBottom: 12 }}>📋</div>
+            <h3 style={{ margin: '0 0 8px', color: 'var(--primary-strong)' }}>路线偏好已丢失</h3>
+            <p style={{ fontSize: 13, color: 'var(--fg-muted)', margin: '0 0 18px' }}>
+              保存的路线仍在，但偏好数据已丢失。重新填写偏好即可恢复路线。
+            </p>
+            <button
+              className="btn btn-primary btn-full"
+              onClick={() => setStage('quiz')}
+            >
+              重新填写偏好 🔄
+            </button>
+            <button
+              className="btn btn-ghost btn-full"
+              style={{ marginTop: 8 }}
+              onClick={reset}
+            >
+              重新规划
+            </button>
+          </div>
+        )}
+
         {stage === 'error' && (
           <>
             <div className="error-banner">
@@ -194,8 +217,8 @@ function SettingsModal({
   onClose: () => void
 }) {
   return (
-    <div className="modal-mask" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-mask" onClick={onClose} role="presentation">
+      <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
         <h3>⚙️ 规划设置</h3>
 
         <label

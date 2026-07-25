@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { api } from '../api/client'
-import { setAuth, loadVisited, saveVisited } from '../lib/storage'
+import { setAuth, addVisitedSource } from '../lib/storage'
 
 interface Props {
   onClose: () => void
@@ -31,9 +31,9 @@ export function AuthModal({ onClose, onAuthed }: Props) {
       try {
         const serverData = await api.myVisitedVenueIds()
         if (serverData.venue_ids?.length) {
-          const local = loadVisited()
-          const merged = new Set([...local, ...serverData.venue_ids])
-          saveVisited(merged)
+          for (const vid of serverData.venue_ids) {
+            addVisitedSource(vid, 'route')
+          }
         }
       } catch {}
       onClose()
@@ -45,9 +45,12 @@ export function AuthModal({ onClose, onAuthed }: Props) {
   }
 
   return (
-    <div className="modal-mask" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 400 }}>
-        <h3>{mode === 'login' ? '🔑 登录' : '✨ 注册'}</h3>
+    <div className="modal-mask" onClick={onClose} role="presentation">
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 400 }} role="dialog" aria-modal="true" aria-label={mode === 'login' ? '登录' : '注册'}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h3>{mode === 'login' ? '🔑 登录' : '✨ 注册'}</h3>
+          <button onClick={onClose} aria-label="关闭" style={{ background: 'none', border: 'none', fontSize: 20, color: 'var(--fg-muted)', cursor: 'pointer', padding: '0 4px' }}>✕</button>
+        </div>
         <p style={{ fontSize: 12, color: 'var(--fg-muted)', margin: '0 0 14px' }}>
           {mode === 'login'
             ? '登录后可以在多个设备看到你的打卡、照片、路线历史'

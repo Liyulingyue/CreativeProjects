@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api, authHeader } from '../../api/client'
 import { useVisitedVenues } from '../../hooks/useVisitedVenues'
-import { saveVisited } from '../../lib/storage'
+import { addVisitedSource } from '../../lib/storage'
 
 interface Props {
   onClose: () => void
@@ -59,11 +59,8 @@ export function GpsFlow({ onClose, onOpenPlan }: Props) {
   }
 
   function quickCheckin(venueId: string) {
-    const next = new Set(visited)
-    if (next.has(venueId)) next.delete(venueId)
-    else next.add(venueId)
-    saveVisited(next)
-    api.checkin(venueId).catch(() => {})
+    addVisitedSource(venueId, 'gps')
+    api.checkin(venueId, 'gps').catch(() => {})
   }
 
   // Auto-locate on mount
