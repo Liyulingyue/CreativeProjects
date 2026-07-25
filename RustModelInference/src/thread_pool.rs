@@ -36,8 +36,8 @@ impl ComputePool {
         let inner = Arc::new(Inner {
             call_fn: AtomicUsize::new(0),
             call_data: AtomicUsize::new(0),
-            n_complete: AtomicI32::new(0),
-            epoch: AtomicU32::new(1),
+            n_complete: AtomicI32::new(n_threads as i32),
+            epoch: AtomicU32::new(0),
             shutdown: AtomicBool::new(false),
         });
 
@@ -75,18 +75,31 @@ impl ComputePool {
         }
 
         let call_fn = call_closure::<F> as usize;
-        let target = self.inner.n_complete.load(Ordering::Acquire) + self.n_threads as i32;
 
-        self.inner.call_fn.store(call_fn, Ordering::Release);
-        self.inner.call_data.store(data_ptr, Ordering::Release);
+        // Wait for all workers to be idle from previous compute
+        while self.inner.n_complete.load(Ordering::Acquire) < self.n_threads as i32 {
+            std::hint::spin_loop();
+        }
+        std::sync::atomic::fence(Ordering::SeqCst);
+
+        // Reset completion counter before publishing new work
+        self.inner.n_complete.store(0, Ordering::Relaxed);
+        self.inner.call_fn.store(call_fn, Ordering::Relaxed);
+        self.inner.call_data.store(data_ptr, Ordering::Relaxed);
+        std::sync::atomic::fence(Ordering::SeqCst);
+
+        // Publish: epoch increment signals workers to start
         self.inner.epoch.fetch_add(1, Ordering::SeqCst);
 
+        // Main thread does its share
         unsafe { call_closure::<F>(0, self.n_threads, data_ptr); }
         self.inner.n_complete.fetch_add(1, Ordering::SeqCst);
 
-        while self.inner.n_complete.load(Ordering::Acquire) < target {
+        // Wait for all threads to finish
+        while self.inner.n_complete.load(Ordering::Acquire) < self.n_threads as i32 {
             std::hint::spin_loop();
         }
+        std::sync::atomic::fence(Ordering::SeqCst);
 
         unsafe { drop(Box::from_raw(data_ptr as *mut F)); }
     }
@@ -98,7 +111,13 @@ impl ComputePool {
 
 impl Drop for ComputePool {
     fn drop(&mut self) {
-        self.inner.shutdown.store(true, Ordering::Release);
+        // Wait for workers to be idle before shutdown
+        while self.inner.n_complete.load(Ordering::Acquire) < self.n_threads as i32 {
+            std::hint::spin_loop();
+        }
+        self.inner.n_complete.store(0, Ordering::Relaxed);
+        self.inner.shutdown.store(true, Ordering::Relaxed);
+        std::sync::atomic::fence(Ordering::SeqCst);
         self.inner.epoch.fetch_add(1, Ordering::SeqCst);
         for t in self.threads.drain(..) {
             let _ = t.join();
@@ -109,6 +128,7 @@ impl Drop for ComputePool {
 fn worker_loop(tid: usize, n_threads: usize, inner: &Inner) {
     let mut my_epoch: u32 = inner.epoch.load(Ordering::Acquire);
     loop {
+        // Wait for new epoch
         while inner.epoch.load(Ordering::Acquire) == my_epoch {
             if inner.shutdown.load(Ordering::Acquire) { return; }
             std::hint::spin_loop();
@@ -116,6 +136,7 @@ fn worker_loop(tid: usize, n_threads: usize, inner: &Inner) {
         my_epoch = inner.epoch.load(Ordering::Acquire);
         if inner.shutdown.load(Ordering::Acquire) { return; }
 
+        // Read function pointers (published before epoch increment)
         let call_fn = inner.call_fn.load(Ordering::Acquire);
         let call_data = inner.call_data.load(Ordering::Acquire);
         if call_fn != 0 {
@@ -123,6 +144,7 @@ fn worker_loop(tid: usize, n_threads: usize, inner: &Inner) {
             unsafe { f(tid, n_threads, call_data); }
         }
 
+        // Signal completion
         inner.n_complete.fetch_add(1, Ordering::SeqCst);
     }
 }
