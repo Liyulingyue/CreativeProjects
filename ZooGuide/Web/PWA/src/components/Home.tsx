@@ -1,4 +1,5 @@
 import type { Meta } from '../types'
+import { shortName } from '../lib/meta-helpers'
 
 interface Props {
   onStart: () => void
@@ -6,7 +7,7 @@ interface Props {
 }
 
 export function Home({ onStart, meta }: Props) {
-  const name = meta?.name || '红山动物园'
+  const name = shortName(meta)
   const slogan = meta?.highlights?.[0] || ''
   return (
     <div>

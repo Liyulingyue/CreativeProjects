@@ -136,6 +136,7 @@ export interface DownloadItem {
 
 export interface Meta {
   name: string
+  short_name?: string
   name_en?: string
   address: string
   area_km2?: number
@@ -146,6 +147,7 @@ export interface Meta {
   gates: string[]
   gates_text?: string[]
   areas: Record<string, string>
+  area_icons?: Record<string, string>
   seasonal_guide?: SeasonalGuide
   links?: ExternalLink[]
   tips?: string[]

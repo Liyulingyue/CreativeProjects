@@ -2,33 +2,32 @@
 
 from __future__ import annotations
 
+from .data_loader import get_meta
 
-SYSTEM_BACKGROUND: str = (
-    "你是「红山省力Agent」，一位对南京红山森林动物园了如指掌的私人导游。"
-    "你的目标：根据游客的偏好与时间，为他/她量身定制一份省力、有故事、不绕路的游园路线。\n"
-    "\n"
-    "【红山的小秘密】\n"
-    "- 中国第一个取消动物表演的动物园（2011），以动物福利为经营底线\n"
-    "- 中国唯一自收自支的公益性动物园\n"
-    "- 国内唯一能同时看到大熊猫、考拉、大猩猩的城市动物园\n"
-    "- 山地型动物园，场馆分散，多上下坡；红山=大红山+小红山+放牛山+南门新区\n"
-    "- 大猩猩兄弟团『野菜F4』：香椿头、马兰头、小蒜头、枸杞头（用南京春季野菜命名）\n"
-    "- 网红：细尾獴『站岗』、小熊猫、环尾狐猴、考拉茉莉（已离世请勿提及）\n"
-    "- 唐家河展区 2025年10月开放，复刻四川唐家河国家级自然保护区\n"
-    "- 冈瓦纳展区展示生命进化（科普向）\n"
-    "- 北门最近大熊猫馆，南门是2025新区主入口（非洲/唐家河/大猩猩），东门通冈瓦纳\n"
-    "\n"
-    "【你的讲解原则】\n"
-    "- 同一个动物，针对不同游客讲不同故事：\n"
-    "  · 年轻人/朋友：行为特征、生态地位、网红梗\n"
-    "  · 带娃家长：拟人化故事、生活习性、童趣比喻\n"
-    "  · 科普爱好者：分类学、保护级别、研究价值\n"
-    "  · 老人：本土回忆、动物与人的关系\n"
-    "- 不要过度煽情，不要堆砌空话，每个讲解词 50-100 字\n"
-    "- 保持自然亲切的语气，不要使用 emoji\n"
-    "- 路线必须严格不超用户给的时间预算\n"
-    "- 必看场馆不能漏（除非时间真的不够）\n"
-)
+
+def _build_system_background() -> str:
+    meta = get_meta()
+    name = meta.get("name", "动物园")
+    short = meta.get("short_name", name[:2])
+    extras = meta.get("prompt_extras", {})
+    template = extras.get("planner_background", "")
+
+    if not template:
+        return f"你是「{short}省力Agent」，帮助游客规划路线。"
+
+    highlights = meta.get("highlights", [])
+    highlights_block = "\n".join(f"- {h}" for h in highlights) if highlights else ""
+
+    areas = meta.get("areas", {})
+    if areas:
+        highlights_block += "\n"
+        for k, v in areas.items():
+            highlights_block += f"\n- {k}：{v}"
+
+    return template.format(name=name, short_name=short, highlights_block=highlights_block)
+
+
+SYSTEM_BACKGROUND: str = _build_system_background()
 
 
 PLAN_REQUIREMENTS: list[str] = [
@@ -41,7 +40,7 @@ PLAN_REQUIREMENTS: list[str] = [
     "如果 available_hours < 1.5，至少保留 1 个 must_see=true 的场馆",
     "如果 with_kids=true，narration 要有童趣",
     "如果 sun_tolerance <=2，优先选择 shaded=true 的场馆",
-    "如果 willing_to_hike=false，避免『坡度大』场馆，路线减少大红山片区",
+    "如果 willing_to_hike=false，避免坡度大的场馆，路线减少高差大的片区",
     "warnings 复用通用警告 + 针对该用户的额外提示",
     "summary 用一段自然语言总结这条路线的精髓，60-100 字",
     "tips 给 2-3 条针对该用户的具体建议（如『带娃节奏建议每1.5小时休息一次』）",

@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import type { Meta, Venue } from '../types'
+import { shortName } from '../lib/meta-helpers'
 
 const VENUE_EMOJIS: Record<string, string> = {
   panda: '🐼', koala: '🐨', gorilla: '🦍', tiger: '🐯',
@@ -89,7 +90,7 @@ export function SeasonGuidePage({ meta, venues }: Props) {
 
       <div className="flow-body">
         <p style={{ fontSize: 13, color: 'var(--fg-muted)', lineHeight: 1.6, margin: '0 0 14px' }}>
-          不同季节来红山，体验完全不同。选对时机，避开人潮，看见动物最活跃的一面。
+          不同季节来{shortName(meta)}，体验完全不同。选对时机，避开人潮，看见动物最活跃的一面。
         </p>
 
         {!sg ? (

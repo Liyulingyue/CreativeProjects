@@ -21,37 +21,35 @@ from .models import ReplanRequest, Route
 
 
 # Regex快路径：常见意图直接回复，省LLM调用
-SIMPLE_RULES = [
-    (r"^(你好|hi|hello|嗨|哈喽)", None, "嗨！我是你的红山导游。今天想怎么逛？"),
-    (r"(累了|走不动|好累|脚酸)", "rest_now", "理解，咱找个有座椅的地方歇会儿。"),
-    (r"(晒|太热|避阴|阴凉|出汗)", "shade_only", "太阳确实晒，我帮你把后续路线都换成有遮阴的馆。"),
-    (r"(少走|短点|轻松|慢点)", "shorter_route", "好嘞，那就少逛几个馆，把节奏放慢。"),
-    (r"(多看|多逛|多去|加几个)", "longer_route", "没问题，给你多塞几个必看馆。"),
-    (r"(上厕所|卫生间|wc|厕所)", None, "最近的厕所在场馆出口附近，要不要我标记一下？"),
-    (r"(饿|吃东西|吃饭|餐厅)", "rest_now", "红山有几家小餐厅（北门/中心广场附近），要不要我调整路线顺路去？"),
-    (r"(谢谢|感谢|多谢|thanks)", None, "不客气！玩得开心最重要。"),
-]
+def _build_simple_rules() -> list:
+    meta = data_loader.get_meta()
+    name = meta.get("name", "动物园")
+    short = meta.get("short_name", name[:2])
+    chat_defaults = meta.get("chat_defaults", {})
+    greeting = chat_defaults.get("greeting", "嗨！我是你的{short_name}导游。今天想怎么逛？").format(short_name=short)
+    restaurant_hint = chat_defaults.get("restaurant_hint", "有几家小餐厅，要不要我调整路线顺路去？").format(short_name=short)
+    return [
+        (r"^(你好|hi|hello|嗨|哈喽)", None, greeting),
+        (r"(累了|走不动|好累|脚酸)", "rest_now", "理解，咱找个有座椅的地方歇会儿。"),
+        (r"(晒|太热|避阴|阴凉|出汗)", "shade_only", "太阳确实晒，我帮你把后续路线都换成有遮阴的馆。"),
+        (r"(少走|短点|轻松|慢点)", "shorter_route", "好嘞，那就少逛几个馆，把节奏放慢。"),
+        (r"(多看|多逛|多去|加几个)", "longer_route", "没问题，给你多塞几个必看馆。"),
+        (r"(上厕所|卫生间|wc|厕所)", None, "最近的厕所在场馆出口附近，要不要我标记一下？"),
+        (r"(饿|吃东西|吃饭|餐厅)", "rest_now", restaurant_hint),
+        (r"(谢谢|感谢|多谢|thanks)", None, "不客气！玩得开心最重要。"),
+    ]
 
-# 实体识别：场馆名/动物名 → venue_id
-ENTITY_MAP = {
-    "大熊猫馆": "panda", "熊猫馆": "panda", "熊猫": "panda",
-    "考拉馆": "koala", "考拉": "koala",
-    "大猩猩馆": "gorilla", "大猩猩": "gorilla", "野菜F4": "gorilla", "野菜": "gorilla",
-    "虎馆": "tiger", "老虎": "tiger", "东北虎": "tiger", "孟加拉虎": "tiger",
-    "长颈鹿馆": "giraffe", "长颈鹿": "giraffe",
-    "小熊猫馆": "red_panda", "小熊猫": "red_panda",
-    "袋鼠角": "kangaroo", "袋鼠": "kangaroo", "澳洲": "kangaroo",
-    "狐猴岛": "lemur", "马岛客厅": "lemur", "狐猴": "lemur", "环尾狐猴": "lemur",
-    "犀牛领地": "rhino", "犀牛": "rhino",
-    "犀鸟馆": "hornbill", "犀鸟": "hornbill",
-    "鹤园": "crane", "丹顶鹤": "crane",
-    "狼馆": "wolf", "狼": "wolf",
-    "熊馆": "bear", "黑熊": "bear", "马来熊": "bear", "熊": "bear",
-    "猴山": "monkey_mountain", "猕猴": "monkey_mountain",
-    "细尾獴馆": "meerkat", "细尾獴": "meerkat", "獴": "meerkat",
-    "唐家河展区": "tangjiahe", "唐家河": "tangjiahe", "川金丝猴": "tangjiahe",
-    "冈瓦纳展区": "gonwana", "冈瓦纳": "gonwana",
-}
+
+SIMPLE_RULES = _build_simple_rules()
+
+
+# 实体识别：场馆名/动物名 → venue_id (from config)
+def _build_entity_map() -> dict:
+    meta = data_loader.get_meta()
+    return meta.get("entity_map", {})
+
+
+ENTITY_MAP = _build_entity_map()
 
 
 TOOLS = [
@@ -59,13 +57,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "search_venues",
-            "description": "搜索场馆信息，按名称、动物、区域等关键词查找。返回场馆ID、名称、区域、动物等基本信息。",
+            "description": "搜索场馆信息，按名称、动物、区域等关键词查找",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "搜索关键词，如'熊猫'、'猫科'、'大红山'",
+                        "description": "搜索关键词",
                     }
                 },
                 "required": ["query"],
@@ -144,10 +142,10 @@ def _load_system_prompt() -> str:
         if cfg.get("rules"):
             parts.append("\n【规则】\n" + "\n".join(f"{i+1}. {r}" for i, r in enumerate(cfg["rules"])))
         if cfg.get("fun_facts"):
-            parts.append("\n【红山梗】\n" + "\n".join(f"- {f}" for f in cfg["fun_facts"]))
+            parts.append("\n【梗】\n" + "\n".join(f"- {f}" for f in cfg["fun_facts"]))
         AGENT_SYSTEM = "\n".join(parts)
     except Exception as e:
-        AGENT_SYSTEM = "你是红山省力Agent，帮助游客规划路线。"
+        AGENT_SYSTEM = f"你是{meta.get('short_name', meta.get('name', '动物园'))}省力Agent，帮助游客规划路线。"
     return AGENT_SYSTEM
 
 

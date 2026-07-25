@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import type { Route, UserPreference } from '../types'
+import type { Meta, Route, UserPreference } from '../types'
 import {
   loadChatHistory,
   saveChatHistory,
   clearChatHistory as clearStorageChat,
   type ChatMessage,
 } from '../lib/storage'
+import { shortName } from '../lib/meta-helpers'
 
 interface Props {
   currentRoute: Route | null
@@ -13,6 +14,7 @@ interface Props {
   onRouteUpdate: (r: Route) => void
   onGoPlan: () => void
   onGoActivity: () => void
+  meta?: Meta | null
 }
 
 interface DisplayMsg {
@@ -32,13 +34,14 @@ const QUICK = [
   '看网红',
 ]
 
-const WELCOME: DisplayMsg = {
-  id: 0,
-  role: 'agent',
-  text: '嗨，我是你的红山导游。想逛哪些馆？走累了？想看什么动物？随时告诉我。',
-}
+const WELCOME_TEXT = (sn: string) => `嗨，我是你的${sn}导游。想逛哪些馆？走累了？想看什么动物？随时告诉我。`
 
-export function ChatPage({ currentRoute, prefs, onRouteUpdate, onGoPlan, onGoActivity }: Props) {
+export function ChatPage({ currentRoute, prefs, onRouteUpdate, onGoPlan, onGoActivity, meta }: Props) {
+  const WELCOME: DisplayMsg = {
+    id: 0,
+    role: 'agent',
+    text: WELCOME_TEXT(shortName(meta)),
+  }
   const [messages, setMessages] = useState<DisplayMsg[]>(() => {
     const stored = loadChatHistory()
     if (stored.length === 0) return [WELCOME]

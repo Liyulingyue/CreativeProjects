@@ -11,15 +11,21 @@
     "gates": {
       "north": {
         "lat": 32.1035,
-        "lon": 118.81
+        "lon": 118.81,
+        "label": "北门",
+        "desc": "地铁1号线，最近大熊猫馆"
       },
       "south": {
         "lat": 32.0945,
-        "lon": 118.8125
+        "lon": 118.8125,
+        "label": "南门",
+        "desc": "2025新馆区，非洲/唐家河/大猩猩"
       },
       "east": {
         "lat": 32.0995,
-        "lon": 118.8165
+        "lon": 118.8165,
+        "label": "东门",
+        "desc": "高黎贡、冈瓦纳"
       }
     },
     "open_time": "08:30",
@@ -156,7 +162,306 @@
         "file": "折页英文版.pdf",
         "tag": "PDF"
       }
-    ]
+    ],
+    "walking": {
+      "path_multiplier": 2.5,
+      "walking_speed_ms": 0.9,
+      "terrain_note": "山地型园区，路径非直线"
+    },
+    "achievements": [
+      {
+        "id": "photo_first",
+        "name": "拍照新手",
+        "desc": "拍下第一张动物照片",
+        "icon": "📷",
+        "category": "photo",
+        "criteria_type": "photo_count",
+        "threshold": 1
+      },
+      {
+        "id": "photo_5",
+        "name": "拍照入门",
+        "desc": "累计拍 5 张照片",
+        "icon": "📸",
+        "category": "photo",
+        "criteria_type": "photo_count",
+        "threshold": 5
+      },
+      {
+        "id": "photo_20",
+        "name": "拍照达人",
+        "desc": "累计拍 20 张照片",
+        "icon": "🎞️",
+        "category": "photo",
+        "criteria_type": "photo_count",
+        "threshold": 20
+      },
+      {
+        "id": "photo_perfect",
+        "name": "完美出片",
+        "desc": "单张照片评分 90+",
+        "icon": "🌟",
+        "category": "photo",
+        "criteria_type": "best_vibe",
+        "threshold": 90
+      },
+      {
+        "id": "photo_streak",
+        "name": "连续打卡",
+        "desc": "连续 3 天拍照",
+        "icon": "🔥",
+        "category": "photo",
+        "criteria_type": "consecutive_days",
+        "threshold": 3
+      },
+      {
+        "id": "checkin_first",
+        "name": "初次打卡",
+        "desc": "第一次标记已游览",
+        "icon": "🦒",
+        "category": "checkin",
+        "criteria_type": "checkin_count",
+        "threshold": 1
+      },
+      {
+        "id": "checkin_5",
+        "name": "小小游客",
+        "desc": "游览 5 个不同馆",
+        "icon": "🌱",
+        "category": "checkin",
+        "criteria_type": "venues_unique",
+        "threshold": 5
+      },
+      {
+        "id": "checkin_10",
+        "name": "资深游客",
+        "desc": "游览 10 个不同馆",
+        "icon": "🌳",
+        "category": "checkin",
+        "criteria_type": "venues_unique",
+        "threshold": 10
+      },
+      {
+        "id": "checkin_all",
+        "name": "全园通关",
+        "desc": "游览全部场馆",
+        "icon": "🏆",
+        "category": "checkin",
+        "criteria_type": "venues_unique",
+        "threshold": -1
+      },
+      {
+        "id": "gps_first",
+        "name": "找得到路",
+        "desc": "第一次 GPS 定位",
+        "icon": "📍",
+        "category": "gps",
+        "criteria_type": "checkin_count",
+        "threshold": 1
+      },
+      {
+        "id": "gps_5",
+        "name": "GPS 高手",
+        "desc": "GPS 定位 5 次",
+        "icon": "🛰️",
+        "category": "gps",
+        "criteria_type": "checkin_count",
+        "threshold": 5
+      }
+    ],
+    "interest_map": {
+      "panda": {
+        "themes": [
+          "中国本土"
+        ],
+        "animals": [
+          "大熊猫"
+        ],
+        "tags": [
+          "明星动物"
+        ]
+      },
+      "ape": {
+        "themes": [
+          "亚洲",
+          "非洲"
+        ],
+        "tags": [
+          "灵长类"
+        ]
+      },
+      "cat": {
+        "animals": [
+          "东北虎",
+          "孟加拉虎",
+          "豹",
+          "豹猫",
+          "猞猁",
+          "薮猫",
+          "狞猫",
+          "美洲豹"
+        ],
+        "tags": [
+          "猫科",
+          "大型猫科"
+        ]
+      },
+      "bird": {
+        "tags": [
+          "鸟类"
+        ]
+      },
+      "australian": {
+        "themes": [
+          "澳洲",
+          "异域"
+        ],
+        "animals": [
+          "考拉",
+          "袋鼠",
+          "鸸鹋",
+          "食火鸡"
+        ]
+      },
+      "african": {
+        "themes": [
+          "非洲"
+        ],
+        "animals": [
+          "犀牛",
+          "长颈鹿",
+          "细尾獴"
+        ]
+      },
+      "local": {
+        "themes": [
+          "中国本土"
+        ]
+      },
+      "exotic": {
+        "themes": [
+          "异域",
+          "非洲",
+          "澳洲"
+        ]
+      },
+      "kids_favorite": {
+        "tags": [
+          "亲子",
+          "明星动物",
+          "网红",
+          "2025新馆"
+        ]
+      }
+    },
+    "entity_map": {
+      "大熊猫馆": "panda",
+      "熊猫馆": "panda",
+      "熊猫": "panda",
+      "考拉馆": "koala",
+      "考拉": "koala",
+      "大猩猩馆": "gorilla",
+      "大猩猩": "gorilla",
+      "野菜F4": "gorilla",
+      "野菜": "gorilla",
+      "虎馆": "tiger",
+      "老虎": "tiger",
+      "东北虎": "tiger",
+      "孟加拉虎": "tiger",
+      "长颈鹿馆": "giraffe",
+      "长颈鹿": "giraffe",
+      "小熊猫馆": "red_panda",
+      "小熊猫": "red_panda",
+      "袋鼠角": "kangaroo",
+      "袋鼠": "kangaroo",
+      "澳洲": "kangaroo",
+      "狐猴岛": "lemur",
+      "马岛客厅": "lemur",
+      "狐猴": "lemur",
+      "环尾狐猴": "lemur",
+      "犀牛领地": "rhino",
+      "犀牛": "rhino",
+      "犀鸟馆": "hornbill",
+      "犀鸟": "hornbill",
+      "鹤园": "crane",
+      "丹顶鹤": "crane",
+      "狼馆": "wolf",
+      "狼": "wolf",
+      "熊馆": "bear",
+      "黑熊": "bear",
+      "马来熊": "bear",
+      "熊": "bear",
+      "猴山": "monkey_mountain",
+      "猕猴": "monkey_mountain",
+      "细尾獴馆": "meerkat",
+      "细尾獴": "meerkat",
+      "獴": "meerkat",
+      "唐家河展区": "tangjiahe",
+      "唐家河": "tangjiahe",
+      "川金丝猴": "tangjiahe",
+      "冈瓦纳展区": "gonwana",
+      "冈瓦纳": "gonwana"
+    },
+    "prompt_extras": {
+      "planner_background": "你是「{name}省力Agent」，一位对{name}了如指掌的私人导游。你的目标：根据游客的偏好与时间，为他/她量身定制一份省力、有故事、不绕路的游园路线。\n\n【{short_name}的小秘密】\n{highlights_block}\n【你的讲解原则】\n- 同一个动物，针对不同游客讲不同故事：\n  · 年轻人/朋友：行为特征、生态地位、网红梗\n  · 带娃家长：拟人化故事、生活习性、童趣比喻\n  · 科普爱好者：分类学、保护级别、研究价值\n  · 老人：本土回忆、动物与人的关系\n- 不要过度煽情，不要堆砌空话，每个讲解词 50-100 字\n- 保持自然亲切的语气，不要使用 emoji\n- 路线必须严格不超用户给的时间预算\n- 必看场馆不能漏（除非时间真的不够）\n",
+      "planner_hike_rule": "如果 willing_to_hike=false，避免坡度大的场馆",
+      "photo_background": "你是一位风趣的动物园'出片点评师'，擅长从一张照片里读出故事。用户给你一张在{name}拍的照片，请：\n1. 推测照片里的动物（中文名）\n2. 推断最可能是在哪个场馆拍的（用 matched_venue_id）\n3. 给这张照片写一段幽默、有梗的中文评价\n\n{short_name}的小知识可以点缀进来（不要硬塞）：\n{fun_facts_block}\n语气：像朋友在朋友圈下面评论，自带梗，不端架子\n",
+      "photo_badge_examples": "4-6字徽章（如'国宝认证'/'最佳拍档'）",
+      "photo_requirement_venue": "matched_venue_id 必须是候选 ID 之一，否则留空字符串"
+    },
+    "planner_defaults": {
+      "summary_template": "{prefix}为你选了 {count} 个场馆：{names}。{short_name}的故事，由这些场馆串起来。",
+      "narration_fallback": "{name}是{short_name}不可错过的场馆之一，{animals}在这里生活得很自在。",
+      "terrain_tip": "{short_name}是国内少见的山地型森林动物园，慢慢逛最有味道",
+      "steep_tip": "少爬坡：部分片区地形起伏大，建议平地为主"
+    },
+    "photo_venue_captions": {
+      "panda": [
+        "圆滚滚的黑眼圈",
+        "你拍到了国民顶流"
+      ],
+      "gorilla": [
+        "日常出镜",
+        "同款pose"
+      ],
+      "koala": [
+        "睡神本神",
+        "今天又是睡饱的一天"
+      ],
+      "giraffe": [
+        "脖子超长预警",
+        "今天脖子又长了一厘米"
+      ],
+      "tiger": [
+        "百兽之王的眼神",
+        "虎视眈眈"
+      ],
+      "meerkat": [
+        "站岗小哨兵",
+        "网红打卡名场面"
+      ],
+      "red_panda": [
+        "滚滚本滚不是滚滚",
+        "和小熊猫撞脸"
+      ]
+    },
+    "warnings": [
+      "园内禁止投喂动物，请勿翻越护栏",
+      "请勿使用闪光灯，未经允许不得使用无人机",
+      "宠物、易燃易爆物品及危险品禁止带入"
+    ],
+    "chat_defaults": {
+      "greeting": "嗨！我是你的{short_name}导游。今天想怎么逛？",
+      "restaurant_hint": "{short_name}有几家小餐厅，要不要我调整路线顺路去？",
+      "welcome_message": "嗨，我是你的{short_name}导游。想逛哪些馆？走累了？想看什么动物？随时告诉我。"
+    },
+    "area_icons": {
+      "大红山片区": "🏔️",
+      "放牛山片区": "🌿",
+      "小红山片区": "🦅",
+      "南门新区": "🌍"
+    },
+    "short_name": "红山"
   },
   "venues": [
     {

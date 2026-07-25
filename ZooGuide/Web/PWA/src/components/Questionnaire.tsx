@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { UserPreference, PartyType, Gate, InterestTag } from '../types'
 import { useQuizOptions } from '../hooks/useQuizOptions'
 import { savePrefs } from '../lib/storage'
+import { shortName } from '../lib/meta-helpers'
 
 interface Props {
   onComplete: (prefs: UserPreference) => void
@@ -175,7 +176,7 @@ export function Questionnaire({ onComplete, initial }: Props) {
           >
             <div>
               <div className="qz-toggle-label">{willing_to_hike ? '可以爬山' : '尽量平地'}</div>
-              <div className="qz-toggle-desc">红山是山地型动物园，部分片区需要爬坡</div>
+              <div className="qz-toggle-desc">部分片区地形有起伏，可能需要爬坡</div>
             </div>
             <div style={{ fontSize: 22 }}>{willing_to_hike ? '⛰️' : '🚶'}</div>
           </button>

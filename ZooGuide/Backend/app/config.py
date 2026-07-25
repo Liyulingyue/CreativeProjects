@@ -32,13 +32,19 @@ HOST: str = os.getenv("HOST", "0.0.0.0")
 PORT: int = int(os.getenv("PORT", "8000"))
 
 
-# Universe of warning tips shown on every route
-UNIVERSAL_WARNINGS: list[str] = [
-    "园内禁止投喂动物，请勿翻越护栏",
-    "请勿使用闪光灯，未经允许不得使用无人机",
-    "宠物、易燃易爆物品及危险品禁止带入",
-    "南门新区地形高差较大，部分区域需注意脚下",
-]
+# Universe of warning tips shown on every route (loaded from meta at runtime)
+UNIVERSAL_WARNINGS: list[str] = []
+
+
+def _load_warnings() -> list[str]:
+    try:
+        from .data_loader import get_meta
+        return get_meta().get("warnings", [])
+    except Exception:
+        return []
+
+
+UNIVERSAL_WARNINGS = _load_warnings()
 
 
 def has_valid_llm_config() -> bool:

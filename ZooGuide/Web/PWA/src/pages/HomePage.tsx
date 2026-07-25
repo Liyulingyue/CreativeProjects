@@ -4,6 +4,7 @@ import type { Meta, Route, UserPreference, Venue } from '../types'
 import { api } from '../api/client'
 import { type AuthUser, loadActivityVisited, loadPhotoLog } from '../lib/storage'
 import { useVisitedVenues } from '../hooks/useVisitedVenues'
+import { shortName } from '../lib/meta-helpers'
 
 interface Props {
   meta: Meta | null
@@ -84,7 +85,7 @@ export function HomePage({
         >
           <div style={{ fontSize: 56, marginBottom: 6 }}>🦒</div>
           <h2 style={{ margin: '0 0 8px', color: 'var(--primary-strong)', fontSize: 22 }}>
-            逛红山，不必人挤人
+            逛{shortName(meta)}，不必人挤人
           </h2>
           <p
             style={{
@@ -96,7 +97,7 @@ export function HomePage({
             }}
           >
             告诉我你的时间、体力、带没带娃、怕不怕晒，
-            我帮你定制一趟只属于你的红山路线。
+            我帮你定制一趟只属于你的{shortName(meta)}路线。
           </p>
           <button className="btn btn-primary btn-full" onClick={onStartPlan}>
             ✨ 开始定制我的路线
@@ -171,7 +172,7 @@ export function HomePage({
         </div>
       )}
 
-      {/* About 红山 (only shown when no route, so it doesn't clutter) */}
+      {/* About section (only shown when no route, so it doesn't clutter) */}
       {!hasRoute && <AboutHongshan meta={meta} venues={venues} />}
 
       {/* Park quick facts (always shown - useful even with active route) */}
@@ -183,7 +184,7 @@ export function HomePage({
   )
 }
 
-/* ----- About 红山 section ----- */
+/* ----- About section ----- */
 function AboutHongshan({ meta, venues }: { meta: Meta | null; venues: Venue[] }) {
   if (!meta) return null
 
@@ -221,7 +222,7 @@ function AboutHongshan({ meta, venues }: { meta: Meta | null; venues: Venue[] })
           letterSpacing: 0.5,
         }}
       >
-        🏆 为什么是红山
+        🏆 为什么是{shortName(meta)}
       </div>
 
       <div className="highlight-list">

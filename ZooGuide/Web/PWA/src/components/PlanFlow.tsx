@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import type { Route, UserPreference } from '../types'
+import type { Meta, Route, UserPreference } from '../types'
 import { api } from '../api/client'
+import { shortName } from '../lib/meta-helpers'
 import { Questionnaire } from './Questionnaire'
 import { RouteView } from './RouteView'
 
@@ -11,6 +12,7 @@ interface Props {
   onOpenChat: () => void
   externalRoute?: Route | null
   initialStage?: Stage
+  meta?: Meta | null
 }
 
 type Stage = 'home' | 'quiz' | 'loading' | 'route' | 'error'
@@ -22,6 +24,7 @@ export function PlanFlow({
   onOpenChat,
   externalRoute,
   initialStage,
+  meta,
 }: Props) {
   const [stage, setStage] = useState<Stage>(
     initialStage || (externalRoute ? 'route' : 'home')
@@ -94,11 +97,11 @@ export function PlanFlow({
           <div className="flow-home">
             <div className="flow-hero">🦒</div>
             <h2 style={{ margin: '12px 0 6px', color: 'var(--primary-strong)' }}>
-              逛红山，不必人挤人
+              逛{shortName(meta)}，不必人挤人
             </h2>
             <p style={{ fontSize: 14, color: 'var(--fg-muted)', lineHeight: 1.6, margin: '0 0 18px' }}>
               告诉我你的时间、体力、带没带娃、怕不怕晒，
-              我帮你定制一趟只属于你的红山路线。
+              我帮你定制一趟只属于你的{shortName(meta)}路线。
             </p>
             <button className="btn btn-primary btn-full" onClick={startQuiz}>
               开始定制路线 ✨
@@ -120,7 +123,7 @@ export function PlanFlow({
         {stage === 'loading' && (
           <div className="loading">
             <div className="spinner" />
-            正在为你定制红山路线…
+            正在为你定制{shortName(meta)}路线…
             <div style={{ fontSize: 12, marginTop: 8 }}>规则引擎筛选 + LLM 编排中</div>
             <div
               style={{

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import type { NearestResponse, PhotoEvaluation } from '../types'
 import { api } from '../api/client'
+import { shortName } from '../lib/meta-helpers'
+import type { Meta } from '../types'
 
 interface Props {
   onClose: () => void
@@ -10,12 +12,15 @@ interface Props {
 type Phase = 'select' | 'preview' | 'evaluating' | 'result'
 
 export function PhotoEvalDialog({ onClose, onPickVenue }: Props) {
+  const [meta, setMeta] = useState<Meta | null>(null)
   const [phase, setPhase] = useState<Phase>('select')
   const [file, setFile] = useState<File | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [evaluation, setEvaluation] = useState<PhotoEvaluation | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [usingCamera, setUsingCamera] = useState(false)
+
+  useEffect(() => { api.meta().then(setMeta).catch(() => {}) }, [])
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -135,7 +140,7 @@ export function PhotoEvalDialog({ onClose, onPickVenue }: Props) {
         {phase === 'select' && !usingCamera && (
           <>
             <p style={{ fontSize: 13, color: 'var(--fg-muted)', margin: '0 0 14px' }}>
-              上传或拍一张在红山拍的动物/合照，Agent 会给你一段幽默点评 + 出片徽章。
+              上传或拍一张在{shortName(meta)}拍的动物/合照，Agent 会给你一段幽默点评 + 出片徽章。
             </p>
             <div style={{ display: 'flex', gap: 10 }}>
               <button
