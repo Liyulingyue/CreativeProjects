@@ -25,10 +25,6 @@ from .models import (
 )
 
 
-# In-memory checkin store (process-local; resets on restart) — DEPRECATED, using DB
-_checkins: dict[str, list[dict]] = {}
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
@@ -37,9 +33,14 @@ async def lifespan(app: FastAPI):
     yield
 
 
+try:
+    _app_desc = f"{data_loader.get_meta().get('name', '动物园')}省力 Agent"
+except Exception:
+    _app_desc = "ZooGuide省力 Agent"
+
 app = FastAPI(
     title="ZooGuide API",
-    description=f"{data_loader.get_meta().get('name', '动物园')}省力 Agent",
+    description=_app_desc,
     version="1.0.0",
     lifespan=lifespan,
 )

@@ -123,10 +123,13 @@ export function ChatPage({ currentRoute, prefs, onRouteUpdate, onGoPlan, onGoAct
         onRouteUpdate(d.new_route)
       }
     } catch {
+      const isOffline = !navigator.onLine
       const errMsg: DisplayMsg = {
         id: idRef.current++,
         role: 'agent',
-        text: '网络好像出问题了，试试再说一次？',
+        text: isOffline
+          ? '网络不可用，请检查网络连接后重试。离线时可查看已有路线和场馆信息。'
+          : '网络好像出问题了，试试再说一次？',
       }
       const updated = [...nextMsgs, errMsg]
       setMessages(updated)

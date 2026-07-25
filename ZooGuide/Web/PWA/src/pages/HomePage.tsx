@@ -110,7 +110,7 @@ export function HomePage({
         <button className="qa-card" onClick={() => navigate('/venue')}>
           <div className="qa-icon">🗺️</div>
           <div className="qa-title">场馆导览</div>
-          <div className="qa-desc">23馆介绍讲解</div>
+          <div className="qa-desc">{venues.length}馆介绍讲解</div>
         </button>
         <button className="qa-card" onClick={() => onSwitchTab('chat')}>
           <div className="qa-icon">💬</div>

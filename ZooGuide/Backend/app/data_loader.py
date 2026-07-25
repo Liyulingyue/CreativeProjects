@@ -1,18 +1,38 @@
 from __future__ import annotations
 
 import json
+import logging
 from functools import lru_cache
 from pathlib import Path
 
 from .models import Facility, Venue
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+logger = logging.getLogger(__name__)
+
+_MINIMAL_RAW: dict = {
+    "meta": {"name": "动物园", "short_name": "动物园"},
+    "venues": [],
+    "facilities": [],
+}
 
 
 @lru_cache(maxsize=1)
 def _load_raw() -> dict:
-    with (DATA_DIR / "venues.json").open(encoding="utf-8") as f:
-        return json.load(f)
+    path = DATA_DIR / "venues.json"
+    try:
+        with path.open(encoding="utf-8") as f:
+            data = json.load(f)
+        if "meta" not in data or "venues" not in data:
+            logger.error("venues.json missing 'meta' or 'venues' key, using fallback")
+            return _MINIMAL_RAW
+        return data
+    except FileNotFoundError:
+        logger.error("venues.json not found at %s, using fallback", path)
+        return _MINIMAL_RAW
+    except json.JSONDecodeError as e:
+        logger.error("venues.json invalid JSON: %s, using fallback", e)
+        return _MINIMAL_RAW
 
 
 def get_meta() -> dict:

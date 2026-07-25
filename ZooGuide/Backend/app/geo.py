@@ -5,7 +5,20 @@ from __future__ import annotations
 import math
 from typing import Optional
 
-from .data_loader import get_all_venue_dicts
+from .data_loader import get_all_venue_dicts, get_meta
+
+
+def _get_bbox() -> dict:
+    meta = get_meta()
+    b = meta.get("bbox")
+    if b:
+        return {
+            "min_lat": b["lat_min"],
+            "max_lat": b["lat_max"],
+            "min_lon": b["lon_min"],
+            "max_lon": b["lon_max"],
+        }
+    return bbox()
 
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -43,8 +56,8 @@ def find_nearest_venues(
 
 
 def is_within_park(lat: float, lon: float) -> bool:
-    """Heuristic: red山 park roughly 32.092-32.105, 118.805-118.820."""
-    return 32.090 <= lat <= 32.107 and 118.803 <= lon <= 118.822
+    b = _get_bbox()
+    return b["min_lat"] <= lat <= b["max_lat"] and b["min_lon"] <= lon <= b["max_lon"]
 
 
 def bbox() -> dict:
@@ -52,7 +65,7 @@ def bbox() -> dict:
     lats = [v["lat"] for v in venues if "lat" in v]
     lons = [v["lon"] for v in venues if "lon" in v]
     if not lats:
-        return {"min_lat": 32.090, "max_lat": 32.107, "min_lon": 118.803, "max_lon": 118.822}
+        return _get_bbox()
     return {
         "min_lat": min(lats) - 0.001,
         "max_lat": max(lats) + 0.001,

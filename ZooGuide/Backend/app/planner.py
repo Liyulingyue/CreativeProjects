@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 
-from . import config, llm_client, prompts
+from . import config, data_loader, llm_client, prompts
 from .models import PlanRequest, ReplanRequest, Route, RouteStop
 from .rule_engine import filter_and_rank, max_stops_by_time
 from .walking import (
@@ -416,18 +416,6 @@ def _fallback_general_tips(prefs: PlanRequest) -> list[str]:
         terrain = defaults.get("terrain_tip", "慢慢逛最有味道")
         tips.append(terrain)
     return tips[:3]
-
-
-def _fallback_summary_legacy(venues: list[dict], prefs: PlanRequest) -> str:
-    """Legacy version kept for replan path."""
-    if not venues:
-        return "时间太紧张啦，建议把可用时间调到 1.5 小时以上，再来一次。"
-    names = " → ".join(v["name"] for v in venues)
-    meta = data_loader.get_meta()
-    short = meta.get("short_name", meta.get("name", "动物园")[:2])
-    defaults = meta.get("planner_defaults", {})
-    template = defaults.get("summary_template", "为你选了 {count} 个场馆：{names}。{short_name}的故事，由这些场馆串起来。")
-    return template.format(prefix="", count=len(venues), names=names, short_name=short)
 
 
 def plan_route(prefs: PlanRequest, force_fast: bool = False) -> tuple[Route, bool]:

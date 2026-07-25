@@ -12,7 +12,7 @@ import json
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import UTC as _UTC, datetime, timedelta
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -55,20 +55,6 @@ CREATE TABLE IF NOT EXISTS checkins (
 
 CREATE INDEX IF NOT EXISTS idx_checkins_user ON checkins(user_id, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_checkins_session ON checkins(session_id, ts DESC);
-
-CREATE TABLE IF NOT EXISTS photo_evals (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    evaluation_id TEXT NOT NULL UNIQUE,
-    user_id INTEGER,
-    session_id TEXT,
-    payload_json TEXT NOT NULL,
-    image_path TEXT,
-    ts TEXT NOT NULL,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_photo_user ON photo_evals(user_id, ts DESC);
-CREATE INDEX IF NOT EXISTS idx_photo_session ON photo_evals(session_id, ts DESC);
 
 CREATE TABLE IF NOT EXISTS routes (
     id TEXT PRIMARY KEY,
@@ -124,10 +110,32 @@ CREATE TABLE IF NOT EXISTS gps_checkins (
     ts TEXT NOT NULL,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 );
+
+-- Photo evaluations (persistent store replacing in-memory dict)
+CREATE TABLE IF NOT EXISTS photo_evals (
+    eval_id TEXT PRIMARY KEY,
+    user_id INTEGER,
+    session_id TEXT,
+    image_path TEXT,
+    animal_guess TEXT DEFAULT '',
+    animal_confidence INTEGER DEFAULT 0,
+    matched_venue_id TEXT DEFAULT '',
+    matched_venue_name TEXT DEFAULT '',
+    caption TEXT DEFAULT '',
+    vibe_score INTEGER DEFAULT 0,
+    vibe_label TEXT DEFAULT '',
+    comment TEXT DEFAULT '',
+    badge TEXT DEFAULT '',
+    tips TEXT DEFAULT '[]',
+    fallback INTEGER DEFAULT 0,
+    fallback_reason TEXT DEFAULT '',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_photo_evals_user ON photo_evals(user_id, created_at DESC);
 """
 
-
-DEFAULT_ACHIEVEMENTS = []
 
 def _load_achievements() -> list:
     try:
@@ -149,7 +157,7 @@ def _load_achievements() -> list:
         return []
 
 
-DEFAULT_ACHIEVEMENTS = _load_achievements()
+DEFAULT_ACHIEVEMENTS: list = _load_achievements()
 
 
 @contextmanager
@@ -190,7 +198,7 @@ def create_user(username: str, password_hash: str, display_name: Optional[str] =
         with get_conn() as c:
             cur = c.execute(
                 "INSERT INTO users(username, password_hash, display_name, created_at) VALUES (?, ?, ?, ?)",
-                (username, password_hash, display_name or username, datetime.utcnow().isoformat()),
+                (username, password_hash, display_name or username, datetime.now(_UTC).isoformat()),
             )
             return cur.lastrowid
 
@@ -210,12 +218,12 @@ def find_user_by_id(user_id: int) -> Optional[dict]:
 def create_token(user_id: int, days: int = 30) -> str:
     import uuid
     token = uuid.uuid4().hex + uuid.uuid4().hex  # 64 chars
-    expires = (datetime.utcnow() + timedelta(days=days)).isoformat()
+    expires = (datetime.now(_UTC) + timedelta(days=days)).isoformat()
     with _lock:
         with get_conn() as c:
             c.execute(
                 "INSERT INTO auth_tokens(token, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
-                (token, user_id, expires, datetime.utcnow().isoformat()),
+                (token, user_id, expires, datetime.now(_UTC).isoformat()),
             )
     return token
 
@@ -228,7 +236,7 @@ def find_user_by_token(token: str) -> Optional[dict]:
             JOIN auth_tokens t ON t.user_id = u.id
             WHERE t.token = ? AND t.expires_at > ?
             """,
-            (token, datetime.utcnow().isoformat()),
+            (token, datetime.now(_UTC).isoformat()),
         ).fetchone()
         return dict(row) if row else None
 
@@ -250,7 +258,7 @@ def insert_checkin(
     user_id: Optional[int] = None,
     note: Optional[str] = None,
 ) -> dict:
-    ts = datetime.utcnow().isoformat(timespec="seconds")
+    ts = datetime.now(_UTC).isoformat(timespec="seconds")
     with _lock:
         with get_conn() as c:
             cur = c.execute(
@@ -293,7 +301,7 @@ def insert_gps_checkin(
     nearest_venue_name: Optional[str] = None,
     in_park: bool = False,
 ) -> int:
-    ts = datetime.utcnow().isoformat(timespec="seconds")
+    ts = datetime.now(_UTC).isoformat(timespec="seconds")
     with _lock:
         with get_conn() as c:
             cur = c.execute(
@@ -313,43 +321,20 @@ def insert_gps_checkin(
             return cur.lastrowid
 
 
-def insert_photo_eval(
-    evaluation_id: str,
-    payload: dict,
-    image_path: Optional[str] = None,
-    session_id: Optional[str] = None,
-    user_id: Optional[int] = None,
-) -> None:
-    ts = datetime.utcnow().isoformat(timespec="seconds")
-    with _lock:
-        with get_conn() as c:
-            c.execute(
-                """INSERT INTO photo_evals(evaluation_id, user_id, session_id, payload_json, image_path, ts)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (
-                    evaluation_id,
-                    user_id,
-                    session_id,
-                    json.dumps(payload, ensure_ascii=False),
-                    image_path,
-                    ts,
-                ),
-            )
-
-
 def list_photo_evals_by_user(user_id: int, limit: int = 50) -> list[dict]:
     with get_conn() as c:
         rows = c.execute(
-            "SELECT evaluation_id, payload_json, image_path, ts FROM photo_evals WHERE user_id = ? ORDER BY ts DESC LIMIT ?",
+            "SELECT * FROM photo_evals WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
             (user_id, limit),
         ).fetchall()
         out = []
         for r in rows:
             d = dict(r)
             try:
-                d["payload"] = json.loads(d.pop("payload_json"))
+                d["tips"] = json.loads(d.get("tips", "[]"))
             except Exception:
-                d["payload"] = {}
+                d["tips"] = []
+            d["fallback"] = bool(d.get("fallback", 0))
             out.append(d)
         return out
 
@@ -397,7 +382,7 @@ def grant_achievement(user_id: int, achievement_id: str) -> bool:
             c.execute(
                 """INSERT INTO user_achievements(user_id, achievement_id, earned_at, progress)
                    VALUES (?, ?, ?, 100)""",
-                (user_id, achievement_id, datetime.utcnow().isoformat(timespec="seconds")),
+                (user_id, achievement_id, datetime.now(_UTC).isoformat(timespec="seconds")),
             )
             return True
 
@@ -418,18 +403,17 @@ def get_user_stats_for_achievements(user_id: int) -> dict:
             (user_id,),
         ).fetchone()[0]
         best_vibe = c.execute(
-            "SELECT MAX(CAST(json_extract(payload_json, '$.vibe_score') AS INTEGER)) FROM photo_evals WHERE user_id = ?",
+            "SELECT MAX(vibe_score) FROM photo_evals WHERE user_id = ?",
             (user_id,),
         ).fetchone()[0] or 0
         # Consecutive days with photos
         rows = c.execute(
-            "SELECT DISTINCT substr(ts, 1, 10) AS day FROM photo_evals WHERE user_id = ? ORDER BY day DESC",
+            "SELECT DISTINCT substr(created_at, 1, 10) AS day FROM photo_evals WHERE user_id = ? ORDER BY day DESC",
             (user_id,),
         ).fetchall()
         days = [r[0] for r in rows]
         consecutive_days = 0
         if days:
-            from datetime import datetime, timedelta
             try:
                 cur_day = datetime.fromisoformat(days[0])
                 consecutive_days = 1
@@ -486,7 +470,7 @@ def insert_route(
     fallback: bool,
     user_id: Optional[int] = None,
 ) -> None:
-    ts = datetime.utcnow().isoformat(timespec="seconds")
+    ts = datetime.now(_UTC).isoformat(timespec="seconds")
     with _lock:
         with get_conn() as c:
             c.execute(
@@ -540,4 +524,59 @@ def get_route_full(route_id: str, user_id: int) -> Optional[dict]:
             d["prefs"] = json.loads(d.pop("prefs_json"))
         except Exception:
             d["prefs"] = {}
+        return d
+
+
+# ---------------------------------------------------------------------------
+# Photo evaluations
+# ---------------------------------------------------------------------------
+
+def insert_photo_eval(
+    eval_id: str,
+    result: dict,
+    user_id: Optional[int] = None,
+    session_id: Optional[str] = None,
+) -> None:
+    with _lock:
+        with get_conn() as c:
+            c.execute(
+                """INSERT OR REPLACE INTO photo_evals
+                   (eval_id, user_id, session_id, image_path,
+                    animal_guess, animal_confidence, matched_venue_id, matched_venue_name,
+                    caption, vibe_score, vibe_label, comment, badge, tips,
+                    fallback, fallback_reason, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    eval_id,
+                    user_id,
+                    session_id,
+                    result.get("image_path", ""),
+                    result.get("animal_guess", ""),
+                    result.get("animal_confidence", 0),
+                    result.get("matched_venue_id", ""),
+                    result.get("matched_venue_name", ""),
+                    result.get("caption", ""),
+                    result.get("vibe_score", 0),
+                    result.get("vibe_label", ""),
+                    result.get("comment", ""),
+                    result.get("badge", ""),
+                    json.dumps(result.get("tips", []), ensure_ascii=False),
+                    1 if result.get("fallback") else 0,
+                    result.get("fallback_reason", ""),
+                    result.get("ts", datetime.now(_UTC).isoformat()),
+                ),
+            )
+
+
+def get_photo_eval(eval_id: str) -> Optional[dict]:
+    with get_conn() as c:
+        row = c.execute("SELECT * FROM photo_evals WHERE eval_id = ?", (eval_id,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["tips"] = json.loads(d.get("tips", "[]"))
+        except Exception:
+            d["tips"] = []
+        d["fallback"] = bool(d.get("fallback", 0))
         return d

@@ -24,9 +24,6 @@ from . import config, data_loader, db, llm_client
 PHOTO_DIR = Path(__file__).resolve().parent.parent / "data" / "photos"
 PHOTO_DIR.mkdir(parents=True, exist_ok=True)
 
-# In-memory store of evaluations keyed by evaluation_id
-_evaluations: dict[str, dict] = {}
-
 
 PHOTO_TARGET_STRUCTURE: dict = {
     "animal_guess": "str, 推测的动物中文名 (e.g. 大熊猫 / 长颈鹿 / 大猩猩 / 考拉 / 细尾獴)",
@@ -58,7 +55,11 @@ def _build_photo_background() -> str:
     return template.format(name=name, short_name=short, fun_facts_block=fun_facts_block)
 
 
-PHOTO_BACKGROUND: str = _build_photo_background()
+PHOTO_BACKGROUND: str = "你是一位风趣的动物园'出片点评师'。用户给你一张在动物园拍的照片，请识别动物并评价。"
+try:
+    PHOTO_BACKGROUND = _build_photo_background()
+except Exception:
+    pass
 
 
 def _build_photo_requirements() -> list[str]:
@@ -77,7 +78,19 @@ def _build_photo_requirements() -> list[str]:
     ]
 
 
-PHOTO_REQUIREMENTS: list[str] = _build_photo_requirements()
+PHOTO_REQUIREMENTS: list[str] = [
+    "animal_guess 用中文常用动物名",
+    "matched_venue_id 必须是候选 ID 之一，否则留空字符串",
+    "caption 不超过 30 字",
+    "comment 60-100 字，要有梗，不要说'这张照片很美'这类空话",
+    "vibe_score 0-100，反映'出片'指数（构图、光线、动物状态综合）",
+    "badge 用 4-6字徽章",
+    "tips 1-2 条即可",
+]
+try:
+    PHOTO_REQUIREMENTS = _build_photo_requirements()
+except Exception:
+    pass
 
 
 def _venues_brief() -> list[dict]:
@@ -148,51 +161,11 @@ def evaluate_photo_with_expected(
         return evaluate_photo(image_path, user_id, session_id, auto_checkin)
 
     if not llm_client.is_llm_enabled():
-        result = _fallback_evaluation(image_path, reason="USE_LLM=false")
-    else:
-        try:
-            result = _evaluate_with_llm_and_expected(image_path, expected_venue)
-        except Exception as e:
-            # If LLM fails (e.g., model doesn't support vision), fall back but use expected_venue
-            result = _fallback_evaluation(image_path, reason=str(e), expected_venue=expected_venue)
-    return result
-
-
-def evaluate_photo_with_expected(
-    image_path: Path,
-    user_id: Optional[int] = None,
-    session_id: Optional[str] = None,
-    auto_checkin: bool = False,
-    expected_venue: Optional[dict] = None,
-) -> dict:
-    """Like evaluate_photo but tells LLM which venue to verify against.
-
-    The returned dict has 'matched_venue_id' set to the LLM's best guess.
-    The caller (main.py) decides success by comparing to expected_venue_id.
-    """
-def evaluate_photo_with_expected(
-    image_path: Path,
-    user_id: Optional[int] = None,
-    session_id: Optional[str] = None,
-    auto_checkin: bool = False,
-    expected_venue: Optional[dict] = None,
-) -> dict:
-    """Like evaluate_photo but tells LLM which venue to verify against.
-
-    The returned dict has 'matched_venue_id' set to the LLM's best guess.
-    The caller (main.py) decides success by comparing to expected_venue_id.
-    """
-    if not expected_venue:
-        return evaluate_photo(image_path, user_id, session_id, auto_checkin)
-
-    if not llm_client.is_llm_enabled():
         return _fallback_evaluation(image_path, reason="USE_LLM=false", expected_venue=expected_venue)
 
     try:
         result = _evaluate_with_llm_and_expected(image_path, expected_venue)
     except BaseException as e:
-        # If LLM fails (e.g., model doesn't support vision), fall back gracefully
-        print(f"DEBUG: LLM error, falling back: {e}", flush=True)
         return _fallback_evaluation(image_path, reason=f"LLM error: {e}", expected_venue=expected_venue)
     return result
 
@@ -258,7 +231,7 @@ def _evaluate_with_llm(image_path: Path) -> dict:
         v = data_loader.get_venue_dict_by_id(result["matched_venue_id"])
         if v:
             result["matched_venue_name"] = v["name"]
-    _evaluations[eval_id] = result
+    db.insert_photo_eval(eval_id, result)
     return result
 
 
@@ -334,7 +307,7 @@ def _evaluate_with_llm_and_expected(image_path: Path, expected_venue: dict) -> d
         v = data_loader.get_venue_dict_by_id(result["matched_venue_id"])
         if v:
             result["matched_venue_name"] = v["name"]
-    _evaluations[eval_id] = result
+    db.insert_photo_eval(eval_id, result)
     return result
 
 
@@ -392,9 +365,9 @@ def _fallback_evaluation(image_path: Path, reason: str = "", expected_venue: Opt
         "fallback_reason": reason,
         "ts": datetime.now().isoformat(timespec="seconds"),
     }
-    _evaluations[eval_id] = result
+    db.insert_photo_eval(eval_id, result)
     return result
 
 
 def get_evaluation(eval_id: str) -> Optional[dict]:
-    return _evaluations.get(eval_id)
+    return db.get_photo_eval(eval_id)

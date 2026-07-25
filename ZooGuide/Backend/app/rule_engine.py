@@ -16,7 +16,11 @@ def _get_interest_map() -> dict:
     return get_meta().get("interest_map", {})
 
 
-INTEREST_MAP = _get_interest_map()
+INTEREST_MAP: dict = {}
+try:
+    INTEREST_MAP = _get_interest_map()
+except Exception:
+    pass
 
 
 def _venue_matches_interest(venue: dict, interest: str) -> bool:

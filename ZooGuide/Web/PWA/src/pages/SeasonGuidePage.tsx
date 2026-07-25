@@ -1,15 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import type { Meta, Venue } from '../types'
 import { shortName } from '../lib/meta-helpers'
-
-const VENUE_EMOJIS: Record<string, string> = {
-  panda: '🐼', koala: '🐨', gorilla: '🦍', tiger: '🐯',
-  china_cat: '🐆', cat_planet: '🐱', giraffe: '🦒', asian_elephant: '🐘',
-  orangutan: '🦧', asian_primates: '🐒', red_panda: '🐾', kangaroo: '🦘',
-  lemur: '🦝', rhino: '🦏', hornbill: '🦜', crane: '🦢',
-  wolf: '🐺', bear: '🐻', monkey_mountain: '🐵', meerkat: '🦡',
-  tangjiahe: '🏞️', gonwana: '🦎', dazhuangguange: '🏛️',
-}
+import { venueEmoji } from '../lib/venue-helpers'
 
 interface Props {
   meta: Meta | null
@@ -68,7 +60,7 @@ export function SeasonGuidePage({ meta, venues }: Props) {
                     className="season-best-tile"
                     onClick={() => navigate(`/venue/${v.id}`)}
                   >
-                    <span className="sbt-emoji">{VENUE_EMOJIS[v.id] || '🏠'}</span>
+                    <span className="sbt-emoji">{venueEmoji(v.id, meta)}</span>
                     <span className="sbt-name">{v.name}</span>
                   </button>
                 ))}

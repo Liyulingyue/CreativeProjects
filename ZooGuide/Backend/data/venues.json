@@ -461,7 +461,38 @@
       "小红山片区": "🦅",
       "南门新区": "🌍"
     },
-    "short_name": "红山"
+    "short_name": "红山",
+    "venue_emojis": {
+      "panda": "🐼",
+      "koala": "🐨",
+      "gorilla": "🦍",
+      "tiger": "🐯",
+      "china_cat": "🐆",
+      "cat_planet": "🐱",
+      "giraffe": "🦒",
+      "asian_elephant": "🐘",
+      "orangutan": "🦧",
+      "asian_primates": "🐒",
+      "red_panda": "🐾",
+      "kangaroo": "🦘",
+      "lemur": "🦝",
+      "rhino": "🦏",
+      "hornbill": "🦜",
+      "crane": "🦢",
+      "wolf": "🐺",
+      "bear": "🐻",
+      "monkey_mountain": "🐵",
+      "meerkat": "🦡",
+      "tangjiahe": "🏞️",
+      "gonwana": "🦎",
+      "dazhuangguange": "🏛️"
+    },
+    "bbox": {
+      "lat_min": 32.09,
+      "lat_max": 32.107,
+      "lon_min": 118.803,
+      "lon_max": 118.822
+    }
   },
   "venues": [
     {
@@ -1184,7 +1215,7 @@
       "near_gate": "north",
       "lat": 32.0995,
       "lon": 118.8085,
-      "open_time": "09:00-16:30",
+      "open_time": "09:00",
       "close_time": "16:30",
       "animals": [],
       "tags": [

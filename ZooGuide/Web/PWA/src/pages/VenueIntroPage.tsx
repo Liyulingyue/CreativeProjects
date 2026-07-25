@@ -1,37 +1,16 @@
-import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import type { Venue, Meta } from '../types'
-import { api } from '../api/client'
-
-const DEFAULT_AREA_ICONS: Record<string, string> = {
-  '大红山片区': '🏔️',
-  '放牛山片区': '🌿',
-  '小红山片区': '🦅',
-  '南门新区': '🌍',
-}
-
-const VENUE_EMOJIS: Record<string, string> = {
-  panda: '🐼', koala: '🐨', gorilla: '🦍', tiger: '🐯',
-  china_cat: '🐆', cat_planet: '🐱', giraffe: '🦒', asian_elephant: '🐘',
-  orangutan: '🦧', asian_primates: '🐒', red_panda: '🐾', kangaroo: '🦘',
-  lemur: '🦝', rhino: '🦏', hornbill: '🦜', crane: '🦢',
-  wolf: '🐺', bear: '🐻', monkey_mountain: '🐵', meerkat: '🦡',
-  tangjiahe: '🏞️', gonwana: '🦎', dazhuangguange: '🏛️',
-}
+import type { Venue } from '../types'
+import { venueEmoji } from '../lib/venue-helpers'
 
 interface Props {
   venues: Venue[]
+  meta?: any
 }
 
-export function VenueIntroPage({ venues }: Props) {
+export function VenueIntroPage({ venues, meta }: Props) {
   const navigate = useNavigate()
-  const [meta, setMeta] = useState<Meta | null>(null)
 
-  useEffect(() => {
-    api.meta().then(setMeta).catch(() => {})
-  }, [])
-
-  const AREA_ICONS = { ...DEFAULT_AREA_ICONS, ...(meta?.area_icons || {}) }
+  const AREA_ICONS: Record<string, string> = { ...(meta?.area_icons || {}) }
 
   const areas = Object.entries(
     venues.reduce<Record<string, Venue[]>>((acc, v) => {
@@ -69,7 +48,7 @@ export function VenueIntroPage({ venues }: Props) {
                   className={`venue-intro-card ${v.must_see ? 'must-see' : ''}`}
                   onClick={() => navigate(`/venue/${v.id}`)}
                 >
-                  <div className="vic-emoji">{VENUE_EMOJIS[v.id] || '🏠'}</div>
+                  <div className="vic-emoji">{venueEmoji(v.id, meta)}</div>
                   <div className="vic-name">{v.name}</div>
                   <div className="vic-animals">
                     {v.animals.slice(0, 2).join('·')}

@@ -2,15 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import type { Venue } from '../types'
 import { api } from '../api/client'
-
-const VENUE_EMOJIS: Record<string, string> = {
-  panda: '🐼', koala: '🐨', gorilla: '🦍', tiger: '🐯',
-  china_cat: '🐆', cat_planet: '🐱', giraffe: '🦒', asian_elephant: '🐘',
-  orangutan: '🦧', asian_primates: '🐒', red_panda: '🐾', kangaroo: '🦘',
-  lemur: '🦝', rhino: '🦏', hornbill: '🦜', crane: '🦢',
-  wolf: '🐺', bear: '🐻', monkey_mountain: '🐵', meerkat: '🦡',
-  tangjiahe: '🏞️', gonwana: '🦎', dazhuangguange: '🏛️',
-}
+import { venueEmoji } from '../lib/venue-helpers'
 
 export function VenueDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -57,7 +49,7 @@ export function VenueDetailPage() {
     )
   }
 
-  const emoji = VENUE_EMOJIS[venue.id] || '🏠'
+  const emoji = venueEmoji(venue.id)
 
   return (
     <div className="fullscreen-flow">

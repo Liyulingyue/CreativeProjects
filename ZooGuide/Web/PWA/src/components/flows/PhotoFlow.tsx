@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { Venue } from '../../types'
 import { api } from '../../api/client'
 import { loadPhotoLog, type PhotoLogEntry } from '../../lib/storage'
+import { venueEmoji } from '../../lib/venue-helpers'
 
 interface Props {
   venue: Venue
@@ -461,22 +462,4 @@ function ResultCard({
       </div>
     </div>
   )
-}
-
-function venueEmoji(venueId: string): string {
-  const map: Record<string, string> = {
-    panda: '🐼',
-    koala: '🐨',
-    gorilla: '🦍',
-    tiger: '🐯',
-    giraffe: '🦒',
-    meerkat: '🦝',
-    red_panda: '🐾',
-    tangjiahe: '🏔️',
-    hornbill: '🦜',
-    crane: '🦢',
-    monkey_mountain: '🐒',
-    bear: '🐻',
-  }
-  return map[venueId] || '📍'
 }

@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import type { Venue } from '../types'
+import type { Meta, Venue } from '../types'
 import { api, authHeader } from '../api/client'
 import { loadVisited, saveVisited } from '../lib/storage'
 import { useVisitedVenues } from '../hooks/useVisitedVenues'
+import { venueEmoji } from '../lib/venue-helpers'
 
 interface CheckinResult {
   distance_m: number
@@ -11,9 +12,14 @@ interface CheckinResult {
   message: string
 }
 
-export function GpsFlowPage() {
+interface Props {
+  venues?: Venue[]
+  meta?: Meta | null
+}
+
+export function GpsFlowPage({ venues: venuesProp, meta }: Props) {
   const navigate = useNavigate()
-  const [venues, setVenues] = useState<Venue[]>([])
+  const [venues, setVenues] = useState<Venue[]>(venuesProp || [])
   const { visited, version } = useVisitedVenues()
   const [selectedVenue, setSelectedVenue] = useState<Venue | null>(null)
   const [locating, setLocating] = useState(false)
@@ -21,8 +27,12 @@ export function GpsFlowPage() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    api.venues().then((d) => setVenues(d.venues)).catch(console.error)
-  }, [])
+    if (venuesProp) {
+      setVenues(venuesProp)
+    } else {
+      api.venues().then((d) => setVenues(d.venues)).catch(console.error)
+    }
+  }, [venuesProp])
 
   function handleVenueClick(v: Venue) {
     setSelectedVenue(v)
@@ -223,11 +233,4 @@ function MiniStat({ value, label, highlight }: { value: number; label: string; h
   )
 }
 
-function venueEmoji(venueId: string): string {
-  const map: Record<string, string> = {
-    panda: '🐼', koala: '🐨', gorilla: '🦍', tiger: '🐯',
-    giraffe: '🦒', meerkat: '🦝', red_panda: '🐾', tangjiahe: '🏔️',
-    hornbill: '🦜', crane: '🦢', monkey_mountain: '🐒', bear: '🐻',
-  }
-  return map[venueId] || '📍'
-}
+

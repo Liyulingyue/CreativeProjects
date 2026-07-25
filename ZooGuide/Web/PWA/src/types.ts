@@ -144,10 +144,12 @@ export interface Meta {
   close_time: string
   ticket: string
   highlights: string[]
-  gates: string[]
+  gates: Record<string, { lat: number; lon: number; label?: string; desc?: string }>
   gates_text?: string[]
   areas: Record<string, string>
   area_icons?: Record<string, string>
+  venue_emojis?: Record<string, string>
+  bbox?: { lat_min: number; lat_max: number; lon_min: number; lon_max: number }
   seasonal_guide?: SeasonalGuide
   links?: ExternalLink[]
   tips?: string[]
