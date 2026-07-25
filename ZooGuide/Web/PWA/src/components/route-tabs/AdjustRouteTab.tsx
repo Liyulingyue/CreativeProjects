@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { api } from '../../api/client'
 import type { Route } from '../../types'
+import { saveVisited } from '../../lib/storage'
 
 interface Props {
   currentRoute: Route | null
@@ -10,6 +11,7 @@ interface Props {
   onReplanned: (r: Route) => void
   onRestartQuiz?: () => void
   onOpenChat?: () => void
+  onResetProgress?: () => void
 }
 
 const QUICK = [
@@ -29,6 +31,7 @@ export function AdjustRouteTab({
   onReplanned,
   onRestartQuiz,
   onOpenChat,
+  onResetProgress,
 }: Props) {
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(false)
@@ -149,6 +152,16 @@ export function AdjustRouteTab({
         </p>
         <button className="btn btn-outline btn-full" onClick={onRestartQuiz}>
           🔄 重新填问卷
+        </button>
+        <button
+          className="btn btn-ghost btn-full"
+          style={{ marginTop: 8 }}
+          onClick={() => {
+            saveVisited(new Set())
+            onResetProgress?.()
+          }}
+        >
+          🔁 这条路线从头走
         </button>
       </div>
 

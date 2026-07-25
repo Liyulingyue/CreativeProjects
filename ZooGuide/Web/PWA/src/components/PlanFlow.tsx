@@ -3,7 +3,6 @@ import type { Route, UserPreference } from '../types'
 import { api } from '../api/client'
 import { Questionnaire } from './Questionnaire'
 import { RouteView } from './RouteView'
-import { ChatDialog } from './ChatDialog'
 
 interface Props {
   initialPrefs: UserPreference | null
@@ -32,7 +31,6 @@ export function PlanFlow({
   const [error, setError] = useState<string | null>(null)
   const [fastMode, setFastMode] = useState(false)
   const [strictHours, setStrictHours] = useState(false)
-  const [chatOpen, setChatOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
 
   async function handlePlan(p: UserPreference) {
@@ -82,15 +80,13 @@ export function PlanFlow({
         <div className="flow-title">
           {stage === 'route' ? '🧭 我的路线' : '🧭 定制路线'}
         </div>
-        {stage === 'route' && (
-          <button
-            className="flow-settings"
-            onClick={() => setSettingsOpen(true)}
-            title="设置"
-          >
-            ⚙️
-          </button>
-        )}
+        <button
+          className="flow-settings"
+          onClick={() => setSettingsOpen(true)}
+          title="规划设置"
+        >
+          ⚙️
+        </button>
       </header>
 
       <div className="flow-body">
@@ -149,7 +145,7 @@ export function PlanFlow({
             onRouteUpdate={handleRouteUpdate}
             onRestartQuiz={restartQuiz}
             onOpenChat={() => {
-              setChatOpen(true)
+              onClose()
               onOpenChat()
             }}
           />
@@ -177,14 +173,6 @@ export function PlanFlow({
             setStrictHours(s.strictHours)
           }}
           onClose={() => setSettingsOpen(false)}
-        />
-      )}
-      {chatOpen && (
-        <ChatDialog
-          onClose={() => setChatOpen(false)}
-          currentRoute={route}
-          prefs={prefs}
-          onNewRoute={(r) => handleRouteUpdate(r)}
         />
       )}
     </div>
