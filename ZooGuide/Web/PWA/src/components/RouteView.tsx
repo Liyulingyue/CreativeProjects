@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { Route, RouteStop, UserPreference } from '../types'
-import { saveVisited } from '../lib/storage'
+import { addVisitedSource, removeVisitedSource } from '../lib/storage'
 import { CurrentRouteTab } from './route-tabs/CurrentRouteTab'
 import { MoreRoutesTab } from './route-tabs/MoreRoutesTab'
 import { AdjustRouteTab } from './route-tabs/AdjustRouteTab'
@@ -44,10 +44,11 @@ export function RouteView({
   }
 
   function toggleVisited(venueId: string) {
-    const next = new Set(visited)
-    if (next.has(venueId)) next.delete(venueId)
-    else next.add(venueId)
-    saveVisited(next)
+    if (visited.has(venueId)) {
+      removeVisitedSource(venueId, 'route')
+    } else {
+      addVisitedSource(venueId, 'route')
+    }
   }
 
   function openStop(idx: number) {

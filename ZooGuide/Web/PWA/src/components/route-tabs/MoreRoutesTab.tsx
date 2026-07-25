@@ -205,8 +205,8 @@ export function MoreRoutesTab({ prefs, currentRoute, onApplyVariant }: Props) {
       {confirmVariant && (() => {
         const diff = computeDiff(confirmVariant)
         return (
-          <div className="modal-mask" onClick={() => setConfirmVariant(null)}>
-            <div className="modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-mask" onClick={() => setConfirmVariant(null)} role="presentation">
+            <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
               <h3>确认切换方案</h3>
               <div style={{ fontSize: 13, color: 'var(--fg-muted)', marginBottom: 14, lineHeight: 1.6 }}>
                 应用「{confirmVariant.variant_label || '新方案'}」会替换当前路线：

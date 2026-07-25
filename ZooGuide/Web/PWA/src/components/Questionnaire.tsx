@@ -88,6 +88,7 @@ export function Questionnaire({ onComplete, initial }: Props) {
                 value={available_hours}
                 onChange={(e) => setHours(parseFloat(e.target.value))}
                 style={{ flex: 1, accentColor: 'var(--primary)' }}
+                aria-label="游览时长（小时）"
               />
               <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--primary-strong)' }}>
                 {available_hours}h
@@ -138,6 +139,7 @@ export function Questionnaire({ onComplete, initial }: Props) {
                   max={16}
                   value={kids_age ?? 5}
                   onChange={(e) => setKidsAge(parseInt(e.target.value))}
+                  aria-label="孩子年龄"
                 />
                 <div className="qz-slider-value">{kids_age ?? 5}</div>
               </div>
@@ -163,6 +165,7 @@ export function Questionnaire({ onComplete, initial }: Props) {
                 max={5}
                 value={stamina}
                 onChange={(e) => setStamina(parseInt(e.target.value))}
+                aria-label="体力等级"
               />
               <div className="qz-slider-value">{stamina}</div>
             </div>
@@ -194,6 +197,7 @@ export function Questionnaire({ onComplete, initial }: Props) {
                 max={5}
                 value={sun_tolerance}
                 onChange={(e) => setSun(parseInt(e.target.value))}
+                aria-label="晒太阳接受度"
               />
               <div className="qz-slider-value">{sun_tolerance}</div>
             </div>

@@ -133,8 +133,8 @@ export function PhotoEvalDialog({ onClose, onPickVenue }: Props) {
   }
 
   return (
-    <div className="modal-mask" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 460 }}>
+    <div className="modal-mask" onClick={onClose} role="presentation">
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 460 }} role="dialog" aria-modal="true">
         <h3>📸 合照彩蛋</h3>
 
         {phase === 'select' && !usingCamera && (

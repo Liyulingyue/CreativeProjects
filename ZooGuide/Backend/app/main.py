@@ -370,6 +370,7 @@ async def chat_endpoint(req: ChatRequest):
 class CheckinRequest(BaseModel):
     venue_id: str
     session_id: Optional[str] = None
+    source: Optional[str] = None
 
 
 class CheckinRecord(BaseModel):
@@ -388,11 +389,13 @@ def checkin(
         raise HTTPException(status_code=404, detail="venue not found")
     sid = req.session_id or (f"u{current_user['id']}" if current_user else "anon")
     user_id = current_user["id"] if current_user else None
+    note = f"source={req.source}" if req.source else None
     record = db.insert_checkin(
         venue_id=venue.id,
         venue_name=venue.name,
         session_id=sid,
         user_id=user_id,
+        note=note,
     )
     if user_id:
         items = db.list_checkins_by_user(user_id)

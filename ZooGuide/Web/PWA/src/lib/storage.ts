@@ -30,20 +30,111 @@ export function getSessionId(): string {
   return sid
 }
 
-const VISITED_KEY = 'zooguide:visited:v1'
+const VISITED_KEY = 'zooguide:visited:v2'
+const VISITED_KEY_V1 = 'zooguide:visited:v1'
 
-export function loadVisited(): Set<string> {
+export type VisitSource = 'route' | 'photo' | 'gps'
+
+export interface VisitedMap {
+  [venueId: string]: VisitSource[]
+}
+
+export function loadVisitedMap(): VisitedMap {
+  _migrateV1()
   try {
     const raw = localStorage.getItem(VISITED_KEY)
-    return new Set(raw ? JSON.parse(raw) : [])
+    return raw ? JSON.parse(raw) : {}
   } catch {
-    return new Set()
+    return {}
   }
 }
 
-export function saveVisited(ids: Set<string>) {
-  localStorage.setItem(VISITED_KEY, JSON.stringify([...ids]))
+function _migrateV1() {
+  if (!localStorage.getItem(VISITED_KEY_V1)) return
+  if (localStorage.getItem(VISITED_KEY)) return
+  try {
+    const raw = localStorage.getItem(VISITED_KEY_V1)
+    if (!raw) return
+    const arr: string[] = JSON.parse(raw)
+    if (!Array.isArray(arr)) return
+    const map: VisitedMap = {}
+    for (const id of arr) {
+      map[id] = ['route']
+    }
+    localStorage.setItem(VISITED_KEY, JSON.stringify(map))
+    localStorage.removeItem(VISITED_KEY_V1)
+  } catch {
+    // ignore corrupt v1 data
+  }
+}
+
+export function saveVisitedMap(map: VisitedMap) {
+  localStorage.setItem(VISITED_KEY, JSON.stringify(map))
   window.dispatchEvent(new Event('zooguide:visitedChanged'))
+}
+
+export function loadVisited(): Set<string> {
+  return new Set(Object.keys(loadVisitedMap()))
+}
+
+export function loadVisitedBySource(source: VisitSource): Set<string> {
+  const map = loadVisitedMap()
+  const ids = new Set<string>()
+  for (const [id, sources] of Object.entries(map)) {
+    if (sources.includes(source)) ids.add(id)
+  }
+  return ids
+}
+
+export function addVisitedSource(venueId: string, source: VisitSource) {
+  const map = loadVisitedMap()
+  const sources = map[venueId] || []
+  if (!sources.includes(source)) {
+    sources.push(source)
+    map[venueId] = sources
+  }
+  saveVisitedMap(map)
+}
+
+export function removeVisitedSource(venueId: string, source: VisitSource) {
+  const map = loadVisitedMap()
+  const sources = map[venueId]
+  if (sources) {
+    map[venueId] = sources.filter((s) => s !== source)
+    if (map[venueId].length === 0) delete map[venueId]
+  }
+  saveVisitedMap(map)
+}
+
+export function removeVisitedSourceAll(source: VisitSource) {
+  const map = loadVisitedMap()
+  for (const [id, sources] of Object.entries(map)) {
+    const filtered = sources.filter((s) => s !== source)
+    if (filtered.length === 0) {
+      delete map[id]
+    } else {
+      map[id] = filtered
+    }
+  }
+  saveVisitedMap(map)
+}
+
+export function hasVisitedSource(venueId: string, source: VisitSource): boolean {
+  const map = loadVisitedMap()
+  return (map[venueId] || []).includes(source)
+}
+
+export function saveVisited(ids: Set<string>) {
+  const map = loadVisitedMap()
+  for (const id of ids) {
+    if (!map[id]) map[id] = ['route']
+  }
+  for (const id of Object.keys(map)) {
+    if (!ids.has(id) && map[id].length === 1 && map[id][0] === 'route') {
+      delete map[id]
+    }
+  }
+  saveVisitedMap(map)
 }
 
 const ACTIVITY_VISITED_PREFIX = 'zooguide:activity:visited:'

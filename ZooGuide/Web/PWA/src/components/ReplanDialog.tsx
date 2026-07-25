@@ -45,8 +45,8 @@ export function ReplanDialog({ route, currentStopIdx, elapsedMinutes, onClose, o
   }
 
   return (
-    <div className="modal-mask" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-mask" onClick={onClose} role="presentation">
+      <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
         <h3>✨ 重新规划后半段</h3>
         <p style={{ fontSize: 13, color: 'var(--fg-muted)', margin: '0 0 12px' }}>
           当前在 <strong>{route.stops[currentStopIdx]?.venue_name || '尚未开始'}</strong>，

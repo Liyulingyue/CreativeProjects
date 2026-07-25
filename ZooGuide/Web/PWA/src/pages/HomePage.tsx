@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { Meta, Route, UserPreference, Venue } from '../types'
 import { api } from '../api/client'
-import { type AuthUser, loadActivityVisited, loadPhotoLog } from '../lib/storage'
+import { type AuthUser, loadActivityVisited, loadPhotoLog, addVisitedSource, removeVisitedSource } from '../lib/storage'
 import { useVisitedVenues } from '../hooks/useVisitedVenues'
 import { shortName } from '../lib/meta-helpers'
 
@@ -461,16 +461,12 @@ function ActiveRouteCard({
           className={`btn arc-cta-btn ${visited.has(currentStop.venue_id) ? 'on-arc-secondary' : 'arc-secondary'}`}
           onClick={(e) => {
             e.stopPropagation()
-            const next = new Set(visited)
-            if (next.has(currentStop.venue_id)) {
-              next.delete(currentStop.venue_id)
+            if (visited.has(currentStop.venue_id)) {
+              removeVisitedSource(currentStop.venue_id, 'route')
             } else {
-              next.add(currentStop.venue_id)
+              addVisitedSource(currentStop.venue_id, 'route')
             }
-            import('../lib/storage').then(({ saveVisited }) => {
-              saveVisited(next)
-            })
-            api.checkin(currentStop.venue_id).catch(() => {})
+            api.checkin(currentStop.venue_id, 'route').catch(() => {})
           }}
         >
           {visited.has(currentStop.venue_id) ? '✓ 已游览' : '🦒 已游览'}

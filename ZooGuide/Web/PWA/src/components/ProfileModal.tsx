@@ -38,8 +38,8 @@ export function ProfileModal({ onClose, onGoLogin }: Props) {
   const user = getStoredUser()
   if (!user) {
     return (
-      <div className="modal-mask" onClick={onClose}>
-        <div className="modal">
+      <div className="modal-mask" onClick={onClose} role="presentation">
+        <div className="modal" role="dialog" aria-modal="true">
           <h3>👤 我的</h3>
           <p style={{ fontSize: 13, color: 'var(--fg-muted)', margin: '0 0 16px' }}>
             登录后可以保存路线、打卡历史、照片评价，下次打开还在。
@@ -64,8 +64,8 @@ export function ProfileModal({ onClose, onGoLogin }: Props) {
   }
 
   return (
-    <div className="modal-mask" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-mask" onClick={onClose} role="presentation">
+      <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
         <h3>👤 {user.display_name}</h3>
         <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '0 0 12px' }}>
           @{user.username}

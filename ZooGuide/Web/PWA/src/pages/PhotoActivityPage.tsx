@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import type { Meta, Venue } from '../types'
 import { api } from '../api/client'
 import { PhotoFlow } from '../components/flows/PhotoFlow'
-import { loadPhotoLog, loadVisited, saveVisited, type PhotoLogEntry } from '../lib/storage'
+import { loadPhotoLog, loadVisitedBySource, addVisitedSource, type PhotoLogEntry } from '../lib/storage'
 import { useVisitedVenues } from '../hooks/useVisitedVenues'
 import { venueEmoji } from '../lib/venue-helpers'
 
@@ -78,11 +78,11 @@ export function PhotoActivityPage({ venues: venuesProp, meta }: Props) {
             <span>📍</span>
             <span>{area}</span>
             <span className="venue-list-count">
-              {list.filter((v) => visited.has(v.id)).length}/{list.length}
+              {list.filter((v) => loadVisitedBySource('photo').has(v.id)).length}/{list.length}
             </span>
           </div>
           {list.map((v) => {
-            const vVisited = visited.has(v.id)
+            const vVisited = loadVisitedBySource('photo').has(v.id)
             const vPhoto = photoLog.find((p) => p.matched_venue_id === v.id)
             return (
               <button
@@ -113,8 +113,8 @@ export function PhotoActivityPage({ venues: venuesProp, meta }: Props) {
       </div>
 
       {selectedVenue && !showFlow && (
-        <div className="modal-mask" onClick={() => setSelectedVenue(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-mask" onClick={() => setSelectedVenue(null)} role="presentation">
+          <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
             <h3>{venueEmoji(selectedVenue.id)} {selectedVenue.name}</h3>
             <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginBottom: 12 }}>
               {selectedVenue.animals.slice(0, 3).join(' · ')}
@@ -178,10 +178,8 @@ export function PhotoActivityPage({ venues: venuesProp, meta }: Props) {
               refreshData()
             }}
             onCheckinSuccess={(venueId) => {
-              const next = new Set(loadVisited())
-              next.add(venueId)
-              saveVisited(next)
-              api.checkin(venueId).catch(() => {})
+              addVisitedSource(venueId, 'photo')
+              api.checkin(venueId, 'photo').catch(() => {})
               refreshData()
             }}
           />

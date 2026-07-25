@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import { AuthModal } from '../components/AuthModal'
 import { PlanFlow } from '../components/PlanFlow'
-import { getStoredUser, clearAuth, loadPhotoLog, type AuthUser } from '../lib/storage'
+import { getStoredUser, clearAuth, loadPhotoLog, loadVisitedBySource, type AuthUser } from '../lib/storage'
 import { shortName } from '../lib/meta-helpers'
 import type { Meta, Route } from '../types'
 
@@ -107,6 +107,15 @@ export function ProfilePage({ user, onUserChange, onRouteOpen, meta }: Props) {
         </div>
 
         <div className="card" style={{ marginTop: 14 }}>
+          <h3 className="card-title">📊 打卡统计</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+            <StatBlock label="路线打卡" value={loadVisitedBySource('route').size} />
+            <StatBlock label="拍照打卡" value={loadVisitedBySource('photo').size} />
+            <StatBlock label="GPS打卡" value={loadVisitedBySource('gps').size} />
+          </div>
+        </div>
+
+        <div className="card" style={{ marginTop: 14 }}>
           <h3 className="card-title">🌟 试试这些</h3>
           <ul style={{ paddingLeft: 18, fontSize: 13, color: 'var(--fg)', lineHeight: 1.8 }}>
             <li>注册一个账号</li>
@@ -192,6 +201,12 @@ export function ProfilePage({ user, onUserChange, onRouteOpen, meta }: Props) {
 
       {summary && (
         <>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 12 }}>
+            <StatBlock label="路线打卡" value={loadVisitedBySource('route').size} />
+            <StatBlock label="拍照打卡" value={loadVisitedBySource('photo').size} />
+            <StatBlock label="GPS打卡" value={loadVisitedBySource('gps').size} />
+          </div>
 
           <Section title="🧭 我的路线">
             {summary.recent_routes.length > 0 ? (() => {

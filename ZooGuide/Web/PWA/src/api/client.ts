@@ -65,10 +65,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(params),
     }),
-  checkin: (venue_id: string, session_id?: string) =>
+  checkin: (venue_id: string, source?: string, session_id?: string) =>
     request<CheckinResponse>('/api/checkin', {
       method: 'POST',
-      body: JSON.stringify({ venue_id, session_id }),
+      body: JSON.stringify({ venue_id, source, session_id }),
     }),
   getCheckins: (session_id: string) =>
     request<{ session_id: string; checkins: any[]; completion_rate: number }>(

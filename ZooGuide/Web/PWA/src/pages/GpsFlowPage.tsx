@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { Meta, Venue } from '../types'
 import { api, authHeader } from '../api/client'
-import { loadVisited, saveVisited } from '../lib/storage'
+import { loadVisitedBySource, addVisitedSource } from '../lib/storage'
 import { useVisitedVenues } from '../hooks/useVisitedVenues'
 import { venueEmoji } from '../lib/venue-helpers'
 
@@ -68,10 +68,8 @@ export function GpsFlowPage({ venues: venuesProp, meta }: Props) {
 
           const success = dist <= 200
           if (success) {
-            const next = new Set(loadVisited())
-            next.add(v.id)
-            saveVisited(next)
-            api.checkin(v.id).catch(() => {})
+            addVisitedSource(v.id, 'gps')
+            api.checkin(v.id, 'gps').catch(() => {})
           }
 
           setResult({
@@ -121,11 +119,11 @@ export function GpsFlowPage({ venues: venuesProp, meta }: Props) {
             <span>📍</span>
             <span>{area}</span>
             <span className="venue-list-count">
-              {list.filter((v) => visited.has(v.id)).length}/{list.length}
+              {list.filter((v) => loadVisitedBySource('gps').has(v.id)).length}/{list.length}
             </span>
           </div>
           {list.map((v) => {
-            const isVisited = visited.has(v.id)
+            const isVisited = loadVisitedBySource('gps').has(v.id)
             return (
               <button
                 key={v.id}
@@ -154,8 +152,8 @@ export function GpsFlowPage({ venues: venuesProp, meta }: Props) {
       </div>
 
       {selectedVenue && (
-        <div className="modal-mask" onClick={() => { setSelectedVenue(null); setResult(null); setError(null) }}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-mask" onClick={() => { setSelectedVenue(null); setResult(null); setError(null) }} role="presentation">
+          <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
             <h3>{venueEmoji(selectedVenue.id)} {selectedVenue.name}</h3>
 
             {locating && (
