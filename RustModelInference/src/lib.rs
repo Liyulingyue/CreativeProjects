@@ -5,6 +5,7 @@ pub mod quant;
 pub mod model;
 pub mod ops;
 pub mod tokenizer;
+pub mod scratchpad;
 
 pub use traits::{Layer, ExecContext, ModelConfig};
 pub use memory::{PagedKVBlock, BlockAllocator, MemoryArena, KVCacheView};
@@ -15,3 +16,4 @@ pub use model::{
 };
 pub use ops::*;
 pub use tokenizer::BPETokenizer;
+pub use scratchpad::{ExecutionScratchpad, KvCache, KvCacheF16, KvCacheF32};
