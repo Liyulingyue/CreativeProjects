@@ -81,9 +81,12 @@ export function RouteView({
           onApplyVariant={(r) => {
             onRouteUpdate(r)
             setSubTab('current')
-            setCurrentStopIdx(0)
+            const visitedIds = visited
+            const firstUnvisited = r.stops.findIndex((s) => !visitedIds.has(s.venue_id))
+            const newIdx = firstUnvisited >= 0 ? firstUnvisited : r.stops.length - 1
+            setCurrentStopIdx(newIdx)
             try {
-              localStorage.setItem(`zooguide:currentStop:${r.id}`, '0')
+              localStorage.setItem(`zooguide:currentStop:${r.id}`, String(newIdx))
             } catch {}
           }}
         />
@@ -98,10 +101,16 @@ export function RouteView({
           onReplanned={(r) => {
             onRouteUpdate(r)
             setSubTab('current')
-            // keep currentStopIdx pointing to similar venue
           }}
           onRestartQuiz={() => onRestartQuiz?.()}
           onOpenChat={() => onOpenChat?.()}
+          onResetProgress={() => {
+            setCurrentStopIdx(0)
+            try {
+              localStorage.setItem(`zooguide:currentStop:${route.id}`, '0')
+            } catch {}
+            setSubTab('current')
+          }}
         />
       )}
 
@@ -131,13 +140,4 @@ export function RouteView({
       </nav>
     </div>
   )
-}
-
-function loadVisited(): Set<string> {
-  try {
-    const raw = localStorage.getItem('zooguide:visited:v1')
-    return new Set(raw ? JSON.parse(raw) : [])
-  } catch {
-    return new Set()
-  }
 }

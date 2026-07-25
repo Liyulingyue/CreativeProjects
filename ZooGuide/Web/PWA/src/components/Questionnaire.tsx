@@ -15,33 +15,40 @@ export function Questionnaire({ onComplete, initial }: Props) {
   const [step, setStep] = useState(0)
 
   const [available_hours, setHours] = useState(initial?.available_hours ?? 3)
-  const [party_type, setPartyType] = useState<PartyType>(initial?.party_type ?? 'family_young')
-  const [with_kids, setWithKids] = useState(initial?.with_kids ?? true)
-  const [kids_age, setKidsAge] = useState<number | undefined>(initial?.kids_age ?? 5)
+  const [party_type, setPartyType] = useState<PartyType | null>(initial?.party_type ?? null)
+  const [with_kids, setWithKids] = useState(initial?.with_kids ?? false)
+  const [kids_age, setKidsAge] = useState<number | undefined>(initial?.kids_age ?? undefined)
   const [stamina, setStamina] = useState(initial?.stamina ?? 3)
   const [sun_tolerance, setSun] = useState(initial?.sun_tolerance ?? 3)
   const [willing_to_hike, setHike] = useState(initial?.willing_to_hike ?? false)
   const [animal_interests, setInterests] = useState<InterestTag[]>(initial?.animal_interests ?? [])
-  const [entry_gate, setGate] = useState<Gate>(initial?.entry_gate ?? 'north')
+  const [entry_gate, setGate] = useState<Gate | null>(initial?.entry_gate ?? null)
   const [start_time, setStartTime] = useState(initial?.start_time ?? '09:00')
 
   if (!opts) {
     return <div className="loading"><div className="spinner" />加载问卷选项…</div>
   }
 
+  function canProceed(): boolean {
+    if (step === 1) return party_type !== null
+    if (step === 4) return entry_gate !== null
+    return true
+  }
+
   function next() {
+    if (!canProceed()) return
     if (step < TOTAL_STEPS - 1) setStep(step + 1)
     else {
       const prefs: UserPreference = {
         available_hours,
-        party_type,
+        party_type: party_type!,
         with_kids,
         kids_age: with_kids ? kids_age : null,
         stamina,
         sun_tolerance,
         willing_to_hike,
         animal_interests,
-        entry_gate,
+        entry_gate: entry_gate!,
         start_time,
         fast: false,
       }
@@ -134,10 +141,10 @@ export function Questionnaire({ onComplete, initial }: Props) {
                 <div className="qz-slider-value">{kids_age ?? 5}</div>
               </div>
               <div className="qz-slider-desc">
-                {kids_age !== undefined && kids_age <= 3 && '学龄前：节奏要慢，多休息'}
-                {kids_age !== undefined && kids_age > 3 && kids_age <= 6 && '幼儿园：可以多看明星动物'}
-                {kids_age !== undefined && kids_age > 6 && kids_age <= 12 && '小学：能听懂小科普'}
-                {kids_age !== undefined && kids_age > 12 && '中学：可以加深度讲解'}
+                {(kids_age ?? 5) <= 3 && '学龄前：节奏要慢，多休息'}
+                {(kids_age ?? 5) > 3 && (kids_age ?? 5) <= 6 && '幼儿园：可以多看明星动物'}
+                {(kids_age ?? 5) > 6 && (kids_age ?? 5) <= 12 && '小学：能听懂小科普'}
+                {(kids_age ?? 5) > 12 && '中学：可以加深度讲解'}
               </div>
             </div>
           )}
@@ -246,7 +253,7 @@ export function Questionnaire({ onComplete, initial }: Props) {
             ← 上一步
           </button>
         )}
-        <button className="btn btn-primary" onClick={next}>
+        <button className="btn btn-primary" onClick={next} disabled={!canProceed()}>
           {step < TOTAL_STEPS - 1 ? '下一步 →' : '生成路线 ✨'}
         </button>
       </div>

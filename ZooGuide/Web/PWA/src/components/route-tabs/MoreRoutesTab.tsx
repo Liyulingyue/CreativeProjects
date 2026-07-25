@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../api/client'
 import type { Route, UserPreference } from '../../types'
+import { loadVisited } from '../../lib/storage'
 
 interface Props {
   prefs: UserPreference | null
@@ -16,6 +17,7 @@ export function MoreRoutesTab({ prefs, currentRoute, onApplyVariant }: Props) {
   const [variants, setVariants] = useState<Variant[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [confirmVariant, setConfirmVariant] = useState<Variant | null>(null)
 
   async function load() {
     if (!prefs) return
@@ -35,6 +37,49 @@ export function MoreRoutesTab({ prefs, currentRoute, onApplyVariant }: Props) {
     load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefs?.available_hours, prefs?.party_type, prefs?.entry_gate])
+
+  function computeDiff(variant: Variant) {
+    const visited = loadVisited()
+    const currentIds = currentRoute.stops.map((s) => s.venue_id)
+    const variantIds = variant.stops.map((s) => s.venue_id)
+
+    const visitedIds = currentRoute.stops
+      .filter((s) => visited.has(s.venue_id))
+      .map((s) => s.venue_id)
+
+    const kept: string[] = []
+    const removed: string[] = []
+    const added: string[] = []
+
+    for (const id of visitedIds) {
+      if (variantIds.includes(id)) kept.push(id)
+      else removed.push(id)
+    }
+    for (const id of variantIds) {
+      if (!currentIds.includes(id) || (!visitedIds.includes(id) && !removed.includes(id) && !kept.includes(id))) {
+        if (!kept.includes(id) && !removed.includes(id)) added.push(id)
+      }
+    }
+
+    const addedClean = variantIds.filter((id) => !currentIds.includes(id))
+
+    return { kept, removed, added: addedClean }
+  }
+
+  function getVenueName(id: string, route: Route): string {
+    const stop = route.stops.find((s) => s.venue_id === id)
+    return stop?.venue_name || id
+  }
+
+  function handleApply(variant: Variant) {
+    setConfirmVariant(variant)
+  }
+
+  function confirmApply() {
+    if (!confirmVariant) return
+    onApplyVariant(confirmVariant)
+    setConfirmVariant(null)
+  }
 
   return (
     <div className="more-tab">
@@ -143,7 +188,7 @@ export function MoreRoutesTab({ prefs, currentRoute, onApplyVariant }: Props) {
               className="btn btn-primary btn-full"
               disabled={sameAsCurrent}
               style={sameAsCurrent ? { background: '#9bb5a5', cursor: 'not-allowed' } : undefined}
-              onClick={() => onApplyVariant(v)}
+              onClick={() => handleApply(v)}
             >
               {sameAsCurrent ? '✓ 当前方案' : '📍 应用此方案'}
             </button>
@@ -156,6 +201,58 @@ export function MoreRoutesTab({ prefs, currentRoute, onApplyVariant }: Props) {
           暂无可用方案
         </div>
       )}
+
+      {confirmVariant && (() => {
+        const diff = computeDiff(confirmVariant)
+        return (
+          <div className="modal-mask" onClick={() => setConfirmVariant(null)}>
+            <div className="modal" onClick={(e) => e.stopPropagation()}>
+              <h3>确认切换方案</h3>
+              <div style={{ fontSize: 13, color: 'var(--fg-muted)', marginBottom: 14, lineHeight: 1.6 }}>
+                应用「{confirmVariant.variant_label || '新方案'}」会替换当前路线：
+              </div>
+
+              {diff.kept.length > 0 && (
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ fontSize: 12, color: '#10b981', fontWeight: 700, marginBottom: 4 }}>✅ 保留已游览</div>
+                  <div style={{ fontSize: 12, color: 'var(--fg)', lineHeight: 1.6 }}>
+                    {diff.kept.map((id) => getVenueName(id, currentRoute)).join('、')}
+                  </div>
+                </div>
+              )}
+
+              {diff.removed.length > 0 && (
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ fontSize: 12, color: '#ef4444', fontWeight: 700, marginBottom: 4 }}>❌ 已游览但不在新方案中</div>
+                  <div style={{ fontSize: 12, color: 'var(--fg)', lineHeight: 1.6 }}>
+                    {diff.removed.map((id) => getVenueName(id, currentRoute)).join('、')}
+                  </div>
+                </div>
+              )}
+
+              {diff.added.length > 0 && (
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ fontSize: 12, color: '#3b82f6', fontWeight: 700, marginBottom: 4 }}>🆕 新增场馆</div>
+                  <div style={{ fontSize: 12, color: 'var(--fg)', lineHeight: 1.6 }}>
+                    {diff.added.map((id) => getVenueName(id, confirmVariant)).join('、')}
+                  </div>
+                </div>
+              )}
+
+              <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 8, marginBottom: 14, display: 'flex', gap: 16 }}>
+                <span>⏱️ {Math.round(currentRoute.total_minutes / 60 * 10) / 10}h → {Math.round(confirmVariant.total_minutes / 60 * 10) / 10}h</span>
+                <span>🚶 {Math.round(currentRoute.total_walk_minutes)}→{Math.round(confirmVariant.total_walk_minutes)}分钟步行</span>
+                <span>📍 {currentRoute.stops.length}→{confirmVariant.stops.length}馆</span>
+              </div>
+
+              <div className="modal-actions">
+                <button className="btn btn-ghost" onClick={() => setConfirmVariant(null)}>取消</button>
+                <button className="btn btn-primary" onClick={confirmApply}>确认应用</button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 }

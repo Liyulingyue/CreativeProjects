@@ -40,7 +40,7 @@ export default function App() {
   const [route, setRoute] = useState<RouteType | null>(null)
   const [user, setUser] = useState<AuthUser | null>(getStoredUser())
   const [planOpen, setPlanOpen] = useState(false)
-  const [planInitialStage, setPlanInitialStage] = useState<'quiz' | undefined>(undefined)
+  const [planInitialStage, setPlanInitialStage] = useState<'home' | 'quiz' | 'route' | undefined>(undefined)
 
   useEffect(() => {
     api.meta().then(setMeta).catch(console.error)
@@ -66,8 +66,12 @@ export default function App() {
   }
 
   function openPlan() {
+    if (route) {
+      setPlanInitialStage('route')
+    } else {
+      setPlanInitialStage('quiz')
+    }
     setPlanOpen(true)
-    setPlanInitialStage(undefined)
   }
 
   function openPlanAtQuiz() {
