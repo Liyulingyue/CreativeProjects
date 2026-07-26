@@ -1,3 +1,30 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static HAS_AVX2_FMA: AtomicBool = AtomicBool::new(false);
+static HAS_F16C: AtomicBool = AtomicBool::new(false);
+static INIT_DONE: AtomicBool = AtomicBool::new(false);
+
+fn init_cpu_features() {
+    if INIT_DONE.load(Ordering::Relaxed) { return; }
+    let avx2_fma = is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma");
+    let f16c = is_x86_feature_detected!("f16c");
+    HAS_AVX2_FMA.store(avx2_fma, Ordering::Relaxed);
+    HAS_F16C.store(f16c, Ordering::Relaxed);
+    INIT_DONE.store(true, Ordering::Relaxed);
+}
+
+#[inline(always)]
+pub fn has_avx2_fma() -> bool {
+    if !INIT_DONE.load(Ordering::Relaxed) { init_cpu_features(); }
+    HAS_AVX2_FMA.load(Ordering::Relaxed)
+}
+
+#[inline(always)]
+pub fn has_f16c() -> bool {
+    if !INIT_DONE.load(Ordering::Relaxed) { init_cpu_features(); }
+    HAS_F16C.load(Ordering::Relaxed)
+}
+
 #[inline]
 pub fn f16_to_f32(bits: u16) -> f32 {
     #[cfg(target_feature = "f16c")]
@@ -31,7 +58,7 @@ pub fn f16_to_f32(bits: u16) -> f32 {
 }
 
 #[inline]
-fn f32_to_f16(v: f32) -> u16 {
+pub fn f32_to_f16(v: f32) -> u16 {
     #[cfg(target_feature = "f16c")]
     {
         unsafe {
@@ -68,7 +95,7 @@ pub fn f32_slice_to_f16(src: &[f32], dst: &mut [u16]) {
     debug_assert_eq!(src.len(), dst.len());
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("f16c") {
+        if has_f16c() {
             unsafe { f32_slice_to_f16_avx2(src, dst); }
             return;
         }
@@ -106,11 +133,65 @@ pub fn rms_norm(input: &[f32], weight: &[f32], output: &mut [f32], eps: f32) {
 
 pub fn rms_norm_inplace(x: &mut [f32], weight: &[f32], eps: f32) {
     let n = x.len().min(weight.len());
-    let sum_sq: f32 = x[..n].iter().map(|&v| v * v).sum();
+    let sum_sq = sum_sq_f32(&x[..n]);
     let scale = 1.0f32 / (sum_sq / n as f32 + eps).sqrt();
-    for i in 0..n {
-        x[i] = x[i] * scale * weight[i];
+    scale_mul_inplace(scale, &weight[..n], &mut x[..n]);
+}
+
+fn sum_sq_f32(x: &[f32]) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if has_avx2_fma() {
+            return unsafe { sum_sq_f32_avx2(x) };
+        }
     }
+    x.iter().map(|&v| v * v).sum()
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "fma")]
+unsafe fn sum_sq_f32_avx2(x: &[f32]) -> f32 {
+    use std::arch::x86_64::*;
+    let n = x.len();
+    let n8 = n / 8 * 8;
+    let mut acc = _mm256_setzero_ps();
+    let mut i = 0;
+    while i < n8 {
+        let v = _mm256_loadu_ps(x.as_ptr().add(i));
+        acc = _mm256_fmadd_ps(v, v, acc);
+        i += 8;
+    }
+    let mut sum = hsum_ps(acc);
+    while i < n { sum += x[i] * x[i]; i += 1; }
+    sum
+}
+
+fn scale_mul_inplace(scale: f32, weight: &[f32], x: &mut [f32]) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if has_avx2_fma() {
+            unsafe { scale_mul_avx2(scale, weight, x) };
+            return;
+        }
+    }
+    for i in 0..weight.len() { x[i] = x[i] * scale * weight[i]; }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "fma")]
+unsafe fn scale_mul_avx2(scale: f32, weight: &[f32], x: &mut [f32]) {
+    use std::arch::x86_64::*;
+    let n = weight.len();
+    let n8 = n / 8 * 8;
+    let vscale = _mm256_set1_ps(scale);
+    let mut i = 0;
+    while i < n8 {
+        let vx = _mm256_loadu_ps(x.as_ptr().add(i));
+        let vw = _mm256_loadu_ps(weight.as_ptr().add(i));
+        _mm256_storeu_ps(x.as_mut_ptr().add(i), _mm256_mul_ps(_mm256_mul_ps(vx, vscale), vw));
+        i += 8;
+    }
+    while i < n { x[i] = x[i] * scale * weight[i]; i += 1; }
 }
 
 pub fn rope_neox(x: &mut [f32], pos: usize, head_dim: usize, freq_base: f32) {
@@ -127,6 +208,87 @@ pub fn rope_neox(x: &mut [f32], pos: usize, head_dim: usize, freq_base: f32) {
             let x1 = x[base + i + half];
             x[base + i] = x0 * cos_a - x1 * sin_a;
             x[base + i + half] = x0 * sin_a + x1 * cos_a;
+        }
+    }
+}
+
+pub fn rope_mrope(x: &mut [f32], positions: [usize; 4], sections: [i32; 4], head_dim: usize, freq_base: f32) {
+    let n_heads = x.len() / head_dim;
+    let half = head_dim / 2;
+    let total_sections: i32 = sections.iter().sum();
+    if total_sections == 0 {
+        rope_neox(x, positions[0], head_dim, freq_base);
+        return;
+    }
+    for h in 0..n_heads {
+        let base = h * head_dim;
+        let mut dim_offset = 0usize;
+        for s in 0..4 {
+            let sec_len = sections[s] as usize;
+            if sec_len == 0 { continue; }
+            let pos = positions[s];
+            for i in 0..sec_len {
+                let freq = 1.0f32 / freq_base.powf(2.0 * (dim_offset + i) as f32 / total_sections as f32);
+                let angle = pos as f32 * freq;
+                let cos_a = angle.cos();
+                let sin_a = angle.sin();
+                let idx0 = base + dim_offset + i;
+                let idx1 = base + dim_offset + i + half;
+                if idx1 < x.len() {
+                    let x0 = x[idx0];
+                    let x1 = x[idx1];
+                    x[idx0] = x0 * cos_a - x1 * sin_a;
+                    x[idx1] = x0 * sin_a + x1 * cos_a;
+                }
+            }
+            dim_offset += sec_len;
+        }
+    }
+}
+
+pub fn rope_mrope_interleaved(x: &mut [f32], positions: [usize; 4], sections: [i32; 4], head_dim: usize, freq_base: f32, n_rope_dims: usize) {
+    let n_heads = x.len() / head_dim;
+    let half = head_dim / 2;
+    let sect_dims: usize = sections.iter().map(|&s| s as usize).sum();
+
+    for h in 0..n_heads {
+        let base = h * head_dim;
+        let mut theta_t = positions[0] as f32;
+        let mut theta_h = positions[1] as f32;
+        let mut theta_w = positions[2] as f32;
+        let mut theta_e = positions[3] as f32;
+        let theta_scale = 1.0f32 / freq_base;
+
+        for i0 in 0..n_rope_dims {
+            let sector = i0 % sect_dims;
+            let pos_f = if sector % 3 == 0 && sector < 3 * sections[0] as usize {
+                theta_t
+            } else if sector % 3 == 1 && sector < 3 * sections[1] as usize {
+                theta_h
+            } else if sector % 3 == 2 && sector < 3 * sections[2] as usize {
+                theta_w
+            } else {
+                theta_e
+            };
+
+            let freq = 1.0f32 / freq_base.powf(2.0 * i0 as f32 / sect_dims as f32);
+            let angle = pos_f * freq;
+            let cos_a = angle.cos();
+            let sin_a = angle.sin();
+
+            let idx0 = base + i0;
+            let idx1 = base + i0 + half;
+            if idx1 < x.len() {
+                let x0 = x[idx0];
+                let x1 = x[idx1];
+                x[idx0] = x0 * cos_a - x1 * sin_a;
+                x[idx1] = x0 * sin_a + x1 * cos_a;
+            }
+
+            theta_t *= theta_scale;
+            theta_h *= theta_scale;
+            theta_w *= theta_scale;
+            theta_e *= theta_scale;
         }
     }
 }
@@ -166,7 +328,7 @@ fn dot_f32_scalar(a: &[f32], b: &[f32], n: usize) -> f32 {
 pub fn dot_f16_f32(a: &[f32], b_f16: &[u16], n: usize) -> f32 {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") && is_x86_feature_detected!("f16c") {
+        if has_avx2_fma() && has_f16c() {
             return unsafe { dot_f16_f32_avx2(a, b_f16, n) };
         }
     }
@@ -199,7 +361,7 @@ pub fn vec_mad_f16_f32(y: &mut [f32], x_f16: &[u16], v: f32) {
     debug_assert_eq!(y.len(), x_f16.len());
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") && is_x86_feature_detected!("f16c") {
+        if has_avx2_fma() && has_f16c() {
             unsafe { vec_mad_f16_f32_avx2(y, x_f16, v); }
             return;
         }
@@ -238,7 +400,7 @@ unsafe fn vec_mad_f16_f32_avx2(y: &mut [f32], x_f16: &[u16], v: f32) {
 pub fn dot_f32(a: &[f32], b: &[f32], n: usize) -> f32 {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+        if has_avx2_fma() {
             return unsafe { dot_f32_avx2(a, b, n) };
         }
     }
@@ -249,7 +411,7 @@ pub fn dot_f32(a: &[f32], b: &[f32], n: usize) -> f32 {
 pub fn vec_scale_f32(y: &mut [f32], v: f32) {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+        if has_avx2_fma() {
             unsafe { vec_scale_f32_avx2(y, v); }
             return;
         }
@@ -286,7 +448,7 @@ pub fn vec_mad_f32(y: &mut [f32], x: &[f32], v: f32) {
     debug_assert_eq!(y.len(), x.len());
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+        if has_avx2_fma() {
             unsafe { vec_mad_f32_avx2(y, x, v); }
             return;
         }
@@ -338,7 +500,7 @@ pub fn quantize_q8_0_into(input: &[f32], n: usize, q8: &mut [u8], scales: &mut [
     let blocks = n / 32;
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") {
+        if has_avx2_fma() {
             unsafe { quantize_q8_0_into_avx2(input, n, q8, scales); }
             return;
         }
@@ -365,7 +527,7 @@ pub fn quantize_q8_0_into_parallel(input: &[f32], n: usize, q8: &mut [u8], scale
     let b_end = (ith + 1) * blocks / nth;
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") {
+        if has_avx2_fma() {
             unsafe { quantize_q8_0_into_avx2_range(input, q8, scales, b_start, b_end); }
             return;
         }
@@ -589,7 +751,7 @@ unsafe fn matmul_q8_0_avx2_range(weight: &[u8], input: &[f32], output: &mut [f32
 }
 
 #[inline]
-unsafe fn hsum_ps(v: std::arch::x86_64::__m256) -> f32 {
+pub unsafe fn hsum_ps(v: std::arch::x86_64::__m256) -> f32 {
     use std::arch::x86_64::*;
     let hi = _mm256_extractf128_ps(v, 1);
     let lo = _mm256_castps256_ps128(v);
@@ -604,7 +766,7 @@ pub fn matmul_q8_0_via_q8(weight: &[u8], input: &[f32], output: &mut [f32], n_in
     quantize_q8_0_into(input, n_in, q8_buf, scale_buf);
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+        if has_avx2_fma() {
             unsafe { matmul_q8_0_vs_q8_0_avx2(weight, q8_buf, scale_buf, output, n_in, 0, n_out); }
             return;
         }
@@ -658,7 +820,7 @@ fn matmul_q8_0_fallback_range(weight: &[u8], input: &[f32], output: &mut [f32], 
 pub fn matmul_q8_0_quantized(weight: &[u8], input_q8: &[u8], input_scales: &[f32], output: &mut [f32], n_in: usize, n_out: usize) {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+        if has_avx2_fma() {
             unsafe { matmul_q8_0_vs_q8_0_avx2(weight, input_q8, input_scales, output, n_in, 0, n_out); }
             return;
         }
@@ -713,7 +875,7 @@ pub fn matmul_q8_0_quantized_dynamic(weight: &[u8], input_q8: &[u8], input_scale
 
 pub fn matmul_q8_0_quantized_range(weight: &[u8], input_q8: &[u8], input_scales: &[f32], output: &mut [f32], n_in: usize, row_start: usize, row_end: usize) {
     debug_assert_eq!(output.len(), row_end - row_start);
-    let use_avx2 = cfg!(target_arch = "x86_64") && is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma");
+    let use_avx2 = has_avx2_fma();
     if use_avx2 {
         unsafe { matmul_q8_0_vs_q8_0_avx2(weight, input_q8, input_scales, output, n_in, row_start, row_end); }
     } else {
@@ -738,8 +900,71 @@ pub fn matmul_q8_0_quantized_range(weight: &[u8], input_q8: &[u8], input_scales:
     }
 }
 
+pub fn q8_0_dot_row(weight: &[u8], input_q8: &[u8], input_scales: &[f32], n_in: usize, row: usize, use_avx2: bool) -> f32 {
+    let blocks_per_row = n_in / 32;
+    let row_stride = blocks_per_row * 34;
+    if use_avx2 {
+        unsafe { q8_0_dot_row_avx2(weight, input_q8, input_scales, n_in, row, blocks_per_row, row_stride) }
+    } else {
+        let row_off = row * row_stride;
+        let mut sum = 0.0f32;
+        for b in 0..blocks_per_row {
+            let w_off = row_off + b * 34;
+            let wd = f16_to_f32(u16::from_le_bytes([weight[w_off], weight[w_off + 1]]));
+            let id = input_scales[b];
+            let d = wd * id;
+            let qs = &weight[w_off + 2..w_off + 34];
+            let inp = &input_q8[b * 32..(b + 1) * 32];
+            let mut local = 0i32;
+            for k in 0..32 { local += (qs[k] as i8 as i32) * (inp[k] as i8 as i32); }
+            sum += d * local as f32;
+        }
+        sum
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "fma")]
+unsafe fn q8_0_dot_row_avx2(weight: &[u8], input_q8: &[u8], input_scales: &[f32], n_in: usize, row: usize, blocks_per_row: usize, row_stride: usize) -> f32 {
+    use std::arch::x86_64::*;
+    let ones = _mm256_set1_epi16(1);
+    let row_off = row * row_stride;
+    let mut acc = _mm256_setzero_ps();
+    for b in 0..blocks_per_row {
+        let w_off = row_off + b * 34;
+        let d = f16_to_f32(u16::from_le_bytes([*weight.as_ptr().add(w_off), *weight.as_ptr().add(w_off + 1)])) * *input_scales.as_ptr().add(b);
+        let d_v = _mm256_set1_ps(d);
+        let qx = _mm256_loadu_si256(weight.as_ptr().add(w_off + 2) as *const __m256i);
+        let qy = _mm256_loadu_si256(input_q8.as_ptr().add(b * 32) as *const __m256i);
+        let ax = _mm256_sign_epi8(qx, qx);
+        let sy = _mm256_sign_epi8(qy, qx);
+        let dot = _mm256_maddubs_epi16(ax, sy);
+        let summed = _mm256_madd_epi16(ones, dot);
+        acc = _mm256_fmadd_ps(d_v, _mm256_cvtepi32_ps(summed), acc);
+    }
+    hsum_ps(acc)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+unsafe fn q8_0_dot_row_avx2(weight: &[u8], input_q8: &[u8], input_scales: &[f32], n_in: usize, row: usize, blocks_per_row: usize, row_stride: usize) -> f32 {
+    let row_off = row * row_stride;
+    let mut sum = 0.0f32;
+    for b in 0..blocks_per_row {
+        let w_off = row_off + b * 34;
+        let wd = f16_to_f32(u16::from_le_bytes([weight[w_off], weight[w_off + 1]]));
+        let id = input_scales[b];
+        let d = wd * id;
+        let qs = &weight[w_off + 2..w_off + 34];
+        let inp = &input_q8[b * 32..(b + 1) * 32];
+        let mut local = 0i32;
+        for k in 0..32 { local += (qs[k] as i8 as i32) * (inp[k] as i8 as i32); }
+        sum += d * local as f32;
+    }
+    sum
+}
+
 pub fn matmul_q8_0_quantized_parallel(weight: &[u8], input_q8: &[u8], input_scales: &[f32], output: &mut [f32], n_in: usize, n_out: usize) {
-    let use_avx2 = cfg!(target_arch = "x86_64") && is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma");
+    let use_avx2 = has_avx2_fma();
     let min_rows = 64;
     parallel_range(weight, input_q8, input_scales, output, n_in, 0, n_out, use_avx2, min_rows);
 }
@@ -783,7 +1008,7 @@ fn parallel_range(weight: &[u8], input_q8: &[u8], input_scales: &[f32], output: 
 pub fn matmul_q8_0(weight: &[u8], input: &[f32], output: &mut [f32], n_in: usize, n_out: usize) {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+        if has_avx2_fma() {
             unsafe { matmul_q8_0_avx2_range(weight, input, output, n_in, 0, n_out); }
             return;
         }
@@ -793,7 +1018,7 @@ pub fn matmul_q8_0(weight: &[u8], input: &[f32], output: &mut [f32], n_in: usize
 
 pub fn matmul_q8_0_parallel(weight: &[u8], input: &[f32], output: &mut [f32], n_in: usize, n_out: usize, _n_threads: usize) {
     use rayon::prelude::*;
-    let use_avx2 = cfg!(target_arch = "x86_64") && is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma");
+    let use_avx2 = has_avx2_fma();
     let chunk = 128;
     output.par_chunks_mut(chunk).enumerate().for_each(|(i, out_slice)| {
         let rs = i * chunk;
@@ -816,7 +1041,7 @@ pub struct MatmulTask<'a> {
 
 pub fn matmul_q8_0_batch(tasks: &mut [MatmulTask<'_>]) {
     use rayon::prelude::*;
-    let use_avx2 = cfg!(target_arch = "x86_64") && is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma");
+    let use_avx2 = has_avx2_fma();
     let chunk = 128;
     struct TaskInfo {
         w_ptr: usize, w_len: usize,
@@ -894,4 +1119,196 @@ pub fn sample_top_k(logits: &[f32], k: usize) -> Vec<(usize, f32)> {
         for (_, p) in top.iter_mut() { *p /= sum; }
     }
     top
+}
+
+#[inline(always)]
+pub fn ssm_state_decay(state: &mut [f32], decay: f32) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if has_avx2_fma() {
+            unsafe { ssm_state_decay_avx2(state, decay) };
+            return;
+        }
+    }
+    for v in state.iter_mut() { *v *= decay; }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "fma")]
+unsafe fn ssm_state_decay_avx2(state: &mut [f32], decay: f32) {
+    use std::arch::x86_64::*;
+    let vdecay = _mm256_set1_ps(decay);
+    let n = state.len();
+    let mut i = 0;
+    while i + 8 <= n {
+        let s = _mm256_loadu_ps(state.as_ptr().add(i));
+        _mm256_storeu_ps(state.as_mut_ptr().add(i), _mm256_mul_ps(s, vdecay));
+        i += 8;
+    }
+    while i < n {
+        state[i] *= decay;
+        i += 1;
+    }
+}
+
+#[inline(always)]
+pub fn ssm_matvec(state: &[f32], vec: &[f32], dim: usize, n_rows: usize, out: &mut [f32]) {
+    debug_assert_eq!(state.len(), n_rows * dim);
+    debug_assert_eq!(vec.len(), dim);
+    debug_assert!(out.len() >= n_rows);
+    #[cfg(target_arch = "x86_64")]
+    {
+        if has_avx2_fma() {
+            unsafe { ssm_matvec_avx2(state, vec, dim, n_rows, out) };
+            return;
+        }
+    }
+    for r in 0..n_rows {
+        out[r] = dot_f32_scalar(&state[r * dim..][..dim], vec, dim);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "fma")]
+unsafe fn ssm_matvec_avx2(state: &[f32], vec: &[f32], dim: usize, n_rows: usize, out: &mut [f32]) {
+    use std::arch::x86_64::*;
+    let n8 = dim / 8 * 8;
+    for r in 0..n_rows {
+        let row = state.as_ptr().add(r * dim);
+        let mut acc = _mm256_setzero_ps();
+        let mut i = 0;
+        while i < n8 {
+            let vs = _mm256_loadu_ps(row.add(i));
+            let vv = _mm256_loadu_ps(vec.as_ptr().add(i));
+            acc = _mm256_fmadd_ps(vs, vv, acc);
+            i += 8;
+        }
+        let mut sum = hsum_ps(acc);
+        while i < dim {
+            sum += *row.add(i) * vec[i];
+            i += 1;
+        }
+        out[r] = sum;
+    }
+}
+
+#[inline(always)]
+pub fn ssm_outer_product_update(state: &mut [f32], k: &[f32], d_vec: &[f32], dim: usize) {
+    debug_assert_eq!(state.len(), dim * dim);
+    debug_assert_eq!(k.len(), dim);
+    debug_assert_eq!(d_vec.len(), dim);
+    #[cfg(target_arch = "x86_64")]
+    {
+        if has_avx2_fma() {
+            unsafe { ssm_outer_product_update_avx2(state, k, d_vec, dim) };
+            return;
+        }
+    }
+    for d in 0..dim {
+        let dv = d_vec[d];
+        for s in 0..dim {
+            state[d * dim + s] += k[s] * dv;
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "fma")]
+unsafe fn ssm_outer_product_update_avx2(state: &mut [f32], k: &[f32], d_vec: &[f32], dim: usize) {
+    use std::arch::x86_64::*;
+    let n8 = dim / 8 * 8;
+    for d in 0..dim {
+        let dv = _mm256_set1_ps(d_vec[d]);
+        let row = state.as_mut_ptr().add(d * dim);
+        let mut s = 0;
+        while s < n8 {
+            let vk = _mm256_loadu_ps(k.as_ptr().add(s));
+            let vs = _mm256_loadu_ps(row.add(s));
+            let updated = _mm256_fmadd_ps(vk, dv, vs);
+            _mm256_storeu_ps(row.add(s), updated);
+            s += 8;
+        }
+        while s < dim {
+            *row.add(s) += k[s] * d_vec[d];
+            s += 1;
+        }
+    }
+}
+
+#[inline(always)]
+pub fn silu_mul_inplace(gate: &[f32], up: &mut [f32]) {
+    debug_assert_eq!(gate.len(), up.len());
+    let n = gate.len();
+    for i in 0..n {
+        let g = gate[i];
+        up[i] *= g / (1.0 + (-g).exp());
+    }
+}
+
+#[inline(always)]
+pub fn vec_mul_inplace(a: &[f32], b: &mut [f32]) {
+    debug_assert_eq!(a.len(), b.len());
+    #[cfg(target_arch = "x86_64")]
+    {
+        if has_avx2_fma() {
+            unsafe { vec_mul_avx2(a, b) };
+            return;
+        }
+    }
+    for i in 0..a.len() { b[i] *= a[i]; }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "fma")]
+unsafe fn vec_mul_avx2(a: &[f32], b: &mut [f32]) {
+    use std::arch::x86_64::*;
+    let n = a.len();
+    let n8 = n / 8 * 8;
+    let mut i = 0;
+    while i < n8 {
+        let va = _mm256_loadu_ps(a.as_ptr().add(i));
+        let vb = _mm256_loadu_ps(b.as_ptr().add(i));
+        _mm256_storeu_ps(b.as_mut_ptr().add(i), _mm256_mul_ps(va, vb));
+        i += 8;
+    }
+    while i < n { b[i] *= a[i]; i += 1; }
+}
+
+#[inline(always)]
+pub fn vec_add_into(a: &[f32], b: &mut [f32]) {
+    debug_assert_eq!(a.len(), b.len());
+    #[cfg(target_arch = "x86_64")]
+    {
+        if has_avx2_fma() {
+            unsafe { vec_add_avx2(a, b) };
+            return;
+        }
+    }
+    for i in 0..a.len() { b[i] += a[i]; }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "fma")]
+unsafe fn vec_add_avx2(a: &[f32], b: &mut [f32]) {
+    use std::arch::x86_64::*;
+    let n = a.len();
+    let n8 = n / 8 * 8;
+    let mut i = 0;
+    while i < n8 {
+        let va = _mm256_loadu_ps(a.as_ptr().add(i));
+        let vb = _mm256_loadu_ps(b.as_ptr().add(i));
+        _mm256_storeu_ps(b.as_mut_ptr().add(i), _mm256_add_ps(va, vb));
+        i += 8;
+    }
+    while i < n { b[i] += a[i]; i += 1; }
+}
+
+pub fn conv1d_silu(kernel: &[f32], state: &[f32], d_conv: usize, conv_dim: usize, output: &mut [f32]) {
+    for c in 0..conv_dim {
+        let mut conv_val = 0.0f32;
+        for k in 0..d_conv {
+            conv_val += kernel[c * d_conv + k] * state[k * conv_dim + c];
+        }
+        output[c] = conv_val / (1.0 + (-conv_val).exp());
+    }
 }

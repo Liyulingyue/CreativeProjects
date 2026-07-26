@@ -471,7 +471,7 @@ impl GGUFLoader {
             .unwrap_or_default();
 
         let prefix = match &arch as &str {
-            "qwen2" | "qwen3" => arch,
+            "qwen2" | "qwen3" | "qwen35" => arch,
             _ => return Err(format!("Unsupported architecture: {}", arch)),
         };
 

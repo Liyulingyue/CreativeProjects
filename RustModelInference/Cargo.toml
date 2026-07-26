@@ -9,6 +9,7 @@ license = "MIT"
 memmap2 = "0.9"
 half = "2.4"
 rayon = "1.10"
+image = "0.25"
 
 [profile.release]
 opt-level = 3
