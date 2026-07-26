@@ -20,6 +20,8 @@ fn main() {
     let mut bench = false;
     let mut profile = false;
     let mut kv_format = KvFormat::F16;
+    let mut mmproj_path = String::new();
+    let mut image_path = String::new();
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -33,13 +35,21 @@ fn main() {
             "--bench" => { bench = true; }
             "--profile" => { profile = true; }
             "--kv-cache" => { if i + 1 < args.len() { kv_format = match args[i + 1].as_str() { "f32" => KvFormat::F32, _ => KvFormat::F16 }; i += 1; } }
+            "--mmproj" => { if i + 1 < args.len() { mmproj_path = args[i + 1].clone(); i += 1; } }
+            "--image" => { if i + 1 < args.len() { image_path = args[i + 1].clone(); i += 1; } }
             _ => {}
         }
         i += 1;
     }
 
-    if !model_path.is_empty() && !prompt.is_empty() {
-        if dump_logits {
+    if !model_path.is_empty() && (!mmproj_path.is_empty() || !image_path.is_empty()) {
+        run_multimodal(&model_path, &mmproj_path, &image_path, &prompt, max_tokens, temperature, n_threads);
+    } else if !model_path.is_empty() && !prompt.is_empty() {
+        let loader = GGUFLoader::from_file(&model_path).unwrap_or_else(|e| { eprintln!("Failed to load model: {}", e); std::process::exit(1); });
+        let arch = loader.metadata("general.architecture").and_then(|v| v.to_string_val()).unwrap_or_default();
+        if arch == "qwen35" {
+            run_multimodal(&model_path, "", "", &prompt, max_tokens, temperature, n_threads);
+        } else if dump_logits {
             run_dump_logits(&model_path, &prompt, max_tokens, n_threads, kv_format);
         } else {
             run_inference(&model_path, &prompt, max_tokens, temperature, n_threads, bench, profile, kv_format);
@@ -349,7 +359,6 @@ fn run_dump_logits(model_path: &str, prompt: &str, max_tokens: usize, n_threads_
             let q8 = q8_buf[..n_embd].as_ptr();
             let sc = scale_buf[..n_embd / 32].as_ptr();
 
-            if layer == 0 && pos == 0 { eprintln!("DEBUG: step0 QKV matmul start"); }
             pool.compute(move |ith: usize, nth: usize| {
                 let q8 = raw_parts!(q8, n_embd);
                 let sc = raw_parts!(sc, n_embd / 32);
@@ -866,7 +875,15 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
 
 fn detect_special_tokens(_loader: &GGUFLoader, tokenizer: &BPETokenizer) -> HashMap<String, u32> {
     let mut specials = HashMap::new();
-    let candidates = [("<|im_start|>", "im_start"), ("<|im_end|>", "im_end"), ("</s>", "eos")];
+    let candidates = [
+        ("<|im_start|>", "im_start"),
+        ("<|im_end|>", "im_end"),
+        ("<|image_pad|>", "image_pad"),
+        ("<|vision_pad|>", "vision_pad"),
+        ("<|vision_start|>", "vision_start"),
+        ("<|vision_end|>", "vision_end"),
+        ("</s>", "eos"),
+    ];
     for (text, name) in &candidates {
         for i in 0..tokenizer.vocab_size() {
             if tokenizer.token_str(i as u32) == *text {
@@ -930,4 +947,278 @@ fn run_self_test() {
 
     println!("\nUsage: cargo run -- --model <path.gguf> --prompt \"hello\"");
     println!("       cargo run -- --model <path.gguf>  (interactive mode)");
+    println!("       cargo run -- --model <llm.gguf> --mmproj <mmproj.gguf> --image <image.png> --prompt \"describe\"");
+}
+
+fn tokenize_prompt(prompt: &str, image_token_id: i32, n_vis_tokens: usize) -> Vec<i32> {
+    let mut tokens = vec![151644, 8946, 198];
+    for _ in 0..n_vis_tokens {
+        tokens.push(image_token_id);
+    }
+    tokens.extend_from_slice(&[151645, 198]);
+    for b in prompt.bytes() {
+        tokens.push(b as i32);
+    }
+    tokens
+}
+
+fn inject_vision_embeddings(llm: &Qwen35Model, tokens: &[i32], vis_embd: &[f32], n_vis_tokens: usize, proj_dim: usize) -> Vec<f32> {
+    let n_embd = llm.config.n_embd;
+    let n_tokens = tokens.len();
+    let mut embeddings = vec![0.0f32; n_tokens * n_embd];
+
+    let image_token_id: i32 = 248056;
+    let mut vis_idx = 0;
+
+    for t in 0..n_tokens {
+        if tokens[t] == image_token_id && vis_idx < n_vis_tokens {
+            let embd_off = t * n_embd;
+            let vis_off = vis_idx * proj_dim;
+            if proj_dim == n_embd {
+                embeddings[embd_off..embd_off + n_embd].copy_from_slice(&vis_embd[vis_off..vis_off + n_embd]);
+            } else {
+                for e in 0..n_embd.min(proj_dim) {
+                    embeddings[embd_off + e] = vis_embd[vis_off + e];
+                }
+            }
+            vis_idx += 1;
+        } else {
+            let tok = tokens[t] as usize;
+            let tok_off = tok * n_embd;
+            let embd_off = t * n_embd;
+            for e in 0..n_embd {
+                if tok_off + e < llm.tok_embd.len() {
+                    embeddings[embd_off + e] = llm.tok_embd[tok_off + e];
+                }
+            }
+        }
+    }
+
+    embeddings
+}
+
+fn sample_token(logits: &[f32], temperature: f32) -> i32 {
+    if temperature <= 0.0 {
+        return logits.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).map(|(i, _)| i as i32).unwrap_or(0);
+    }
+    let max_logit = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let mut sum = 0.0f32;
+    let mut probs = vec![0.0f32; logits.len()];
+    for (i, l) in logits.iter().enumerate() {
+        probs[i] = ((l - max_logit) / temperature).exp();
+        sum += probs[i];
+    }
+    for p in probs.iter_mut() { *p /= sum; }
+
+    let r = 0.5f32;
+    let mut cumsum = 0.0f32;
+    for (i, p) in probs.iter().enumerate() {
+        cumsum += p;
+        if cumsum >= r { return i as i32; }
+    }
+    (logits.len() - 1) as i32
+}
+
+fn decode_token(loader: &GGUFLoader, token_id: i32) -> String {
+    if let Some(MetaValue::Array(_, vals)) = loader.metadata("tokenizer.ggml.tokens") {
+        let idx = token_id as usize;
+        if idx < vals.len() {
+            if let Some(s) = vals[idx].to_string_val() {
+                return s.replace("Ġ", " ").replace("Ċ", "\n").replace("▁", " ");
+            }
+        }
+    }
+    format!("<{}>", token_id)
+}
+
+fn load_image_f32(path: &str, target_w: usize, target_h: usize, mean: &[f32; 3], std: &[f32; 3]) -> Vec<f32> {
+    let img_bytes = std::fs::read(path).unwrap_or_else(|e| { eprintln!("Failed to read image: {}", e); std::process::exit(1); });
+    let img = image::load_from_memory(&img_bytes).unwrap_or_else(|e| { eprintln!("Failed to decode image: {}", e); std::process::exit(1 ) });
+    let img = img.resize_exact(target_w as u32, target_h as u32, image::imageops::FilterType::Lanczos3);
+    let rgb = img.to_rgb8();
+    let mut out = vec![0.0f32; target_w * target_h * 3];
+    for y in 0..target_h {
+        for x in 0..target_w {
+            let px = rgb.get_pixel(x as u32, y as u32);
+            let idx = (y * target_w + x) * 3;
+            out[idx + 0] = (px[0] as f32 / 255.0 - mean[0]) / std[0];
+            out[idx + 1] = (px[1] as f32 / 255.0 - mean[1]) / std[1];
+            out[idx + 2] = (px[2] as f32 / 255.0 - mean[2]) / std[2];
+        }
+    }
+    out
+}
+
+fn run_multimodal(model_path: &str, mmproj_path: &str, image_path: &str, prompt: &str, max_tokens: usize, temperature: f32, n_threads_arg: usize) {
+    let has_image = !image_path.is_empty();
+    let has_mmproj = !mmproj_path.is_empty();
+
+    println!("Loading model {} ...", model_path);
+    let llm_loader = GGUFLoader::from_file(model_path).unwrap_or_else(|e| { eprintln!("Failed to load model: {}", e); std::process::exit(1); });
+
+    let arch = llm_loader.metadata("general.architecture").and_then(|v| v.to_string_val()).unwrap_or_default();
+    println!("LLM arch: {}", arch);
+    if arch != "qwen35" {
+        eprintln!("Only qwen35 architecture is supported for multimodal, got: {}", arch);
+        std::process::exit(1);
+    }
+
+    let (n_vis_tokens, vis_embeddings_vec) = if has_image && has_mmproj {
+        println!("Loading mmproj {} ...", mmproj_path);
+        let mmproj_loader = GGUFLoader::from_file(mmproj_path).unwrap_or_else(|e| { eprintln!("Failed to load mmproj: {}", e); std::process::exit(1); });
+        let mut vision_encoder = VisionEncoder::from_gguf(&mmproj_loader).unwrap_or_else(|e| { eprintln!("Failed to parse vision encoder: {}", e); std::process::exit(1); });
+        vision_encoder.precompute();
+        println!("Vision encoder loaded: {} layers, n_embd={}, image_size={}, patch_size={}, merge={}",
+                 vision_encoder.config.n_layer, vision_encoder.config.n_embd,
+                 vision_encoder.config.image_size, vision_encoder.config.patch_size,
+                 vision_encoder.config.spatial_merge_size);
+
+        let cfg = &vision_encoder.config;
+        let align = cfg.patch_size * cfg.spatial_merge_size;
+        let img_w = (256 / align) * align;
+        let img_h = (256 / align) * align;
+        let pixels = load_image_f32(image_path, img_w, img_h, &cfg.image_mean, &cfg.image_std);
+        println!("Image resized to {}x{} ({} patches, aligned to patch_size*merge={})", img_w, img_h, (img_w/cfg.patch_size)*(img_h/cfg.patch_size), align);
+
+        let mut vis_scratch = VisionScratchpad::new(cfg);
+        println!("Encoding image...");
+        let n = vision_encoder.encode_image(&pixels, img_w, img_h, &mut vis_scratch);
+        println!("Vision tokens: {} (dim={})", n, cfg.projection_dim);
+        (n, vis_scratch.projected[..n * cfg.projection_dim].to_vec())
+    } else {
+        (0usize, Vec::new())
+    };
+    let vis_embeddings = &vis_embeddings_vec[..];
+    if has_image {
+        println!("First 5 vision embedding values: {:?}", &vis_embeddings[..5.min(vis_embeddings.len())]);
+    }
+
+    let mut llm = Qwen35Model::from_gguf(&llm_loader).unwrap_or_else(|e| { eprintln!("Failed to parse Qwen3.5 model: {}", e); std::process::exit(1); });
+    println!("Qwen3.5 model loaded: {} layers, n_embd={}, n_head={}, n_ff={}, rope_freq_base={}, rope_sections={:?}, rope_dim_count={}", llm.config.n_layer, llm.config.n_embd, llm.config.n_head, llm.config.n_ff, llm.config.rope_freq_base, llm.config.rope_dimension_sections, llm.config.rope_dimension_count);
+    // llm.precompute_f32();
+
+    let mut tokenizer = BPETokenizer::from_gguf_metadata(|k| llm_loader.metadata(k).cloned())
+        .unwrap_or_else(|e| { eprintln!("Failed to init tokenizer: {}", e); std::process::exit(1); });
+    let special_tokens = detect_special_tokens(&llm_loader, &tokenizer);
+    tokenizer.set_special_tokens(special_tokens.clone());
+
+    let im_start = *special_tokens.get("im_start").unwrap_or(&248045u32) as i32;
+    let im_end = *special_tokens.get("im_end").unwrap_or(&248046u32) as i32;
+    let image_token_id = *special_tokens.get("image_pad").unwrap_or(&248056u32) as i32;
+
+    let mut prompt_tokens: Vec<i32> = Vec::new();
+    prompt_tokens.push(im_start);
+    prompt_tokens.extend(tokenizer.encode("user\n").iter().map(|&t| t as i32));
+    if !image_path.is_empty() {
+        for _ in 0..n_vis_tokens {
+            prompt_tokens.push(image_token_id);
+        }
+    }
+    prompt_tokens.extend(tokenizer.encode(prompt).iter().map(|&t| t as i32));
+    prompt_tokens.push(im_end);
+    prompt_tokens.push(im_start);
+    prompt_tokens.extend(tokenizer.encode("assistant\n").iter().map(|&t| t as i32));
+
+    println!("Prompt tokens: {} (including {} vision placeholders)", prompt_tokens.len(), n_vis_tokens);
+
+    let max_seq = llm.config.n_ctx;
+    let mut kv_cache = crate::scratchpad::KvCache::new_f32(
+        llm.config.n_layer,
+        max_seq,
+        llm.config.n_embd_head() * llm.config.n_head_kv,
+    );
+    let mut llm_scratch = crate::qwen35::Qwen35Scratchpad::new(&llm.config, prompt_tokens.len().max(max_tokens));
+
+    let prompt_embd = inject_vision_embeddings(&llm, &prompt_tokens, vis_embeddings, n_vis_tokens, llm.config.n_embd);
+
+    let n_prompt = prompt_tokens.len();
+    let mut all_tokens = prompt_tokens.clone();
+
+    let image_token_id_i32: i32 = *special_tokens.get("image_pad").unwrap_or(&248056u32) as i32;
+    let spatial_merge = 2usize;
+    let patch_size = 16usize;
+    let vis_nx = if n_vis_tokens > 0 { (256 / patch_size) / spatial_merge } else { 0 };
+    let vis_ny = if n_vis_tokens > 0 { (256 / patch_size) / spatial_merge } else { 0 };
+    let vis_n_pos = if n_vis_tokens > 0 { vis_nx.max(vis_ny) } else { 0 };
+
+    let mut mrope_positions_prompt: Vec<[usize; 4]> = Vec::with_capacity(n_prompt);
+    {
+        let mut seq_pos = 0usize;
+        let mut vis_start_pos: Option<usize> = None;
+        let mut vis_idx = 0usize;
+        for t in 0..n_prompt {
+            if prompt_tokens[t] == image_token_id_i32 && vis_idx < n_vis_tokens {
+                if vis_start_pos.is_none() {
+                    vis_start_pos = Some(seq_pos);
+                }
+                let sp = vis_start_pos.unwrap();
+                let row = vis_idx / vis_nx;
+                let col = vis_idx % vis_nx;
+                mrope_positions_prompt.push([sp, sp + col, sp + row, 0]);
+                vis_idx += 1;
+            } else {
+                mrope_positions_prompt.push([seq_pos, seq_pos, seq_pos, 0]);
+                seq_pos += 1;
+            }
+        }
+        if vis_idx > 0 {
+            seq_pos += vis_n_pos;
+        }
+    }
+
+    let n_threads = if n_threads_arg > 0 { n_threads_arg } else { 8 };
+    let pool = std::sync::Arc::new(crate::thread_pool::ComputePool::new(n_threads));
+    eprintln!("compute pool: {} threads", pool.n_threads());
+
+    let mut generated = String::new();
+    println!("\n--- Generation ---");
+    let t_gen_start = std::time::Instant::now();
+
+    for step in 0..max_tokens {
+        let tokens = if step == 0 { &prompt_tokens } else { &all_tokens[all_tokens.len()-1..all_tokens.len()-1+1] };
+        let n_tok = tokens.len();
+
+        if step == 0 {
+            for t in 0..n_prompt {
+                let embd_off = t * llm.config.n_embd;
+                llm_scratch.x[embd_off..embd_off + llm.config.n_embd].copy_from_slice(&prompt_embd[embd_off..embd_off + llm.config.n_embd]);
+            }
+        } else {
+            let tok = tokens[0] as usize;
+            let tok_off = tok * llm.config.n_embd;
+            for e in 0..llm.config.n_embd {
+                if tok_off + e < llm.tok_embd.len() {
+                    llm_scratch.x[e] = llm.tok_embd[tok_off + e];
+                }
+            }
+        }
+
+        let mrope_ref = if step == 0 {
+            Some(&mrope_positions_prompt[..])
+        } else {
+            None
+        };
+        let logits = llm.forward(n_tok, &mut kv_cache, &mut llm_scratch, &pool, mrope_ref);
+
+        let next_token = if temperature <= 0.0 {
+            logits.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).map(|(i, _)| i as i32).unwrap_or(0)
+        } else {
+            sample_token(&logits, temperature)
+        };
+
+        if next_token == 248046 || next_token == im_end { break; }
+
+        let token_str = decode_token(&llm_loader, next_token);
+        generated.push_str(&token_str);
+        print!("{}", token_str);
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+
+        all_tokens.push(next_token);
+    }
+
+    let gen_ms = t_gen_start.elapsed().as_millis();
+    let n_gen = all_tokens.len() - n_prompt;
+    let tok_s = if gen_ms > 0 { n_gen as f64 / gen_ms as f64 * 1000.0 } else { 0.0 };
+    println!("\n--- End ---");
+    eprintln!("[{} gen tokens in {}ms | {:.1} tok/s]", n_gen, gen_ms, tok_s);
 }
