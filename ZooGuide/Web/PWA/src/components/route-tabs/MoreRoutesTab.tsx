@@ -34,7 +34,7 @@ export function MoreRoutesTab({ prefs, currentRoute, onApplyVariant }: Props) {
   }
 
   useEffect(() => {
-    load()
+    if (variants.length === 0) load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefs?.available_hours, prefs?.party_type, prefs?.entry_gate])
 

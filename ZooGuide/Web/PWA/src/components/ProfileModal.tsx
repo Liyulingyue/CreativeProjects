@@ -9,9 +9,8 @@ interface Props {
 
 interface Summary {
   user: { id: number; username: string; display_name: string }
-  stats: { checkins_count: number; venues_visited: number; routes_planned: number; photos_evaluated: number }
+  stats: { checkins_count: number; venues_visited: number; photos_evaluated: number }
   recent_checkins: Array<{ venue_id: string; venue_name: string; ts: string }>
-  recent_routes: Array<{ id: string; summary: string; total_minutes: number; created_at: string }>
   recent_photos: Array<{
     evaluation_id: string
     ts: string
@@ -92,24 +91,8 @@ export function ProfileModal({ onClose, onGoLogin }: Props) {
             >
               <StatCard label="打卡次数" value={summary.stats.checkins_count} />
               <StatCard label="去过的馆" value={summary.stats.venues_visited} />
-              <StatCard label="规划路线" value={summary.stats.routes_planned} />
               <StatCard label="照片评价" value={summary.stats.photos_evaluated} />
             </div>
-
-            {summary.recent_routes.length > 0 && (
-              <Section title="🧭 最近的路线">
-                {summary.recent_routes.map((r) => (
-                  <div key={r.id} className="history-row">
-                    <div className="history-main">
-                      <div className="history-title">{r.summary?.slice(0, 50) || '路线'}</div>
-                      <div className="history-meta">
-                        {Math.round(r.total_minutes / 60 * 10) / 10}h · {r.created_at?.slice(0, 10)}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </Section>
-            )}
 
             {summary.recent_checkins.length > 0 && (
               <Section title="🦒 最近打卡">

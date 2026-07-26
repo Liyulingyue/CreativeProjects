@@ -118,7 +118,7 @@ export function AdjustRouteTab({
           </div>
           <div className="quick-feedback">
             {QUICK.map((q) => (
-              <button key={q} onClick={() => adjust(q)} disabled={loading}>
+              <button key={q} onClick={() => setMessage(q)} disabled={loading}>
                 {q}
               </button>
             ))}

@@ -65,7 +65,7 @@ export function RouteView({
 
   return (
     <div className="route-view">
-      {subTab === 'current' && (
+      <div style={subTab === 'current' ? undefined : { display: 'none' }}>
         <CurrentRouteTab
           route={route}
           prefs={prefs}
@@ -73,9 +73,9 @@ export function RouteView({
           onMarkCurrent={persistCurrentStop}
           onToggleVisited={toggleVisited}
         />
-      )}
+      </div>
 
-      {subTab === 'more' && (
+      <div style={subTab === 'more' ? undefined : { display: 'none' }}>
         <MoreRoutesTab
           prefs={prefs}
           currentRoute={route}
@@ -91,9 +91,9 @@ export function RouteView({
             } catch {}
           }}
         />
-      )}
+      </div>
 
-      {subTab === 'adjust' && (
+      <div style={subTab === 'adjust' ? undefined : { display: 'none' }}>
         <AdjustRouteTab
           currentRoute={route}
           currentStopIdx={currentStopIdx}
@@ -119,7 +119,7 @@ export function RouteView({
             setSubTab('current')
           }}
         />
-      )}
+      </div>
 
       {/* 3-tab bottom toolbar */}
       <nav className="route-toolbar">

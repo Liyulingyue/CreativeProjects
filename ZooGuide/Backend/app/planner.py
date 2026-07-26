@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import random
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional
@@ -448,16 +449,12 @@ def plan_route(prefs: PlanRequest, force_fast: bool = False) -> tuple[Route, boo
 
 
 def plan_route_variants(prefs: PlanRequest) -> list[dict]:
-    """Generate 3 variant routes for comparison.
-
-    Each variant uses a different style:
-      - must_see: prioritize must_see venues, ignore distance
-      - hidden_gem: deprioritize must_see, prioritize unique picks
-      - balanced: default scoring
-    """
-    variants = []
+    curated = data_loader.get_curated_routes()
+    if curated:
+        return _curated_to_variants(curated)
     styles = ["must_see", "hidden_gem", "balanced"]
     labels = {"balanced": "⚖️ 平衡推荐", "must_see": "⭐ 必看精选", "hidden_gem": "💎 小众探索"}
+    variants = []
     for style in styles:
         p = prefs.model_copy()
         p.style = style
@@ -465,6 +462,48 @@ def plan_route_variants(prefs: PlanRequest) -> list[dict]:
         d = route.model_dump()
         d["variant_label"] = labels[style]
         variants.append(d)
+    return variants
+
+
+def _curated_to_variants(curated: list[dict]) -> list[dict]:
+    all_venues = {v["id"]: v for v in data_loader.get_all_venue_dicts()}
+    sample = random.sample(curated, min(3, len(curated)))
+    variants = []
+    for cr in sample:
+        stop_venues = [all_venues[sid] for sid in cr["stops"] if sid in all_venues]
+        if not stop_venues:
+            continue
+        stops = []
+        t = datetime.strptime("09:00", "%H:%M")
+        for i, v in enumerate(stop_venues):
+            visit = 25
+            arrive = t.strftime("%H:%M")
+            t += timedelta(minutes=visit)
+            leave = t.strftime("%H:%M")
+            t += timedelta(minutes=5)
+            stops.append({
+                "venue_id": v["id"],
+                "venue_name": v["name"],
+                "area": v.get("area", ""),
+                "arrive_time": arrive,
+                "leave_time": leave,
+                "visit_minutes": visit,
+                "narration": "",
+                "tips": [],
+                "rest_here": False,
+                "walk_to_next_minutes": 5,
+            })
+        route_id = str(uuid.uuid4())[:8]
+        variants.append({
+            "id": route_id,
+            "summary": cr["summary"],
+            "variant_label": cr["label"],
+            "stops": stops,
+            "total_minutes": cr.get("total_minutes", 180),
+            "total_walk_minutes": (len(stop_venues) - 1) * 5,
+            "start_gate": cr.get("start_gate", "north"),
+            "fallback": False,
+        })
     return variants
 
 
