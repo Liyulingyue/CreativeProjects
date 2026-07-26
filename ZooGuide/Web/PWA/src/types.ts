@@ -109,14 +109,38 @@ export interface QuizOption {
   label: string
   icon?: string
   desc?: string
+  implies_with_kids?: boolean
+}
+
+export interface SliderDescriptionThreshold {
+  max: number
+  text: string
+}
+
+export interface SliderConfig {
+  min: number
+  max: number
+  step: number
+  default: number
+  unit?: string
+  descriptions: Record<string, string> | SliderDescriptionThreshold[]
+}
+
+export interface ConditionalField {
+  field: string
+  show_when: string
+  slider: string
 }
 
 export interface QuizOptions {
   party_types: QuizOption[]
   interests: QuizOption[]
   gates: QuizOption[]
-  stamina_descriptions: Record<string, string>
-  sun_descriptions: Record<string, string>
+  sliders: Record<string, SliderConfig>
+  hike_options: Record<string, string>
+  hike_terrain_hint: string
+  conditional_fields: ConditionalField[]
+  required_fields: string[]
 }
 
 export interface ExternalLink {
