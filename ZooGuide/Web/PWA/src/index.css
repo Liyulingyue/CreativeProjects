@@ -153,27 +153,14 @@ a {
 }
 
 /* ----- Questionnaire ----- */
-.qz-progress {
+.qz-form {
   display: flex;
+  flex-direction: column;
   gap: 4px;
-  margin-bottom: 14px;
 }
 
-.qz-progress-dot {
-  height: 4px;
-  background: var(--border);
-  border-radius: 2px;
-  flex: 1;
-}
-
-.qz-progress-dot.active {
-  background: var(--primary);
-}
-
-.qz-step {
-  font-size: 13px;
-  color: var(--fg-muted);
-  margin-bottom: 8px;
+.qz-form .qz-question {
+  margin-top: 20px;
 }
 
 .qz-question {

@@ -497,74 +497,347 @@
       {
         "label": "⭐ 必看精华半日游",
         "summary": "北门入，直奔大熊猫，经猫科到长颈鹿，半天看全园明星",
-        "stops": ["panda", "china_cat", "cat_planet", "tiger", "giraffe", "red_panda"],
+        "stops": [
+          "panda",
+          "china_cat",
+          "cat_planet",
+          "tiger",
+          "giraffe",
+          "red_panda"
+        ],
         "total_minutes": 180,
         "start_gate": "north"
       },
       {
         "label": "🐼 国宝之旅",
         "summary": "大熊猫+考拉+小熊猫，三大国宝一次看完",
-        "stops": ["panda", "koala", "red_panda"],
+        "stops": [
+          "panda",
+          "koala",
+          "red_panda"
+        ],
         "total_minutes": 120,
         "start_gate": "north"
       },
       {
         "label": "🦍 灵长类深度行",
         "summary": "大猩猩、猩猩、亚洲灵长，灵长爱好者的天堂",
-        "stops": ["gorilla", "orangutan", "asian_primates", "monkey_mountain"],
+        "stops": [
+          "gorilla",
+          "orangutan",
+          "asian_primates",
+          "monkey_mountain"
+        ],
         "total_minutes": 150,
         "start_gate": "north"
       },
       {
         "label": "🌍 南门新区探索",
         "summary": "从南门进入，非洲区、唐家河、冈瓦纳，体验最新馆区",
-        "stops": ["rhino", "tangjiahe", "gonwana", "lemur", "kangaroo"],
+        "stops": [
+          "rhino",
+          "tangjiahe",
+          "gonwana",
+          "lemur",
+          "kangaroo"
+        ],
         "total_minutes": 180,
         "start_gate": "south"
       },
       {
         "label": "🐾 猫科动物全搜罗",
         "summary": "老虎、中国猫科、猫科星球，猫奴必走路线",
-        "stops": ["tiger", "china_cat", "cat_planet"],
+        "stops": [
+          "tiger",
+          "china_cat",
+          "cat_planet"
+        ],
         "total_minutes": 90,
         "start_gate": "north"
       },
       {
         "label": "🐘 亚洲巨兽线",
         "summary": "亚洲象、长颈鹿、犀牛，大型动物爱好者的选择",
-        "stops": ["asian_elephant", "giraffe", "rhino", "bear"],
+        "stops": [
+          "asian_elephant",
+          "giraffe",
+          "rhino",
+          "bear"
+        ],
         "total_minutes": 150,
         "start_gate": "north"
       },
       {
         "label": "🦜 飞羽与萌兽",
         "summary": "犀鸟、鹤园、细尾獴、小熊猫，安静又治愈",
-        "stops": ["hornbill", "crane", "meerkat", "red_panda", "koala"],
+        "stops": [
+          "hornbill",
+          "crane",
+          "meerkat",
+          "red_panda",
+          "koala"
+        ],
         "total_minutes": 120,
         "start_gate": "north"
       },
       {
         "label": "⛰️ 全园挑战路线",
         "summary": "北门入，穿越大红山、放牛山、小红山到南门新区，一天刷完全园",
-        "stops": ["panda", "tiger", "bear", "wolf", "monkey_mountain", "gorilla", "koala", "asian_elephant", "red_panda", "hornbill", "tangjiahe", "gonwana", "rhino", "lemur", "kangaroo"],
+        "stops": [
+          "panda",
+          "tiger",
+          "bear",
+          "wolf",
+          "monkey_mountain",
+          "gorilla",
+          "koala",
+          "asian_elephant",
+          "red_panda",
+          "hornbill",
+          "tangjiahe",
+          "gonwana",
+          "rhino",
+          "lemur",
+          "kangaroo"
+        ],
         "total_minutes": 360,
         "start_gate": "north"
       },
       {
         "label": "🌿 生态保育之旅",
         "summary": "唐家河、冈瓦纳、大壮观阁，了解红山保育故事",
-        "stops": ["tangjiahe", "gonwana", "dazhuangguange"],
+        "stops": [
+          "tangjiahe",
+          "gonwana",
+          "dazhuangguange"
+        ],
         "total_minutes": 90,
         "start_gate": "south"
       },
       {
         "label": "👨‍👩‍👧 亲子轻松游",
         "summary": "大熊猫+考拉+细尾獴+长颈鹿，节奏慢、不爬山，适合带小娃",
-        "stops": ["panda", "koala", "meerkat", "giraffe"],
+        "stops": [
+          "panda",
+          "koala",
+          "meerkat",
+          "giraffe"
+        ],
         "total_minutes": 120,
         "start_gate": "north"
       }
-    ]
+    ],
+    "quiz": {
+      "party_types": [
+        {
+          "value": "solo",
+          "label": "一个人",
+          "icon": "🧍",
+          "desc": "专注观察动物，按自己节奏走",
+          "implies_with_kids": false
+        },
+        {
+          "value": "couple",
+          "label": "情侣/朋友",
+          "icon": "👥",
+          "desc": "兼顾出片与轻松",
+          "implies_with_kids": false
+        },
+        {
+          "value": "family_young",
+          "label": "带学龄前娃",
+          "icon": "👨‍👩‍👧",
+          "desc": "节奏要慢，多亲子互动",
+          "implies_with_kids": true
+        },
+        {
+          "value": "family_teen",
+          "label": "带青少年",
+          "icon": "🧑‍🎓",
+          "desc": "可步行更多，可加科普",
+          "implies_with_kids": true
+        },
+        {
+          "value": "seniors",
+          "label": "带老人",
+          "icon": "👵",
+          "desc": "少爬坡，多座椅与厕所",
+          "implies_with_kids": false
+        }
+      ],
+      "interests": [
+        {
+          "value": "panda",
+          "label": "国宝大熊猫"
+        },
+        {
+          "value": "ape",
+          "label": "灵长类"
+        },
+        {
+          "value": "cat",
+          "label": "猫科动物"
+        },
+        {
+          "value": "bird",
+          "label": "鸟类"
+        },
+        {
+          "value": "australian",
+          "label": "澳洲动物"
+        },
+        {
+          "value": "african",
+          "label": "非洲动物"
+        },
+        {
+          "value": "local",
+          "label": "中国本土物种"
+        },
+        {
+          "value": "exotic",
+          "label": "异域奇观"
+        },
+        {
+          "value": "kids_favorite",
+          "label": "孩子最爱"
+        }
+      ],
+      "hike_options": {
+        "true": "可以爬山",
+        "false": "不想爬山，尽量走平路"
+      },
+      "planner_translations": {
+        "party_types": {
+          "solo": "独自一人",
+          "couple": "情侣/朋友两人",
+          "family_young": "带小娃的家庭",
+          "family_teen": "带青少年的家庭",
+          "seniors": "陪老人出行"
+        },
+        "interests": {
+          "panda": "大熊猫",
+          "ape": "猿猴类",
+          "cat": "猫科动物",
+          "bird": "鸟类",
+          "australian": "澳洲动物",
+          "african": "非洲动物",
+          "local": "本土物种",
+          "exotic": "异域物种",
+          "kids_favorite": "亲子互动"
+        },
+        "no_interest": "没有特别偏好，看什么都行",
+        "gates": {
+          "north": "北门",
+          "south": "南门",
+          "east": "东门"
+        }
+      },
+      "hike_terrain_hint": "部分片区地形有起伏，可能需要爬坡",
+      "party_style_guides": {
+        "solo": "独行游客：可以深度观察，讲解偏科普和行为学细节",
+        "couple": "情侣/朋友：节奏轻快，可加出片点位、动物梗",
+        "seniors": "带老人：少爬坡，多座椅与厕所，讲解平和有回忆感",
+        "family_young": "学龄前娃家长：节奏慢，多亲子互动，讲解要有童趣比喻，不要讲残酷的食物链",
+        "family_teen": "带娃家长：节奏适中，可加科普小知识，讲解要兼顾孩子兴趣",
+        "default": "一般游客：平衡科普与趣味"
+      },
+      "narration_templates": {
+        "solo": "独行逛{name}，可以慢慢观察{animals}的细节行为，不赶时间。",
+        "couple": "和同伴一起看{animals}，这里是园里出片率很高的点位之一。",
+        "family_young": "小朋友最爱{animals}啦！这里的布置会让孩子很兴奋，记得蹲下来和它们打招呼。",
+        "family_teen": "{name}的{animals}值得多停留一会儿，可以聊聊它的野外生存与保护现状。",
+        "seniors": "{name}里的{animals}是我们这代人的老朋友，慢慢看，慢慢聊。"
+      },
+      "sliders": {
+        "time": {
+          "min": 1,
+          "max": 8,
+          "step": 0.5,
+          "default": 3,
+          "unit": "h",
+          "descriptions": [
+            {
+              "max": 1.5,
+              "text": "只有一两小时，得挑精华看"
+            },
+            {
+              "max": 3,
+              "text": "半天左右，可以逛 3-5 个场馆"
+            },
+            {
+              "max": 5,
+              "text": "大半天，可以比较从容"
+            },
+            {
+              "max": 99,
+              "text": "接近全园深度游"
+            }
+          ]
+        },
+        "stamina": {
+          "min": 1,
+          "max": 5,
+          "step": 1,
+          "default": 3,
+          "descriptions": {
+            "1": "走几步就累",
+            "2": "体力一般",
+            "3": "体力正常",
+            "4": "体力不错",
+            "5": "精力充沛，可暴走全园"
+          }
+        },
+        "sun_tolerance": {
+          "min": 1,
+          "max": 5,
+          "step": 1,
+          "default": 3,
+          "descriptions": {
+            "1": "很怕晒，尽量走阴凉",
+            "2": "有点怕晒",
+            "3": "晒不晒都行",
+            "4": "不太怕晒",
+            "5": "完全不怕晒"
+          }
+        },
+        "kids_age": {
+          "min": 1,
+          "max": 16,
+          "step": 1,
+          "default": 5,
+          "descriptions": {
+            "1": "学龄前：节奏要慢，多休息",
+            "2": "学龄前：节奏要慢，多休息",
+            "3": "学龄前：节奏要慢，多休息",
+            "4": "幼儿园：可以多看明星动物",
+            "5": "幼儿园：可以多看明星动物",
+            "6": "幼儿园：可以多看明星动物",
+            "7": "小学：能听懂小科普",
+            "8": "小学：能听懂小科普",
+            "9": "小学：能听懂小科普",
+            "10": "小学：能听懂小科普",
+            "11": "小学：能听懂小科普",
+            "12": "小学：能听懂小科普",
+            "13": "中学：可以加深度讲解",
+            "14": "中学：可以加深度讲解",
+            "15": "中学：可以加深度讲解",
+            "16": "中学：可以加深度讲解"
+          }
+        }
+      },
+      "conditional_fields": [
+        {
+          "field": "kids_age",
+          "show_when": "with_kids",
+          "slider": "kids_age"
+        }
+      ],
+      "required_fields": [
+        "party_type",
+        "entry_gate"
+      ]
+    }
   },
   "venues": [
     {

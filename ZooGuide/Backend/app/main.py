@@ -75,43 +75,19 @@ def meta():
 
 @app.get("/api/quiz-options")
 def quiz_options():
+    quiz = data_loader.get_quiz_config()
     return {
-        "party_types": [
-            {"value": "solo", "label": "一个人", "icon": "🧍", "desc": "专注观察动物，按自己节奏走"},
-            {"value": "couple", "label": "情侣/朋友", "icon": "👥", "desc": "兼顾出片与轻松"},
-            {"value": "family_young", "label": "带学龄前娃", "icon": "👨‍👩‍👧", "desc": "节奏要慢，多亲子互动"},
-            {"value": "family_teen", "label": "带青少年", "icon": "🧑‍🎓", "desc": "可步行更多，可加科普"},
-            {"value": "seniors", "label": "带老人", "icon": "👵", "desc": "少爬坡，多座椅与厕所"},
-        ],
-        "interests": [
-            {"value": "panda", "label": "国宝大熊猫"},
-            {"value": "ape", "label": "灵长类"},
-            {"value": "cat", "label": "猫科动物"},
-            {"value": "bird", "label": "鸟类"},
-            {"value": "australian", "label": "澳洲动物"},
-            {"value": "african", "label": "非洲动物"},
-            {"value": "local", "label": "中国本土物种"},
-            {"value": "exotic", "label": "异域奇观"},
-            {"value": "kids_favorite", "label": "孩子最爱"},
-        ],
+        "party_types": quiz.get("party_types", []),
+        "interests": quiz.get("interests", []),
         "gates": [
             {"value": k, "label": v.get("label", k), "desc": v.get("desc", "")}
             for k, v in data_loader.get_meta().get("gates", {}).items()
         ],
-        "stamina_descriptions": {
-            "1": "体力一般，不想走太多",
-            "2": "偏休闲，可走 1-2 公里",
-            "3": "一般，可走 3-4 公里",
-            "4": "较好，可走 5-6 公里",
-            "5": "精力充沛，可暴走全园",
-        },
-        "sun_descriptions": {
-            "1": "非常怕晒，必须阴凉/室内",
-            "2": "怕晒，倾向遮阴路线",
-            "3": "无所谓",
-            "4": "能晒",
-            "5": "喜欢阳光户外",
-        },
+        "sliders": quiz.get("sliders", {}),
+        "hike_options": quiz.get("hike_options", {}),
+        "hike_terrain_hint": quiz.get("hike_terrain_hint", ""),
+        "conditional_fields": quiz.get("conditional_fields", []),
+        "required_fields": quiz.get("required_fields", []),
     }
 
 

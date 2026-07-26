@@ -80,6 +80,10 @@ def get_curated_routes() -> list[dict]:
     return _load_raw().get("meta", {}).get("curated_routes", [])
 
 
+def get_quiz_config() -> dict:
+    return _load_raw().get("meta", {}).get("quiz", {})
+
+
 def get_facility_categories() -> list[str]:
     seen = []
     for f in _load_raw().get("facilities", []):

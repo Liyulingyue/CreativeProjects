@@ -23,17 +23,13 @@ def _hhmm(t: datetime) -> str:
 
 
 def _party_style_guide(party_type: str, with_kids: bool, kids_age: Optional[int]) -> str:
+    quiz = data_loader.get_quiz_config()
+    guides = quiz.get("party_style_guides", {})
     if with_kids:
         if kids_age is not None and kids_age <= 6:
-            return "学龄前娃家长：节奏慢，多亲子互动，讲解要有童趣比喻，不要讲残酷的食物链"
-        return "带娃家长：节奏适中，可加科普小知识，讲解要兼顾孩子兴趣"
-    if party_type == "solo":
-        return "独行游客：可以深度观察，讲解偏科普和行为学细节"
-    if party_type == "couple":
-        return "情侣/朋友：节奏轻快，可加出片点位、动物梗"
-    if party_type == "seniors":
-        return "带老人：少爬坡，多座椅与厕所，讲解平和有回忆感"
-    return "一般游客：平衡科普与趣味"
+            return guides.get("family_young", guides.get("default", "一般游客：平衡科普与趣味"))
+        return guides.get("family_teen", guides.get("default", "一般游客：平衡科普与趣味"))
+    return guides.get(party_type, guides.get("default", "一般游客：平衡科普与趣味"))
 
 
 def _build_user_prompt_plan(prefs: PlanRequest, candidates: list[dict], walking_matrix: dict) -> str:
@@ -64,13 +60,19 @@ def _build_user_prompt_plan(prefs: PlanRequest, candidates: list[dict], walking_
         if a in top_ids
     }
 
-    party_desc = {"solo": "独自一人", "couple": "情侣/朋友两人", "family_young": "带小娃的家庭", "family_teen": "带青少年的家庭", "seniors": "陪老人出行"}.get(prefs.party_type, prefs.party_type)
-    stamina_desc = {1: "走几步就累", 2: "体力一般", 3: "体力正常", 4: "体力不错", 5: "体力很好"}.get(prefs.stamina, f"体力{prefs.stamina}/5")
-    sun_desc = {1: "很怕晒，尽量走阴凉", 2: "有点怕晒", 3: "晒不晒都行", 4: "不太怕晒", 5: "完全不怕晒"}.get(prefs.sun_tolerance, f"防晒{prefs.sun_tolerance}/5")
-    hike_desc = "愿意爬山" if prefs.willing_to_hike else "不想爬山，尽量走平路"
-    interest_desc = {"panda": "大熊猫", "ape": "猿猴类", "cat": "猫科动物", "bird": "鸟类", "australian": "澳洲动物", "african": "非洲动物", "local": "本土物种", "exotic": "异域物种", "kids_favorite": "亲子互动"}.get
-    interests = "、".join([interest_desc(i, i) for i in prefs.animal_interests]) if prefs.animal_interests else "没有特别偏好，看什么都行"
-    gate_desc = {"north": "北门", "south": "南门", "east": "东门"}.get(prefs.entry_gate, prefs.entry_gate)
+    quiz = data_loader.get_quiz_config()
+    tr = quiz.get("planner_translations", {})
+    party_desc = tr.get("party_types", {}).get(prefs.party_type, prefs.party_type)
+    stamina_map = quiz.get("stamina_descriptions", {})
+    stamina_desc = stamina_map.get(str(prefs.stamina), f"体力{prefs.stamina}/5")
+    sun_map = quiz.get("sun_descriptions", {})
+    sun_desc = sun_map.get(str(prefs.sun_tolerance), f"防晒{prefs.sun_tolerance}/5")
+    hike_map = quiz.get("hike_options", {})
+    hike_desc = hike_map.get(str(prefs.willing_to_hike).lower(), "不想爬山" if not prefs.willing_to_hike else "愿意爬山")
+    interest_tr = tr.get("interests", {})
+    interests = "、".join([interest_tr.get(i, i) for i in prefs.animal_interests]) if prefs.animal_interests else tr.get("no_interest", "没有特别偏好，看什么都行")
+    gate_tr = tr.get("gates", {})
+    gate_desc = gate_tr.get(prefs.entry_gate, prefs.entry_gate)
 
     return f"""游客画像：{party_desc}{'，孩子'+str(prefs.kids_age)+'岁' if prefs.with_kids and prefs.kids_age else '，带娃' if prefs.with_kids else ''}，{stamina_desc}，{sun_desc}，{hike_desc}。感兴趣的动物：{interests}。从{gate_desc}入园，{prefs.start_time}开始，总共能玩{prefs.available_hours}小时。
 
@@ -373,18 +375,15 @@ def _fallback_narration(v: dict, prefs: PlanRequest) -> str:
     name = v["name"]
     animals = v.get("animals", [])
     animal_str = "、".join(animals[:2]) if animals else "这里的动物"
-    base_intros = {
-        "solo": f"独行逛{name}，可以慢慢观察{animal_str}的细节行为，不赶时间。",
-        "couple": f"和同伴一起看{animal_str}，这里是园里出片率很高的点位之一。",
-        "family_young": f"小朋友最爱{animal_str}啦！这里的布置会让孩子很兴奋，记得蹲下来和它们打招呼。",
-        "family_teen": f"{name}的{animal_str}值得多停留一会儿，可以聊聊它的野外生存与保护现状。",
-        "seniors": f"{name}里的{animal_str}是我们这代人的老朋友，慢慢看，慢慢聊。",
-    }
+    quiz = data_loader.get_quiz_config()
+    templates = quiz.get("narration_templates", {})
     meta = data_loader.get_meta()
-    short = meta.get("short_name", meta.get("name", "动物园")[:2])
     defaults = meta.get("planner_defaults", {})
     fallback = defaults.get("narration_fallback", "{name}是不可错过的场馆之一，{animals}在这里生活得很自在。")
-    return base_intros.get(prefs.party_type, fallback.format(name=name, animals=animal_str, short_name=short))
+    template = templates.get(prefs.party_type)
+    if template:
+        return template.format(name=name, animals=animal_str)
+    return fallback.format(name=name, animals=animal_str)
 
 
 def _fallback_tips(v: dict, prefs: PlanRequest) -> list[str]:
