@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { api } from '../api/client'
-import { setAuth, addVisitedSource } from '../lib/storage'
+import { setAuth, addVisitedSource, getSessionId } from '../lib/storage'
 
 interface Props {
   onClose: () => void
@@ -27,7 +27,10 @@ export function AuthModal({ onClose, onAuthed }: Props) {
           : await api.register(username, password, displayName || undefined)
       setAuth(result.token, result.user)
       onAuthed(result.user)
-      // Sync: merge server-side visited venues into local
+      try {
+        const sid = getSessionId()
+        await api.claimSession(sid)
+      } catch {}
       try {
         const serverData = await api.myVisitedVenueIds()
         if (serverData.venue_ids?.length) {

@@ -77,6 +77,27 @@ export function useStreamPlan() {
           }
         }
       }
+      if (!doneRef.current && buffer.trim()) {
+        const remaining = buffer.split('\n')
+        let eventName = ''
+        let dataStr = ''
+        for (const line of remaining) {
+          if (line.startsWith('event:')) eventName = line.slice(6).trim()
+          else if (line.startsWith('data:')) dataStr += line.slice(5).trim()
+        }
+        if (eventName && dataStr) {
+          try {
+            const data = JSON.parse(dataStr)
+            if (eventName === 'done' && data.route) {
+              setRoute(data.route)
+            } else if (eventName === 'error') {
+              setError(data.message || 'unknown')
+            } else {
+              setEvents((prev) => [...prev, { type: eventName as any, text: data.text }])
+            }
+          } catch {}
+        }
+      }
       if (!doneRef.current) {
         setDone(true)
         doneRef.current = true

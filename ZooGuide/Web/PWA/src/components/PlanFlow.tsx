@@ -9,6 +9,7 @@ interface Props {
   initialPrefs: UserPreference | null
   onClose: () => void
   onRouteChange: (r: Route | null) => void
+  onPrefsChange: (p: UserPreference | null) => void
   onOpenChat: () => void
   externalRoute?: Route | null
   initialStage?: Stage
@@ -21,6 +22,7 @@ export function PlanFlow({
   initialPrefs,
   onClose,
   onRouteChange,
+  onPrefsChange,
   onOpenChat,
   externalRoute,
   initialStage,
@@ -38,6 +40,7 @@ export function PlanFlow({
 
   async function handlePlan(p: UserPreference) {
     setPrefs(p)
+    onPrefsChange(p)
     setStage('loading')
     setError(null)
     try {
@@ -55,6 +58,7 @@ export function PlanFlow({
     setStage('home')
     setRoute(null)
     onRouteChange(null)
+    onPrefsChange(null)
   }
 
   function startQuiz() {
@@ -159,7 +163,7 @@ export function PlanFlow({
             <div style={{ fontSize: 40, marginBottom: 12 }}>📋</div>
             <h3 style={{ margin: '0 0 8px', color: 'var(--primary-strong)' }}>路线偏好已丢失</h3>
             <p style={{ fontSize: 13, color: 'var(--fg-muted)', margin: '0 0 18px' }}>
-              保存的路线仍在，但偏好数据已丢失。重新填写偏好即可恢复路线。
+              保存的路线仍在，但偏好数据已丢失。重新填写偏好将生成新路线。
             </p>
             <button
               className="btn btn-primary btn-full"
@@ -172,7 +176,7 @@ export function PlanFlow({
               style={{ marginTop: 8 }}
               onClick={reset}
             >
-              重新规划
+              从头开始
             </button>
           </div>
         )}

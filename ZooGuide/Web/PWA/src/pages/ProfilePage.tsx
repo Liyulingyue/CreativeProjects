@@ -3,14 +3,19 @@ import { api } from '../api/client'
 import { AuthModal } from '../components/AuthModal'
 import { PlanFlow } from '../components/PlanFlow'
 import { getStoredUser, clearAuth, loadPhotoLog, loadVisitedBySource, type AuthUser } from '../lib/storage'
+import { useVisitedVenues } from '../hooks/useVisitedVenues'
 import { shortName } from '../lib/meta-helpers'
-import type { Meta, Route } from '../types'
+import type { Meta, Route, UserPreference } from '../types'
 
 interface Props {
   user: AuthUser | null
   onUserChange: (u: AuthUser | null) => void
   onRouteOpen?: (r: Route) => void
   meta?: Meta | null
+  prefs?: UserPreference | null
+  route?: Route | null
+  onPrefsChange?: (p: UserPreference | null) => void
+  onRouteChange?: (r: Route | null) => void
 }
 
 interface Summary {
@@ -47,7 +52,7 @@ interface Achievement {
   earned_at: string | null
 }
 
-export function ProfilePage({ user, onUserChange, onRouteOpen, meta }: Props) {
+export function ProfilePage({ user, onUserChange, onRouteOpen, meta, prefs, route, onPrefsChange, onRouteChange }: Props) {
   const [summary, setSummary] = useState<Summary | null>(null)
   const [achievements, setAchievements] = useState<Achievement[]>([])
   const [earnedCount, setEarnedCount] = useState(0)
@@ -55,6 +60,11 @@ export function ProfilePage({ user, onUserChange, onRouteOpen, meta }: Props) {
   const [authOpen, setAuthOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [planOpen, setPlanOpen] = useState(false)
+  const { version } = useVisitedVenues()
+  const routeCount = loadVisitedBySource('route').size
+  const photoCount = loadVisitedBySource('photo').size
+  const gpsCount = loadVisitedBySource('gps').size
+  void version
 
   async function load() {
     if (!user) return
@@ -109,9 +119,9 @@ export function ProfilePage({ user, onUserChange, onRouteOpen, meta }: Props) {
         <div className="card" style={{ marginTop: 14 }}>
           <h3 className="card-title">📊 打卡统计</h3>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
-            <StatBlock label="路线打卡" value={loadVisitedBySource('route').size} />
-            <StatBlock label="拍照打卡" value={loadVisitedBySource('photo').size} />
-            <StatBlock label="GPS打卡" value={loadVisitedBySource('gps').size} />
+            <StatBlock label="路线打卡" value={routeCount} />
+            <StatBlock label="拍照打卡" value={photoCount} />
+            <StatBlock label="GPS打卡" value={gpsCount} />
           </div>
         </div>
 
@@ -137,11 +147,13 @@ export function ProfilePage({ user, onUserChange, onRouteOpen, meta }: Props) {
 
       {planOpen && (
         <PlanFlow
-          initialPrefs={null}
-          externalRoute={null}
+          initialPrefs={prefs ?? null}
+          externalRoute={route ?? null}
           onClose={() => setPlanOpen(false)}
-          onRouteChange={() => {}}
+          onRouteChange={onRouteChange ?? (() => {})}
+          onPrefsChange={onPrefsChange ?? (() => {})}
           onOpenChat={() => {}}
+          meta={meta}
         />
       )}
     </div>
@@ -203,9 +215,9 @@ export function ProfilePage({ user, onUserChange, onRouteOpen, meta }: Props) {
         <>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 12 }}>
-            <StatBlock label="路线打卡" value={loadVisitedBySource('route').size} />
-            <StatBlock label="拍照打卡" value={loadVisitedBySource('photo').size} />
-            <StatBlock label="GPS打卡" value={loadVisitedBySource('gps').size} />
+            <StatBlock label="路线打卡" value={routeCount} />
+            <StatBlock label="拍照打卡" value={photoCount} />
+            <StatBlock label="GPS打卡" value={gpsCount} />
           </div>
 
           <Section title="🧭 我的路线">

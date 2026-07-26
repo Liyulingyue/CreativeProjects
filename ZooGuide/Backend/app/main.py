@@ -671,7 +671,17 @@ def login(req: LoginRequest):
     }
 
 
-@app.post("/api/auth/logout")
+class ClaimSessionRequest(BaseModel):
+    session_id: str
+
+
+@app.post("/api/auth/claim-session")
+def claim_session(
+    req: ClaimSessionRequest,
+    current_user: dict = Depends(auth.get_current_user),
+):
+    result = db.claim_session_data(req.session_id, current_user["id"])
+    return {"ok": True, **result}
 def logout(authorization: Optional[str] = Header(default=None)):
     if authorization and authorization.lower().startswith("bearer "):
         token = authorization[7:].strip()
