@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Venue } from '../../types'
 import { api } from '../../api/client'
-import { loadPhotoLog, type PhotoLogEntry } from '../../lib/storage'
+import { loadPhotoLog, generateThumbnail, generatePreview, type PhotoLogEntry } from '../../lib/storage'
 import { venueEmoji } from '../../lib/venue-helpers'
 
 interface Props {
@@ -94,22 +94,27 @@ export function PhotoFlow({ venue, onClose, onCheckinSuccess, initialFile }: Pro
     setStep('evaluating')
     setError(null)
     try {
-      const result = await api.evaluatePhoto(file, file.name, {
-        expectedVenueId: venue.id,
-      })
+      const result = await api.photoCheckin(file, venue.id, file.name)
       setEvaluation(result)
       // Append to local photo log
       try {
         const { appendPhotoLog } = await import('../../lib/storage')
+        const thumbnail = await generateThumbnail(file)
+        const preview = await generatePreview(file)
         appendPhotoLog({
           evaluation_id: result.evaluation_id,
-          animal_guess: result.animal_guess,
-          matched_venue_id: result.matched_venue_id,
-          matched_venue_name: result.matched_venue_name,
-          badge: result.badge,
-          vibe_score: result.vibe_score,
-          caption: result.caption,
+          animal: venue.animals?.[0] || venue.name,
+          desc: result.desc,
+          score: result.score,
+          style: '',
+          blurry: '',
           ts: result.ts,
+          source: 'checkin',
+          is_match: result.is_match,
+          matched_venue_id: result.matched_venue_id || venue.id,
+          matched_venue_name: result.matched_venue_name || venue.name,
+          thumbnail,
+          preview,
         })
         setHistory(loadPhotoLog())
       } catch {}
@@ -327,8 +332,8 @@ function ResultCard({
   onAgain: () => void
   onClose: () => void
 }) {
-  const success = evaluation.success === true && evaluation.matched_venue_id === expectedVenue.id
-  const actual = evaluation.matched_venue_name || evaluation.animal_guess || '未识别'
+  const success = evaluation.success === true
+  const actual = evaluation.matched_venue_name || '其他动物'
 
   return (
     <div>
@@ -364,7 +369,6 @@ function ResultCard({
         )}
       </div>
 
-      {/* Photo + AI analysis */}
       <div
         style={{
           background: 'linear-gradient(135deg, var(--primary-soft), #fff)',
@@ -375,7 +379,7 @@ function ResultCard({
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div style={{ fontSize: 13, color: 'var(--fg-muted)' }}>
-            🐾 推测：<strong>{evaluation.animal_guess}</strong>
+            🐾 识别：<strong>{evaluation.matched_venue_name || '其他动物'}</strong>
             {evaluation.matched_venue_name && (
               <> · {evaluation.matched_venue_name}</>
             )}
@@ -390,63 +394,36 @@ function ResultCard({
               fontWeight: 700,
             }}
           >
-            {evaluation.vibe_score}分
+            {evaluation.score}分
           </div>
         </div>
+        {evaluation.desc && (
+          <div style={{ marginTop: 10, fontSize: 13, color: 'var(--fg)', lineHeight: 1.6 }}>
+            {evaluation.desc}
+          </div>
+        )}
+      </div>
+
+      {!success && (
         <div
           style={{
-            marginTop: 10,
-            display: 'inline-block',
-            background: 'var(--accent)',
-            color: 'white',
-            borderRadius: 8,
-            padding: '6px 12px',
-            fontSize: 14,
-            fontWeight: 700,
+            background: 'var(--bg-elev)',
+            border: '1px solid var(--border)',
+            borderRadius: 14,
+            padding: 14,
+            marginBottom: 14,
           }}
         >
-          🏅 {evaluation.badge}
-        </div>
-        <div style={{ marginTop: 12, fontSize: 13, color: 'var(--fg-muted)', lineHeight: 1.6 }}>
-          「{evaluation.caption}」
-        </div>
-      </div>
-
-      <div
-        style={{
-          background: 'var(--bg-elev)',
-          border: '1px solid var(--border)',
-          borderRadius: 14,
-          padding: 14,
-          marginBottom: 14,
-          lineHeight: 1.6,
-          fontSize: 14,
-          color: 'var(--fg)',
-        }}
-      >
-        {evaluation.comment}
-      </div>
-
-      {evaluation.tips && evaluation.tips.length > 0 && (
-        <div style={{ marginBottom: 14 }}>
-          <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginBottom: 4 }}>
-            📷 拍摄小贴士
+          <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginBottom: 8 }}>
+            💡 这样拍更容易打卡成功
           </div>
-          {evaluation.tips.map((t: string, i: number) => (
-            <div
-              key={i}
-              style={{
-                fontSize: 13,
-                color: 'var(--primary-strong)',
-                background: 'var(--primary-soft)',
-                padding: '6px 10px',
-                borderRadius: 8,
-                marginBottom: 4,
-              }}
-            >
-              · {t}
-            </div>
-          ))}
+          <div style={{ fontSize: 13, color: 'var(--fg)', lineHeight: 1.7 }}>
+            · 把「{expectedVenue.animals.slice(0, 2).join(' / ') || '动物本体'}」拍清楚
+            <br />
+            · 避开玻璃反光、栏杆和围网
+            <br />
+            · 动物在动，等一个表情或姿态到位的瞬间
+          </div>
         </div>
       )}
 

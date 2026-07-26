@@ -29,10 +29,10 @@ interface Summary {
   recent_photos: Array<{
     evaluation_id: string
     ts: string
-    badge: string
-    animal_guess: string
+    is_match: boolean
+    desc: string
     matched_venue_name: string
-    vibe_score: number
+    score: number
   }>
 }
 
@@ -59,9 +59,8 @@ export function ProfilePage({ user, onUserChange, onRouteOpen, meta, prefs, rout
   const [error, setError] = useState<string | null>(null)
   const [planOpen, setPlanOpen] = useState(false)
   const { version } = useVisitedVenues()
-  const routeCount = loadVisitedBySource('route').size
   const photoCount = loadVisitedBySource('photo').size
-  const gpsCount = loadVisitedBySource('gps').size
+  const photoLogCount = loadPhotoLog().length
   void version
 
   async function load() {
@@ -114,14 +113,16 @@ export function ProfilePage({ user, onUserChange, onRouteOpen, meta, prefs, rout
           </button>
         </div>
 
-        <div className="card" style={{ marginTop: 14 }}>
-          <h3 className="card-title">📊 打卡统计</h3>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
-            <StatBlock label="路线打卡" value={routeCount} />
-            <StatBlock label="拍照打卡" value={photoCount} />
-            <StatBlock label="GPS打卡" value={gpsCount} />
+        {user && (
+          <div className="card" style={{ marginTop: 14 }}>
+            <h3 className="card-title">📊 我的足迹</h3>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+              <StatBlock label="拍照打卡" value={photoCount} />
+              <StatBlock label="照片" value={photoLogCount} />
+              <StatBlock label="成就" value={earnedCount} />
+            </div>
           </div>
-        </div>
+        )}
 
         <div className="card" style={{ marginTop: 14 }}>
           <h3 className="card-title">🌟 试试这些</h3>
@@ -212,33 +213,14 @@ export function ProfilePage({ user, onUserChange, onRouteOpen, meta, prefs, rout
       {summary && (
         <>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 12 }}>
-            <StatBlock label="路线打卡" value={routeCount} />
-            <StatBlock label="拍照打卡" value={photoCount} />
-            <StatBlock label="GPS打卡" value={gpsCount} />
+          <div className="card" style={{ marginBottom: 12 }}>
+            <h3 className="card-title">📊 我的足迹</h3>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+              <StatBlock label="拍照打卡" value={photoCount} />
+              <StatBlock label="照片" value={photoLogCount} />
+              <StatBlock label="成就" value={earnedCount} />
+            </div>
           </div>
-
-          <Section title="📸 我的照片">
-            {(() => {
-              const photos = loadPhotoLog()
-              return photos.length > 0 ? (
-                photos.slice(0, 10).map((p) => (
-                  <div key={p.evaluation_id} className="history-row">
-                    <div className="history-title">
-                      🏅 {p.badge} · {p.matched_venue_name || p.animal_guess}
-                    </div>
-                    <div className="history-meta">
-                      {p.vibe_score}分 · {p.ts?.slice(0, 16).replace('T', ' ')}
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <div style={{ textAlign: 'center', color: 'var(--fg-muted)', fontSize: 13, padding: 16 }}>
-                  暂无照片
-                </div>
-              )
-            })()}
-          </Section>
 
           {/* 活动成就 */}
           {achievements.length > 0 && (
@@ -337,7 +319,6 @@ export function ProfilePage({ user, onUserChange, onRouteOpen, meta, prefs, rout
           )}
 
           {summary.recent_checkins.length === 0 &&
-            summary.recent_photos.length === 0 &&
             achievements.length === 0 && (
               <div
                 className="card"

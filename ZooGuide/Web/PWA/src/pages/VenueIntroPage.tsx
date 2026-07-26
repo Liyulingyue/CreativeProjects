@@ -49,15 +49,19 @@ export function VenueIntroPage({ venues, meta }: Props) {
                   onClick={() => navigate(`/venue/${v.id}`)}
                 >
                   <div className="vic-emoji">{venueEmoji(v.id, meta)}</div>
-                  <div className="vic-name">{v.name}</div>
-                  <div className="vic-animals">
-                    {v.animals.slice(0, 2).join('·')}
-                    {v.animals.length > 2 ? '…' : ''}
-                  </div>
-                  <div className="vic-meta">
-                    <span>{v.recommended_visit_minutes}min</span>
-                    {v.must_see && <span className="vic-badge">必看</span>}
-                    {v.tags.includes('2025新馆') && <span className="vic-badge new">新馆</span>}
+                  <div className="vic-info">
+                    <div className="vic-row1">
+                      <div className="vic-name">{v.name}</div>
+                      <div className="vic-row1-right">
+                        {v.must_see && <span className="vic-badge">必看</span>}
+                        {v.tags.includes('2025新馆') && <span className="vic-badge new">新馆</span>}
+                        <span className="vic-time">{v.recommended_visit_minutes}min</span>
+                      </div>
+                    </div>
+                    <div className="vic-animals">
+                      {v.animals.slice(0, 2).join('·')}
+                      {v.animals.length > 2 ? '…' : ''}
+                    </div>
                   </div>
                 </button>
               ))}

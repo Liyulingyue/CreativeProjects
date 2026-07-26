@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, UploadFile, File
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -188,12 +188,13 @@ def get_facility(facility_id: str):
 # ---------------------------------------------------------------------------
 
 @app.post("/api/plan")
-def plan(
+async def plan(
     req: PlanRequest,
     current_user: Optional[dict] = Depends(auth.get_current_user_optional),
 ):
     try:
-        route, used_llm = planner.plan_route(req, force_fast=req.fast)
+        print(f"[plan] 📋 Request: {req.model_dump_json()[:300]}")
+        route, used_llm = await planner.plan_route(req, force_fast=req.fast)
         # Echo prefs back so client can /replan later
         resp = route.model_dump()
         resp["_party_type"] = req.party_type
@@ -213,10 +214,10 @@ def plan(
 
 
 @app.post("/api/plan-variants")
-def plan_variants(req: PlanRequest):
+async def plan_variants(req: PlanRequest):
     """Generate 2-3 alternative routes for comparison (always fast / rule-based)."""
     try:
-        variants = planner.plan_route_variants(req)
+        variants = await planner.plan_route_variants(req)
         return {
             "variants": variants,
             "prefs": req.model_dump(),
@@ -226,9 +227,9 @@ def plan_variants(req: PlanRequest):
 
 
 @app.post("/api/replan")
-def replan(req: ReplanRequest):
+async def replan(req: ReplanRequest):
     try:
-        route, used_llm = planner.replan_route(req.original_route, req)
+        route, used_llm = await planner.replan_route(req.original_route, req)
         resp = route.model_dump()
         resp["llm_used"] = used_llm
         return resp
@@ -337,99 +338,51 @@ def nearest(lat: float, lon: float, top_k: int = 3):
 # Photo evaluation (合照彩蛋)
 # ---------------------------------------------------------------------------
 
-@app.post("/api/photo-evaluate")
-async def photo_evaluate(
+@app.post("/api/photo-checkin")
+async def photo_checkin(
     file: UploadFile = File(...),
-    session_id: Optional[str] = None,
-    auto_checkin: bool = True,
-    expected_venue_id: Optional[str] = None,
+    expected_venue_id: str = Form(...),
+    session_id: Optional[str] = Form(None),
     current_user: Optional[dict] = Depends(auth.get_current_user_optional),
 ):
-    """Upload a photo, get a fun evaluation + auto-checkin.
-
-    If expected_venue_id is provided, verifies the photo matches that venue
-    and returns a 'success' field. If photo doesn't match, still evaluates
-    but doesn't auto-checkin (user must select correct venue).
-    """
+    """Verify a photo matches the expected venue, auto-checkin on success."""
     contents = await file.read()
     if len(contents) > 8 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="file too large (max 8MB)")
     suffix = Path(file.filename or "photo.jpg").suffix.lower()
     if suffix not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
         suffix = ".jpg"
-    path = photo.save_photo(contents, suffix)
     user_id = current_user["id"] if current_user else None
     sid = session_id or (f"u{user_id}" if user_id else "anon")
 
-    # Build expected venue context for LLM
-    expected_venue = None
-    if expected_venue_id:
-        expected_venue = data_loader.get_venue_dict_by_id(expected_venue_id)
-        if expected_venue:
-            result = photo.evaluate_photo_with_expected(
-                path,
-                user_id=user_id,
-                session_id=sid,
-                auto_checkin=False,  # we'll handle checkin based on success
-                expected_venue=expected_venue,
-            )
-        else:
-            result = photo.evaluate_photo(
-                path,
-                user_id=user_id,
-                session_id=sid,
-                auto_checkin=auto_checkin,
-            )
-    else:
-        result = photo.evaluate_photo(
-            path,
-            user_id=user_id,
+    expected_venue = data_loader.get_venue_dict_by_id(expected_venue_id)
+    if not expected_venue:
+        raise HTTPException(status_code=404, detail=f"venue not found: {expected_venue_id}")
+
+    result = await photo.evaluate_photo_with_expected(
+        contents, suffix,
+        user_id=user_id,
+        session_id=sid,
+        auto_checkin=False,
+        expected_venue=expected_venue,
+    )
+
+    matched = bool(result.get("is_match", False))
+    result["success"] = matched
+    result["expected_venue_id"] = expected_venue_id
+
+    if matched:
+        result["auto_checkin"] = db.insert_checkin(
+            venue_id=expected_venue["id"],
+            venue_name=expected_venue["name"],
             session_id=sid,
-            auto_checkin=auto_checkin,
+            user_id=user_id,
+            note=f"photo checkin {result['evaluation_id']}",
         )
-
-# Determine success: matched_venue_id == expected_venue_id
-    if expected_venue_id:
-        matched = result.get("matched_venue_id") == expected_venue_id
-        result["success"] = matched
-        result["expected_venue_id"] = expected_venue_id
-        if matched:
-            # Only auto-checkin on success
-            venue = data_loader.get_venue_dict_by_id(expected_venue_id)
-            if venue:
-                result["auto_checkin"] = db.insert_checkin(
-                    venue_id=expected_venue["id"],
-                    venue_name=expected_venue["name"],
-                    session_id=sid,
-                    user_id=user_id,
-                    note=f"photo eval {result['evaluation_id']}",
-                )
-        else:
-            actual_name = result.get("matched_venue_name") or "未识别"
-            expected_name = expected_venue["name"]
-            result["failure_reason"] = (
-                f"照片里没有 {expected_name}（识别为：{actual_name}）"
-            )
     else:
-        # No expected venue - just use normal auto-checkin logic
-        if auto_checkin and result.get("matched_venue_id"):
-            venue = data_loader.get_venue_dict_by_id(result["matched_venue_id"])
-            if venue:
-                sid = session_id or (str(user_id) if user_id else "anon")
-                try:
-                    checkin = db.insert_checkin(
-                        venue_id=venue["id"],
-                        venue_name=venue["name"],
-                        session_id=sid,
-                        user_id=user_id,
-                        note=f"photo eval {result['evaluation_id']}",
-                    )
-                    result["auto_checkin"] = checkin
-                except Exception:
-                    pass
+        result["failure_reason"] = f"照片里没有 {expected_venue['name']}"
 
-    # Evaluate achievements (only for logged-in users, on success)
-    if user_id and (not expected_venue_id or result.get("success")):
+    if user_id and matched:
         try:
             newly_earned = db.evaluate_achievements(user_id)
             if newly_earned:
@@ -442,17 +395,39 @@ async def photo_evaluate(
         except Exception as e:
             print(f"[warn] achievement eval failed: {e}")
 
-    # Persist photo eval to DB
-    try:
-        db.insert_photo_eval(
-            evaluation_id=result.get("evaluation_id", ""),
-            payload=result,
-            image_path=str(path) if path else None,
-            session_id=sid,
-            user_id=user_id,
-        )
-    except Exception:
-        pass
+    return result
+
+
+@app.post("/api/photo-evaluate")
+async def photo_evaluate(
+    file: UploadFile = File(...),
+    session_id: Optional[str] = Form(None),
+    current_user: Optional[dict] = Depends(auth.get_current_user_optional),
+):
+    """Fun evaluation for photo wall — no venue verification."""
+    contents = await file.read()
+    if len(contents) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="file too large (max 8MB)")
+    suffix = Path(file.filename or "photo.jpg").suffix.lower()
+    if suffix not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+        suffix = ".jpg"
+    user_id = current_user["id"] if current_user else None
+    sid = session_id or (f"u{user_id}" if user_id else "anon")
+
+    result = await photo.evaluate_photo_for_wall(contents, suffix)
+
+    if user_id:
+        try:
+            newly_earned = db.evaluate_achievements(user_id)
+            if newly_earned:
+                catalog = {a["id"]: a for a in db.list_all_achievements()}
+                result["new_achievements"] = [
+                    {**catalog[aid], "earned_at": "just now"}
+                    for aid in newly_earned
+                    if aid in catalog
+                ]
+        except Exception as e:
+            print(f"[warn] achievement eval failed: {e}")
 
     return result
 
@@ -660,10 +635,10 @@ def me_summary(current_user: dict = Depends(auth.get_current_user)):
             {
                 "evaluation_id": e["eval_id"],
                 "ts": e["created_at"],
-                "badge": e.get("badge", ""),
-                "animal_guess": e.get("animal_guess", ""),
+                "is_match": bool(e.get("is_match", False)),
+                "desc": e.get("desc", "") or "",
                 "matched_venue_name": e.get("matched_venue_name", ""),
-                "vibe_score": e.get("vibe_score", 0),
+                "score": e.get("score", 0),
             }
             for e in photo_evals[:5]
         ],

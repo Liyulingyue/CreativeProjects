@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import type { Meta, Venue } from '../types'
 import { api } from '../api/client'
 import { PhotoFlow } from '../components/flows/PhotoFlow'
-import { loadPhotoLog, loadVisitedBySource, addVisitedSource, type PhotoLogEntry } from '../lib/storage'
+import { loadPhotoLog, loadVisitedBySource, addVisitedSource, getCheckinPhoto, type PhotoLogEntry } from '../lib/storage'
 import { useVisitedVenues } from '../hooks/useVisitedVenues'
 import { venueEmoji } from '../lib/venue-helpers'
 
@@ -21,6 +21,7 @@ export function PhotoActivityPage({ venues: venuesProp, meta }: Props) {
   const { visited, version } = useVisitedVenues()
   const [selectedVenue, setSelectedVenue] = useState<Venue | null>(null)
   const [showFlow, setShowFlow] = useState(false)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
 
   useEffect(() => {
     if (venuesProp) {
@@ -43,7 +44,7 @@ export function PhotoActivityPage({ venues: venuesProp, meta }: Props) {
     setPhotoLog(loadPhotoLog())
   }
 
-  const maxVibe = photoLog.length > 0 ? Math.max(...photoLog.map((p) => p.vibe_score)) : 0
+  const maxVibe = photoLog.length > 0 ? Math.max(...photoLog.map((p) => p.score)) : 0
 
   const byArea: Record<string, Venue[]> = {}
   venues.forEach((v) => {
@@ -52,9 +53,7 @@ export function PhotoActivityPage({ venues: venuesProp, meta }: Props) {
     byArea[a].push(v)
   })
 
-  const venuePhotos = selectedVenue
-    ? photoLog.filter((p) => p.matched_venue_id === selectedVenue.id)
-    : []
+  const checkinPhoto = selectedVenue ? getCheckinPhoto(selectedVenue.id) : undefined
   const isVisited = selectedVenue ? visited.has(selectedVenue.id) : false
 
   return (
@@ -93,10 +92,10 @@ export function PhotoActivityPage({ venues: venuesProp, meta }: Props) {
                 <div className="venue-list-emoji">{venueEmoji(v.id)}</div>
                 <div className="venue-list-body">
                   <div className="venue-list-name">{v.name}</div>
-                  <div className="venue-list-meta">
-                    {v.animals.slice(0, 2).join(' · ')}
-                    {vPhoto && ` · ${vPhoto.vibe_score}分`}
-                  </div>
+<div className="venue-list-meta">
+            {v.animals.slice(0, 2).join(' · ')}
+            {vPhoto && ` · ${vPhoto.score}分`}
+          </div>
                 </div>
                 <div className="venue-list-status">
                   {vVisited ? (
@@ -120,37 +119,52 @@ export function PhotoActivityPage({ venues: venuesProp, meta }: Props) {
               {selectedVenue.animals.slice(0, 3).join(' · ')}
             </div>
 
-            {isVisited && venuePhotos.length > 0 && (
+            {isVisited && checkinPhoto && (
               <div style={{ marginBottom: 14 }}>
                 <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginBottom: 6 }}>打卡记录</div>
-                {venuePhotos.map((p) => (
-                  <div
-                    key={p.evaluation_id}
-                    style={{
-                      background: 'var(--primary-soft)',
-                      borderRadius: 10,
-                      padding: '10px 12px',
-                      marginBottom: 6,
-                    }}
-                  >
+                <div
+                  style={{
+                    background: 'var(--primary-soft)',
+                    borderRadius: 10,
+                    padding: '10px 12px',
+                    display: 'flex',
+                    gap: 10,
+                    alignItems: 'center',
+                  }}
+                >
+                  {checkinPhoto.thumbnail && (
+                    <img
+                      src={checkinPhoto.thumbnail}
+                      alt={checkinPhoto.animal || selectedVenue.name}
+                      onClick={() => setPreviewUrl(checkinPhoto.preview || checkinPhoto.thumbnail || null)}
+                      style={{
+                        width: 56,
+                        height: 56,
+                        borderRadius: 8,
+                        objectFit: 'cover',
+                        flexShrink: 0,
+                        cursor: 'pointer',
+                      }}
+                    />
+                  )}
+                  <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: 13 }}>{p.animal_guess}</span>
+                      <span style={{ fontSize: 13, fontWeight: 600 }}>{checkinPhoto.animal || selectedVenue.name}</span>
                       <span style={{ background: '#10b981', color: '#fff', borderRadius: 6, padding: '2px 8px', fontSize: 12, fontWeight: 700 }}>
-                        {p.vibe_score}分
+                        {checkinPhoto.score}分
                       </span>
                     </div>
-                    <div style={{ display: 'inline-block', marginTop: 4, background: 'var(--accent)', color: '#fff', borderRadius: 6, padding: '2px 8px', fontSize: 12 }}>
-                      🏅 {p.badge}
-                    </div>
-                    <div style={{ marginTop: 4, fontSize: 12, color: 'var(--fg-muted)' }}>
-                      「{p.caption}」
-                    </div>
+                    {checkinPhoto.desc && (
+                      <div style={{ marginTop: 4, fontSize: 12, color: 'var(--fg-muted)', lineHeight: 1.4 }}>
+                        {checkinPhoto.desc}
+                      </div>
+                    )}
                   </div>
-                ))}
+                </div>
               </div>
             )}
 
-            {isVisited && venuePhotos.length === 0 && (
+            {isVisited && !checkinPhoto && (
               <div style={{ marginBottom: 14, padding: 12, background: 'var(--primary-soft)', borderRadius: 10, textAlign: 'center', color: 'var(--primary-strong)', fontSize: 13 }}>
                 ✓ 已打卡
               </div>
@@ -183,6 +197,45 @@ export function PhotoActivityPage({ venues: venuesProp, meta }: Props) {
               refreshData()
             }}
           />
+        </div>
+      )}
+
+      {previewUrl && (
+        <div
+          className="modal-mask"
+          onClick={() => setPreviewUrl(null)}
+          style={{ background: 'rgba(0,0,0,0.9)', zIndex: 1000 }}
+          role="presentation"
+        >
+          <img
+            src={previewUrl}
+            alt="预览"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              maxWidth: '90vw',
+              maxHeight: '85vh',
+              borderRadius: 12,
+              objectFit: 'contain',
+            }}
+          />
+          <button
+            onClick={() => setPreviewUrl(null)}
+            style={{
+              position: 'absolute',
+              top: 16,
+              right: 16,
+              background: 'rgba(255,255,255,0.2)',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '50%',
+              width: 36,
+              height: 36,
+              fontSize: 18,
+              cursor: 'pointer',
+            }}
+          >
+            ×
+          </button>
         </div>
       )}
     </div>
