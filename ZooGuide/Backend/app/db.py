@@ -288,6 +288,24 @@ def list_checkins_by_user(user_id: int, limit: int = 100) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def claim_session_data(session_id: str, user_id: int) -> dict:
+    with _lock:
+        with get_conn() as c:
+            cc = c.execute(
+                "UPDATE checkins SET user_id = ? WHERE session_id = ? AND user_id IS NULL",
+                (user_id, session_id),
+            ).rowcount
+            gc = c.execute(
+                "UPDATE gps_checkins SET user_id = ? WHERE session_id = ? AND user_id IS NULL",
+                (user_id, session_id),
+            ).rowcount
+            pc = c.execute(
+                "UPDATE photo_evals SET user_id = ? WHERE session_id = ? AND user_id IS NULL",
+                (user_id, session_id),
+            ).rowcount
+    return {"checkins": cc, "gps_checkins": gc, "photo_evals": pc}
+
+
 # ---------------------------------------------------------------------------
 # Photo evaluations
 # ---------------------------------------------------------------------------

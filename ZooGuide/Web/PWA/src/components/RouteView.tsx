@@ -102,6 +102,12 @@ export function RouteView({
           onReplanned={(r) => {
             onRouteUpdate(r)
             setSubTab('current')
+            const firstUnvisited = r.stops.findIndex((s) => !visited.has(s.venue_id))
+            const newIdx = firstUnvisited >= 0 ? firstUnvisited : r.stops.length - 1
+            setCurrentStopIdx(newIdx)
+            try {
+              localStorage.setItem(`zooguide:currentStop:${r.id}`, String(newIdx))
+            } catch {}
           }}
           onRestartQuiz={() => onRestartQuiz?.()}
           onOpenChat={() => onOpenChat?.()}

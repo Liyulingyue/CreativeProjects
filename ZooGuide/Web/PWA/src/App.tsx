@@ -136,7 +136,7 @@ export default function App() {
           <Route path="/facility" element={<FacilityListPage />} />
           <Route path="/facility/:id" element={<FacilityDetailPage />} />
           <Route path="/me" element={
-            <ProfilePage user={user} onUserChange={setUser} meta={meta} />
+             <ProfilePage user={user} onUserChange={setUser} meta={meta} prefs={prefs} route={route} onPrefsChange={setPrefs} onRouteChange={setRoute} />
           } />
         </Routes>
       </main>
@@ -148,6 +148,7 @@ export default function App() {
           initialStage={planInitialStage}
           onClose={closePlan}
           onRouteChange={setRoute}
+          onPrefsChange={setPrefs}
           onOpenChat={() => navigate('/chat')}
           meta={meta}
         />

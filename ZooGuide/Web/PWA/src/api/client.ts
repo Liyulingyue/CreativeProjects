@@ -111,6 +111,11 @@ export const api = {
     ),
   logout: () =>
     request<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
+  claimSession: (session_id: string) =>
+    request<{ ok: boolean; checkins: number; gps_checkins: number; photo_evals: number }>(
+      '/api/auth/claim-session',
+      { method: 'POST', body: JSON.stringify({ session_id }) },
+    ),
   me: () =>
     request<{ id: number; username: string; display_name: string; created_at: string }>('/api/auth/me'),
 

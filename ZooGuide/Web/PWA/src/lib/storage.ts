@@ -137,23 +137,6 @@ export function saveVisited(ids: Set<string>) {
   saveVisitedMap(map)
 }
 
-const ACTIVITY_VISITED_PREFIX = 'zooguide:activity:visited:'
-
-export function loadActivityVisited(activity: string): Set<string> {
-  try {
-    const raw = localStorage.getItem(ACTIVITY_VISITED_PREFIX + activity)
-    return new Set(raw ? JSON.parse(raw) : [])
-  } catch {
-    return new Set()
-  }
-}
-
-export function saveActivityVisited(activity: string, ids: Set<string>) {
-  localStorage.setItem(ACTIVITY_VISITED_PREFIX + activity, JSON.stringify([...ids]))
-  window.dispatchEvent(new Event('zooguide:activityVisitedChanged'))
-}
-
-// Recent photo evaluations (capped)
 const PHOTO_LOG_KEY = 'zooguide:photoLog:v1'
 const PHOTO_LOG_MAX = 30
 

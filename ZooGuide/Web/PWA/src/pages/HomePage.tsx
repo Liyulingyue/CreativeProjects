@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { Meta, Route, UserPreference, Venue } from '../types'
 import { api } from '../api/client'
-import { type AuthUser, loadActivityVisited, loadPhotoLog, addVisitedSource, removeVisitedSource } from '../lib/storage'
+import { type AuthUser, loadVisitedBySource, loadPhotoLog, addVisitedSource, removeVisitedSource } from '../lib/storage'
 import { useVisitedVenues } from '../hooks/useVisitedVenues'
 import { shortName } from '../lib/meta-helpers'
 
@@ -165,7 +165,7 @@ export function HomePage({
         >
           <h3 className="card-title">📊 我的足迹</h3>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 }}>
-            <StatBlock label="拍照打卡" value={loadActivityVisited('photo').size} />
+            <StatBlock label="拍照打卡" value={loadVisitedBySource('photo').size} />
             <StatBlock label="照片" value={loadPhotoLog().length} />
             <StatBlock label="成就" value={earnedCount} />
           </div>
