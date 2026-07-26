@@ -1,6 +1,12 @@
 import { useState } from 'react'
 import { api } from '../api/client'
-import { setAuth, addVisitedSource, getSessionId } from '../lib/storage'
+import {
+  setAuth,
+  addVisitedSource,
+  getSessionId,
+  appendPhotoLog,
+  type PhotoLogEntry,
+} from '../lib/storage'
 
 interface Props {
   onClose: () => void
@@ -17,6 +23,61 @@ export function AuthModal({ onClose, onAuthed }: Props) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  async function syncFromBackend() {
+    try {
+      const sid = getSessionId()
+      await api.claimSession(sid)
+    } catch {}
+
+    try {
+      const sid = getSessionId()
+      const { evals } = await api.sessionPhotoEvals(sid)
+      for (const e of evals) {
+        const entry: PhotoLogEntry = {
+          evaluation_id: e.eval_id,
+          animal: e.animal || '',
+          desc: e.desc || '',
+          score: e.score || 0,
+          style: e.style || '',
+          blurry: e.blurry || '',
+          ts: e.created_at || '',
+          source: (e.source === 'wall' ? 'wall' : 'checkin') as 'wall' | 'checkin',
+          is_match: !!e.is_match,
+          matched_venue_id: e.matched_venue_id || '',
+          matched_venue_name: e.matched_venue_name || '',
+          thumbnail: e.thumbnail || undefined,
+          preview: e.preview || undefined,
+        }
+        appendPhotoLog(entry)
+      }
+    } catch {}
+
+    try {
+      const serverData = await api.myVisitedVenueIds()
+      if (serverData.venue_ids?.length) {
+        for (const vid of serverData.venue_ids) {
+          addVisitedSource(vid, 'route')
+        }
+      }
+    } catch {}
+
+    try {
+      const summary = await api.mySummary()
+      for (const c of summary.recent_checkins || []) {
+        if (c.venue_id) {
+          const note = (c as any).note || ''
+          if (note.includes('photo')) {
+            addVisitedSource(c.venue_id, 'photo')
+          } else if (note.includes('gps')) {
+            addVisitedSource(c.venue_id, 'gps')
+          } else {
+            addVisitedSource(c.venue_id, 'route')
+          }
+        }
+      }
+    } catch {}
+  }
+
   async function submit() {
     setLoading(true)
     setError(null)
@@ -27,18 +88,7 @@ export function AuthModal({ onClose, onAuthed }: Props) {
           : await api.register(username, password, displayName || undefined)
       setAuth(result.token, result.user)
       onAuthed(result.user)
-      try {
-        const sid = getSessionId()
-        await api.claimSession(sid)
-      } catch {}
-      try {
-        const serverData = await api.myVisitedVenueIds()
-        if (serverData.venue_ids?.length) {
-          for (const vid of serverData.venue_ids) {
-            addVisitedSource(vid, 'route')
-          }
-        }
-      } catch {}
+      await syncFromBackend()
       onClose()
     } catch (e) {
       setError(e instanceof Error ? e.message : '失败')

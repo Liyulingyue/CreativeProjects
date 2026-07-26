@@ -80,10 +80,13 @@ export const api = {
     file: File | Blob,
     expectedVenueId: string,
     filename = 'photo.jpg',
+    extras?: { thumbnail?: string; preview?: string },
   ) => {
     const form = new FormData()
     form.append('file', file, filename)
     form.append('expected_venue_id', expectedVenueId)
+    if (extras?.thumbnail) form.append('thumbnail', extras.thumbnail)
+    if (extras?.preview) form.append('preview', extras.preview)
     const res = await fetch(`${BASE}/api/photo-checkin`, {
       method: 'POST',
       body: form,
@@ -99,9 +102,12 @@ export const api = {
   evaluatePhoto: async (
     file: File | Blob,
     filename = 'photo.jpg',
+    extras?: { thumbnail?: string; preview?: string },
   ) => {
     const form = new FormData()
     form.append('file', file, filename)
+    if (extras?.thumbnail) form.append('thumbnail', extras.thumbnail)
+    if (extras?.preview) form.append('preview', extras.preview)
     const res = await fetch(`${BASE}/api/photo-evaluate`, {
       method: 'POST',
       body: form,
@@ -138,6 +144,9 @@ export const api = {
   // User history
   myVisitedVenueIds: () =>
     request<{ user_id: number; venue_ids: string[] }>('/api/me/visited-venue-ids'),
+
+  sessionPhotoEvals: (sessionId: string) =>
+    request<{ session_id: string; evals: any[] }>(`/api/session/photo-evals?session_id=${sessionId}`),
 
   mySummary: () =>
     request<{

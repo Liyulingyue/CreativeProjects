@@ -343,6 +343,8 @@ async def photo_checkin(
     file: UploadFile = File(...),
     expected_venue_id: str = Form(...),
     session_id: Optional[str] = Form(None),
+    thumbnail: Optional[str] = Form(None),
+    preview: Optional[str] = Form(None),
     current_user: Optional[dict] = Depends(auth.get_current_user_optional),
 ):
     """Verify a photo matches the expected venue, auto-checkin on success."""
@@ -370,6 +372,9 @@ async def photo_checkin(
     matched = bool(result.get("is_match", False))
     result["success"] = matched
     result["expected_venue_id"] = expected_venue_id
+    result["source"] = "checkin"
+    result["thumbnail"] = thumbnail or ""
+    result["preview"] = preview or ""
 
     if matched:
         result["auto_checkin"] = db.insert_checkin(
@@ -402,6 +407,8 @@ async def photo_checkin(
 async def photo_evaluate(
     file: UploadFile = File(...),
     session_id: Optional[str] = Form(None),
+    thumbnail: Optional[str] = Form(None),
+    preview: Optional[str] = Form(None),
     current_user: Optional[dict] = Depends(auth.get_current_user_optional),
 ):
     """Fun evaluation for photo wall — no venue verification."""
@@ -415,6 +422,9 @@ async def photo_evaluate(
     sid = session_id or (f"u{user_id}" if user_id else "anon")
 
     result = await photo.evaluate_photo_for_wall(contents, suffix)
+    result["source"] = "wall"
+    result["thumbnail"] = thumbnail or ""
+    result["preview"] = preview or ""
 
     if user_id:
         try:
@@ -579,6 +589,13 @@ def me_visited_venue_ids(current_user: dict = Depends(auth.get_current_user)):
 def me_photo_evals(current_user: dict = Depends(auth.get_current_user)):
     items = db.list_photo_evals_by_user(current_user["id"])
     return {"user_id": current_user["id"], "evals": items}
+
+
+@app.get("/api/session/photo-evals")
+def session_photo_evals(session_id: str, current_user: Optional[dict] = Depends(auth.get_current_user_optional)):
+    uid = current_user["id"] if current_user else None
+    items = db.list_photo_evals_by_session(session_id, uid)
+    return {"session_id": session_id, "evals": items}
 
 
 @app.get("/api/me/achievements")

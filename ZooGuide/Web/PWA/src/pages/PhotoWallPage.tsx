@@ -32,11 +32,11 @@ export function PhotoWallPage() {
     setStep('evaluating')
     setError(null)
     try {
-      const result = await api.evaluatePhoto(file, file.name)
+      const thumbnail = await generateThumbnail(file)
+      const preview = await generatePreview(file)
+      const result = await api.evaluatePhoto(file, file.name, { thumbnail, preview })
       setEvaluation(result)
       try {
-        const thumbnail = await generateThumbnail(file)
-        const preview = await generatePreview(file)
         appendPhotoLog({
           evaluation_id: result.evaluation_id,
           animal: result.animal || '未知动物',
