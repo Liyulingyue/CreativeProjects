@@ -94,13 +94,13 @@ export function PhotoFlow({ venue, onClose, onCheckinSuccess, initialFile }: Pro
     setStep('evaluating')
     setError(null)
     try {
-      const result = await api.photoCheckin(file, venue.id, file.name)
+      const thumbnail = await generateThumbnail(file)
+      const preview = await generatePreview(file)
+      const result = await api.photoCheckin(file, venue.id, file.name, { thumbnail, preview })
       setEvaluation(result)
       // Append to local photo log
       try {
         const { appendPhotoLog } = await import('../../lib/storage')
-        const thumbnail = await generateThumbnail(file)
-        const preview = await generatePreview(file)
         appendPhotoLog({
           evaluation_id: result.evaluation_id,
           animal: venue.animals?.[0] || venue.name,

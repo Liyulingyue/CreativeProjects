@@ -107,14 +107,30 @@ CREATE TABLE IF NOT EXISTS photo_evals (
     score INTEGER DEFAULT 0,
     matched_venue_id TEXT DEFAULT '',
     matched_venue_name TEXT DEFAULT '',
+    animal TEXT DEFAULT '',
+    style TEXT DEFAULT '',
+    blurry TEXT DEFAULT '',
+    source TEXT DEFAULT '',
     fallback INTEGER DEFAULT 0,
     fallback_reason TEXT DEFAULT '',
+    thumbnail TEXT DEFAULT '',
+    preview TEXT DEFAULT '',
     created_at TEXT NOT NULL,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_photo_evals_user ON photo_evals(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_photo_evals_session ON photo_evals(session_id);
 """
+
+_MIGRATIONS = [
+    "ALTER TABLE photo_evals ADD COLUMN animal TEXT DEFAULT ''",
+    "ALTER TABLE photo_evals ADD COLUMN style TEXT DEFAULT ''",
+    "ALTER TABLE photo_evals ADD COLUMN blurry TEXT DEFAULT ''",
+    "ALTER TABLE photo_evals ADD COLUMN source TEXT DEFAULT ''",
+    "ALTER TABLE photo_evals ADD COLUMN thumbnail TEXT DEFAULT ''",
+    "ALTER TABLE photo_evals ADD COLUMN preview TEXT DEFAULT ''",
+]
 
 
 def _load_achievements() -> list:
@@ -157,7 +173,6 @@ def init_db() -> None:
     with _lock:
         with get_conn() as c:
             c.executescript(SCHEMA)
-            # Seed default achievements if empty
             cur = c.execute("SELECT COUNT(*) FROM achievements")
             (count,) = cur.fetchone()
             if count == 0:
@@ -167,6 +182,11 @@ def init_db() -> None:
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     DEFAULT_ACHIEVEMENTS,
                 )
+            for sql in _MIGRATIONS:
+                try:
+                    c.execute(sql)
+                except Exception:
+                    pass
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +354,27 @@ def list_photo_evals_by_user(user_id: int, limit: int = 50) -> list[dict]:
         return out
 
 
+def list_photo_evals_by_session(session_id: str, user_id: Optional[int] = None, limit: int = 50) -> list[dict]:
+    with get_conn() as c:
+        if user_id:
+            rows = c.execute(
+                "SELECT * FROM photo_evals WHERE (session_id = ? OR user_id = ?) ORDER BY created_at DESC LIMIT ?",
+                (session_id, user_id, limit),
+            ).fetchall()
+        else:
+            rows = c.execute(
+                "SELECT * FROM photo_evals WHERE session_id = ? ORDER BY created_at DESC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["is_match"] = bool(d.get("is_match", 0))
+            d["fallback"] = bool(d.get("fallback", 0))
+            out.append(d)
+        return out
+
+
 # ---------------------------------------------------------------------------
 # Achievements
 # ---------------------------------------------------------------------------
@@ -472,8 +513,10 @@ def insert_photo_eval(
                    (eval_id, user_id, session_id, image_path,
                     is_match, desc, score,
                     matched_venue_id, matched_venue_name,
-                    fallback, fallback_reason, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    animal, style, blurry, source,
+                    fallback, fallback_reason,
+                    thumbnail, preview, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     eval_id,
                     user_id,
@@ -484,8 +527,14 @@ def insert_photo_eval(
                     int(result.get("score", 0) or 0),
                     result.get("matched_venue_id", ""),
                     result.get("matched_venue_name", ""),
+                    result.get("animal", ""),
+                    result.get("style", ""),
+                    result.get("blurry", ""),
+                    result.get("source", ""),
                     1 if result.get("fallback") else 0,
                     result.get("fallback_reason", ""),
+                    result.get("thumbnail", ""),
+                    result.get("preview", ""),
                     result.get("ts", datetime.now(_UTC).isoformat()),
                 ),
             )
