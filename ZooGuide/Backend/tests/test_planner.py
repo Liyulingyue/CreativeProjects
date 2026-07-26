@@ -1,3 +1,5 @@
+import pytest
+
 from app.planner import (
     _fallback_summary,
     _fallback_narration,
@@ -55,13 +57,14 @@ def test_fallback_general_tips():
     assert len(tips) >= 1
 
 
-def test_plan_route_fallback():
+@pytest.mark.asyncio
+async def test_plan_route_fallback():
     req = PlanRequest(
         available_hours=2.0, party_type="solo", with_kids=False,
         stamina=3, sun_tolerance=3, willing_to_hike=True,
         animal_interests=["panda"], entry_gate="north", start_time="09:00",
     )
-    route, used_llm = plan_route(req, force_fast=True)
+    route, used_llm = await plan_route(req, force_fast=True)
     assert route is not None
     assert len(route.stops) >= 1
     assert used_llm is False

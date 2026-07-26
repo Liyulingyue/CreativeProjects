@@ -137,21 +137,90 @@ export function saveVisited(ids: Set<string>) {
   saveVisitedMap(map)
 }
 
-const PHOTO_LOG_KEY = 'zooguide:photoLog:v1'
+const PHOTO_LOG_KEY = 'zooguide:photoLog:v2'
+const PHOTO_LOG_KEY_V1 = 'zooguide:photoLog:v1'
 const PHOTO_LOG_MAX = 30
+
+export function generateThumbnail(file: File | Blob, maxDim = 200): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image()
+    img.onload = () => {
+      const scale = Math.min(maxDim / img.width, maxDim / img.height, 1)
+      const w = Math.round(img.width * scale)
+      const h = Math.round(img.height * scale)
+      const canvas = document.createElement('canvas')
+      canvas.width = w
+      canvas.height = h
+      const ctx = canvas.getContext('2d')
+      ctx?.drawImage(img, 0, 0, w, h)
+      resolve(canvas.toDataURL('image/jpeg', 0.6))
+      URL.revokeObjectURL(img.src)
+    }
+    img.onerror = () => {
+      URL.revokeObjectURL(img.src)
+      resolve('')
+    }
+    img.src = URL.createObjectURL(file)
+  })
+}
+
+export function generatePreview(file: File | Blob, maxDim = 800): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image()
+    img.onload = () => {
+      const scale = Math.min(maxDim / img.width, maxDim / img.height, 1)
+      const w = Math.round(img.width * scale)
+      const h = Math.round(img.height * scale)
+      const canvas = document.createElement('canvas')
+      canvas.width = w
+      canvas.height = h
+      const ctx = canvas.getContext('2d')
+      ctx?.drawImage(img, 0, 0, w, h)
+      resolve(canvas.toDataURL('image/jpeg', 0.8))
+      URL.revokeObjectURL(img.src)
+    }
+    img.onerror = () => {
+      URL.revokeObjectURL(img.src)
+      resolve('')
+    }
+    img.src = URL.createObjectURL(file)
+  })
+}
+
+export type PhotoSource = 'checkin' | 'wall'
 
 export interface PhotoLogEntry {
   evaluation_id: string
-  animal_guess: string
-  matched_venue_id: string
-  matched_venue_name: string
-  badge: string
-  vibe_score: number
-  caption: string
+  animal: string
+  desc: string
+  score: number
+  style: string
+  blurry: string
   ts: string
+  source: PhotoSource
+  thumbnail?: string
+  preview?: string
+  is_match?: boolean
+  matched_venue_id?: string
+  matched_venue_name?: string
+}
+
+function _migratePhotoLogV1() {
+  if (!localStorage.getItem(PHOTO_LOG_KEY_V1)) return
+  if (localStorage.getItem(PHOTO_LOG_KEY)) return
+  try {
+    const raw = localStorage.getItem(PHOTO_LOG_KEY_V1)
+    if (!raw) return
+    const arr: any[] = JSON.parse(raw)
+    if (!Array.isArray(arr)) return
+    const migrated: PhotoLogEntry[] = arr.map((e) => ({ ...e, source: 'wall' as PhotoSource }))
+    localStorage.setItem(PHOTO_LOG_KEY, JSON.stringify(migrated))
+    localStorage.removeItem(PHOTO_LOG_KEY_V1)
+  } catch {}
 }
 
 export function loadPhotoLog(): PhotoLogEntry[] {
+  _migratePhotoLogV1()
   try {
     const raw = localStorage.getItem(PHOTO_LOG_KEY)
     return raw ? JSON.parse(raw) : []
@@ -160,9 +229,19 @@ export function loadPhotoLog(): PhotoLogEntry[] {
   }
 }
 
+export function loadPhotoLogBySource(source: PhotoSource): PhotoLogEntry[] {
+  return loadPhotoLog().filter((e) => e.source === source)
+}
+
 export function appendPhotoLog(entry: PhotoLogEntry) {
   const log = loadPhotoLog()
-  log.unshift(entry) // newest first
+  if (entry.source === 'checkin' && entry.matched_venue_id) {
+    const idx = log.findIndex(
+      (e) => e.source === 'checkin' && e.matched_venue_id === entry.matched_venue_id,
+    )
+    if (idx >= 0) log.splice(idx, 1)
+  }
+  log.unshift(entry)
   if (log.length > PHOTO_LOG_MAX) log.pop()
   try {
     localStorage.setItem(PHOTO_LOG_KEY, JSON.stringify(log))
@@ -170,9 +249,27 @@ export function appendPhotoLog(entry: PhotoLogEntry) {
   window.dispatchEvent(new Event('zooguide:photoLogChanged'))
 }
 
+export function getCheckinPhoto(venueId: string): PhotoLogEntry | undefined {
+  return loadPhotoLog().find(
+    (e) => e.source === 'checkin' && e.matched_venue_id === venueId,
+  )
+}
+
 export function clearPhotoLog() {
   localStorage.removeItem(PHOTO_LOG_KEY)
   window.dispatchEvent(new Event('zooguide:photoLogChanged'))
+}
+
+export function removePhotoLogEntry(evaluationId: string) {
+  const log = loadPhotoLog()
+  const idx = log.findIndex((e) => e.evaluation_id === evaluationId)
+  if (idx >= 0) {
+    log.splice(idx, 1)
+    try {
+      localStorage.setItem(PHOTO_LOG_KEY, JSON.stringify(log))
+    } catch {}
+    window.dispatchEvent(new Event('zooguide:photoLogChanged'))
+  }
 }
 
 const TOKEN_KEY = 'zooguide:token:v1'

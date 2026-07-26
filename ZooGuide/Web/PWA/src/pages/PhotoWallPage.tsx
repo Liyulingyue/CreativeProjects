@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import { PhotoWallFlow } from '../components/flows/PhotoWallFlow'
-import { loadPhotoLog, appendPhotoLog } from '../lib/storage'
+import { loadPhotoLog, appendPhotoLog, generateThumbnail, generatePreview } from '../lib/storage'
 
 export function PhotoWallPage() {
   const navigate = useNavigate()
@@ -35,15 +35,19 @@ export function PhotoWallPage() {
       const result = await api.evaluatePhoto(file, file.name)
       setEvaluation(result)
       try {
+        const thumbnail = await generateThumbnail(file)
+        const preview = await generatePreview(file)
         appendPhotoLog({
           evaluation_id: result.evaluation_id,
-          animal_guess: result.animal_guess,
-          matched_venue_id: result.matched_venue_id,
-          matched_venue_name: result.matched_venue_name,
-          badge: result.badge,
-          vibe_score: result.vibe_score,
-          caption: result.caption,
+          animal: result.animal || '未知动物',
+          desc: result.desc,
+          score: result.score,
+          style: result.style || '其他',
+          blurry: result.blurry || '清晰',
           ts: result.ts,
+          source: 'wall',
+          thumbnail,
+          preview,
         })
       } catch {}
       setStep('result')
@@ -114,36 +118,46 @@ export function PhotoWallPage() {
               )}
 
               {step === 'result' && evaluation && (
-                <>
-                  <div
-                    style={{
-                      background: 'linear-gradient(135deg, var(--primary-soft), #fff)',
-                      borderRadius: 14,
-                      padding: 16,
-                      marginBottom: 14,
-                    }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div style={{ fontSize: 13, color: 'var(--fg-muted)' }}>
-                        🐾 推测：<strong>{evaluation.animal_guess}</strong>
-                        {evaluation.matched_venue_name && <> · {evaluation.matched_venue_name}</>}
-                      </div>
-                      <div style={{ background: '#10b981', color: '#fff', borderRadius: 8, padding: '4px 10px', fontSize: 13, fontWeight: 700 }}>
-                        {evaluation.vibe_score}分
-                      </div>
-                    </div>
-                    <div style={{ marginTop: 10, display: 'inline-block', background: 'var(--accent)', color: 'white', borderRadius: 8, padding: '6px 12px', fontSize: 14, fontWeight: 700 }}>
-                      🏅 {evaluation.badge}
-                    </div>
-                    <div style={{ marginTop: 12, fontSize: 13, color: 'var(--fg-muted)', lineHeight: 1.6 }}>
-                      「{evaluation.caption}」
-                    </div>
-                  </div>
-                  <div className="modal-actions">
-                    <button className="btn btn-primary btn-full" onClick={reset}>✓ 完成</button>
-                  </div>
-                </>
-              )}
+                 <>
+                   <div
+                     style={{
+                       background: 'linear-gradient(135deg, var(--primary-soft), #fff)',
+                       borderRadius: 14,
+                       padding: 16,
+                       marginBottom: 14,
+                     }}
+                   >
+                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                       <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--fg)' }}>
+                         {evaluation.animal || '未知动物'}
+                       </div>
+                       <div style={{ background: evaluation.score >= 80 ? '#10b981' : evaluation.score >= 50 ? '#f59e0b' : 'var(--fg-muted)', color: '#fff', borderRadius: 8, padding: '4px 10px', fontSize: 13, fontWeight: 700 }}>
+                         {evaluation.score}分
+                       </div>
+                     </div>
+                     {evaluation.desc && (
+                       <div style={{ marginTop: 10, fontSize: 13, color: 'var(--fg)', lineHeight: 1.6 }}>
+                         {evaluation.desc}
+                       </div>
+                     )}
+                     <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
+                       {evaluation.style && evaluation.style !== '其他' && (
+                         <span style={{ fontSize: 11, background: 'var(--primary-soft)', color: 'var(--primary-strong)', padding: '2px 8px', borderRadius: 4 }}>
+                           {evaluation.style}
+                         </span>
+                       )}
+                       {evaluation.blurry && (
+                         <span style={{ fontSize: 11, background: evaluation.blurry === '清晰' ? '#d1fae5' : evaluation.blurry === '略微模糊' ? '#fef3c7' : '#fee2e2', color: 'var(--fg-muted)', padding: '2px 8px', borderRadius: 4 }}>
+                           {evaluation.blurry}
+                         </span>
+                       )}
+                     </div>
+                   </div>
+                   <div className="modal-actions">
+                     <button className="btn btn-primary btn-full" onClick={reset}>✓ 完成</button>
+                   </div>
+                 </>
+               )}
 
               {step === 'error' && (
                 <>

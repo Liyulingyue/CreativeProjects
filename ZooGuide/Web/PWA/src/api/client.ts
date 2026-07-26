@@ -76,16 +76,32 @@ export const api = {
     ),
   nearest: (lat: number, lon: number, top_k = 3) =>
     request<NearestResponse>(`/api/nearest?lat=${lat}&lon=${lon}&top_k=${top_k}`),
-  evaluatePhoto: async (
+  photoCheckin: async (
     file: File | Blob,
+    expectedVenueId: string,
     filename = 'photo.jpg',
-    options?: { expectedVenueId?: string },
   ) => {
     const form = new FormData()
     form.append('file', file, filename)
-    if (options?.expectedVenueId) {
-      form.append('expected_venue_id', options.expectedVenueId)
+    form.append('expected_venue_id', expectedVenueId)
+    const res = await fetch(`${BASE}/api/photo-checkin`, {
+      method: 'POST',
+      body: form,
+      headers: authHeader(),
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      throw new Error(body.detail || `HTTP ${res.status}`)
     }
+    return res.json() as Promise<PhotoEvaluation & { success?: boolean; failure_reason?: string }>
+  },
+
+  evaluatePhoto: async (
+    file: File | Blob,
+    filename = 'photo.jpg',
+  ) => {
+    const form = new FormData()
+    form.append('file', file, filename)
     const res = await fetch(`${BASE}/api/photo-evaluate`, {
       method: 'POST',
       body: form,
@@ -135,10 +151,10 @@ export const api = {
       recent_photos: Array<{
         evaluation_id: string
         ts: string
-        badge: string
-        animal_guess: string
+        is_match: boolean
+        desc: string
         matched_venue_name: string
-        vibe_score: number
+        score: number
       }>
     }>('/api/me/summary'),
 

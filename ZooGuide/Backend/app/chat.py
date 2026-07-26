@@ -367,13 +367,13 @@ async def chat(req) -> dict:
         messages.append({"role": h.get("role", "user"), "content": h.get("content", "")})
     messages.append({"role": "user", "content": req.message})
 
-    client = llm_client.get_client()
+    client = llm_client.get_async_client()
     current_route = copy.deepcopy(req.current_route) if req.current_route else None
     final_new_route = None
 
     for _ in range(5):
         try:
-            response = client.chat.completions.create(
+            response = await client.chat.completions.create(
                 model=config.MODEL_NAME,
                 messages=messages,
                 tools=TOOLS,

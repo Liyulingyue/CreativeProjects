@@ -102,16 +102,11 @@ CREATE TABLE IF NOT EXISTS photo_evals (
     user_id INTEGER,
     session_id TEXT,
     image_path TEXT,
-    animal_guess TEXT DEFAULT '',
-    animal_confidence INTEGER DEFAULT 0,
+    is_match INTEGER DEFAULT 0,
+    desc TEXT DEFAULT '',
+    score INTEGER DEFAULT 0,
     matched_venue_id TEXT DEFAULT '',
     matched_venue_name TEXT DEFAULT '',
-    caption TEXT DEFAULT '',
-    vibe_score INTEGER DEFAULT 0,
-    vibe_label TEXT DEFAULT '',
-    comment TEXT DEFAULT '',
-    badge TEXT DEFAULT '',
-    tips TEXT DEFAULT '[]',
     fallback INTEGER DEFAULT 0,
     fallback_reason TEXT DEFAULT '',
     created_at TEXT NOT NULL,
@@ -333,10 +328,7 @@ def list_photo_evals_by_user(user_id: int, limit: int = 50) -> list[dict]:
         out = []
         for r in rows:
             d = dict(r)
-            try:
-                d["tips"] = json.loads(d.get("tips", "[]"))
-            except Exception:
-                d["tips"] = []
+            d["is_match"] = bool(d.get("is_match", 0))
             d["fallback"] = bool(d.get("fallback", 0))
             out.append(d)
         return out
@@ -405,8 +397,8 @@ def get_user_stats_for_achievements(user_id: int) -> dict:
             "SELECT COUNT(DISTINCT venue_id) FROM checkins WHERE user_id = ?",
             (user_id,),
         ).fetchone()[0]
-        best_vibe = c.execute(
-            "SELECT MAX(vibe_score) FROM photo_evals WHERE user_id = ?",
+        best_score = c.execute(
+            "SELECT MAX(score) FROM photo_evals WHERE user_id = ?",
             (user_id,),
         ).fetchone()[0] or 0
         # Consecutive days with photos
@@ -438,7 +430,7 @@ def get_user_stats_for_achievements(user_id: int) -> dict:
         "photo_count": photo_count,
         "checkin_count": checkin_count,
         "venues_unique": venues_unique,
-        "best_vibe": best_vibe,
+        "best_score": best_score,
         "consecutive_days": consecutive_days,
         "gps_count": gps_count,
     }
@@ -478,25 +470,20 @@ def insert_photo_eval(
             c.execute(
                 """INSERT OR REPLACE INTO photo_evals
                    (eval_id, user_id, session_id, image_path,
-                    animal_guess, animal_confidence, matched_venue_id, matched_venue_name,
-                    caption, vibe_score, vibe_label, comment, badge, tips,
+                    is_match, desc, score,
+                    matched_venue_id, matched_venue_name,
                     fallback, fallback_reason, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     eval_id,
                     user_id,
                     session_id,
                     result.get("image_path", ""),
-                    result.get("animal_guess", ""),
-                    result.get("animal_confidence", 0),
+                    1 if result.get("is_match") else 0,
+                    result.get("desc", ""),
+                    int(result.get("score", 0) or 0),
                     result.get("matched_venue_id", ""),
                     result.get("matched_venue_name", ""),
-                    result.get("caption", ""),
-                    result.get("vibe_score", 0),
-                    result.get("vibe_label", ""),
-                    result.get("comment", ""),
-                    result.get("badge", ""),
-                    json.dumps(result.get("tips", []), ensure_ascii=False),
                     1 if result.get("fallback") else 0,
                     result.get("fallback_reason", ""),
                     result.get("ts", datetime.now(_UTC).isoformat()),
@@ -510,9 +497,6 @@ def get_photo_eval(eval_id: str) -> Optional[dict]:
         if not row:
             return None
         d = dict(row)
-        try:
-            d["tips"] = json.loads(d.get("tips", "[]"))
-        except Exception:
-            d["tips"] = []
+        d["is_match"] = bool(d.get("is_match", 0))
         d["fallback"] = bool(d.get("fallback", 0))
         return d

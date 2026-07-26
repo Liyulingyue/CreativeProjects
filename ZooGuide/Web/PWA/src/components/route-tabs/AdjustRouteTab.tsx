@@ -36,7 +36,7 @@ export function AdjustRouteTab({
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [lastResult, setLastResult] = useState<{ reply: string; route?: Route } | null>(null)
+  const [pendingRoute, setPendingRoute] = useState<Route | null>(null)
 
   async function adjust(text?: string) {
     const msg = (text ?? message).trim()
@@ -45,43 +45,25 @@ export function AdjustRouteTab({
     setLoading(true)
     setError(null)
     try {
-      // Use chat endpoint for both adjust + replan
-      const r = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: msg,
-          current_route: currentRoute,
-          prefs,
-          history: [],
-        }),
+      const currentStop = currentRoute.stops[currentStopIdx]
+      const newRoute = await api.replan({
+        original_route: currentRoute,
+        current_venue_id: currentStop?.venue_id,
+        elapsed_minutes: elapsedMinutes,
+        feedback: msg,
       })
-      const d = await r.json()
-      setLastResult({ reply: d.reply, route: d.new_route })
-      if (d.new_route) {
-        onReplanned(d.new_route)
-      } else if (d.suggested_replan) {
-        // No new route generated, but suggested — fallback to /replan
-        const replanRes = await fetch('/api/replan', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            original_route: currentRoute,
-            current_venue_id: currentRoute.stops[currentStopIdx]?.venue_id,
-            elapsed_minutes: elapsedMinutes,
-            feedback: msg,
-          }),
-        })
-        const rd = await replanRes.json()
-        if (rd && rd.id) {
-          setLastResult({ reply: d.reply, route: rd })
-          onReplanned(rd)
-        }
-      }
+      setPendingRoute(newRoute)
     } catch (e) {
       setError(e instanceof Error ? e.message : '调整失败')
     } finally {
       setLoading(false)
+    }
+  }
+
+  function confirmReplace() {
+    if (pendingRoute) {
+      onReplanned(pendingRoute)
+      setPendingRoute(null)
     }
   }
 
@@ -92,7 +74,7 @@ export function AdjustRouteTab({
           💬 一句话调整
         </h3>
         <p style={{ fontSize: 12, color: 'var(--fg-muted)', margin: '0 0 12px' }}>
-          告诉 Agent 你现在的感受，Agent 帮你重新规划后半段
+          告诉导游你现在的感受，帮你重新规划后半段
         </p>
 
         <textarea
@@ -109,7 +91,7 @@ export function AdjustRouteTab({
           onClick={() => adjust()}
           disabled={loading || !message.trim()}
         >
-          {loading ? '调整中…' : '✨ 重新生成后半段'}
+          {loading ? '重新规划中…' : '✨ 重新生成后半段'}
         </button>
 
         <div style={{ marginTop: 12 }}>
@@ -126,20 +108,37 @@ export function AdjustRouteTab({
         </div>
       </div>
 
-      {lastResult && (
+      {pendingRoute && (
         <div
           className="card"
           style={{ marginTop: 12, background: '#f0fdf4', border: '1px solid #86efac' }}
         >
-          <div style={{ fontSize: 13, color: '#15803d', fontWeight: 600, marginBottom: 6 }}>
-            ✓ Agent 回复
+          <div style={{ fontSize: 13, color: '#15803d', fontWeight: 600, marginBottom: 8 }}>
+            🧭 新路线已生成，{pendingRoute.stops.length} 个场馆
           </div>
-          <div style={{ fontSize: 13, color: '#1a3a2a', lineHeight: 1.5 }}>{lastResult.reply}</div>
-          {lastResult.route && (
-            <div style={{ fontSize: 11, color: '#15803d', marginTop: 6 }}>
-              🧭 后半段已重新规划，{lastResult.route.stops.length} 馆
-            </div>
-          )}
+          <div style={{ fontSize: 12, color: '#1a3a2a', lineHeight: 1.6, marginBottom: 10 }}>
+            {pendingRoute.stops.map((s, i) => (
+              <div key={i}>
+                {i + 1}. {s.venue_name}（{s.visit_minutes}分钟）
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              className="btn btn-ghost"
+              style={{ flex: 1 }}
+              onClick={() => setPendingRoute(null)}
+            >
+              取消
+            </button>
+            <button
+              className="btn btn-primary"
+              style={{ flex: 1 }}
+              onClick={confirmReplace}
+            >
+              ✓ 采用新路线
+            </button>
+          </div>
         </div>
       )}
 
@@ -170,7 +169,7 @@ export function AdjustRouteTab({
           💭 想详细聊聊？
         </h3>
         <p style={{ fontSize: 12, color: 'var(--fg-muted)', margin: '0 0 12px' }}>
-          去对话 Tab，Agent 可以基于上下文回答你的问题
+          去对话 Tab，导游可以基于上下文回答你的问题
         </p>
         <button className="btn btn-ghost btn-full" onClick={onOpenChat}>
           💬 打开对话 →

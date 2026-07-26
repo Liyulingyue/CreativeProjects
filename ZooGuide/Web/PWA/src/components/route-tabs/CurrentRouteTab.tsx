@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { Route, RouteStop } from '../../types'
 import { useVisitedVenues } from '../../hooks/useVisitedVenues'
+import { getCheckinPhoto } from '../../lib/storage'
 
 interface Props {
   route: Route
@@ -207,6 +208,7 @@ function AreaStopCard({
   onToggleVisited: () => void
 }) {
   const [expanded, setExpanded] = useState(isCurrent)
+  const checkinPhoto = isVisited ? getCheckinPhoto(stop.venue_id) : undefined
 
   return (
     <div
@@ -214,7 +216,22 @@ function AreaStopCard({
       onClick={() => setExpanded(!expanded)}
     >
       <div className="asc-header">
-        <div className="asc-num">{idx + 1}</div>
+        {checkinPhoto?.thumbnail ? (
+          <img
+            src={checkinPhoto.thumbnail}
+            alt={stop.venue_name}
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: '50%',
+              objectFit: 'cover',
+              border: '2px solid var(--primary)',
+              flexShrink: 0,
+            }}
+          />
+        ) : (
+          <div className="asc-num">{idx + 1}</div>
+        )}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="asc-name">{stop.venue_name}</div>
           <div className="asc-meta">

@@ -21,6 +21,7 @@ interface DisplayMsg {
   id: number
   role: 'user' | 'agent'
   text: string
+  reasoning?: string
   toolCalls?: { name: string; result: string }[]
   routeChanged?: boolean
 }
@@ -33,6 +34,15 @@ const QUICK = [
   '想多逛',
   '看网红',
 ]
+
+function splitThink(text: string): { reply: string; reasoning: string | null } {
+  const pattern = /<think>([\s\S]*?)<\/think>/
+  const match = text.match(pattern)
+  if (!match) return { reply: text, reasoning: null }
+  const reasoning = match[1].trim()
+  const reply = text.replace(pattern, '').trim()
+  return { reply, reasoning }
+}
 
 const WELCOME_TEXT = (sn: string) => `嗨，我是你的${sn}导游。想逛哪些馆？走累了？想看什么动物？随时告诉我。`
 
@@ -109,12 +119,17 @@ export function ChatPage({ currentRoute, prefs, onRouteUpdate, onGoPlan, onGoAct
       })
       const d = await r.json()
 
-      const agentMsg: DisplayMsg = {
-        id: idRef.current++,
-        role: 'agent',
-        text: d.reply || '…',
-        routeChanged: !!d.new_route,
-      }
+      const agentMsg: DisplayMsg = (() => {
+        const raw = d.reply || '…'
+        const { reply, reasoning } = splitThink(raw)
+        return {
+          id: idRef.current++,
+          role: 'agent',
+          text: reply,
+          reasoning: reasoning || undefined,
+          routeChanged: !!d.new_route,
+        }
+      })()
       const updated = [...nextMsgs, agentMsg]
       setMessages(updated)
       persistMessages(updated)
@@ -236,6 +251,7 @@ export function ChatPage({ currentRoute, prefs, onRouteUpdate, onGoPlan, onGoAct
 
 function MessageBubble({ msg }: { msg: DisplayMsg }) {
   const isUser = msg.role === 'user'
+  const [thinkOpen, setThinkOpen] = useState(false)
   return (
     <div
       style={{
@@ -259,6 +275,41 @@ function MessageBubble({ msg }: { msg: DisplayMsg }) {
             : '0 1px 2px rgba(0,0,0,0.04)',
         }}
       >
+        {!isUser && msg.reasoning && (
+          <button
+            onClick={() => setThinkOpen((v) => !v)}
+            style={{
+              display: 'block',
+              marginBottom: 6,
+              padding: '2px 8px',
+              fontSize: 11,
+              color: 'var(--fg-muted)',
+              background: 'transparent',
+              border: '1px solid var(--border)',
+              borderRadius: 999,
+              cursor: 'pointer',
+            }}
+          >
+            {thinkOpen ? '▾ 思考过程' : '▸ 思考过程'}
+          </button>
+        )}
+        {!isUser && msg.reasoning && thinkOpen && (
+          <div
+            style={{
+              marginBottom: 8,
+              padding: '6px 10px',
+              fontSize: 12,
+              lineHeight: 1.55,
+              color: 'var(--fg-muted)',
+              background: 'var(--bg-soft)',
+              borderRadius: 8,
+              borderLeft: '2px solid var(--border)',
+              whiteSpace: 'pre-wrap',
+            }}
+          >
+            {msg.reasoning}
+          </div>
+        )}
         {msg.text}
         {msg.routeChanged && (
           <div

@@ -14,10 +14,10 @@ interface Summary {
   recent_photos: Array<{
     evaluation_id: string
     ts: string
-    badge: string
-    animal_guess: string
+    is_match: boolean
+    desc: string
     matched_venue_name: string
-    vibe_score: number
+    score: number
   }>
 }
 
@@ -113,10 +113,11 @@ export function ProfileModal({ onClose, onGoLogin }: Props) {
                   <div key={p.evaluation_id} className="history-row">
                     <div className="history-main">
                       <div className="history-title">
-                        🏅 {p.badge} · {p.matched_venue_name || p.animal_guess}
+                        🐾 {p.matched_venue_name || '其他动物'}
+                        {p.is_match && ' · ✓ 通过'}
                       </div>
                       <div className="history-meta">
-                        {p.vibe_score}分 · {p.ts?.slice(0, 16).replace('T', ' ')}
+                        {p.score}分 · {p.ts?.slice(0, 16).replace('T', ' ')}
                       </div>
                     </div>
                   </div>

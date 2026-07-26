@@ -64,9 +64,17 @@ def _build_user_prompt_plan(prefs: PlanRequest, candidates: list[dict], walking_
         if a in top_ids
     }
 
-    return f"""游客：{prefs.party_type}{'带娃'+str(prefs.kids_age)+'岁' if prefs.with_kids else ''} | 体力{prefs.stamina}/5 | 防晒{prefs.sun_tolerance}/5 | 爬山={prefs.willing_to_hike} | 兴趣={','.join(prefs.animal_interests) or '无'} | 门={prefs.entry_gate} | {prefs.start_time}起 | 总{prefs.available_hours}h
+    party_desc = {"solo": "独自一人", "couple": "情侣/朋友两人", "family_young": "带小娃的家庭", "family_teen": "带青少年的家庭", "seniors": "陪老人出行"}.get(prefs.party_type, prefs.party_type)
+    stamina_desc = {1: "走几步就累", 2: "体力一般", 3: "体力正常", 4: "体力不错", 5: "体力很好"}.get(prefs.stamina, f"体力{prefs.stamina}/5")
+    sun_desc = {1: "很怕晒，尽量走阴凉", 2: "有点怕晒", 3: "晒不晒都行", 4: "不太怕晒", 5: "完全不怕晒"}.get(prefs.sun_tolerance, f"防晒{prefs.sun_tolerance}/5")
+    hike_desc = "愿意爬山" if prefs.willing_to_hike else "不想爬山，尽量走平路"
+    interest_desc = {"panda": "大熊猫", "ape": "猿猴类", "cat": "猫科动物", "bird": "鸟类", "australian": "澳洲动物", "african": "非洲动物", "local": "本土物种", "exotic": "异域物种", "kids_favorite": "亲子互动"}.get
+    interests = "、".join([interest_desc(i, i) for i in prefs.animal_interests]) if prefs.animal_interests else "没有特别偏好，看什么都行"
+    gate_desc = {"north": "北门", "south": "南门", "east": "东门"}.get(prefs.entry_gate, prefs.entry_gate)
 
-风格：{style}
+    return f"""游客画像：{party_desc}{'，孩子'+str(prefs.kids_age)+'岁' if prefs.with_kids and prefs.kids_age else '，带娃' if prefs.with_kids else ''}，{stamina_desc}，{sun_desc}，{hike_desc}。感兴趣的动物：{interests}。从{gate_desc}入园，{prefs.start_time}开始，总共能玩{prefs.available_hours}小时。
+
+导游风格：{style}
 
 候选场馆({len(top_candidates)})：
 {json.dumps(cand_brief, ensure_ascii=False)}
@@ -79,8 +87,7 @@ def _build_user_prompt_plan(prefs: PlanRequest, candidates: list[dict], walking_
 - stops 3-{min(8, top_n)} 个，按 id 选
 - 必看场馆优先
 - narration 50-100 字
-- 输出符合 target_structure 的 JSON
-"""
+- 输出符合 target_structure 的 JSON"""
 
 
 def _build_user_prompt_replan(
@@ -111,7 +118,7 @@ def _build_user_prompt_replan(
     remaining_minutes = max(0, int(original.get("_available_hours", 3) * 60) - prefs.elapsed_minutes)
 
     return f"""【原始路线】
-{json.dumps(original.get('stops', []), ensure_ascii=False, indent=2)}
+{json.dumps(original.get('stops', []), ensure_ascii=False)}
 
 【当前状态】
 - 已走到：{prefs.current_venue_id or '还未开始'}
@@ -121,18 +128,17 @@ def _build_user_prompt_replan(
 
 【讲解风格】{style}
 
-【未参观候选】（按规则引擎重排分数）
-{json.dumps(cand_brief, ensure_ascii=False, indent=2)}
+【未参观候选】
+{json.dumps(cand_brief, ensure_ascii=False)}
 
-【步行矩阵】
-{json.dumps(walking_matrix, ensure_ascii=False, indent=2)}
+【步行矩阵(分钟)】
+{json.dumps(walking_matrix, ensure_ascii=False)}
 
-请重新规划从 {prefs.current_venue_id or '起点'} 开始的后半段路线。stops 必须从下一个未参观场馆开始。
-- 总剩余时长（含步行）不超过 {remaining_minutes} 分钟
+请重新规划从 {prefs.current_venue_id or '起点'} 开始的后半段路线，stops 必须从下一个未参观场馆开始。
+- 剩余总时长（含步行）不超过 {remaining_minutes} 分钟
 - stops 数量 2-5 个
-- narration 必须呼应用户的反馈（『{prefs.feedback}』），让用户感觉 Agent 听懂了
-- 输出严格 JSON
-"""
+- narration 要回应用户反馈（『{prefs.feedback}』），让游客感觉导游听懂了
+- 输出严格符合 target_structure 的 JSON"""
 
 
 def _parse_hhmm(s: str) -> Optional[datetime]:
@@ -419,36 +425,50 @@ def _fallback_general_tips(prefs: PlanRequest) -> list[str]:
     return tips[:3]
 
 
-def plan_route(prefs: PlanRequest, force_fast: bool = False) -> tuple[Route, bool]:
+async def plan_route(prefs: PlanRequest, force_fast: bool = False) -> tuple[Route, bool]:
     """Returns (route, used_llm)."""
     candidates = filter_and_rank(prefs)
     walking_matrix = build_walking_matrix([c["id"] for c in candidates])
 
     # Try LLM (unless fast mode forced)
     if llm_client.is_llm_enabled() and not force_fast:
+        print("[plan] 🧠 LLM enabled, calling async_chat_json...")
         user_prompt = _build_user_prompt_plan(prefs, candidates, walking_matrix)
-        messages = [{"role": "user", "content": [{"type": "text", "text": user_prompt}]}]
-        result = llm_client.chat_json(
+        print(f"[plan] 📝 User prompt: {len(user_prompt)} chars, candidates: {len(candidates)}")
+        messages = [
+            {"role": "system", "content": "直接输出路线JSON，不要写推理过程。在```json```代码块中输出，不要写其他内容。"},
+            {"role": "user", "content": [{"type": "text", "text": user_prompt}]},
+        ]
+        result = await llm_client.async_chat_json(
             messages=messages,
             target_structure=prompts.PLAN_TARGET_STRUCTURE,
             background=prompts.SYSTEM_BACKGROUND,
             requirements=prompts.PLAN_REQUIREMENTS,
-            overall_timeout=120.0,
+            overall_timeout=300.0,
         )
         if not result.get("error") and result.get("data"):
             try:
                 route = _route_from_llm_data(result["data"], candidates, prefs.entry_gate, prefs.start_time)
+                print("[plan] ✅ LLM route generated successfully")
                 return route, True
             except Exception as e:
-                # Fall through to greedy fallback
-                pass
+                print(f"[plan] ⚠️ LLM output parse failed: {e}, falling back to rule engine")
+        else:
+            err = result.get("error", "unknown")
+            raw_len = len(result.get("raw_content") or "")
+            data_present = result.get("data") is not None
+            print(f"[plan] ⚠️ LLM call failed: {err} | data={data_present} | raw_len={raw_len}, falling back to rule engine")
+    else:
+        reason = "fast mode" if force_fast else "LLM not enabled"
+        print(f"[plan] ⏭️ Skipping LLM ({reason}), using rule engine")
 
     # Fallback (also used if LLM disabled or failed)
     route = _greedy_fallback_route(prefs, candidates, style=prefs.style)
+    print("[plan] 📐 Rule engine fallback route generated")
     return route, False
 
 
-def plan_route_variants(prefs: PlanRequest) -> list[dict]:
+async def plan_route_variants(prefs: PlanRequest) -> list[dict]:
     curated = data_loader.get_curated_routes()
     if curated:
         return _curated_to_variants(curated)
@@ -458,7 +478,7 @@ def plan_route_variants(prefs: PlanRequest) -> list[dict]:
     for style in styles:
         p = prefs.model_copy()
         p.style = style
-        route, _ = plan_route(p, force_fast=True)
+        route, _ = await plan_route(p, force_fast=True)
         d = route.model_dump()
         d["variant_label"] = labels[style]
         variants.append(d)
@@ -507,7 +527,7 @@ def _curated_to_variants(curated: list[dict]) -> list[dict]:
     return variants
 
 
-def replan_route(
+async def replan_route(
     original_route: dict,
     prefs: ReplanRequest,
     force_fast: bool = False,
@@ -537,16 +557,20 @@ def replan_route(
     remaining_minutes = max(0, int(plan_prefs.available_hours * 60) - prefs.elapsed_minutes)
 
     if llm_client.is_llm_enabled() and not force_fast:
+        print("[replan] 🧠 LLM enabled, calling async_chat_json...")
         user_prompt = _build_user_prompt_replan(
             original_route, prefs, candidates, walking_matrix, remaining_candidates
         )
-        messages = [{"role": "user", "content": [{"type": "text", "text": user_prompt}]}]
-        result = llm_client.chat_json(
+        messages = [
+            {"role": "system", "content": "直接输出路线JSON，不要写推理过程。在```json```代码块中输出，不要写其他内容。"},
+            {"role": "user", "content": [{"type": "text", "text": user_prompt}]},
+        ]
+        result = await llm_client.async_chat_json(
             messages=messages,
             target_structure=prompts.REPLAN_TARGET_STRUCTURE,
             background=prompts.SYSTEM_BACKGROUND,
             requirements=prompts.REPLAN_REQUIREMENTS,
-            overall_timeout=120.0,
+            overall_timeout=300.0,
         )
         if not result.get("error") and result.get("data"):
             try:
@@ -560,9 +584,18 @@ def replan_route(
                 route = _route_from_llm_data(
                     result["data"], candidates, plan_prefs.entry_gate, anchor_time
                 )
+                print("[replan] ✅ LLM route generated successfully")
                 return route, True
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[replan] ⚠️ LLM output parse failed: {e}, falling back to rule engine")
+        else:
+            err = result.get("error", "unknown")
+            raw_len = len(result.get("raw_content") or "")
+            data_present = result.get("data") is not None
+            print(f"[replan] ⚠️ LLM call failed: {err} | data={data_present} | raw_len={raw_len}, falling back to rule engine")
+    else:
+        reason = "fast mode" if force_fast else "LLM not enabled"
+        print(f"[replan] ⏭️ Skipping LLM ({reason}), using rule engine")
 
     # Fallback: greedy on remaining candidates
     fallback = _greedy_fallback_route(
@@ -571,4 +604,5 @@ def replan_route(
         remaining_minutes=remaining_minutes,
         current_venue_id=prefs.current_venue_id,
     )
+    print("[replan] 📐 Rule engine fallback route generated")
     return fallback, False

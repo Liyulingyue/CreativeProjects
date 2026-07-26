@@ -19,12 +19,31 @@ def _build_system_background() -> str:
     highlights_block = "\n".join(f"- {h}" for h in highlights) if highlights else ""
 
     areas = meta.get("areas", {})
-    if areas:
-        highlights_block += "\n"
-        for k, v in areas.items():
-            highlights_block += f"\n- {k}：{v}"
+    areas_block = ""
+    for k, v in areas.items():
+        areas_block += f"- **{k}**：{v}\n"
 
-    return template.format(name=name, short_name=short, highlights_block=highlights_block)
+    gates = meta.get("gates", {})
+    gates_block = ""
+    for k, v in gates.items():
+        label = v.get("label", k) if isinstance(v, dict) else k
+        desc = v.get("desc", "") if isinstance(v, dict) else ""
+        gates_block += f"- {label}（{k}）：{desc}\n"
+
+    tips = meta.get("tips", [])
+    tips_block = "\n".join(f"- {t}" for t in tips) if tips else ""
+
+    return template.format(
+        name=name,
+        short_name=short,
+        highlights_block=highlights_block,
+        areas_block=areas_block,
+        gates_block=gates_block,
+        tips_block=tips_block,
+        open_time=meta.get("open_time", "09:00"),
+        close_time=meta.get("close_time", "17:00"),
+        area_km2=meta.get("area_km2", ""),
+    )
 
 
 SYSTEM_BACKGROUND: str = ""

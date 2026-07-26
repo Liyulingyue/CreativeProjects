@@ -187,24 +187,24 @@ export interface AutoCheckin {
   ts: string
 }
 
-export interface PhotoEvaluation {
-  evaluation_id: string
-  animal_guess: string
-  animal_confidence: number
-  matched_venue_id: string
-  matched_venue_name: string
-  caption: string
-  vibe_score: number
-  vibe_label: string
-  comment: string
-  badge: string
-  tips: string[]
-  fallback: boolean
-  fallback_reason?: string
-  image_path?: string
-  ts: string
-  auto_checkin?: AutoCheckin
-}
+ export interface PhotoEvaluation {
+   evaluation_id: string
+   desc: string
+   score: number
+   fallback: boolean
+   fallback_reason?: string
+   ts: string
+   auto_checkin?: AutoCheckin
+   success?: boolean
+   expected_venue_id?: string
+   failure_reason?: string
+   matched_venue_id?: string
+   matched_venue_name?: string
+   is_match?: boolean
+   animal?: string
+   style?: string
+   blurry?: string
+ }
 
 export interface Facility {
   id: string
