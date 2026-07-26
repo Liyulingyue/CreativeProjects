@@ -20,13 +20,6 @@ interface Props {
   onClearRoute: () => void
 }
 
-interface RouteSummary {
-  id: string
-  summary: string
-  total_minutes: number
-  created_at: string
-}
-
 export function HomePage({
   meta,
   venues,
@@ -41,7 +34,6 @@ export function HomePage({
   onClearRoute,
 }: Props) {
   const navigate = useNavigate()
-  const [recentRoute, setRecentRoute] = useState<RouteSummary | null>(null)
   const [stats, setStats] = useState<any>(null)
   const [earnedCount, setEarnedCount] = useState(0)
 
@@ -51,9 +43,6 @@ export function HomePage({
       .mySummary()
       .then((s) => {
         setStats(s.stats)
-        if (s.recent_routes && s.recent_routes.length > 0) {
-          setRecentRoute(s.recent_routes[0])
-        }
       })
       .catch(() => {})
     api
@@ -128,33 +117,6 @@ export function HomePage({
           <div className="qa-desc">宣传册/讲解稿</div>
         </button>
       </div>
-
-      {/* Recent route from DB */}
-      {user && recentRoute && !hasRoute && (
-        <div
-          className="card"
-          style={{
-            background: 'linear-gradient(135deg, #fef3c7, #fff)',
-            cursor: 'pointer',
-          }}
-          onClick={onStartPlan}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{ fontSize: 24 }}>🕰️</div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 700, color: 'var(--primary-strong)', fontSize: 14 }}>
-                上次规划的路线
-              </div>
-              <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 2 }}>
-                {recentRoute.summary?.slice(0, 40)} ·{' '}
-                {Math.round(recentRoute.total_minutes / 60 * 10) / 10}h ·{' '}
-                {recentRoute.created_at?.slice(0, 10)}
-              </div>
-            </div>
-            <span className="pill-btn primary">恢复 →</span>
-          </div>
-        </div>
-      )}
 
       {/* Stats */}
       {user && (

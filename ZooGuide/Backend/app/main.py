@@ -207,22 +207,6 @@ def plan(
         resp["_start_time"] = req.start_time
         resp["_available_hours"] = req.available_hours
         resp["llm_used"] = used_llm
-        # Persist to DB (if logged in)
-        if current_user:
-            try:
-                prefs_dict = req.model_dump()
-                db.insert_route(
-                    route_id=route.id,
-                    prefs=prefs_dict,
-                    summary=route.summary,
-                    total_minutes=route.total_minutes,
-                    stops_count=len(route.stops),
-                    llm_used=used_llm,
-                    fallback=route.fallback,
-                    user_id=current_user["id"],
-                )
-            except Exception as e:
-                print(f"[warn] failed to persist route: {e}")
         return resp
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -239,107 +223,6 @@ def plan_variants(req: PlanRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-# ---------------------------------------------------------------------------
-# Streaming plan (SSE)
-# ---------------------------------------------------------------------------
-
-@app.post("/api/plan-stream")
-async def plan_stream(req: PlanRequest):
-    """Server-Sent Events stream of the planning process.
-
-    Events:
-      - thinking: {"text": "..."} chunks
-      - done: {"route": {...}}
-      - error: {"message": "..."}
-    Falls back to non-streaming rule engine if model doesn't support streaming.
-    """
-    from fastapi.responses import StreamingResponse
-    from . import config
-    import json as _json
-
-    async def event_gen():
-        # 1. Emit progress preamble
-        yield f"event: thinking\ndata: {_json.dumps({'text': '正在分析你的偏好…'})}\n\n"
-        yield f"event: thinking\ndata: {_json.dumps({'text': '从 23 个场馆中筛选候选…'})}\n\n"
-
-        if req.fast or not llm_client.is_llm_enabled():
-            # Fast path: no streaming, just rule-based route
-            yield f"event: thinking\ndata: {_json.dumps({'text': '使用规则引擎（极速模式）'})}\n\n"
-            route, _ = planner.plan_route(req, force_fast=True)
-            yield f"event: done\ndata: {_json.dumps({'route': route.model_dump()})}\n\n"
-            return
-
-        # 2. Slow path: try LLM with streaming
-        try:
-            from openai import OpenAI
-            client = OpenAI(api_key=config.API_KEY, base_url=config.BASE_URL, timeout=180.0)
-            from .prompts import PLAN_TARGET_STRUCTURE, SYSTEM_BACKGROUND, PLAN_REQUIREMENTS
-            from .rule_engine import filter_and_rank, max_stops_by_time
-            from .walking import build_walking_matrix
-            import json as _json2
-            from .planner import _build_user_prompt_plan, _route_from_llm_data
-
-            yield f"event: thinking\ndata: {_json.dumps({'text': '请 LLM 编排路线（30-90 秒）…'})}\n\n"
-
-            candidates = filter_and_rank(req)
-            walking_matrix = build_walking_matrix([c["id"] for c in candidates])
-            user_prompt = _build_user_prompt_plan(req, candidates, walking_matrix)
-
-            system = (
-                SYSTEM_BACKGROUND
-                + "\n\n请输出严格的 JSON，不要任何额外文字。"
-                + "\n\nJSON 结构:\n"
-                + _json2.dumps(PLAN_TARGET_STRUCTURE, ensure_ascii=False)
-                + "\n\nRequirements:\n"
-                + "\n".join(PLAN_REQUIREMENTS)
-            )
-
-            stream = client.chat.completions.create(
-                model=config.MODEL_NAME,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_prompt},
-                ],
-                stream=True,
-                max_tokens=4000,
-                timeout=180.0,
-            )
-
-            collected = ""
-            for chunk in stream:
-                delta = chunk.choices[0].delta.content or ""
-                if delta:
-                    collected += delta
-                    yield f"event: token\ndata: {_json.dumps({'text': delta})}\n\n"
-
-            # Try to parse collected as JSON
-            from .planner import _route_from_llm_data
-            try:
-                if "```" in collected:
-                    for fence in ("```json", "```"):
-                        if fence in collected:
-                            collected = collected.split(fence)[1].split("```")[0]
-                            break
-                data = _json2.loads(collected)
-                route = _route_from_llm_data(data, candidates, req.entry_gate, req.start_time)
-                yield f"event: done\ndata: {_json.dumps({'route': route.model_dump()})}\n\n"
-            except Exception as e:
-                # Parse failed, fall back to rule engine
-                yield f"event: thinking\ndata: {_json.dumps({'text': '解析失败，回退到规则引擎'})}\n\n"
-                route, _ = planner.plan_route(req, force_fast=True)
-                yield f"event: done\ndata: {_json.dumps({'route': route.model_dump()})}\n\n"
-        except Exception as e:
-            yield f"event: error\ndata: {_json.dumps({'message': str(e)})}\n\n"
-            # Always provide a fallback route
-            try:
-                route, _ = planner.plan_route(req, force_fast=True)
-                yield f"event: done\ndata: {_json.dumps({'route': route.model_dump()})}\n\n"
-            except Exception:
-                pass
-
-    return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 
 @app.post("/api/replan")
@@ -756,16 +639,9 @@ def me_achievements(current_user: dict = Depends(auth.get_current_user)):
     }
 
 
-@app.get("/api/me/routes")
-def me_routes(current_user: dict = Depends(auth.get_current_user)):
-    items = db.list_routes_by_user(current_user["id"])
-    return {"user_id": current_user["id"], "routes": items}
-
-
 @app.get("/api/me/summary")
 def me_summary(current_user: dict = Depends(auth.get_current_user)):
     checkins = db.list_checkins_by_user(current_user["id"])
-    routes = db.list_routes_by_user(current_user["id"])
     photo_evals = db.list_photo_evals_by_user(current_user["id"])
     venue_ids = {c["venue_id"] for c in checkins}
     return {
@@ -777,19 +653,17 @@ def me_summary(current_user: dict = Depends(auth.get_current_user)):
         "stats": {
             "checkins_count": len(checkins),
             "venues_visited": len(venue_ids),
-            "routes_planned": len(routes),
             "photos_evaluated": len(photo_evals),
         },
         "recent_checkins": checkins[:5],
-        "recent_routes": routes[:5],
         "recent_photos": [
             {
-                "evaluation_id": e["evaluation_id"],
-                "ts": e["ts"],
-                "badge": e["payload"].get("badge", ""),
-                "animal_guess": e["payload"].get("animal_guess", ""),
-                "matched_venue_name": e["payload"].get("matched_venue_name", ""),
-                "vibe_score": e["payload"].get("vibe_score", 0),
+                "evaluation_id": e["eval_id"],
+                "ts": e["created_at"],
+                "badge": e.get("badge", ""),
+                "animal_guess": e.get("animal_guess", ""),
+                "matched_venue_name": e.get("matched_venue_name", ""),
+                "vibe_score": e.get("vibe_score", 0),
             }
             for e in photo_evals[:5]
         ],

@@ -129,11 +129,9 @@ export const api = {
       stats: {
         checkins_count: number
         venues_visited: number
-        routes_planned: number
         photos_evaluated: number
       }
       recent_checkins: Array<{ venue_id: string; venue_name: string; ts: string }>
-      recent_routes: Array<{ id: string; summary: string; total_minutes: number; created_at: string }>
       recent_photos: Array<{
         evaluation_id: string
         ts: string

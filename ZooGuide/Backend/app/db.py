@@ -56,21 +56,6 @@ CREATE TABLE IF NOT EXISTS checkins (
 CREATE INDEX IF NOT EXISTS idx_checkins_user ON checkins(user_id, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_checkins_session ON checkins(session_id, ts DESC);
 
-CREATE TABLE IF NOT EXISTS routes (
-    id TEXT PRIMARY KEY,
-    user_id INTEGER,
-    prefs_json TEXT NOT NULL,
-    summary TEXT,
-    total_minutes INTEGER,
-    stops_count INTEGER,
-    llm_used INTEGER,
-    fallback INTEGER,
-    created_at TEXT NOT NULL,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_routes_user ON routes(user_id, created_at DESC);
-
 -- Activity Achievements: catalog of available achievements (id, name, criteria)
 CREATE TABLE IF NOT EXISTS achievements (
     id TEXT PRIMARY KEY,
@@ -477,73 +462,6 @@ def evaluate_achievements(user_id: int) -> list[str]:
 # ---------------------------------------------------------------------------
 # Routes (history)
 # ---------------------------------------------------------------------------
-
-def insert_route(
-    route_id: str,
-    prefs: dict,
-    summary: str,
-    total_minutes: int,
-    stops_count: int,
-    llm_used: bool,
-    fallback: bool,
-    user_id: Optional[int] = None,
-) -> None:
-    ts = datetime.now(_UTC).isoformat(timespec="seconds")
-    with _lock:
-        with get_conn() as c:
-            c.execute(
-                """INSERT INTO routes(id, user_id, prefs_json, summary, total_minutes, stops_count, llm_used, fallback, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    route_id,
-                    user_id,
-                    json.dumps(prefs, ensure_ascii=False),
-                    summary,
-                    total_minutes,
-                    stops_count,
-                    int(llm_used),
-                    int(fallback),
-                    ts,
-                ),
-            )
-
-
-def list_routes_by_user(user_id: int, limit: int = 20) -> list[dict]:
-    with get_conn() as c:
-        rows = c.execute(
-            """SELECT id, prefs_json, summary, total_minutes, stops_count, llm_used, fallback, created_at
-               FROM routes WHERE user_id = ? ORDER BY created_at DESC LIMIT ?""",
-            (user_id, limit),
-        ).fetchall()
-        out = []
-        for r in rows:
-            d = dict(r)
-            try:
-                d["prefs"] = json.loads(d.pop("prefs_json"))
-            except Exception:
-                d["prefs"] = {}
-            d["llm_used"] = bool(d["llm_used"])
-            d["fallback"] = bool(d["fallback"])
-            out.append(d)
-        return out
-
-
-def get_route_full(route_id: str, user_id: int) -> Optional[dict]:
-    """Reconstruct full route from prefs + summary."""
-    with get_conn() as c:
-        row = c.execute(
-            "SELECT * FROM routes WHERE id = ? AND user_id = ?",
-            (route_id, user_id),
-        ).fetchone()
-        if not row:
-            return None
-        d = dict(row)
-        try:
-            d["prefs"] = json.loads(d.pop("prefs_json"))
-        except Exception:
-            d["prefs"] = {}
-        return d
-
 
 # ---------------------------------------------------------------------------
 # Photo evaluations

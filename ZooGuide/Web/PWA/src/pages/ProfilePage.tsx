@@ -23,11 +23,9 @@ interface Summary {
   stats: {
     checkins_count: number
     venues_visited: number
-    routes_planned: number
     photos_evaluated: number
   }
   recent_checkins: Array<{ venue_id: string; venue_name: string; ts: string }>
-  recent_routes: Array<{ id: string; summary: string; total_minutes: number; created_at: string }>
   recent_photos: Array<{
     evaluation_id: string
     ts: string
@@ -220,34 +218,6 @@ export function ProfilePage({ user, onUserChange, onRouteOpen, meta, prefs, rout
             <StatBlock label="GPS打卡" value={gpsCount} />
           </div>
 
-          <Section title="🧭 我的路线">
-            {summary.recent_routes.length > 0 ? (() => {
-              const r = summary.recent_routes[0]
-              return (
-                <div
-                  className="history-row"
-                  style={{ cursor: 'pointer' }}
-                  onClick={() => setPlanOpen(true)}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <div style={{ flex: 1 }}>
-                      <div className="history-title">{r.summary?.slice(0, 40) || '路线'}</div>
-                      <div className="history-meta">
-                        {Math.round(r.total_minutes / 60 * 10) / 10}h ·{' '}
-                        {r.created_at?.slice(0, 10)}
-                      </div>
-                    </div>
-                    <span style={{ fontSize: 18, color: 'var(--primary)' }}>›</span>
-                  </div>
-                </div>
-              )
-            })() : (
-              <div style={{ textAlign: 'center', color: 'var(--fg-muted)', fontSize: 13, padding: 16 }}>
-                暂无路线
-              </div>
-            )}
-          </Section>
-
           <Section title="📸 我的照片">
             {(() => {
               const photos = loadPhotoLog()
@@ -366,7 +336,7 @@ export function ProfilePage({ user, onUserChange, onRouteOpen, meta, prefs, rout
             </Section>
           )}
 
-          {summary.recent_routes.length === 0 &&
+          {summary.recent_checkins.length === 0 &&
             summary.recent_photos.length === 0 &&
             achievements.length === 0 && (
               <div

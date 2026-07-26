@@ -76,6 +76,10 @@ def get_facility_by_id(fid: str) -> Facility | None:
     return None
 
 
+def get_curated_routes() -> list[dict]:
+    return _load_raw().get("meta", {}).get("curated_routes", [])
+
+
 def get_facility_categories() -> list[str]:
     seen = []
     for f in _load_raw().get("facilities", []):
