@@ -5,25 +5,25 @@
     "address": "江苏省南京市玄武区和燕路168号",
     "area_km2": 0.68,
     "center": {
-      "lat": 32.0995,
-      "lon": 118.8115
+      "lat": 32.094,
+      "lon": 118.7972
     },
     "gates": {
       "north": {
-        "lat": 32.1035,
-        "lon": 118.81,
+        "lat": 32.0985,
+        "lon": 118.7972,
         "label": "北门",
         "desc": "地铁1号线，最近大熊猫馆"
       },
       "south": {
-        "lat": 32.0945,
-        "lon": 118.8125,
+        "lat": 32.0885,
+        "lon": 118.7975,
         "label": "南门",
         "desc": "2025新馆区，非洲/唐家河/大猩猩"
       },
       "east": {
-        "lat": 32.0995,
-        "lon": 118.8165,
+        "lat": 32.0935,
+        "lon": 118.802,
         "label": "东门",
         "desc": "高黎贡、冈瓦纳"
       }
@@ -50,7 +50,7 @@
       "小红山片区": "鸟类(犀鸟馆、鹤园)",
       "南门新区": "非洲区、冈瓦纳、唐家河、马岛客厅、澳洲袋鼠角"
     },
-    "coord_note": "场馆坐标为相对估算值（约 50-200m 精度），用于演示定位推荐，非实测",
+    "coord_note": "大红线以上场馆坐标来自OpenStreetMap实测POI(精度约10-30m)；2025南门新区场馆为基于园区布局估算(约50-100m精度)",
     "seasonal_guide": {
       "peak": {
         "label": "旺季 (3-5月, 10-11月, 节假日)",
@@ -488,10 +488,10 @@
       "dazhuangguange": "🏛️"
     },
     "bbox": {
-      "lat_min": 32.09,
-      "lat_max": 32.107,
-      "lon_min": 118.803,
-      "lon_max": 118.822
+      "lat_min": 32.087,
+      "lat_max": 32.1,
+      "lon_min": 118.79,
+      "lon_max": 118.804
     },
     "curated_routes": [
       {
@@ -845,8 +845,8 @@
       "name": "大熊猫馆",
       "area": "大红山片区",
       "near_gate": "north",
-      "lat": 32.1027,
-      "lon": 118.8098,
+      "lat": 32.09493,
+      "lon": 118.79639,
       "open_time": "08:30",
       "close_time": "17:00",
       "animals": [
@@ -882,8 +882,8 @@
       "name": "考拉馆",
       "area": "放牛山片区",
       "near_gate": "south",
-      "lat": 32.0985,
-      "lon": 118.812,
+      "lat": 32.09272,
+      "lon": 118.79921,
       "open_time": "08:00",
       "close_time": "17:00",
       "animals": [
@@ -915,8 +915,8 @@
       "name": "大猩猩馆",
       "area": "南门新区",
       "near_gate": "south",
-      "lat": 32.0965,
-      "lon": 118.813,
+      "lat": 32.0895,
+      "lon": 118.7975,
       "open_time": "08:00",
       "close_time": "17:00",
       "animals": [
@@ -948,8 +948,8 @@
       "name": "虎馆",
       "area": "大红山片区",
       "near_gate": "north",
-      "lat": 32.1005,
-      "lon": 118.81,
+      "lat": 32.0945,
+      "lon": 118.79934,
       "open_time": "08:30",
       "close_time": "16:30",
       "animals": [
@@ -982,8 +982,8 @@
       "name": "中国猫科馆",
       "area": "大红山片区",
       "near_gate": "north",
-      "lat": 32.0995,
-      "lon": 118.81,
+      "lat": 32.09516,
+      "lon": 118.79992,
       "open_time": "08:30",
       "close_time": "16:30",
       "animals": [
@@ -1014,8 +1014,8 @@
       "name": "猫科星球",
       "area": "大红山片区",
       "near_gate": "north",
-      "lat": 32.0995,
-      "lon": 118.8105,
+      "lat": 32.0948,
+      "lon": 118.8003,
       "open_time": "08:30",
       "close_time": "16:30",
       "animals": [
@@ -1046,8 +1046,8 @@
       "name": "长颈鹿馆",
       "area": "大红山片区",
       "near_gate": "north",
-      "lat": 32.1,
-      "lon": 118.81,
+      "lat": 32.09274,
+      "lon": 118.79799,
       "open_time": "08:00",
       "close_time": "17:00",
       "animals": [
@@ -1077,8 +1077,8 @@
       "name": "亚洲象馆",
       "area": "放牛山片区",
       "near_gate": "south",
-      "lat": 32.099,
-      "lon": 118.8115,
+      "lat": 32.09295,
+      "lon": 118.79982,
       "open_time": "08:00",
       "close_time": "17:00",
       "animals": [
@@ -1110,8 +1110,8 @@
       "name": "猩猩馆",
       "area": "放牛山片区",
       "near_gate": "south",
-      "lat": 32.099,
-      "lon": 118.812,
+      "lat": 32.09071,
+      "lon": 118.79949,
       "open_time": "08:00",
       "close_time": "17:00",
       "animals": [
@@ -1142,8 +1142,8 @@
       "name": "亚洲灵长区",
       "area": "放牛山片区",
       "near_gate": "south",
-      "lat": 32.0985,
-      "lon": 118.8125,
+      "lat": 32.09116,
+      "lon": 118.79941,
       "open_time": "08:00",
       "close_time": "17:00",
       "animals": [
@@ -1175,8 +1175,8 @@
       "name": "小熊猫馆",
       "area": "放牛山片区",
       "near_gate": "south",
-      "lat": 32.098,
-      "lon": 118.8125,
+      "lat": 32.0918,
+      "lon": 118.7988,
       "open_time": "08:00",
       "close_time": "17:00",
       "animals": [
@@ -1207,8 +1207,8 @@
       "name": "澳洲袋鼠角",
       "area": "南门新区",
       "near_gate": "south",
-      "lat": 32.096,
-      "lon": 118.8135,
+      "lat": 32.089,
+      "lon": 118.7968,
       "open_time": "08:00",
       "close_time": "17:00",
       "animals": [
@@ -1240,8 +1240,8 @@
       "name": "马岛客厅(狐猴岛)",
       "area": "南门新区",
       "near_gate": "south",
-      "lat": 32.096,
-      "lon": 118.814,
+      "lat": 32.0888,
+      "lon": 118.7975,
       "open_time": "08:00",
       "close_time": "17:00",
       "animals": [
@@ -1272,8 +1272,8 @@
       "name": "犀牛领地(非洲区)",
       "area": "南门新区",
       "near_gate": "south",
-      "lat": 32.0955,
-      "lon": 118.814,
+      "lat": 32.0888,
+      "lon": 118.7982,
       "open_time": "08:00",
       "close_time": "17:00",
       "animals": [
@@ -1303,8 +1303,8 @@
       "name": "犀鸟馆",
       "area": "小红山片区",
       "near_gate": "north",
-      "lat": 32.101,
-      "lon": 118.807,
+      "lat": 32.0932,
+      "lon": 118.79354,
       "open_time": "08:00",
       "close_time": "16:30",
       "animals": [
@@ -1338,8 +1338,8 @@
       "name": "鹤园",
       "area": "小红山片区",
       "near_gate": "north",
-      "lat": 32.1005,
-      "lon": 118.807,
+      "lat": 32.0938,
+      "lon": 118.7937,
       "open_time": "08:00",
       "close_time": "17:00",
       "animals": [
@@ -1371,8 +1371,8 @@
       "name": "狼馆",
       "area": "大红山片区",
       "near_gate": "north",
-      "lat": 32.102,
-      "lon": 118.81,
+      "lat": 32.09422,
+      "lon": 118.7977,
       "open_time": "08:30",
       "close_time": "16:30",
       "animals": [
@@ -1400,8 +1400,8 @@
       "name": "熊馆",
       "area": "大红山片区",
       "near_gate": "north",
-      "lat": 32.101,
-      "lon": 118.81,
+      "lat": 32.09578,
+      "lon": 118.80093,
       "open_time": "08:00",
       "close_time": "17:00",
       "animals": [
@@ -1432,8 +1432,8 @@
       "name": "猴山",
       "area": "大红山片区",
       "near_gate": "north",
-      "lat": 32.1015,
-      "lon": 118.81,
+      "lat": 32.096,
+      "lon": 118.8002,
       "open_time": "08:00",
       "close_time": "17:00",
       "animals": [
@@ -1462,8 +1462,8 @@
       "name": "细尾獴馆",
       "area": "大红山片区",
       "near_gate": "north",
-      "lat": 32.1025,
-      "lon": 118.81,
+      "lat": 32.09319,
+      "lon": 118.7966,
       "open_time": "08:00",
       "close_time": "17:00",
       "animals": [
@@ -1492,8 +1492,8 @@
       "name": "唐家河展区",
       "area": "南门新区",
       "near_gate": "south",
-      "lat": 32.095,
-      "lon": 118.8135,
+      "lat": 32.0892,
+      "lon": 118.7985,
       "open_time": "08:00",
       "close_time": "17:00",
       "animals": [
@@ -1528,8 +1528,8 @@
       "name": "冈瓦纳展区",
       "area": "南门新区",
       "near_gate": "south",
-      "lat": 32.0945,
-      "lon": 118.8135,
+      "lat": 32.0885,
+      "lon": 118.7988,
       "open_time": "08:00",
       "close_time": "17:00",
       "animals": [
@@ -1558,8 +1558,8 @@
       "name": "大壮观阁(生物多样性司法保护馆)",
       "area": "大红山片区",
       "near_gate": "north",
-      "lat": 32.0995,
-      "lon": 118.8085,
+      "lat": 32.0945,
+      "lon": 118.7955,
       "open_time": "09:00",
       "close_time": "16:30",
       "animals": [],
@@ -1600,8 +1600,8 @@
       "category": "卫生间",
       "area": "大红山片区",
       "near_venue_id": "panda",
-      "lat": 32.103,
-      "lon": 118.8102,
+      "lat": 32.0965,
+      "lon": 118.7977,
       "description": "北门入口右侧，靠近大熊猫馆方向。设有无障碍卫生间。",
       "tags": [
         "无障碍",
@@ -1615,8 +1615,8 @@
       "category": "卫生间",
       "area": "大红山片区",
       "near_venue_id": "giraffe",
-      "lat": 32.1002,
-      "lon": 118.8103,
+      "lat": 32.0937,
+      "lon": 118.7978,
       "description": "大红山片区中心位置，长颈鹿馆附近。园区内使用频率最高的卫生间之一。",
       "tags": [
         "无障碍"
@@ -1629,8 +1629,8 @@
       "category": "卫生间",
       "area": "南门新区",
       "near_venue_id": "gorilla",
-      "lat": 32.0955,
-      "lon": 118.8132,
+      "lat": 32.089,
+      "lon": 118.8007,
       "description": "南门新区入口处，大猩猩馆旁。2025年新建，设施较新。",
       "tags": [
         "无障碍",
@@ -1645,8 +1645,8 @@
       "category": "卫生间",
       "area": "小红山片区",
       "near_venue_id": "hornbill",
-      "lat": 32.1012,
-      "lon": 118.8072,
+      "lat": 32.0947,
+      "lon": 118.7947,
       "description": "小红山片区，犀鸟馆附近。",
       "tags": [],
       "open_time": "08:30–17:00"
@@ -1657,8 +1657,8 @@
       "category": "餐饮",
       "area": "大红山片区",
       "near_venue_id": "panda",
-      "lat": 32.1032,
-      "lon": 118.8096,
+      "lat": 32.0967,
+      "lon": 118.7971,
       "description": "北门入口旁，提供简餐、饮料、冰淇淋。价格适中。",
       "tags": [
         "饮料",
@@ -1673,8 +1673,8 @@
       "category": "餐饮",
       "area": "大红山片区",
       "near_venue_id": "giraffe",
-      "lat": 32.1,
-      "lon": 118.8105,
+      "lat": 32.0935,
+      "lon": 118.798,
       "description": "园区内主要餐厅，提供中式快餐、面条、饮料。有室内座位和遮阳棚。",
       "tags": [
         "中式快餐",
@@ -1689,8 +1689,8 @@
       "category": "餐饮",
       "area": "南门新区",
       "near_venue_id": "lemur",
-      "lat": 32.0962,
-      "lon": 118.8138,
+      "lat": 32.0897,
+      "lon": 118.8013,
       "description": "2025年新建，提供咖啡、甜品、轻食。环境舒适，适合歇脚。",
       "tags": [
         "咖啡",
@@ -1706,8 +1706,8 @@
       "category": "售票",
       "area": "大红山片区",
       "near_venue_id": "panda",
-      "lat": 32.1038,
-      "lon": 118.8098,
+      "lat": 32.0973,
+      "lon": 118.7973,
       "description": "北门主入口售票窗口，支持现金、微信、支付宝。也支持线上购票扫码入园。",
       "tags": [
         "现金",
@@ -1723,8 +1723,8 @@
       "category": "售票",
       "area": "南门新区",
       "near_venue_id": "gorilla",
-      "lat": 32.0948,
-      "lon": 118.813,
+      "lat": 32.0883,
+      "lon": 118.8005,
       "description": "南门新区售票窗口，2025年开放。人流量相对北门较少。",
       "tags": [
         "微信",
@@ -1739,8 +1739,8 @@
       "category": "商店",
       "area": "大红山片区",
       "near_venue_id": "panda",
-      "lat": 32.1035,
-      "lon": 118.8095,
+      "lat": 32.097,
+      "lon": 118.797,
       "description": "北门入口旁，售卖红山IP周边、毛绒玩具、明信片等。",
       "tags": [
         "纪念品",
@@ -1755,8 +1755,8 @@
       "category": "商店",
       "area": "南门新区",
       "near_venue_id": "tangjiahe",
-      "lat": 32.0952,
-      "lon": 118.8136,
+      "lat": 32.0887,
+      "lon": 118.8011,
       "description": "南门新区文创店，2025年新开。特色唐家河主题文创、大猩猩IP周边。",
       "tags": [
         "文创",
@@ -1771,8 +1771,8 @@
       "category": "停车",
       "area": "大红山片区",
       "near_venue_id": "panda",
-      "lat": 32.1045,
-      "lon": 118.8095,
+      "lat": 32.098,
+      "lon": 118.797,
       "description": "北门主停车场，约200个车位。节假日非常紧张，建议早到或绿色出行。地铁1号线红山动物园站步行5分钟。",
       "tags": [
         "约200车位",
@@ -1786,8 +1786,8 @@
       "category": "停车",
       "area": "南门新区",
       "near_venue_id": "gorilla",
-      "lat": 32.094,
-      "lon": 118.8125,
+      "lat": 32.0875,
+      "lon": 118.8,
       "description": "南门新区停车场，2025年新建，约150个车位。相对北门压力小。",
       "tags": [
         "约150车位",
@@ -1801,8 +1801,8 @@
       "category": "医疗",
       "area": "大红山片区",
       "near_venue_id": "giraffe",
-      "lat": 32.0998,
-      "lon": 118.8108,
+      "lat": 32.0933,
+      "lon": 118.7983,
       "description": "园区医务室，提供基础急救处理。如遇紧急情况请拨打120。",
       "tags": [
         "急救",
@@ -1816,8 +1816,8 @@
       "category": "寄存",
       "area": "大红山片区",
       "near_venue_id": "panda",
-      "lat": 32.1036,
-      "lon": 118.8097,
+      "lat": 32.0971,
+      "lon": 118.7972,
       "description": "北门入口旁行李寄存柜，扫码使用。小柜5元/次，大柜10元/次。",
       "tags": [
         "扫码",
@@ -1831,8 +1831,8 @@
       "category": "母婴",
       "area": "大红山片区",
       "near_venue_id": "giraffe",
-      "lat": 32.1001,
-      "lon": 118.8106,
+      "lat": 32.0936,
+      "lon": 118.7981,
       "description": "中心餐厅旁，提供哺乳空间、婴儿打理台、温奶器等。",
       "tags": [
         "哺乳",
