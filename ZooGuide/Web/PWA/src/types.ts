@@ -21,6 +21,7 @@ export interface UserPreference {
   willing_to_hike: boolean
   animal_interests: InterestTag[]
   entry_gate: Gate
+  exit_gate?: Gate | 'auto'
   start_time: string
   fast?: boolean
   strict_hours?: boolean
@@ -45,6 +46,8 @@ export interface Route {
   total_minutes: number
   total_walk_minutes: number
   stops: RouteStop[]
+  exit_gate: string
+  walk_to_exit_minutes: number
   warnings: string[]
   tips: string[]
   fallback: boolean
@@ -58,6 +61,7 @@ export interface Route {
   _willing_to_hike?: boolean
   _animal_interests?: InterestTag[]
   _entry_gate?: Gate
+  _exit_gate?: Gate | 'auto'
   _start_time?: string
   _available_hours?: number
 }
@@ -66,6 +70,9 @@ export interface Venue {
   id: string
   name: string
   area: string
+  near_gate?: string
+  lat: number
+  lon: number
   animals: string[]
   tags: string[]
   themes: string[]
@@ -81,6 +88,7 @@ export interface Venue {
   keeper_talk?: string
   open_time?: string
   close_time?: string
+  neighbors?: string[]
 }
 
 export interface SeasonalGuide {

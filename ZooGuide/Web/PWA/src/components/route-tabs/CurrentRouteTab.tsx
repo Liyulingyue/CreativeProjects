@@ -130,7 +130,9 @@ export function CurrentRouteTab({
         {!nextStop && currentStopIdx === total - 1 && (
           <div className="next-stop finish">
             <div className="ns-label">🎉 已游览全部</div>
-            <div className="ns-name">完成今日探索 🎊</div>
+            <div className="ns-name">
+              {route.exit_gate ? `→ ${route.exit_gate}门出园 · 步行 ${route.walk_to_exit_minutes}min` : '完成今日探索 🎊'}
+            </div>
           </div>
         )}
       </div>

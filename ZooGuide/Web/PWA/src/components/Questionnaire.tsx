@@ -36,6 +36,7 @@ export function Questionnaire({ onComplete, initial }: Props) {
   const [willing_to_hike, setHike] = useState(initial?.willing_to_hike ?? false)
   const [animal_interests, setInterests] = useState<InterestTag[]>(initial?.animal_interests ?? [])
   const [entry_gate, setGate] = useState<Gate | null>(initial?.entry_gate ?? null)
+  const [exit_gate, setExitGate] = useState<Gate | 'auto' | null>(initial?.exit_gate ?? 'auto')
   const [start_time, setStartTime] = useState(initial?.start_time ?? '09:00')
 
   if (!opts) {
@@ -75,6 +76,7 @@ export function Questionnaire({ onComplete, initial }: Props) {
       willing_to_hike,
       animal_interests,
       entry_gate: entry_gate!,
+      exit_gate: exit_gate ?? 'auto',
       start_time,
       fast: false,
     }
@@ -215,6 +217,27 @@ export function Questionnaire({ onComplete, initial }: Props) {
             key={o.value}
             className={`qz-option ${entry_gate === o.value ? 'selected' : ''}`}
             onClick={() => setGate(o.value as Gate)}
+          >
+            <div className="qz-option-label">{o.label}</div>
+            <div className="qz-option-desc">{o.desc}</div>
+          </button>
+        ))}
+      </div>
+
+      <h2 className="qz-question">从哪个门出园？</h2>
+      <div className="qz-options">
+        <button
+          className={`qz-option ${exit_gate === 'auto' ? 'selected' : ''}`}
+          onClick={() => setExitGate('auto')}
+        >
+          <div className="qz-option-label">🧭 自动推荐</div>
+          <div className="qz-option-desc">根据路线终点选最近的门</div>
+        </button>
+        {opts.gates.map((o) => (
+          <button
+            key={o.value}
+            className={`qz-option ${exit_gate === o.value ? 'selected' : ''}`}
+            onClick={() => setExitGate(o.value as Gate)}
           >
             <div className="qz-option-label">{o.label}</div>
             <div className="qz-option-desc">{o.desc}</div>
