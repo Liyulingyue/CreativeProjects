@@ -5,12 +5,11 @@ static HAS_F16C: AtomicBool = AtomicBool::new(false);
 static INIT_DONE: AtomicBool = AtomicBool::new(false);
 
 fn init_cpu_features() {
-    if INIT_DONE.load(Ordering::Relaxed) { return; }
+    if INIT_DONE.swap(true, Ordering::Relaxed) { return; }
     let avx2_fma = is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma");
     let f16c = is_x86_feature_detected!("f16c");
     HAS_AVX2_FMA.store(avx2_fma, Ordering::Relaxed);
     HAS_F16C.store(f16c, Ordering::Relaxed);
-    INIT_DONE.store(true, Ordering::Relaxed);
 }
 
 #[inline(always)]
