@@ -153,12 +153,30 @@ def _parse_hhmm(s: str) -> Optional[datetime]:
         return None
 
 
+def _best_exit_gate(last_venue_id: str, entry_gate: str, exit_gate_pref: Optional[str] = None) -> tuple[str, int]:
+    """Find the nearest exit gate from the last venue.
+    Returns (gate_name, walk_minutes).
+    If exit_gate_pref is a specific gate, use it.
+    If 'auto' or None, pick nearest (preferring entry gate if within +5min).
+    """
+    if exit_gate_pref and exit_gate_pref != "auto" and exit_gate_pref in ("north", "south", "east"):
+        return exit_gate_pref, get_entry_venue_minutes(exit_gate_pref, last_venue_id)
+    gates = ["north", "south", "east"]
+    dists = {g: get_entry_venue_minutes(g, last_venue_id) for g in gates}
+    nearest = min(dists, key=dists.get)
+    nearest_min = dists[nearest]
+    if nearest != entry_gate and dists.get(entry_gate, 999) <= nearest_min + 5:
+        return entry_gate, dists[entry_gate]
+    return nearest, nearest_min
+
+
 def _route_from_llm_data(
     data: dict,
     candidates: list[dict],
     entry_gate: str,
     start_time: str,
     elapsed_minutes: int = 0,
+    exit_gate_pref: Optional[str] = None,
 ) -> Route:
     """Validate + transform LLM JSON to a Route object."""
     cand_map = {c["id"]: c for c in candidates}
@@ -191,12 +209,20 @@ def _route_from_llm_data(
         )
         cur = leave + timedelta(minutes=walk_to_next)
 
+    last_vid = stops[-1].venue_id if stops else ""
+    exit_gate, walk_to_exit = _best_exit_gate(last_vid, entry_gate, exit_gate_pref) if last_vid else ("", 0)
+    entry_walk = get_entry_venue_minutes(entry_gate, stops[0].venue_id) if stops else 0
+    total_walk = entry_walk + sum(s.walk_to_next_minutes for s in stops) + walk_to_exit
+    total = entry_walk + sum(s.visit_minutes + s.walk_to_next_minutes for s in stops) + walk_to_exit
+
     return Route(
         id=data.get("id") or f"r_{uuid.uuid4().hex[:8]}",
         summary=data.get("summary", ""),
-        total_minutes=int(data.get("total_minutes", sum(s.visit_minutes + s.walk_to_next_minutes for s in stops))),
-        total_walk_minutes=int(data.get("total_walk_minutes", sum(s.walk_to_next_minutes for s in stops))),
+        total_minutes=int(data.get("total_minutes", total)),
+        total_walk_minutes=int(data.get("total_walk_minutes", total_walk)),
         stops=stops,
+        exit_gate=exit_gate,
+        walk_to_exit_minutes=walk_to_exit,
         warnings=data.get("warnings", []) or config.UNIVERSAL_WARNINGS,
         tips=data.get("tips", []) or [],
         fallback=False,
@@ -310,8 +336,13 @@ def _greedy_fallback_route(
         )
         cur = leave + timedelta(minutes=walk_to_next)
 
-    total = sum(s.visit_minutes + s.walk_to_next_minutes for s in stops)
-    total_walk = sum(s.walk_to_next_minutes for s in stops)
+    total_visit = sum(s.visit_minutes for s in stops)
+    total_inter_walk = sum(s.walk_to_next_minutes for s in stops)
+    entry_walk = get_entry_venue_minutes(prefs.entry_gate, picked[0]["id"]) if picked else 0
+    last_vid = picked[-1]["id"] if picked else ""
+    exit_gate, walk_to_exit = _best_exit_gate(last_vid, prefs.entry_gate, prefs.exit_gate) if last_vid else ("", 0)
+    total_walk = entry_walk + total_inter_walk + walk_to_exit
+    total = entry_walk + total_visit + total_inter_walk + walk_to_exit
 
     summary = _fallback_summary(picked, prefs, style)
 
@@ -321,6 +352,8 @@ def _greedy_fallback_route(
         total_minutes=total,
         total_walk_minutes=total_walk,
         stops=stops,
+        exit_gate=exit_gate,
+        walk_to_exit_minutes=walk_to_exit,
         warnings=config.UNIVERSAL_WARNINGS,
         tips=_fallback_general_tips(prefs),
         fallback=True,
@@ -447,7 +480,7 @@ async def plan_route(prefs: PlanRequest, force_fast: bool = False) -> tuple[Rout
         )
         if not result.get("error") and result.get("data"):
             try:
-                route = _route_from_llm_data(result["data"], candidates, prefs.entry_gate, prefs.start_time)
+                route = _route_from_llm_data(result["data"], candidates, prefs.entry_gate, prefs.start_time, exit_gate_pref=prefs.exit_gate)
                 print("[plan] ✅ LLM route generated successfully")
                 return route, True
             except Exception as e:
@@ -512,6 +545,10 @@ def _curated_to_variants(curated: list[dict]) -> list[dict]:
                 "rest_here": False,
                 "walk_to_next_minutes": 5,
             })
+        last_vid = stop_venues[-1]["id"] if stop_venues else ""
+        entry_gate = cr.get("start_gate", "north")
+        exit_gate, walk_to_exit = _best_exit_gate(last_vid, entry_gate, None) if last_vid else ("", 0)
+        entry_walk = get_entry_venue_minutes(entry_gate, stop_venues[0]["id"]) if stop_venues else 0
         route_id = str(uuid.uuid4())[:8]
         variants.append({
             "id": route_id,
@@ -520,7 +557,9 @@ def _curated_to_variants(curated: list[dict]) -> list[dict]:
             "stops": stops,
             "total_minutes": cr.get("total_minutes", 180),
             "total_walk_minutes": (len(stop_venues) - 1) * 5,
-            "start_gate": cr.get("start_gate", "north"),
+            "start_gate": entry_gate,
+            "exit_gate": exit_gate,
+            "walk_to_exit_minutes": walk_to_exit,
             "fallback": False,
         })
     return variants
@@ -544,6 +583,7 @@ async def replan_route(
         willing_to_hike=original_route.get("_willing_to_hike", True),
         animal_interests=original_route.get("_animal_interests", []),
         entry_gate=original_route.get("_entry_gate", "north"),
+        exit_gate=original_route.get("_exit_gate", "auto"),
         start_time=original_route.get("_start_time", "09:00"),
     )
     candidates = filter_and_rank(plan_prefs)
@@ -581,7 +621,8 @@ async def replan_route(
                             break
                 anchor_time = anchor or plan_prefs.start_time
                 route = _route_from_llm_data(
-                    result["data"], candidates, plan_prefs.entry_gate, anchor_time
+                    result["data"], candidates, plan_prefs.entry_gate, anchor_time,
+                    exit_gate_pref=plan_prefs.exit_gate,
                 )
                 print("[replan] ✅ LLM route generated successfully")
                 return route, True

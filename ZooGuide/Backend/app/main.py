@@ -119,6 +119,10 @@ def list_venues():
                 narration=v.narration,
                 seasonal_tips=v.seasonal_tips,
                 keeper_talk=v.keeper_talk,
+                near_gate=v.near_gate,
+                lat=v.lat,
+                lon=v.lon,
+                neighbors=v.neighbors,
             ).model_dump()
             for v in venues
         ]
@@ -181,6 +185,7 @@ async def plan(
         resp["_willing_to_hike"] = req.willing_to_hike
         resp["_animal_interests"] = req.animal_interests
         resp["_entry_gate"] = req.entry_gate
+        resp["_exit_gate"] = req.exit_gate
         resp["_start_time"] = req.start_time
         resp["_available_hours"] = req.available_hours
         resp["llm_used"] = used_llm
@@ -208,6 +213,11 @@ async def replan(req: ReplanRequest):
         route, used_llm = await planner.replan_route(req.original_route, req)
         resp = route.model_dump()
         resp["llm_used"] = used_llm
+        for key in ("_party_type", "_with_kids", "_kids_age", "_stamina",
+                     "_sun_tolerance", "_willing_to_hike", "_animal_interests",
+                     "_entry_gate", "_exit_gate", "_start_time", "_available_hours"):
+            if key in req.original_route:
+                resp[key] = req.original_route[key]
         return resp
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -526,6 +536,9 @@ def claim_session(
 ):
     result = db.claim_session_data(req.session_id, current_user["id"])
     return {"ok": True, **result}
+
+
+@app.post("/api/auth/logout")
 def logout(authorization: Optional[str] = Header(default=None)):
     if authorization and authorization.lower().startswith("bearer "):
         token = authorization[7:].strip()

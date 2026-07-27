@@ -30,13 +30,14 @@ class UserPreference(BaseModel):
     willing_to_hike: bool = True
     animal_interests: list[InterestTag] = Field(default_factory=list)
     entry_gate: Gate = "north"
+    exit_gate: Optional[str] = "auto"
     start_time: str = "09:00"
     dynamic_feedback: Optional[str] = None
     current_venue_id: Optional[str] = None
     elapsed_minutes: int = 0
-    fast: bool = False  # if true, skip LLM, use rule engine only
-    strict_hours: bool = False  # if true, exclude venues that will be closed by visit time
-    style: str = "balanced"  # balanced / must_see / hidden_gem (alt route styles)
+    fast: bool = False
+    strict_hours: bool = False
+    style: str = "balanced"
 
 
 class PlanRequest(UserPreference):
@@ -69,6 +70,10 @@ class VenueBrief(BaseModel):
     narration: Optional[str] = None
     seasonal_tips: Optional[str] = None
     keeper_talk: Optional[str] = None
+    near_gate: Optional[str] = None
+    lat: float = 0.0
+    lon: float = 0.0
+    neighbors: list[str] = Field(default_factory=list)
 
 
 class RouteStop(BaseModel):
@@ -89,6 +94,8 @@ class Route(BaseModel):
     total_minutes: int
     total_walk_minutes: int
     stops: list[RouteStop]
+    exit_gate: str = ""
+    walk_to_exit_minutes: int = 0
     warnings: list[str] = Field(default_factory=list)
     tips: list[str] = Field(default_factory=list)
     fallback: bool = False
@@ -122,6 +129,9 @@ class Venue(BaseModel):
     kid_friendly: int
     photo_op: int
     must_see: bool
+    lat: float = 0.0
+    lon: float = 0.0
+    neighbors: list[str] = Field(default_factory=list)
 
 
 class ChatRequest(BaseModel):

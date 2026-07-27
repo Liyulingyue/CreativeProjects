@@ -392,12 +392,12 @@ function ActiveRouteCard({
 
       {!nextStop && remainingCount === 0 && (
         <div className="arc-next-stop finish">
-          🎉 全部游览完
+          🎉 全部游览完{route.exit_gate ? ` · →${route.exit_gate}门出园 ${route.walk_to_exit_minutes}min` : ''}
         </div>
       )}
       {!nextStop && remainingCount > 0 && (
         <div className="arc-next-stop finish">
-          最后一站·{currentStop.venue_name}
+          最后一站·{currentStop.venue_name}{route.exit_gate ? ` · →${route.exit_gate}门出园 ${route.walk_to_exit_minutes}min` : ''}
         </div>
       )}
 
