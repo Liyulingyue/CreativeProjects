@@ -471,7 +471,7 @@ impl GGUFLoader {
             .unwrap_or_default();
 
         let prefix = match &arch as &str {
-            "qwen2" | "qwen3" | "qwen35" => arch,
+            "qwen2" | "qwen3" | "qwen35" | "llama" => arch,
             _ => return Err(format!("Unsupported architecture: {}", arch)),
         };
 
@@ -498,7 +498,7 @@ impl GGUFLoader {
             n_embd_head: n_embd / n_head,
             n_ff: get_u64(&format!("{}.feed_forward_length", prefix))? as usize,
             n_ctx: get_u64(&format!("{}.context_length", prefix))? as usize,
-            vocab_size: get_u64(&format!("{}.attention.head_count", prefix))? as usize,
+            vocab_size: get_u64(&format!("{}.vocab_size", prefix))? as usize,
             rope_freq_base: get_f64(&format!("{}.rope.freq_base", prefix))? as f32,
             norm_eps: get_f64(&format!("{}.attention.layer_norm_rms_epsilon", prefix))? as f32,
         })
