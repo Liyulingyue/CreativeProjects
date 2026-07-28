@@ -13,12 +13,35 @@ export function useMonitor(): UseMonitorResult {
   const [snapshot, setSnapshot] = useState<MonitorSnapshot | null>(null);
   const [isMonitoring, setIsMonitoring] = useState(false);
   const initialized = useRef(false);
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     if (initialized.current) return;
     initialized.current = true;
     getMonitorStatus().then(setSnapshot).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (isMonitoring) {
+      pollTimerRef.current = setInterval(async () => {
+        try {
+          const snap = await getMonitorStatus();
+          setSnapshot(snap);
+        } catch {}
+      }, 1000);
+    } else {
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+    }
+    return () => {
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+    };
+  }, [isMonitoring]);
 
   const toggleMonitoring = useCallback(async () => {
     if (isMonitoring) {
@@ -38,10 +61,7 @@ export function useMonitor(): UseMonitorResult {
     try {
       const snap = await updatePresence(present);
       setSnapshot(snap);
-      setIsMonitoring(snap.is_monitoring);
-    } catch {
-      // ignore
-    }
+    } catch {}
   }, []);
 
   return {

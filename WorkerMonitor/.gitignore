@@ -1,3 +1,13 @@
 node_modules/
 dist/
 src-tauri/target/
+
+*.exe
+*.msi
+*.nupkg
+
+src-tauri/target/release/bundle/
+dist_package/
+
+.env
+.env.local
