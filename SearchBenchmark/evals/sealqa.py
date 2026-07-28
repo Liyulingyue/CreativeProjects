@@ -19,7 +19,7 @@ from rich.table import Table
 console = Console()
 logger = logging.getLogger(__name__)
 DEFAULT_DATA_DIR = Path(__file__).parent.parent / "data"
-DEFAULT_REFERENCES_DIR = Path(__file__).parent.parent / "references"
+DEFAULT_DATA_DIR = Path(__file__).parent.parent / "data"
 
 SEALQA_GRADING_SYSTEM = """\
 You are evaluating search-augmented language model answers on fact-seeking questions.
@@ -63,7 +63,7 @@ class BaseGrader:
 
 
 def load_sealqa(config: str = "seal-0", data_dir: Path | None = None) -> list[dict]:
-    data_dir = data_dir or DEFAULT_REFERENCES_DIR / "sealqa"
+    data_dir = data_dir or DEFAULT_DATA_DIR / "sealqa"
 
     parquet_path = data_dir / f"{config}.parquet"
 
@@ -72,7 +72,7 @@ def load_sealqa(config: str = "seal-0", data_dir: Path | None = None) -> list[di
         console.print("  SealQA data needs to be downloaded from HuggingFace:")
         console.print("    from datasets import load_dataset")
         console.print("    ds = load_dataset('vtllms/sealqa', name='seal_0', split='test')")
-        console.print("    ds.to_parquet('references/sealqa/seal-0.parquet')")
+        console.print("    ds.to_parquet('data/sealqa/seal-0.parquet')")
         return []
 
     try:
@@ -232,7 +232,7 @@ async def run(
     questions = load_sealqa(config, Path(data_dir) if data_dir else None)
 
     if not questions:
-        console.print("[red]No questions found.[/red]")
+        console.print("[red]No questions found. Ensure data/sealqa/ has parquet files.[/red]")
         return []
 
     if limit:

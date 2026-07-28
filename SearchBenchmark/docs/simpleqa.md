@@ -50,7 +50,18 @@
 - INCORRECT (B): 预测答案与目标答案矛盾
 - NOT_ATTEMPTED (C): 预测答案未包含目标答案
 
-## 7. 关键差异
+## 7. Perplexity 评测结果参考
+
+> 参考: [Perplexity Search API](https://research.perplexity.ai/articles/architecting-and-evaluating-an-ai-first-search-api)
+
+| Provider | SimpleQA | FRAMES | BrowseComp | HLE |
+|----------|----------|--------|------------|-----|
+| Perplexity | **0.930** | **0.453** | **0.371** | **0.288** |
+| Exa | 0.781 | 0.399 | 0.265 | 0.242 |
+| Brave | 0.822 | 0.320 | 0.221 | 0.191 |
+| SERP-based | 0.890 | 0.437 | 0.348 | 0.248 |
+
+## 8. 关键差异
 
 | 维度 | 官方 SimpleQA | SearchBenchmark |
 |------|---------------|-----------------|
@@ -58,7 +69,7 @@
 | **Search** | ❌ 无 | ✅ 有 |
 | **Pipeline** | LLM → Grader | **Search API → RAG → Grader** |
 
-## 7. 运行命令
+## 9. 运行命令
 
 ```bash
 python -m evals.simpleqa --info

@@ -1,12 +1,12 @@
-"""FRAMES eval — Multi-hop reasoning over Wikipedia.
+"""SealQA eval — 支持多种模式.
 
-Reference: https://project-fireball.github.io/FRAMES/
-Data: references/frames-benchmark.tsv
+Modes:
+    simple: 直接 OpenAI SDK，简化 prompt
+    langchain: LangChain 版本，对齐 Tavily/web-search-api-evals
 """
 
 import argparse
 import asyncio
-import csv
 import json
 import logging
 import time
@@ -20,7 +20,6 @@ from rich.table import Table
 console = Console()
 logger = logging.getLogger(__name__)
 DEFAULT_DATA_DIR = Path(__file__).parent.parent / "data"
-DEFAULT_DATA_DIR = Path(__file__).parent.parent / "data"
 
 
 class BaseSearcher:
@@ -31,81 +30,77 @@ class BaseSearcher:
 
 
 class BaseRAGAgent:
-    def __init__(self, model: str = "gpt-4o-mini", api_key: str | None = None):
+    def __init__(self, model: str = "gpt-4o-mini", api_key: str | None = None, api_url: str | None = None):
         self.model = model
         self.api_key = api_key
+        self.api_url = api_url
 
     async def synthesize(self, question: str, search_results: list[dict]) -> dict:
         raise NotImplementedError
 
 
 class BaseGrader:
-    def __init__(self, model: str = "gpt-4o", temperature: float = 0.0, api_key: str | None = None):
+    def __init__(
+        self,
+        model: str = "gpt-4o",
+        temperature: float = 0.0,
+        api_key: str | None = None,
+        api_url: str | None = None,
+    ):
         self.model = model
         self.temperature = temperature
         self.api_key = api_key
+        self.api_url = api_url
 
     async def grade(
         self,
         question: str,
-        answer: str,
+        evidence: str,
         predicted_answer: str,
     ) -> dict[str, Any]:
         raise NotImplementedError
 
 
-def load_frames(tsv_path: Path | None = None) -> list[dict]:
-    if tsv_path is None:
-        tsv_path = DEFAULT_DATA_DIR / "frames" / "frames-benchmark.tsv"
+def load_sealqa(config: str = "seal-0", data_dir: Path | None = None) -> list[dict]:
+    data_dir = data_dir or DEFAULT_DATA_DIR / "sealqa"
 
-    if not tsv_path.exists():
-        console.print(f"[yellow]File not found: {tsv_path}[/yellow]")
+    parquet_path = data_dir / f"{config}.parquet"
+
+    if not parquet_path.exists() or parquet_path.stat().st_size < 1000:
+        console.print(f"[yellow]Parquet file not found or too small: {parquet_path}[/yellow]")
+        console.print("  SealQA data needs to be downloaded from HuggingFace:")
+        console.print("    from datasets import load_dataset")
+        console.print("    ds = load_dataset('vtllms/sealqa', name='seal_0', split='test')")
+        console.print("    ds.to_parquet('data/sealqa/seal-0.parquet')")
         return []
 
-    questions = []
-    with open(tsv_path, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f, delimiter="\t")
-        for row in reader:
-            prompt = row.get("Prompt", "").strip()
-            answer = row.get("Answer", "").strip()
-            if not prompt:
-                continue
-            wiki_links = []
-            for i in range(1, 12):
-                key = f"wikipedia_link_{i}"
-                if key in row and row[key]:
-                    wiki_links.append(row[key])
-            wiki_links_str = row.get("wiki_links", "")
-            if wiki_links_str:
-                try:
-                    wiki_links = json.loads(wiki_links_str)
-                except:
-                    pass
-            questions.append({
-                "id": row.get("Unnamed: 0", ""),
-                "prompt": prompt,
-                "answer": answer,
-                "wiki_links": wiki_links,
-                "reasoning_types": row.get("reasoning_types", ""),
-            })
-    return questions
+    try:
+        import pandas as pd
+        df = pd.read_parquet(parquet_path)
+        questions = df.to_dict("records")
+        return questions
+    except Exception as e:
+        logger.warning(f"Failed to load parquet: {e}")
+        return []
 
 
 def print_info():
-    questions = load_frames()
-    console.print("\n[bold]FRAMES Dataset[/bold]")
-    console.print("  Multi-hop reasoning over Wikipedia.\n")
+    configs = ["seal-0", "seal-hard", "longseal"]
+    console.print("\n[bold]SealQA Dataset[/bold]")
+    console.print("  SEarch-Augmented Language models on challenging QA.\n")
 
-    if questions:
-        console.print(f"  Total questions: {len(questions)}")
-        console.print(f"  Sample question: {questions[0].get('prompt', '')[:80]}...")
-        console.print(f"  Sample answer: {questions[0].get('answer', '')}")
-    else:
-        console.print("  [yellow]No questions loaded.[/yellow]")
+    for config in configs:
+        questions = load_sealqa(config)
+        if questions:
+            console.print(f"  {config}: {len(questions)} questions")
+            if len(questions) > 0:
+                console.print(f"    Sample: {questions[0].get('question', questions[0].get('input', ''))[:60]}...")
+        else:
+            console.print(f"  {config}: [yellow]data not loaded (git lfs placeholder)[/yellow]")
     console.print()
 
 
-class FRAMESEvaluator:
+class SealQAEvaluator:
     def __init__(
         self,
         searcher: BaseSearcher,
@@ -121,13 +116,14 @@ class FRAMESEvaluator:
         questions: list[dict],
         num_results: int = 5,
         concurrency: int = 10,
+        use_retrieved_evidence: bool = True,
         verbose: bool = True,
     ) -> list[dict]:
         semaphore = asyncio.Semaphore(concurrency)
         results = []
 
         if verbose:
-            console.print(f"[bold]Evaluating {len(questions)} FRAMES questions[/bold]")
+            console.print(f"[bold]Evaluating {len(questions)} SealQA questions[/bold]")
             console.print(f"  Searcher: {self.searcher.name}")
             console.print(f"  RAG Model: {self.rag_agent.model}")
             console.print(f"  Grader Model: {self.grader.model}\n")
@@ -145,30 +141,39 @@ class FRAMESEvaluator:
 
             async def process(q: dict) -> dict:
                 async with semaphore:
-                    prompt = q.get("prompt", "")
-                    answer = q.get("answer", "")
+                    question_text = q.get("question", q.get("input", ""))
+                    answer_text = q.get("answer", q.get("ground_truth", ""))
                     question_id = q.get("id", "")
                     start = time.time()
 
                     try:
-                        search_results = await self.searcher.search(prompt, num_results=num_results)
+                        search_results = await self.searcher.search(
+                            question_text, num_results=num_results
+                        )
                     except Exception as e:
                         logger.warning(f"Search failed: {e}")
                         search_results = []
 
                     latency = time.time() - start
 
-                    try:
-                        rag_result = await self.rag_agent.synthesize(prompt, search_results)
-                        predicted = rag_result.get("answer", "")
-                    except Exception as e:
-                        logger.warning(f"RAG synthesis failed: {e}")
-                        predicted = "I don't know"
+                    if use_retrieved_evidence:
+                        try:
+                            rag_result = await self.rag_agent.synthesize(question_text, search_results)
+                            predicted = rag_result.get("answer", "")
+                        except Exception as e:
+                            logger.warning(f"RAG synthesis failed: {e}")
+                            predicted = "I don't know"
+                    else:
+                        predicted = "Not evaluated (w/o search mode)"
 
                     try:
+                        evidence = "\n".join([
+                            f"- {r.get('title', '')}: {r.get('text', r.get('snippet', ''))}"
+                            for r in search_results[:3]
+                        ])
                         grade = await self.grader.grade(
-                            question=prompt,
-                            answer=answer,
+                            question=question_text,
+                            evidence=evidence,
                             predicted_answer=predicted,
                         )
                         is_correct = grade.get("is_correct", False)
@@ -180,8 +185,8 @@ class FRAMESEvaluator:
 
                     return {
                         "id": question_id,
-                        "prompt": prompt,
-                        "answer": answer,
+                        "query": question_text,
+                        "answer": answer_text,
                         "predicted_answer": predicted,
                         "is_correct": is_correct,
                         "latency": round(latency, 2),
@@ -192,14 +197,14 @@ class FRAMESEvaluator:
         return list(results)
 
 
-def print_results(all_results: list[dict]):
+def print_results(all_results: list[dict], config: str = "seal-0"):
     if not all_results:
         return
 
     n = len(all_results)
     correct = sum(1 for r in all_results if r.get("is_correct", False))
 
-    table = Table(title="FRAMES Results")
+    table = Table(title=f"SealQA Results ({config})")
     table.add_column("Metric", style="cyan")
     table.add_column("Value", justify="right")
 
@@ -219,19 +224,20 @@ async def run(
     output: str | None = None,
     num_results: int = 5,
     concurrency: int = 10,
-    tsv_path: str | None = None,
+    config: str = "seal-0",
+    data_dir: str | None = None,
     verbose: bool = True,
 ) -> list[dict]:
-    questions = load_frames(Path(tsv_path) if tsv_path else None)
+    questions = load_sealqa(config, Path(data_dir) if data_dir else None)
 
     if not questions:
-        console.print("[red]No questions found. Ensure data/frames/ exists.[/red]")
+        console.print("[red]No questions found. Ensure data/sealqa/ has parquet files.[/red]")
         return []
 
     if limit:
         questions = questions[:limit]
 
-    evaluator = FRAMESEvaluator(searcher, rag_agent, grader)
+    evaluator = SealQAEvaluator(searcher, rag_agent, grader)
     results = await evaluator.evaluate(
         questions=questions,
         num_results=num_results,
@@ -240,7 +246,7 @@ async def run(
     )
 
     if verbose:
-        print_results(results)
+        print_results(results, config)
 
     if output:
         with open(output, "w") as f:
@@ -251,21 +257,21 @@ async def run(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="FRAMES eval")
+    parser = argparse.ArgumentParser(description="SealQA eval")
     parser.add_argument("--info", action="store_true", help="Print dataset info")
+    parser.add_argument("--mode", default="simple", choices=["simple", "langchain"], help="Evaluation mode")
     parser.add_argument("--searcher-api-url", help="Search API URL")
     parser.add_argument("--searcher-api-key", default=None, help="Search API key")
     parser.add_argument("--rag-model", default="gpt-4o-mini", help="RAG model")
-    parser.add_argument("--rag-model-url", default=None, help="RAG model API URL")
-    parser.add_argument("--rag-api-key", default=None, help="RAG model API key")
+    parser.add_argument("--rag-api-key", default=None, help="RAG API key")
     parser.add_argument("--grader-model", default="gpt-4o", help="Grader model")
-    parser.add_argument("--grader-model-url", default=None, help="Grader model API URL")
-    parser.add_argument("--grader-api-key", default=None, help="Grader model API key")
+    parser.add_argument("--grader-api-key", default=None, help="Grader API key")
     parser.add_argument("--limit", type=int, help="Limit questions")
     parser.add_argument("--num-results", type=int, default=5, help="Search results")
     parser.add_argument("--concurrency", type=int, default=10)
+    parser.add_argument("--config", default="seal-0", choices=["seal-0", "seal-hard", "longseal"])
     parser.add_argument("--output", "-o", help="Output file")
-    parser.add_argument("--tsv-path", help="Path to FRAMES TSV")
+    parser.add_argument("--data-dir", help="Path to sealqa data directory")
     args = parser.parse_args()
 
     if args.info:
@@ -273,26 +279,23 @@ def main():
         return
 
     if not args.searcher_api_url:
-        console.print("[red]--searcher-api-url is required unless --info is used[/red]")
+        console.print("[red]--searcher-api-url is required[/red]")
         return
 
-    from .implementations import HTTPSearcher, OpenAIRAGAgent, OpenAIGrader
+    if args.mode == "simple":
+        from .simple_impl import SimpleSearcher, SimpleRAGAgent
+        from .sealqa_simple_grader import SealQASimpleGrader
 
-    searcher = HTTPSearcher(
-        api_url=args.searcher_api_url,
-        api_key=args.searcher_api_key,
-        name="queria",
-    )
-    rag_agent = OpenAIRAGAgent(
-        model=args.rag_model,
-        api_url=args.rag_model_url,
-        api_key=args.rag_api_key,
-    )
-    grader = OpenAIGrader(
-        model=args.grader_model,
-        api_url=args.grader_model_url,
-        api_key=args.grader_api_key,
-    )
+        searcher = SimpleSearcher(args.searcher_api_url, args.searcher_api_key)
+        rag_agent = SimpleRAGAgent(args.rag_model, api_key=args.rag_api_key)
+        grader = SealQASimpleGrader(args.grader_model, api_key=args.grader_api_key)
+    elif args.mode == "langchain":
+        from .langchain_impl import LangChainSearcher, LangChainRAGAgent
+        from .sealqa_langchain_grader import SealQALangChainGrader
+
+        searcher = LangChainSearcher(args.searcher_api_url, args.searcher_api_key)
+        rag_agent = LangChainRAGAgent(args.rag_model, api_key=args.rag_api_key)
+        grader = SealQALangChainGrader(args.grader_model, api_key=args.grader_api_key)
 
     asyncio.run(run(
         searcher=searcher,
@@ -302,7 +305,8 @@ def main():
         output=args.output,
         num_results=args.num_results,
         concurrency=args.concurrency,
-        tsv_path=args.tsv_path,
+        config=args.config,
+        data_dir=args.data_dir,
     ))
 
 

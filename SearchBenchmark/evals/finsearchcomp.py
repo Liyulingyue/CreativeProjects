@@ -19,7 +19,7 @@ from rich.table import Table
 console = Console()
 logger = logging.getLogger(__name__)
 DEFAULT_DATA_DIR = Path(__file__).parent.parent / "data"
-DEFAULT_REFERENCES_DIR = Path(__file__).parent.parent / "references"
+DEFAULT_DATA_DIR = Path(__file__).parent.parent / "data"
 
 
 class BaseSearcher:
@@ -56,7 +56,7 @@ class BaseGrader:
 
 def load_finsearchcomp(json_path: Path | None = None) -> list[dict]:
     if json_path is None:
-        json_path = DEFAULT_REFERENCES_DIR / "finsearchcomp_data.json"
+        json_path = DEFAULT_DATA_DIR / "finsearchcomp" / "finsearchcomp_data.json"
     if not json_path.exists():
         json_path = DEFAULT_DATA_DIR / "finsearchcomp_data.json"
 
@@ -212,7 +212,7 @@ async def run(
     items = load_finsearchcomp(Path(json_path) if json_path else None)
 
     if not items:
-        console.print("[red]No items found.[/red]")
+        console.print("[red]No items found. Ensure data/finsearchcomp/ exists.[/red]")
         return []
 
     if limit:
