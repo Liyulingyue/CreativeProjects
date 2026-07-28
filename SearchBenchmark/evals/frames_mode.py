@@ -1,7 +1,8 @@
-"""FRAMES eval — Multi-hop reasoning over Wikipedia.
+"""FRAMES eval — 支持多种模式.
 
-Reference: https://project-fireball.github.io/FRAMES/
-Data: references/frames-benchmark.tsv
+Modes:
+    simple: 直接 OpenAI SDK，简化 prompt
+    langchain: LangChain 版本，对齐 Tavily/web-search-api-evals
 """
 
 import argparse
@@ -20,7 +21,6 @@ from rich.table import Table
 console = Console()
 logger = logging.getLogger(__name__)
 DEFAULT_DATA_DIR = Path(__file__).parent.parent / "data"
-DEFAULT_DATA_DIR = Path(__file__).parent.parent / "data"
 
 
 class BaseSearcher:
@@ -31,19 +31,27 @@ class BaseSearcher:
 
 
 class BaseRAGAgent:
-    def __init__(self, model: str = "gpt-4o-mini", api_key: str | None = None):
+    def __init__(self, model: str = "gpt-4o-mini", api_key: str | None = None, api_url: str | None = None):
         self.model = model
         self.api_key = api_key
+        self.api_url = api_url
 
     async def synthesize(self, question: str, search_results: list[dict]) -> dict:
         raise NotImplementedError
 
 
 class BaseGrader:
-    def __init__(self, model: str = "gpt-4o", temperature: float = 0.0, api_key: str | None = None):
+    def __init__(
+        self,
+        model: str = "gpt-4o",
+        temperature: float = 0.0,
+        api_key: str | None = None,
+        api_url: str | None = None,
+    ):
         self.model = model
         self.temperature = temperature
         self.api_key = api_key
+        self.api_url = api_url
 
     async def grade(
         self,
@@ -253,14 +261,13 @@ async def run(
 def main():
     parser = argparse.ArgumentParser(description="FRAMES eval")
     parser.add_argument("--info", action="store_true", help="Print dataset info")
+    parser.add_argument("--mode", default="simple", choices=["simple", "langchain"], help="Evaluation mode")
     parser.add_argument("--searcher-api-url", help="Search API URL")
     parser.add_argument("--searcher-api-key", default=None, help="Search API key")
     parser.add_argument("--rag-model", default="gpt-4o-mini", help="RAG model")
-    parser.add_argument("--rag-model-url", default=None, help="RAG model API URL")
-    parser.add_argument("--rag-api-key", default=None, help="RAG model API key")
+    parser.add_argument("--rag-api-key", default=None, help="RAG API key")
     parser.add_argument("--grader-model", default="gpt-4o", help="Grader model")
-    parser.add_argument("--grader-model-url", default=None, help="Grader model API URL")
-    parser.add_argument("--grader-api-key", default=None, help="Grader model API key")
+    parser.add_argument("--grader-api-key", default=None, help="Grader API key")
     parser.add_argument("--limit", type=int, help="Limit questions")
     parser.add_argument("--num-results", type=int, default=5, help="Search results")
     parser.add_argument("--concurrency", type=int, default=10)
@@ -273,26 +280,23 @@ def main():
         return
 
     if not args.searcher_api_url:
-        console.print("[red]--searcher-api-url is required unless --info is used[/red]")
+        console.print("[red]--searcher-api-url is required[/red]")
         return
 
-    from .implementations import HTTPSearcher, OpenAIRAGAgent, OpenAIGrader
+    if args.mode == "simple":
+        from .simple_impl import SimpleSearcher, SimpleRAGAgent
+        from .frames_simple_grader import FRAMESSimpleGrader
 
-    searcher = HTTPSearcher(
-        api_url=args.searcher_api_url,
-        api_key=args.searcher_api_key,
-        name="queria",
-    )
-    rag_agent = OpenAIRAGAgent(
-        model=args.rag_model,
-        api_url=args.rag_model_url,
-        api_key=args.rag_api_key,
-    )
-    grader = OpenAIGrader(
-        model=args.grader_model,
-        api_url=args.grader_model_url,
-        api_key=args.grader_api_key,
-    )
+        searcher = SimpleSearcher(args.searcher_api_url, args.searcher_api_key)
+        rag_agent = SimpleRAGAgent(args.rag_model, api_key=args.rag_api_key)
+        grader = FRAMESSimpleGrader(args.grader_model, api_key=args.grader_api_key)
+    elif args.mode == "langchain":
+        from .langchain_impl import LangChainSearcher, LangChainRAGAgent
+        from .frames_langchain_grader import FRAMESLangChainGrader
+
+        searcher = LangChainSearcher(args.searcher_api_url, args.searcher_api_key)
+        rag_agent = LangChainRAGAgent(args.rag_model, api_key=args.rag_api_key)
+        grader = FRAMESLangChainGrader(args.grader_model, api_key=args.grader_api_key)
 
     asyncio.run(run(
         searcher=searcher,

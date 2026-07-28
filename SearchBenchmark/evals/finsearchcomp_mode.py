@@ -1,12 +1,12 @@
-"""FRAMES eval — Multi-hop reasoning over Wikipedia.
+"""FinSearchComp eval — 支持多种模式.
 
-Reference: https://project-fireball.github.io/FRAMES/
-Data: references/frames-benchmark.tsv
+Modes:
+    simple: 直接 OpenAI SDK，简化 prompt
+    langchain: LangChain 版本，对齐 Tavily/web-search-api-evals
 """
 
 import argparse
 import asyncio
-import csv
 import json
 import logging
 import time
@@ -20,7 +20,6 @@ from rich.table import Table
 console = Console()
 logger = logging.getLogger(__name__)
 DEFAULT_DATA_DIR = Path(__file__).parent.parent / "data"
-DEFAULT_DATA_DIR = Path(__file__).parent.parent / "data"
 
 
 class BaseSearcher:
@@ -31,81 +30,73 @@ class BaseSearcher:
 
 
 class BaseRAGAgent:
-    def __init__(self, model: str = "gpt-4o-mini", api_key: str | None = None):
+    def __init__(self, model: str = "gpt-4o-mini", api_key: str | None = None, api_url: str | None = None):
         self.model = model
         self.api_key = api_key
+        self.api_url = api_url
 
     async def synthesize(self, question: str, search_results: list[dict]) -> dict:
         raise NotImplementedError
 
 
 class BaseGrader:
-    def __init__(self, model: str = "gpt-4o", temperature: float = 0.0, api_key: str | None = None):
+    def __init__(
+        self,
+        model: str = "gpt-4o",
+        temperature: float = 0.0,
+        api_key: str | None = None,
+        api_url: str | None = None,
+    ):
         self.model = model
         self.temperature = temperature
         self.api_key = api_key
+        self.api_url = api_url
 
     async def grade(
         self,
         question: str,
-        answer: str,
+        ground_truth: str,
         predicted_answer: str,
+        reference: str = "",
     ) -> dict[str, Any]:
         raise NotImplementedError
 
 
-def load_frames(tsv_path: Path | None = None) -> list[dict]:
-    if tsv_path is None:
-        tsv_path = DEFAULT_DATA_DIR / "frames" / "frames-benchmark.tsv"
+def load_finsearchcomp(json_path: Path | None = None) -> list[dict]:
+    if json_path is None:
+        json_path = DEFAULT_DATA_DIR / "finsearchcomp" / "finsearchcomp_data.json"
+    if not json_path.exists():
+        json_path = DEFAULT_DATA_DIR / "finsearchcomp_data.json"
 
-    if not tsv_path.exists():
-        console.print(f"[yellow]File not found: {tsv_path}[/yellow]")
+    if not json_path.exists():
+        console.print(f"[yellow]File not found: {json_path}[/yellow]")
         return []
 
-    questions = []
-    with open(tsv_path, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f, delimiter="\t")
-        for row in reader:
-            prompt = row.get("Prompt", "").strip()
-            answer = row.get("Answer", "").strip()
-            if not prompt:
-                continue
-            wiki_links = []
-            for i in range(1, 12):
-                key = f"wikipedia_link_{i}"
-                if key in row and row[key]:
-                    wiki_links.append(row[key])
-            wiki_links_str = row.get("wiki_links", "")
-            if wiki_links_str:
-                try:
-                    wiki_links = json.loads(wiki_links_str)
-                except:
-                    pass
-            questions.append({
-                "id": row.get("Unnamed: 0", ""),
-                "prompt": prompt,
-                "answer": answer,
-                "wiki_links": wiki_links,
-                "reasoning_types": row.get("reasoning_types", ""),
-            })
-    return questions
+    with open(json_path, encoding="utf-8") as f:
+        data = json.load(f)
+
+    if isinstance(data, list):
+        return data
+    return [data] if data else []
 
 
 def print_info():
-    questions = load_frames()
-    console.print("\n[bold]FRAMES Dataset[/bold]")
-    console.print("  Multi-hop reasoning over Wikipedia.\n")
+    items = load_finsearchcomp()
+    console.print("\n[bold]FinSearchComp Dataset[/bold]")
+    console.print("  Financial search and reasoning benchmark.\n")
 
-    if questions:
-        console.print(f"  Total questions: {len(questions)}")
-        console.print(f"  Sample question: {questions[0].get('prompt', '')[:80]}...")
-        console.print(f"  Sample answer: {questions[0].get('answer', '')}")
+    if items:
+        console.print(f"  Total items: {len(items)}")
+        if len(items) > 0:
+            item = items[0]
+            console.print(f"  Sample prompt: {item.get('prompt', '')[:80]}...")
+            console.print(f"  prompt_id: {item.get('prompt_id', '')}")
     else:
-        console.print("  [yellow]No questions loaded.[/yellow]")
+        console.print("  [yellow]No data loaded.[/yellow]")
     console.print()
 
 
-class FRAMESEvaluator:
+class FinSearchCompEvaluator:
     def __init__(
         self,
         searcher: BaseSearcher,
@@ -118,7 +109,7 @@ class FRAMESEvaluator:
 
     async def evaluate(
         self,
-        questions: list[dict],
+        items: list[dict],
         num_results: int = 5,
         concurrency: int = 10,
         verbose: bool = True,
@@ -127,7 +118,7 @@ class FRAMESEvaluator:
         results = []
 
         if verbose:
-            console.print(f"[bold]Evaluating {len(questions)} FRAMES questions[/bold]")
+            console.print(f"[bold]Evaluating {len(items)} FinSearchComp items[/bold]")
             console.print(f"  Searcher: {self.searcher.name}")
             console.print(f"  RAG Model: {self.rag_agent.model}")
             console.print(f"  Grader Model: {self.grader.model}\n")
@@ -141,13 +132,13 @@ class FRAMESEvaluator:
             console=console,
             disable=not verbose,
         ) as progress:
-            task_id = progress.add_task("Evaluating", total=len(questions))
+            task_id = progress.add_task("Evaluating", total=len(items))
 
-            async def process(q: dict) -> dict:
+            async def process(item: dict) -> dict:
                 async with semaphore:
-                    prompt = q.get("prompt", "")
-                    answer = q.get("answer", "")
-                    question_id = q.get("id", "")
+                    prompt = item.get("prompt", "")
+                    prompt_id = item.get("prompt_id", [""])[0] if isinstance(item.get("prompt_id"), list) else item.get("prompt_id", "")
+                    reference = item.get("response_reference", "")
                     start = time.time()
 
                     try:
@@ -168,26 +159,26 @@ class FRAMESEvaluator:
                     try:
                         grade = await self.grader.grade(
                             question=prompt,
-                            answer=answer,
+                            ground_truth="",
                             predicted_answer=predicted,
+                            reference=reference,
                         )
-                        is_correct = grade.get("is_correct", False)
+                        score = grade.get("score", 0.0)
                     except Exception as e:
                         logger.warning(f"Grading failed: {e}")
-                        is_correct = False
+                        score = 0.0
 
                     progress.advance(task_id)
 
                     return {
-                        "id": question_id,
+                        "id": prompt_id,
                         "prompt": prompt,
-                        "answer": answer,
                         "predicted_answer": predicted,
-                        "is_correct": is_correct,
+                        "score": score,
                         "latency": round(latency, 2),
                     }
 
-            results = await asyncio.gather(*[process(q) for q in questions])
+            results = await asyncio.gather(*[process(item) for item in items])
 
         return list(results)
 
@@ -197,15 +188,19 @@ def print_results(all_results: list[dict]):
         return
 
     n = len(all_results)
-    correct = sum(1 for r in all_results if r.get("is_correct", False))
+    total_score = sum(r.get("score", 0.0) for r in all_results)
+    avg_score = total_score / n if n > 0 else 0.0
+    valid_scores = sum(1 for r in all_results if r.get("score", -100000) > -1000)
+    accuracy = total_score / valid_scores if valid_scores > 0 else 0.0
 
-    table = Table(title="FRAMES Results")
+    table = Table(title="FinSearchComp Results")
     table.add_column("Metric", style="cyan")
     table.add_column("Value", justify="right")
 
-    table.add_row("Total Questions", str(n))
-    table.add_row("Correct", str(correct))
-    table.add_row("Accuracy", f"{correct / n:.1%}" if n > 0 else "N/A")
+    table.add_row("Total Items", str(n))
+    table.add_row("Valid Evaluations", str(valid_scores))
+    table.add_row("Average Score", f"{avg_score:.4f}")
+    table.add_row("Accuracy", f"{accuracy:.1%}")
 
     console.print()
     console.print(table)
@@ -219,21 +214,21 @@ async def run(
     output: str | None = None,
     num_results: int = 5,
     concurrency: int = 10,
-    tsv_path: str | None = None,
+    json_path: str | None = None,
     verbose: bool = True,
 ) -> list[dict]:
-    questions = load_frames(Path(tsv_path) if tsv_path else None)
+    items = load_finsearchcomp(Path(json_path) if json_path else None)
 
-    if not questions:
-        console.print("[red]No questions found. Ensure data/frames/ exists.[/red]")
+    if not items:
+        console.print("[red]No items found. Ensure data/finsearchcomp/ exists.[/red]")
         return []
 
     if limit:
-        questions = questions[:limit]
+        items = items[:limit]
 
-    evaluator = FRAMESEvaluator(searcher, rag_agent, grader)
+    evaluator = FinSearchCompEvaluator(searcher, rag_agent, grader)
     results = await evaluator.evaluate(
-        questions=questions,
+        items=items,
         num_results=num_results,
         concurrency=concurrency,
         verbose=verbose,
@@ -251,21 +246,20 @@ async def run(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="FRAMES eval")
+    parser = argparse.ArgumentParser(description="FinSearchComp eval")
     parser.add_argument("--info", action="store_true", help="Print dataset info")
+    parser.add_argument("--mode", default="simple", choices=["simple", "langchain"], help="Evaluation mode")
     parser.add_argument("--searcher-api-url", help="Search API URL")
     parser.add_argument("--searcher-api-key", default=None, help="Search API key")
     parser.add_argument("--rag-model", default="gpt-4o-mini", help="RAG model")
-    parser.add_argument("--rag-model-url", default=None, help="RAG model API URL")
-    parser.add_argument("--rag-api-key", default=None, help="RAG model API key")
+    parser.add_argument("--rag-api-key", default=None, help="RAG API key")
     parser.add_argument("--grader-model", default="gpt-4o", help="Grader model")
-    parser.add_argument("--grader-model-url", default=None, help="Grader model API URL")
-    parser.add_argument("--grader-api-key", default=None, help="Grader model API key")
-    parser.add_argument("--limit", type=int, help="Limit questions")
+    parser.add_argument("--grader-api-key", default=None, help="Grader API key")
+    parser.add_argument("--limit", type=int, help="Limit items")
     parser.add_argument("--num-results", type=int, default=5, help="Search results")
     parser.add_argument("--concurrency", type=int, default=10)
     parser.add_argument("--output", "-o", help="Output file")
-    parser.add_argument("--tsv-path", help="Path to FRAMES TSV")
+    parser.add_argument("--json-path", help="Path to FinSearchComp JSON")
     args = parser.parse_args()
 
     if args.info:
@@ -273,26 +267,23 @@ def main():
         return
 
     if not args.searcher_api_url:
-        console.print("[red]--searcher-api-url is required unless --info is used[/red]")
+        console.print("[red]--searcher-api-url is required[/red]")
         return
 
-    from .implementations import HTTPSearcher, OpenAIRAGAgent, OpenAIGrader
+    if args.mode == "simple":
+        from .simple_impl import SimpleSearcher, SimpleRAGAgent
+        from .finsearchcomp_simple_grader import FinSearchCompSimpleGrader
 
-    searcher = HTTPSearcher(
-        api_url=args.searcher_api_url,
-        api_key=args.searcher_api_key,
-        name="queria",
-    )
-    rag_agent = OpenAIRAGAgent(
-        model=args.rag_model,
-        api_url=args.rag_model_url,
-        api_key=args.rag_api_key,
-    )
-    grader = OpenAIGrader(
-        model=args.grader_model,
-        api_url=args.grader_model_url,
-        api_key=args.grader_api_key,
-    )
+        searcher = SimpleSearcher(args.searcher_api_url, args.searcher_api_key)
+        rag_agent = SimpleRAGAgent(args.rag_model, api_key=args.rag_api_key)
+        grader = FinSearchCompSimpleGrader(args.grader_model, api_key=args.grader_api_key)
+    elif args.mode == "langchain":
+        from .langchain_impl import LangChainSearcher, LangChainRAGAgent
+        from .finsearchcomp_langchain_grader import FinSearchCompLangChainGrader
+
+        searcher = LangChainSearcher(args.searcher_api_url, args.searcher_api_key)
+        rag_agent = LangChainRAGAgent(args.rag_model, api_key=args.rag_api_key)
+        grader = FinSearchCompLangChainGrader(args.grader_model, api_key=args.grader_api_key)
 
     asyncio.run(run(
         searcher=searcher,
@@ -302,7 +293,7 @@ def main():
         output=args.output,
         num_results=args.num_results,
         concurrency=args.concurrency,
-        tsv_path=args.tsv_path,
+        json_path=args.json_path,
     ))
 
 
