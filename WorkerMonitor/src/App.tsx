@@ -25,6 +25,10 @@ export default function App() {
   const [personDetected, setPersonDetected] = useState(false);
 
   const lastTimestampRef = useRef<number>(0);
+  const toggleFnRef = useRef(toggleMonitoring);
+  toggleFnRef.current = toggleMonitoring;
+  const isMonitoringRef = useRef(isMonitoring);
+  isMonitoringRef.current = isMonitoring;
 
   useEffect(() => {
     getConfig().then(setConfig).catch(() => {});
@@ -92,16 +96,17 @@ export default function App() {
   }, [isMonitoring, isCameraReady, isPoseReady, config, detect, reportPresence]);
 
   const handleToggleMonitoring = useCallback(async () => {
-    if (!isMonitoring) {
+    const current = isMonitoringRef.current;
+    if (!current) {
       await startCamera();
-      await toggleMonitoring();
+      await toggleFnRef.current();
     } else {
       stopCamera();
-      await toggleMonitoring();
+      await toggleFnRef.current();
       setPersonDetected(false);
       setPosture(null);
     }
-  }, [isMonitoring, startCamera, stopCamera, toggleMonitoring]);
+  }, [startCamera, stopCamera]);
 
   const handleSaveConfig = async (newConfig: AppConfig) => {
     await saveConfig(newConfig);

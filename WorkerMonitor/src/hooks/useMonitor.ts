@@ -12,6 +12,7 @@ interface UseMonitorResult {
 export function useMonitor(): UseMonitorResult {
   const [snapshot, setSnapshot] = useState<MonitorSnapshot | null>(null);
   const [isMonitoring, setIsMonitoring] = useState(false);
+  const isMonitoringRef = useRef(false);
   const initialized = useRef(false);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -44,18 +45,20 @@ export function useMonitor(): UseMonitorResult {
   }, [isMonitoring]);
 
   const toggleMonitoring = useCallback(async () => {
-    if (isMonitoring) {
+    if (isMonitoringRef.current) {
       await stopMonitoring();
+      isMonitoringRef.current = false;
       setIsMonitoring(false);
       const snap = await getMonitorStatus();
       setSnapshot(snap);
     } else {
       await startMonitoring();
+      isMonitoringRef.current = true;
       setIsMonitoring(true);
       const snap = await getMonitorStatus();
       setSnapshot(snap);
     }
-  }, [isMonitoring]);
+  }, []);
 
   const reportPresence = useCallback(async (present: boolean) => {
     try {
