@@ -26,8 +26,18 @@ export function useCamera(): UseCameraResult {
   }, []);
 
   const startCamera = useCallback(async () => {
+    if (streamRef.current && streamRef.current.getVideoTracks().length > 0) {
+      const track = streamRef.current.getVideoTracks()[0];
+      if (track.readyState === "live") {
+        return;
+      }
+    }
     try {
       setCameraError(null);
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: 320, height: 240, facingMode: "user" },
         audio: false,
@@ -35,7 +45,7 @@ export function useCamera(): UseCameraResult {
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        await videoRef.current.play();
+        await videoRef.current.play().catch(() => {});
       }
       setIsCameraReady(true);
     } catch (err) {

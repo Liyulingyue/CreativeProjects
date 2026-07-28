@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { useCamera } from "./hooks/useCamera";
 import { usePoseDetector } from "./hooks/usePoseDetector";
@@ -12,31 +13,18 @@ import Settings from "./components/Settings";
 import BreakAlert from "./components/BreakAlert";
 import "./App.css";
 
-function formatDuration(secs: number): string {
-  const total = Math.floor(secs);
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-}
-
 export default function App() {
   const { videoRef, canvasRef, isCameraReady, cameraError, startCamera, stopCamera } = useCamera();
   const { isReady: isPoseReady, isLoading: isPoseLoading, error: poseError, detect } = usePoseDetector();
   const { snapshot, isMonitoring, toggleMonitoring, reportPresence } = useMonitor();
   const [config, setConfig] = useState<AppConfig | null>(null);
-  const [compact, setCompact] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
+  const [view, setView] = useState<"monitor" | "settings" | "compact">("monitor");
   const [breakAlertInfo, setBreakAlertInfo] = useState<{ workSecs: number } | null>(null);
   const [welcomeBack, setWelcomeBack] = useState<{ breakSecs: number } | null>(null);
   const [posture, setPosture] = useState<PostureResult | null>(null);
   const [personDetected, setPersonDetected] = useState(false);
 
-  const checkTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const tickTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastTimestampRef = useRef<number>(0);
-  const [tick, setTick] = useState(0);
 
   useEffect(() => {
     getConfig().then(setConfig).catch(() => {});
@@ -71,56 +59,39 @@ export default function App() {
     }
   }, [welcomeBack]);
 
-  const runDetection = useCallback(() => {
-    const video = videoRef.current;
-    if (!video || !isCameraReady || !isMonitoring || !isPoseReady) return;
-
-    const now = performance.now();
-    if (now === lastTimestampRef.current) return;
-    lastTimestampRef.current = now;
-
-    const result = detect(video, now);
-    setPersonDetected(result.personDetected);
-    setPosture(result.posture);
-
-    reportPresence(result.personDetected);
-
-    if (result.personDetected && result.posture) {
-      reportPosture(
-        result.posture.score,
-        result.posture.headForward,
-        result.posture.headTilt,
-        result.posture.shoulderUneven,
-        result.posture.slouching
-      ).catch(() => {});
-    }
-  }, [videoRef, isCameraReady, isMonitoring, isPoseReady, detect, reportPresence]);
-
   useEffect(() => {
-    if (isMonitoring && isCameraReady && isPoseReady) {
-      const interval = (config?.check_interval_seconds ?? 5) * 1000;
-      runDetection();
-      checkTimerRef.current = setInterval(runDetection, interval);
-      return () => {
-        if (checkTimerRef.current) clearInterval(checkTimerRef.current);
-      };
-    } else {
-      if (checkTimerRef.current) clearInterval(checkTimerRef.current);
-    }
-  }, [isMonitoring, isCameraReady, isPoseReady, config, runDetection]);
+    if (!(isMonitoring && isCameraReady && isPoseReady)) return;
 
-  useEffect(() => {
-    if (isMonitoring) {
-      tickTimerRef.current = setInterval(() => setTick((t) => t + 1), 1000);
-      return () => {
-        if (tickTimerRef.current) clearInterval(tickTimerRef.current);
-      };
-    } else {
-      if (tickTimerRef.current) clearInterval(tickTimerRef.current);
-    }
-  }, [isMonitoring]);
+    const doDetection = () => {
+      const video = videoRef.current;
+      if (!video) return;
+      const now = performance.now();
+      if (now === lastTimestampRef.current) return;
+      lastTimestampRef.current = now;
 
-  const handleToggleMonitoring = async () => {
+      const result = detect(video, now);
+      setPersonDetected(result.personDetected);
+      setPosture(result.posture);
+      reportPresence(result.personDetected);
+
+      if (result.personDetected && result.posture) {
+        reportPosture(
+          result.posture.score,
+          result.posture.headForward,
+          result.posture.headTilt,
+          result.posture.shoulderUneven,
+          result.posture.slouching
+        ).catch(() => {});
+      }
+    };
+
+    doDetection();
+    const interval = (config?.check_interval_seconds ?? 5) * 1000;
+    const timer = setInterval(doDetection, interval);
+    return () => clearInterval(timer);
+  }, [isMonitoring, isCameraReady, isPoseReady, config, detect, reportPresence]);
+
+  const handleToggleMonitoring = useCallback(async () => {
     if (!isMonitoring) {
       await startCamera();
       await toggleMonitoring();
@@ -130,7 +101,7 @@ export default function App() {
       setPersonDetected(false);
       setPosture(null);
     }
-  };
+  }, [isMonitoring, startCamera, stopCamera, toggleMonitoring]);
 
   const handleSaveConfig = async (newConfig: AppConfig) => {
     await saveConfig(newConfig);
@@ -143,21 +114,18 @@ export default function App() {
   };
 
   const handleEnterCompact = async () => {
-    setShowSettings(false);
     await enterCompactMode();
-    setCompact(true);
+    setView("compact");
   };
 
   const handleEnterExpanded = async () => {
     await enterExpandedMode();
-    setCompact(false);
+    setView("monitor");
   };
 
   const handleHideToTray = async () => {
     await hideToTray();
   };
-
-  void tick;
 
   const status = snapshot?.status ?? "idle";
   const workSecs = snapshot?.work_duration_secs ?? 0;
@@ -165,53 +133,60 @@ export default function App() {
   const totalWork = snapshot?.total_work_secs ?? 0;
   const totalBreak = snapshot?.total_break_secs ?? 0;
 
-  if (compact) {
-    return (
-      <div className="app-compact">
-        <CompactView
-          status={status}
-          isMonitoring={isMonitoring}
-          posture={posture}
-          personDetected={personDetected}
-          workSecs={workSecs}
-          breakSecs={breakSecs}
-          onExpand={handleEnterExpanded}
-          onToggleMonitoring={handleToggleMonitoring}
-          onHide={handleHideToTray}
-        />
-        {welcomeBack && (
-          <div className="welcome-back-toast compact-toast">
-            <div className="welcome-back-content">
+  const cameraPortal = createPortal(
+    <>
+      <video ref={videoRef} playsInline muted style={{ position: "fixed", top: 0, left: 0, width: 0, height: 0, pointerEvents: "none", visibility: "hidden" }} />
+      <canvas ref={canvasRef} style={{ display: "none" }} />
+    </>,
+    document.body
+  );
+
+  return (
+    <>
+      {cameraPortal}
+
+      {view === "compact" && (
+        <div className="app-compact">
+          <CompactView
+            status={status}
+            isMonitoring={isMonitoring}
+            posture={posture}
+            personDetected={personDetected}
+            workSecs={workSecs}
+            breakSecs={breakSecs}
+            onExpand={handleEnterExpanded}
+            onToggleMonitoring={handleToggleMonitoring}
+            onHide={handleHideToTray}
+          />
+          {welcomeBack && (
+            <div className="welcome-back-toast compact-toast">
               <span className="welcome-back-icon">👋</span>
               <div>
                 <strong>欢迎回来！</strong>
-                <p>休息了 {formatDuration(welcomeBack.breakSecs)}</p>
+                <p>休息了 {Math.floor(welcomeBack.breakSecs / 60)}分</p>
               </div>
             </div>
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <div className="app">
-      <header className="app-header">
-        <h1>WorkerMonitor</h1>
-        <div className="header-actions">
-          <button className="header-btn" onClick={handleEnterCompact} title="紧凑模式">
-            ◻
-          </button>
-          <button className="settings-btn" onClick={() => setShowSettings(!showSettings)}>
-            ⚙
-          </button>
+          )}
         </div>
-      </header>
+      )}
 
-      {showSettings ? (
-        <Settings config={config} onSave={handleSaveConfig} onClose={() => setShowSettings(false)} />
-      ) : (
-        <>
+      {view === "settings" && (
+        <div className="app">
+          <header className="app-header">
+            <div className="app-header-left">
+              <span className="app-logo">🖥️</span>
+              <span className="app-header-title">WorkerMonitor</span>
+            </div>
+            <div className="app-header-right">
+              <button className="icon-btn" onClick={() => setView("monitor")} title="返回">←</button>
+            </div>
+          </header>
+          <Settings config={config} onSave={handleSaveConfig} onClose={() => setView("monitor")} />
+        </div>
+      )}
+
+      {view === "monitor" && (
+        <div className="app">
           <MonitorView
             videoRef={videoRef}
             canvasRef={canvasRef}
@@ -229,25 +204,25 @@ export default function App() {
             isPoseLoading={isPoseLoading}
             poseError={poseError}
             onToggleMonitoring={handleToggleMonitoring}
+            onCompact={handleEnterCompact}
+            onSettings={() => setView("settings")}
           />
-
-          {breakAlertInfo && (
-            <BreakAlert workSecs={breakAlertInfo.workSecs} onDismiss={handleDismissAlert} />
-          )}
-
-          {welcomeBack && (
-            <div className="welcome-back-toast">
-              <div className="welcome-back-content">
-                <span className="welcome-back-icon">👋</span>
-                <div>
-                  <strong>欢迎回来！</strong>
-                  <p>你休息了 {formatDuration(welcomeBack.breakSecs)}</p>
-                </div>
-              </div>
-            </div>
-          )}
-        </>
+        </div>
       )}
-    </div>
+
+      {breakAlertInfo && (
+        <BreakAlert workSecs={breakAlertInfo.workSecs} onDismiss={handleDismissAlert} />
+      )}
+
+      {welcomeBack && view !== "compact" && (
+        <div className="welcome-back-toast">
+          <span className="welcome-back-icon">👋</span>
+          <div className="welcome-back-text">
+            <strong>欢迎回来！</strong>
+            <p>休息了 {Math.floor(welcomeBack.breakSecs / 60)}分</p>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
