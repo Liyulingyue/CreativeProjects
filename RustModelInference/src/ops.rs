@@ -5,11 +5,12 @@ static HAS_F16C: AtomicBool = AtomicBool::new(false);
 static INIT_DONE: AtomicBool = AtomicBool::new(false);
 
 fn init_cpu_features() {
-    if INIT_DONE.swap(true, Ordering::Relaxed) { return; }
+    if INIT_DONE.load(Ordering::Relaxed) { return; }
     let avx2_fma = is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma");
     let f16c = is_x86_feature_detected!("f16c");
     HAS_AVX2_FMA.store(avx2_fma, Ordering::Relaxed);
     HAS_F16C.store(f16c, Ordering::Relaxed);
+    INIT_DONE.store(true, Ordering::Relaxed);
 }
 
 #[inline(always)]
@@ -862,14 +863,24 @@ pub fn matmul_q8_0_quantized_parallel_rows(weight: &[u8], input_q8: &[u8], input
 pub fn matmul_q8_0_quantized_dynamic(weight: &[u8], input_q8: &[u8], input_scales: &[f32], output: &mut [f32], n_in: usize, n_out: usize, pool: &crate::thread_pool::ComputePool) {
     if n_out == 0 { return; }
     let chunk_size = 16.max(n_out / (pool.n_threads() * 4));
-    let n_chunks = (n_out + chunk_size - 1) / chunk_size;
-    loop {
-        let chunk = pool.next_chunk() as usize;
-        if chunk >= n_chunks { break; }
-        let row_start = chunk * chunk_size;
+    let n_chunks = (n_out as i32 + chunk_size as i32 - 1) / chunk_size as i32;
+    let w_ptr = weight.as_ptr() as usize;
+    let w_len = weight.len();
+    let iq_ptr = input_q8.as_ptr() as usize;
+    let iq_len = input_q8.len();
+    let sc_ptr = input_scales.as_ptr() as usize;
+    let sc_len = input_scales.len();
+    let out_ptr = output.as_mut_ptr() as usize;
+    pool.compute_with_chunks(n_chunks, move |_ith, chunk_id| {
+        let row_start = (chunk_id as usize) * chunk_size;
         let row_end = (row_start + chunk_size).min(n_out);
-        matmul_q8_0_quantized_range(weight, input_q8, input_scales, &mut output[row_start..row_end], n_in, row_start, row_end);
-    }
+        if row_start >= row_end { return; }
+        let w = unsafe { std::slice::from_raw_parts(w_ptr as *const u8, w_len) };
+        let iq = unsafe { std::slice::from_raw_parts(iq_ptr as *const u8, iq_len) };
+        let sc = unsafe { std::slice::from_raw_parts(sc_ptr as *const f32, sc_len) };
+        let out_slice = unsafe { std::slice::from_raw_parts_mut((out_ptr as *mut f32).add(row_start), row_end - row_start) };
+        matmul_q8_0_quantized_range(w, iq, sc, out_slice, n_in, row_start, row_end);
+    });
 }
 
 pub fn matmul_q8_0_quantized_range(weight: &[u8], input_q8: &[u8], input_scales: &[f32], output: &mut [f32], n_in: usize, row_start: usize, row_end: usize) {

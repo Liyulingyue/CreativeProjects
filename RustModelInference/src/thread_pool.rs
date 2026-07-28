@@ -13,6 +13,9 @@ struct Inner {
     n_complete: AtomicI32,
     epoch: AtomicU32,
     shutdown: AtomicBool,
+    chunk_counter: AtomicI32,
+    chunk_barrier: std::sync::atomic::AtomicUsize,
+    chunk_n_chunks: std::sync::atomic::AtomicI32,
 }
 
 type CallFn = unsafe fn(usize, usize, usize);
@@ -28,6 +31,9 @@ impl ComputePool {
                     n_complete: AtomicI32::new(0),
                     epoch: AtomicU32::new(0),
                     shutdown: AtomicBool::new(true),
+                    chunk_counter: AtomicI32::new(0),
+                    chunk_barrier: AtomicUsize::new(0),
+                    chunk_n_chunks: AtomicI32::new(0),
                 }),
                 threads: Vec::new(),
             };
@@ -39,6 +45,9 @@ impl ComputePool {
             n_complete: AtomicI32::new(n_threads as i32),
             epoch: AtomicU32::new(0),
             shutdown: AtomicBool::new(false),
+            chunk_counter: AtomicI32::new(0),
+            chunk_barrier: AtomicUsize::new(0),
+            chunk_n_chunks: AtomicI32::new(0),
         });
 
         let mut threads = Vec::with_capacity(n_threads - 1);
@@ -104,6 +113,84 @@ impl ComputePool {
         unsafe { drop(Box::from_raw(data_ptr as *mut F)); }
     }
 
+    pub fn compute_with_chunks<F: Fn(usize, i32) + Send + Sync + 'static>(&self, n_chunks: i32, f: F) {
+        let f = Arc::new(f);
+        if self.n_threads <= 1 {
+            let mut chunk_id = 0;
+            while chunk_id < n_chunks {
+                f(0, chunk_id);
+                chunk_id += 1;
+            }
+            return;
+        }
+
+        while self.inner.n_complete.load(Ordering::Acquire) < self.n_threads as i32 {
+            std::hint::spin_loop();
+        }
+        std::sync::atomic::fence(Ordering::SeqCst);
+
+        self.inner.n_complete.store(0, Ordering::Relaxed);
+
+        let barrier = Arc::new(std::sync::Barrier::new(self.n_threads));
+        let mut handles = Vec::with_capacity(self.n_threads - 1);
+        for tid in 1..self.n_threads {
+            let barrier = barrier.clone();
+            let inner = self.inner.clone();
+            let f = f.clone();
+            let handle = std::thread::spawn(move || {
+                barrier.wait();
+                let mut chunk_id = inner.chunk_counter.fetch_add(1, Ordering::Relaxed);
+                loop {
+                    if chunk_id >= n_chunks { break; }
+                    f(tid, chunk_id);
+                    chunk_id = inner.chunk_counter.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+            handles.push(handle);
+        }
+
+        self.inner.call_fn.store(0, Ordering::Relaxed);
+        self.inner.call_data.store(0, Ordering::Relaxed);
+        self.inner.chunk_counter.store(self.n_threads as i32, Ordering::Relaxed);
+        self.inner.chunk_barrier.store(
+            Arc::as_ptr(&barrier) as usize,
+            Ordering::Relaxed
+        );
+        self.inner.chunk_n_chunks.store(n_chunks, Ordering::Relaxed);
+        std::sync::atomic::fence(Ordering::SeqCst);
+
+        self.inner.epoch.fetch_add(1, Ordering::SeqCst);
+
+        while self.inner.n_complete.load(Ordering::Acquire) < (self.n_threads - 1) as i32 {
+            std::hint::spin_loop();
+        }
+
+        barrier.wait();
+
+        let mut chunk_id = self.inner.chunk_counter.fetch_add(1, Ordering::Relaxed);
+        loop {
+            if chunk_id >= n_chunks { break; }
+            f(0, chunk_id);
+            chunk_id = self.inner.chunk_counter.fetch_add(1, Ordering::Relaxed);
+        }
+
+        self.inner.n_complete.fetch_add(1, Ordering::SeqCst);
+
+        while self.inner.n_complete.load(Ordering::Acquire) < self.n_threads as i32 {
+            std::hint::spin_loop();
+        }
+        std::sync::atomic::fence(Ordering::SeqCst);
+
+        self.inner.call_fn.store(0, Ordering::Relaxed);
+        self.inner.call_data.store(0, Ordering::Relaxed);
+        self.inner.chunk_barrier.store(0, Ordering::Relaxed);
+        self.inner.chunk_n_chunks.store(0, Ordering::Relaxed);
+
+        for h in handles {
+            let _ = h.join();
+        }
+    }
+
     pub fn next_chunk(&self) -> i32 {
         0
     }
@@ -111,7 +198,6 @@ impl ComputePool {
 
 impl Drop for ComputePool {
     fn drop(&mut self) {
-        // Wait for workers to be idle before shutdown
         while self.inner.n_complete.load(Ordering::Acquire) < self.n_threads as i32 {
             std::hint::spin_loop();
         }
@@ -128,7 +214,6 @@ impl Drop for ComputePool {
 fn worker_loop(tid: usize, n_threads: usize, inner: &Inner) {
     let mut my_epoch: u32 = 0;
     loop {
-        // Wait for new epoch
         while inner.epoch.load(Ordering::Acquire) == my_epoch {
             if inner.shutdown.load(Ordering::Acquire) { return; }
             std::hint::spin_loop();
@@ -136,7 +221,6 @@ fn worker_loop(tid: usize, n_threads: usize, inner: &Inner) {
         my_epoch = inner.epoch.load(Ordering::Acquire);
         if inner.shutdown.load(Ordering::Acquire) { return; }
 
-        // Read function pointers (published before epoch increment)
         let call_fn = inner.call_fn.load(Ordering::Acquire);
         let call_data = inner.call_data.load(Ordering::Acquire);
         if call_fn != 0 {
@@ -144,7 +228,6 @@ fn worker_loop(tid: usize, n_threads: usize, inner: &Inner) {
             unsafe { f(tid, n_threads, call_data); }
         }
 
-        // Signal completion
         inner.n_complete.fetch_add(1, Ordering::SeqCst);
     }
 }
