@@ -174,6 +174,13 @@ impl MetaValue {
             _ => None,
         }
     }
+
+    pub fn to_arr(&self) -> Option<&Vec<MetaValue>> {
+        match self {
+            Self::Array(_, v) => Some(v),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -498,7 +505,11 @@ impl GGUFLoader {
             n_embd_head: n_embd / n_head,
             n_ff: get_u64(&format!("{}.feed_forward_length", prefix))? as usize,
             n_ctx: get_u64(&format!("{}.context_length", prefix))? as usize,
-            vocab_size: get_u64(&format!("{}.vocab_size", prefix))? as usize,
+            vocab_size: get_u64(&format!("{}.vocab_size", prefix)).unwrap_or_else(|_| {
+                self.metadata("tokenizer.ggml.tokens")
+                    .and_then(|v| v.to_arr().map(|a| a.len()))
+                    .unwrap_or(0) as u64
+            }) as usize,
             rope_freq_base: get_f64(&format!("{}.rope.freq_base", prefix))? as f32,
             norm_eps: get_f64(&format!("{}.attention.layer_norm_rms_epsilon", prefix))? as f32,
         })
