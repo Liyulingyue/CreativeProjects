@@ -1,0 +1,27 @@
+[package]
+name = "mediapipe-rust"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name"]
+description = "Pure Rust bindings to MediaPipe with pluggable backends"
+
+[dependencies]
+thiserror = "1"
+anyhow = "1"
+flatbuffers = "23"
+serde = { version = "1", features = ["derive"] }
+libc = "0.2"
+image = "0.25"
+ort = { version = "2.0.0-rc.13", optional = true, features = ["download-binaries"] }
+
+[build-dependencies]
+bindgen = "0.69"
+
+[features]
+default = ["onnxruntime"]
+onnxruntime = ["ort"]
+vision = []
+audio = []
+text = []
+native-tflite = []
+mediapipe-cpp = []

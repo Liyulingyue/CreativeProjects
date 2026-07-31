@@ -1,0 +1,22 @@
+# Rust
+/target/
+Cargo.lock
+
+# Models (binary files, can be re-downloaded)
+models/
+
+# Python virtual environments
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+reference/
+references/
