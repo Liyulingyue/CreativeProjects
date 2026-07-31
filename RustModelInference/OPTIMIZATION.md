@@ -1,13 +1,15 @@
 # Rust LLM Inference Engine — 优化记录
 
-## 当前性能基线（2025-07-31 更新）
+## 当前性能基线（2025-07-31 更新，llama-bench 校正）
 
 | 模型 | 线程 | Rust | llama.cpp | 差距 |
 |------|------|------|-----------|------|
-| Qwen3-0.6B Q8_0 | T1 | 16.7 tok/s | 44.07 tok/s | 2.6x |
-| Qwen3-0.6B Q8_0 | T4 | 36.7 tok/s | 44.32 tok/s | 1.2x |
-| MiniCPM5-1B Q8_0 | T1 | 9.5 tok/s | 31.97 tok/s | 3.4x |
-| MiniCPM5-1B Q8_0 | T4 | 27.9 tok/s | 32.14 tok/s | 1.15x |
+| Qwen3-0.6B Q8_0 | T1 | ~16 tok/s | ~21 tok/s | 1.3x |
+| Qwen3-0.6B Q8_0 | T4 | ~38 tok/s | ~44 tok/s | 1.16x |
+| MiniCPM5-1B Q8_0 | T1 | 9.5 tok/s | ~32 tok/s | 3.4x |
+| MiniCPM5-1B Q8_0 | T4 | 27.9 tok/s | ~32 tok/s | 1.15x |
+
+> 注：之前 llama.cpp T1=44 tok/s 的数据有误（可能是多线程测量）。使用 `llama-bench -t 1` 校正后为 ~21 tok/s。
 
 测试条件：40 decode tokens，纯 decode（无 prompt），`--bench` 模式。
 

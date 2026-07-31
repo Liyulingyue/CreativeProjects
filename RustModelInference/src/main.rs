@@ -19,6 +19,7 @@ fn main() {
     let mut dump_logits = false;
     let mut bench = false;
     let mut profile = false;
+    let mut embedding_mode = false;
     let mut kv_format = KvFormat::F16;
     let mut mmproj_path = String::new();
     let mut image_path = String::new();
@@ -32,6 +33,7 @@ fn main() {
             "--temp" => { if i + 1 < args.len() { temperature = args[i + 1].parse().unwrap_or(0.6); i += 1; } }
             "--threads" => { if i + 1 < args.len() { n_threads = args[i + 1].parse().unwrap_or(0); i += 1; } }
             "--dump-logits" => { dump_logits = true; }
+            "--embedding" => { embedding_mode = true; }
             "--bench" => { bench = true; }
             "--profile" => { profile = true; }
             "--kv-cache" => { if i + 1 < args.len() { kv_format = match args[i + 1].as_str() { "f32" => KvFormat::F32, _ => KvFormat::F16 }; i += 1; } }
@@ -49,6 +51,8 @@ fn main() {
         let arch = loader.metadata("general.architecture").and_then(|v| v.to_string_val()).unwrap_or_default();
         if arch == "qwen35" {
             run_multimodal(&model_path, "", "", &prompt, max_tokens, temperature, n_threads);
+        } else if embedding_mode {
+            run_embedding(&model_path, &prompt, n_threads, kv_format);
         } else if dump_logits {
             run_dump_logits(&model_path, &prompt, max_tokens, n_threads, kv_format);
         } else {
@@ -85,6 +89,276 @@ macro_rules! slice_from_ref {
 
 macro_rules! raw_parts {
     ($ptr:expr, $len:expr) => { unsafe { std::slice::from_raw_parts($ptr, $len) } };
+}
+
+fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_format: KvFormat) {
+    let t0 = Instant::now();
+    println!("Loading {} ...", model_path);
+    let loader = GGUFLoader::from_file(model_path).expect("Failed to load GGUF");
+    let config = loader.model_config().expect("Failed to parse model config");
+
+    let arch = loader.metadata("general.architecture").and_then(|v| v.to_string_val()).unwrap_or_default();
+    let is_qwen3 = arch == "qwen3";
+
+    let mut tokenizer = BPETokenizer::from_gguf_metadata(|k| loader.metadata(k).cloned())
+        .expect("Failed to init tokenizer");
+
+    let n_embd = config.n_embd;
+    let n_layer = config.n_layer;
+    let n_head = config.n_head;
+    let n_head_kv = config.n_head_kv;
+    let n_embd_head = config.n_embd_head;
+    let n_embd_head_k = if let Some(v) = loader.metadata(&format!("{}.attention.key_length", arch)) {
+        v.to_u64().unwrap_or(n_embd_head as u64) as usize
+    } else { n_embd_head };
+    let n_embd_head_v = if let Some(v) = loader.metadata(&format!("{}.attention.value_length", arch)) {
+        v.to_u64().unwrap_or(n_embd_head as u64) as usize
+    } else { n_embd_head };
+    let n_embd_q = n_head * n_embd_head_k;
+    let n_embd_gqa = n_head_kv * n_embd_head_v;
+    let n_ff = config.n_ff;
+    let eps = config.norm_eps;
+    let freq_base = config.rope_freq_base;
+
+    let output_norm = get_f32_tensor(&loader, "output_norm.weight", n_embd);
+    let embd_weight = loader.tensor_slice("token_embd.weight").expect("no embd");
+    let output_weight = loader.tensor_slice("output.weight").unwrap_or(embd_weight);
+
+    let layers: Vec<LayerWeights> = (0..n_layer).map(|l| LayerWeights {
+        attn_norm: get_f32_tensor(&loader, &format!("blk.{}.attn_norm.weight", l), n_embd),
+        ffn_norm: get_f32_tensor(&loader, &format!("blk.{}.ffn_norm.weight", l), n_embd),
+        q_norm: if is_qwen3 { Some(get_f32_tensor(&loader, &format!("blk.{}.attn_q_norm.weight", l), n_embd_head_k)) } else { None },
+        k_norm: if is_qwen3 { Some(get_f32_tensor(&loader, &format!("blk.{}.attn_k_norm.weight", l), n_embd_head_k)) } else { None },
+        wq: loader.tensor_slice(&format!("blk.{}.attn_q.weight", l)).unwrap(),
+        wk: loader.tensor_slice(&format!("blk.{}.attn_k.weight", l)).unwrap(),
+        wv: loader.tensor_slice(&format!("blk.{}.attn_v.weight", l)).unwrap(),
+        wo: loader.tensor_slice(&format!("blk.{}.attn_output.weight", l)).unwrap(),
+        w_gate: loader.tensor_slice(&format!("blk.{}.ffn_gate.weight", l)).unwrap(),
+        w_up: loader.tensor_slice(&format!("blk.{}.ffn_up.weight", l)).unwrap(),
+        w_down: loader.tensor_slice(&format!("blk.{}.ffn_down.weight", l)).unwrap(),
+    }).collect();
+
+    let load_ms = t0.elapsed().as_millis();
+    println!("Model: {} | n_embd={} n_layer={} n_head={} n_head_kv={} n_ff={} | loaded in {}ms",
+        arch, n_embd, n_layer, n_head, n_head_kv, n_ff, load_ms);
+
+    let vocab = tokenizer.vocab_size();
+    let prompt_tokens = tokenizer.encode(prompt);
+    let n_tokens = prompt_tokens.len();
+    let n_threads = if n_threads_arg > 0 { n_threads_arg } else { std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4) };
+
+    let max_n_in = n_embd_q.max(n_ff);
+    let pool = std::sync::Arc::new(thread_pool::ComputePool::new(n_threads));
+    eprintln!("compute pool: {} threads", pool.n_threads());
+    println!("Prompt: {} ({} tokens)", prompt, n_tokens);
+
+    let kq_scale = 1.0f32 / (n_embd_head_k as f32).sqrt();
+    let group_size = n_head / n_head_kv;
+
+    let mut hidden = vec![0.0f32; n_tokens * n_embd];
+    let mut q_buf = vec![0.0f32; n_tokens * n_embd_q];
+    let mut k_buf = vec![0.0f32; n_tokens * n_embd_gqa];
+    let mut v_buf = vec![0.0f32; n_tokens * n_embd_gqa];
+    let mut attn_out = vec![0.0f32; n_tokens * n_embd_q];
+    let mut attn_proj = vec![0.0f32; n_tokens * n_embd];
+    let mut normed = vec![0.0f32; n_tokens * n_embd];
+    let mut q8_buf = vec![0u8; max_n_in];
+    let mut scale_buf = vec![0.0f32; max_n_in / 32];
+    let mut gate_buf = vec![0.0f32; n_ff];
+    let mut up_buf = vec![0.0f32; n_ff];
+    let mut down_buf = vec![0.0f32; n_ff];
+
+    for t in 0..n_tokens {
+        let token_id = prompt_tokens[t];
+        let x_slice = &mut hidden[t * n_embd..(t + 1) * n_embd];
+        embedding_lookup_q8_0(embd_weight, token_id, n_embd, x_slice);
+    }
+
+    eprintln!("DEBUG: initial embedding[0:8] = {:?}, n_embd={}, token_id={}", &hidden[..8], n_embd, prompt_tokens[0]);
+    let t_embed = Instant::now();
+    for layer in 0..n_layer {
+        let lw = &layers[layer];
+
+        for t in 0..n_tokens {
+            rms_norm(&hidden[t * n_embd..(t + 1) * n_embd], &lw.attn_norm, &mut normed[t * n_embd..(t + 1) * n_embd], eps);
+        }
+
+        for t in 0..n_tokens {
+            let x = &normed[t * n_embd..(t + 1) * n_embd];
+            let q = &mut q_buf[t * n_embd_q..(t + 1) * n_embd_q];
+            let k = &mut k_buf[t * n_embd_gqa..(t + 1) * n_embd_gqa];
+            let v = &mut v_buf[t * n_embd_gqa..(t + 1) * n_embd_gqa];
+
+            let mut local_q8 = vec![0u8; max_n_in];
+            let mut local_sc = vec![0.0f32; max_n_in / 32];
+            quantize_q8_0_into(x, n_embd, &mut local_q8[..n_embd], &mut local_sc[..n_embd / 32]);
+
+            matmul_q8_0_quantized(lw.wq, &local_q8[..n_embd], &local_sc[..n_embd / 32], q, n_embd, n_embd_q);
+            matmul_q8_0_quantized(lw.wk, &local_q8[..n_embd], &local_sc[..n_embd / 32], k, n_embd, n_embd_gqa);
+            matmul_q8_0_quantized(lw.wv, &local_q8[..n_embd], &local_sc[..n_embd / 32], v, n_embd, n_embd_gqa);
+        }
+
+        if let (Some(qn), Some(kn)) = (&lw.q_norm, &lw.k_norm) {
+            for t in 0..n_tokens {
+                let q = &mut q_buf[t * n_embd_q..(t + 1) * n_embd_q];
+                for h in 0..n_head {
+                    rms_norm_inplace(&mut q[h * n_embd_head_k..(h + 1) * n_embd_head_k], qn, eps);
+                }
+            }
+            for t in 0..n_tokens {
+                let k = &mut k_buf[t * n_embd_gqa..(t + 1) * n_embd_gqa];
+                for h in 0..n_head_kv {
+                    rms_norm_inplace(&mut k[h * n_embd_head_k..(h + 1) * n_embd_head_k], kn, eps);
+                }
+            }
+        }
+
+        for t in 0..n_tokens {
+            let q = &mut q_buf[t * n_embd_q..(t + 1) * n_embd_q];
+            for h in 0..n_head {
+                rope_neox(&mut q[h * n_embd_head_k..(h + 1) * n_embd_head_k], t, n_embd_head_k, freq_base);
+            }
+        }
+        for t in 0..n_tokens {
+            let k = &mut k_buf[t * n_embd_gqa..(t + 1) * n_embd_gqa];
+            for h in 0..n_head_kv {
+                rope_neox(&mut k[h * n_embd_head_k..(h + 1) * n_embd_head_k], t, n_embd_head_v, freq_base);
+            }
+        }
+
+        for t in 0..n_tokens {
+            let q_row = &q_buf[t * n_embd_q..(t + 1) * n_embd_q];
+            let attn_row = &mut attn_out[t * n_embd_q..(t + 1) * n_embd_q];
+
+            for h in 0..n_head {
+                let kv_h = h / group_size;
+                let q_off = h * n_embd_head_k;
+                let out_base = h * n_embd_head_v;
+
+                let mut ms = f32::NEG_INFINITY;
+                let mut s_sum = 0.0f32;
+                for d in 0..n_embd_head_v {
+                    attn_row[out_base + d] = 0.0;
+                }
+
+                for s in 0..n_tokens {
+                    let k_row = &k_buf[s * n_embd_gqa..(s + 1) * n_embd_gqa];
+                    let v_row = &v_buf[s * n_embd_gqa..(s + 1) * n_embd_gqa];
+
+                    let score = dot_f32(
+                        &q_row[q_off..q_off + n_embd_head_k],
+                        &k_row[kv_h * n_embd_head_v..kv_h * n_embd_head_v + n_embd_head_k],
+                        n_embd_head_k,
+                    ) * kq_scale;
+
+                    if score > ms {
+                        let rescale = (ms - score).exp();
+                        vec_scale_f32(&mut attn_row[out_base..out_base + n_embd_head_v], rescale);
+                        s_sum *= rescale;
+                        ms = score;
+                    }
+                    let vs = (score - ms).exp();
+                    vec_mad_f32(&mut attn_row[out_base..out_base + n_embd_head_v],
+                        &v_row[kv_h * n_embd_head_v..kv_h * n_embd_head_v + n_embd_head_v], vs);
+                    s_sum += vs;
+                }
+
+                let inv_sum = 1.0 / s_sum;
+                vec_scale_f32(&mut attn_row[out_base..out_base + n_embd_head_v], inv_sum);
+            }
+        }
+
+        for t in 0..n_tokens {
+            let attn = &attn_out[t * n_embd_q..(t + 1) * n_embd_q];
+            let proj = &mut attn_proj[t * n_embd..(t + 1) * n_embd];
+
+            let mut local_q8 = vec![0u8; n_embd_q];
+            let mut local_sc = vec![0.0f32; n_embd_q / 32];
+            quantize_q8_0_into(attn, n_embd_q, &mut local_q8, &mut local_sc);
+
+            matmul_q8_0_quantized(lw.wo, &local_q8, &local_sc, proj, n_embd_q, n_embd);
+        }
+
+        for t in 0..n_tokens {
+            let x = &mut hidden[t * n_embd..(t + 1) * n_embd];
+            let proj = &attn_proj[t * n_embd..(t + 1) * n_embd];
+            for i in 0..n_embd {
+                x[i] += proj[i];
+            }
+        }
+
+        for t in 0..n_tokens {
+            rms_norm(&hidden[t * n_embd..(t + 1) * n_embd], &lw.ffn_norm, &mut normed[t * n_embd..(t + 1) * n_embd], eps);
+        }
+
+        for t in 0..n_tokens {
+            let x = &normed[t * n_embd..(t + 1) * n_embd];
+
+            let mut local_q8 = vec![0u8; n_embd];
+            let mut local_sc = vec![0.0f32; n_embd / 32];
+            quantize_q8_0_into(x, n_embd, &mut local_q8, &mut local_sc);
+
+            matmul_q8_0_quantized(lw.w_gate, &local_q8, &local_sc, &mut gate_buf, n_embd, n_ff);
+            matmul_q8_0_quantized(lw.w_up, &local_q8, &local_sc, &mut up_buf, n_embd, n_ff);
+        }
+
+        for i in 0..n_ff {
+            gate_buf[i] = silu(gate_buf[i]) * up_buf[i];
+        }
+
+        for t in 0..n_tokens {
+            let down = &mut down_buf[t * n_embd..(t + 1) * n_embd];
+            let mut local_q8 = vec![0u8; n_ff];
+            let mut local_sc = vec![0.0f32; n_ff / 32];
+            quantize_q8_0_into(&gate_buf, n_ff, &mut local_q8, &mut local_sc);
+            matmul_q8_0_quantized(lw.w_down, &local_q8, &local_sc, down, n_ff, n_embd);
+        }
+
+        for t in 0..n_tokens {
+            let x = &mut hidden[t * n_embd..(t + 1) * n_embd];
+            let down = &down_buf[t * n_embd..(t + 1) * n_embd];
+            for i in 0..n_embd {
+                x[i] += down[i];
+            }
+        }
+
+    }
+
+    for t in 0..n_tokens {
+        let x = &mut hidden[t * n_embd..(t + 1) * n_embd];
+        rms_norm(x, &output_norm, &mut normed[t * n_embd..(t + 1) * n_embd], eps);
+        x.copy_from_slice(&normed[t * n_embd..(t + 1) * n_embd]);
+    }
+
+    let mut pooled = vec![0.0f32; n_embd];
+    let inv_n = 1.0 / n_tokens as f32;
+    for i in 0..n_embd {
+        let mut sum = 0.0f32;
+        for t in 0..n_tokens {
+            sum += hidden[t * n_embd + i];
+        }
+        pooled[i] = sum * inv_n;
+    }
+
+    let norm: f32 = pooled.iter().map(|&x| x * x).sum::<f32>().sqrt();
+    for v in pooled.iter_mut() {
+        *v /= norm;
+    }
+
+    let embed_ms = t_embed.elapsed().as_millis();
+    println!("Embedding ({} dims, {} layers, {}ms):", n_embd, n_layer, embed_ms);
+    for (i, &v) in pooled.iter().enumerate() {
+        if i < 8 {
+            print!("{:+.6} ", v);
+        }
+    }
+    if n_embd > 8 {
+        print!("... ");
+        for i in (n_embd - 4)..n_embd {
+            print!("{:+.6} ", pooled[i]);
+        }
+    }
+    println!();
 }
 
 fn run_dump_logits(model_path: &str, prompt: &str, max_tokens: usize, n_threads_arg: usize, kv_format: KvFormat) {
