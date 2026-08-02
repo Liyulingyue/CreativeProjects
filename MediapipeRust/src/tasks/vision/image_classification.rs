@@ -1,8 +1,6 @@
-use crate::backend::{Backend, CategoriesFilter, Class, InferenceBackend, Model, Session, Tensor, TensorType, Error};
-use std::sync::Arc;
+use crate::backend::{CategoriesFilter, Class, InferenceBackend, Session, Tensor, Error};
 
-pub struct ImageClassifierBuilder<B: InferenceBackend> {
-    backend: B,
+pub struct ImageClassifierBuilder {
     max_results: i32,
     classifier_options: ImageClassifierOptions,
 }
@@ -14,10 +12,9 @@ pub struct ImageClassifierOptions {
     pub score_threshold: Option<f32>,
 }
 
-impl<B: InferenceBackend> ImageClassifierBuilder<B> {
-    pub fn new(backend: B) -> Self {
+impl ImageClassifierBuilder {
+    pub fn new() -> Self {
         Self {
-            backend,
             max_results: 5,
             classifier_options: ImageClassifierOptions::default(),
         }
@@ -43,76 +40,57 @@ impl<B: InferenceBackend> ImageClassifierBuilder<B> {
         self
     }
 
-    pub fn build_from_file(self, path: &str) -> Result<ImageClassifier<B>, Error> {
+    pub fn build_from_file<B: InferenceBackend>(self, backend: &B, path: &str) -> Result<ImageClassifier, Error> {
         let data = std::fs::read(path)?;
-        self.build_from_buffer(data)
+        self.build_from_buffer(backend, data)
     }
 
-    pub fn build_from_buffer(self, buffer: Vec<u8>) -> Result<ImageClassifier<B>, Error> {
-        let model = self.backend.load_model(&buffer)?;
+    pub fn build_from_buffer<B: InferenceBackend>(self, backend: &B, buffer: Vec<u8>) -> Result<ImageClassifier, Error> {
+        let (model, session) = backend.load_model_and_session(&buffer)?;
         Ok(ImageClassifier {
-            backend: self.backend,
-            model: Arc::new(model),
+            model,
+            session,
             max_results: self.max_results,
             options: self.classifier_options,
         })
     }
 }
 
-pub struct ImageClassifier<B: InferenceBackend> {
-    backend: B,
-    model: Arc<Model>,
+pub struct ImageClassifier {
+    model: crate::backend::Model,
+    session: Session,
     max_results: i32,
     options: ImageClassifierOptions,
 }
 
-impl<B: InferenceBackend> ImageClassifier<B> {
-    pub fn new_session(&self) -> Result<ImageClassifierSession<'_, B>, Error> {
-        let session = self.backend.create_session(&*self.model)?;
-        Ok(ImageClassifierSession {
-            classifier: self,
-            session,
-        })
-    }
+impl ImageClassifier {
+    pub fn classify(&mut self, image_data: &[u8], _width: u32, _height: u32) -> Result<Vec<Class>, Error> {
+        let input_tensor = self.prepare_input(image_data)?;
 
-    pub fn classify(&self, image_data: &[u8], width: u32, height: u32) -> Result<Vec<Class>, Error> {
-        let mut session = self.new_session()?;
-        session.classify(image_data, width, height)
-    }
-}
-
-pub struct ImageClassifierSession<'a, B: InferenceBackend> {
-    classifier: &'a ImageClassifier<B>,
-    session: Session,
-}
-
-impl<'a, B: InferenceBackend> ImageClassifierSession<'a, B> {
-    pub fn classify(&mut self, image_data: &[u8], width: u32, height: u32) -> Result<Vec<Class>, Error> {
-        let input_tensor = self.prepare_input(image_data, width, height)?;
         self.session.set_input(0, &input_tensor)?;
         self.session.compute()?;
 
-        let output_shape = &self.classifier.model.outputs[0].shape;
-        let output_type = self.classifier.model.outputs[0].tensor_type;
+        let output_shape = &self.model.outputs[0].shape;
+        let output_type = self.model.outputs[0].tensor_type;
         let mut output = Tensor::empty(output_type, output_shape.clone());
         self.session.get_output(0, &mut output)?;
 
         let mut classes = self.postprocess_output(&output)?;
         let filter = CategoriesFilter {
-            label_allow_list: self.classifier.options.label_allow_list.clone(),
-            label_deny_list: self.classifier.options.label_deny_list.clone(),
-            min_score: self.classifier.options.score_threshold.unwrap_or(f32::MIN),
+            label_allow_list: self.options.label_allow_list.clone(),
+            label_deny_list: self.options.label_deny_list.clone(),
+            min_score: self.options.score_threshold.unwrap_or(f32::MIN),
         };
         filter.filter(&mut classes);
         classes.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-        classes.truncate(self.classifier.max_results as usize);
+        classes.truncate(self.max_results as usize);
 
         Ok(classes)
     }
 
-    fn prepare_input(&self, image_data: &[u8], width: u32, height: u32) -> Result<Tensor, Error> {
-        let input_shape = &self.classifier.model.inputs[0].shape;
-        let input_type = self.classifier.model.inputs[0].tensor_type;
+    fn prepare_input(&self, image_data: &[u8]) -> Result<Tensor, Error> {
+        let input_shape = &self.model.inputs[0].shape;
+        let input_type = self.model.inputs[0].tensor_type;
 
         let tensor = Tensor::new(input_type, input_shape.clone(), image_data.to_vec());
         Ok(tensor)

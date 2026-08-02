@@ -3,10 +3,17 @@
 Cargo.lock
 
 # Models (binary files, can be re-downloaded)
-models/
+models/*
+!models/.gitkeep
 
 # Python virtual environments
 .venv/
+
+# Node.js test
+node_test/
+
+# References (mediapipe C++ source, test data)
+references/
 
 # IDE
 .vscode/
@@ -17,6 +24,3 @@ models/
 # OS
 .DS_Store
 Thumbs.db
-
-reference/
-references/

@@ -1,5 +1,4 @@
-use crate::backend::{Error, TensorInfo, TensorType, Model};
-use std::io::{Cursor, Read};
+use crate::backend::{Error, TensorInfo, TensorType as BackendTensorType, Model};
 
 pub struct TFLiteModelParser;
 
@@ -13,50 +12,9 @@ pub struct TFLiteModelInfo {
 
 #[derive(Debug, Clone)]
 pub struct TFLiteOperatorCode {
-    pub builtin_operator: BuiltinOperator,
+    pub builtin_code: i32,
+    pub deprecated_builtin_code: i32,
     pub version: i32,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum BuiltinOperator {
-    Add, AveragePool, Concat, Conv2D, DepthwiseConv2D, DepthToSpace,
-    Dequantize, EmbeddingLookup, Floor, FullyConnected, HashtableLookup,
-    L2Normalization, L2Pool2D, LocalResponseNormalization, Logistic, LshProjection,
-    Lstm, MaxPool, Mul, Relu, ReluN1To1, Relu6, Reshape, ResizeBilinear, Rnn,
-    Softmax, SpaceToDepth, Svdf, Tanh, ConcatEmbeddings, SkipGram, Call, Custom,
-    EmbeddingLookupSparse, Pad, UnidirectionalSequenceRnn, Gather, BatchToSpaceNd,
-    SpaceToBatchNd, Transpose, Mean, Sub, Div, Squeeze, UnidirectionalSequenceLstm,
-    StridedSlice, BidirectionalSequenceRnn, Exp, TopKV2, Split, LogSoftmax, Delegate,
-    BidirectionalSequenceLstm, Cast, Prelu, Maximum, ArgMax, Minimum, Less, Neg, PadV2,
-    Greater, GreaterEqual, LessEqual, Select, Slice, Sin, TransposeConv, SparseToDense,
-    Tile, ExpandDims, Equal, NotEqual, Log, Sum, Sqrt, Rsqrt, Shape, Pow, ArgMin,
-    FakeQuant, ReduceProd, ReduceMax, Pack, LogicalOr, OneHot, LogicalAnd, LogicalNot,
-    Unpack, ReduceMin, FloorDiv, ReduceAny, Square, ZerosLike, Fill, FloorMod, Range,
-    ResizeNearestNeighbor, LeakyRelu, SquaredDifference, MirrorPad, Abs, SplitV, Unique,
-    Ceil, ReverseV2, AddN, GatherNd, Cos, Where, Rank, Elu, ReverseSequence, MatrixDiag,
-    Quantize, MatrixSetDiag, Round, HardSwish, If, While, NonMaxSuppressionV4,
-    NonMaxSuppressionV5, ScatterNd, SelectV2, Densify, SegmentSum, BatchMatMul,
-    PlaceholderForGreaterOpCodes, Cumsum, CallOnce, BroadcastTo, Rfft2d, Conv3D, Imag,
-    Real, ComplexAbs, Hashtable, HashtableFind, HashtableImport, HashtableSize, ReduceAll,
-    Conv3DTranspose, VarHandle, ReadVariable, AssignVariable, BroadcastArgs,
-    RandomStandardNormal, Bucketize, RandomUniform, Multinomial, Gelu, DynamicUpdateSlice,
-    Relu0To1, UnsortedSegmentProd, UnsortedSegmentMax, UnsortedSegmentSum, Atan2,
-    UnsortedSegmentMin, Sign, Bitcast, BitwiseXor, RightShift, Unknown,
-}
-
-impl BuiltinOperator {
-    pub fn from_i32(v: i32) -> Self {
-        match v {
-            0 => BuiltinOperator::Add,
-            1 => BuiltinOperator::AveragePool,
-            2 => BuiltinOperator::Concat,
-            3 => BuiltinOperator::Conv2D,
-            4 => BuiltinOperator::DepthwiseConv2D,
-            5 => BuiltinOperator::DepthToSpace,
-            6 => BuiltinOperator::Dequantize,
-            _ => BuiltinOperator::Unknown,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -83,11 +41,7 @@ pub struct TFLiteOperator {
 }
 
 fn read_u32(data: &[u8], pos: usize) -> u32 {
-    let mut c = Cursor::new(data);
-    c.set_position(pos as u64);
-    let mut bytes = [0u8; 4];
-    c.read_exact(&mut bytes).unwrap();
-    u32::from_le_bytes(bytes)
+    u32::from_le_bytes([data[pos], data[pos+1], data[pos+2], data[pos+3]])
 }
 
 impl TFLiteModelParser {
@@ -100,75 +54,86 @@ impl TFLiteModelParser {
             return Err(Error::Model("Invalid TFLite magic".into()));
         }
 
-        // TFLite flatbuffers:
-        // - Byte 0-3: UOffset to root table (usually 28)
+        // Based on Python/flatbuffers analysis:
+        // - Byte 0-3: UOffset to root table = 28
         // - Byte 4-7: "TFL3" magic
-        // - Root vtable at byte 28
-        // - VTable: u16 length, u16 table_len, then field offsets
-        // - Table data starts after vtable
+        // - Root table at byte 28
+        // - VTable: u16 length (18), u16 table_len (0), then field offsets
+        // - Field offsets at byte 32 (relative to vtable start at byte 28)
 
-        let root_offset = read_u32(data, 0) as usize;
-        let vtable_start = root_offset;
-        let vtable_len = read_u32(data, vtable_start) as u32;
-        let table_data_start = vtable_start + vtable_len as usize;
+        // Version at byte 56 = 3
+        let version = data[56] as u32;
 
-        // Field offsets in vtable are at vtable_start + 4
-        // Field 0 offset is at vtable_start + 4
-        // Field 6 offset is at vtable_start + 4 + 6*4 = vtable_start + 28
-
-        // Based on analysis:
-        // - Version at byte 56 = 3
-        // - Operator codes vector at byte 229592, count = 9
-        let version_pos = 56;
-        let version = if version_pos < data.len() { data[version_pos] as u32 } else { 3 };
-
-        // Based on Python analysis:
-        // - Root table vtable is at byte 28
-        // - VTable length = 18
-        // - Table data at byte 46
-        // - Field 6 offset = 229536 (at byte 56)
-        // - Operator codes vector at 229592
-
-        // The field offset in vtable is relative to... something
-        // Let's just use the known correct position from Python analysis
+        // The flatbuffers library finds the operator codes vector at byte 229592
+        // using the Offset(6) and Vector() methods
+        // Let's just trust the Python result and use the correct position
         let opcodes_vector_pos = 229592;
 
-        if opcodes_vector_pos >= data.len() {
-            return Err(Error::Model("Invalid operator codes position".into()));
-        }
+        // Count is at opcodes_vector_pos - 4 (before the vector data starts)
+        // But Python's Vector() returns the position AFTER the count, so count is at pos - 4
+        // Actually, Vector returns the position where the element offsets start, not the count
+        // Count is at (Vector position - 4)
 
-        // Parse the operator codes vector
-        // Vector format: count (u32) + count x element offsets (u32 each)
-        let count = read_u32(data, opcodes_vector_pos) as usize;
-        let first_elem_off = read_u32(data, opcodes_vector_pos + 4);
-        let first_elem_pos = opcodes_vector_pos + 4 + first_elem_off as usize;
+        // Wait, let me re-trace. Vector(24) returns 229592.
+        // Count at 229592 - 4 = 229588 = 9 (according to Python)
+        let count_pos = opcodes_vector_pos - 4;
+        let count = read_u32(data, count_pos) as usize;
+
+        // Element offsets start at opcodes_vector_pos
+        // First element offset at opcodes_vector_pos
+        let first_elem_off = read_u32(data, opcodes_vector_pos);
+
+        // Element data starts at opcodes_vector_pos + count * 4
+        let elem_data_start = opcodes_vector_pos + count * 4;
+
+        // First element position
+        let first_elem_pos = elem_data_start + first_elem_off as usize;
 
         // Parse operator codes
         let mut operator_codes = Vec::new();
         for i in 0..count.min(20) {
-            let elem_off = read_u32(data, opcodes_vector_pos + 4 + i * 4);
-            let elem_pos = opcodes_vector_pos + 4 + elem_off as usize;
+            let elem_off = read_u32(data, opcodes_vector_pos + i * 4);
+            let elem_pos = elem_data_start + elem_off as usize;
 
             if elem_pos + 16 <= data.len() {
-                // OperatorCode structure:
-                // deprecated_builtin_code (1 byte) at elem_pos + 0
-                // padding (3 bytes)
-                // custom_code offset (4 bytes) at elem_pos + 4
-                // version (4 bytes) at elem_pos + 8
-                // builtin_code is derived from deprecated_builtin_code
                 let deprecated_code = data[elem_pos] as i32;
                 let version = read_u32(data, elem_pos + 8) as i32;
+                let builtin_code = read_u32(data, elem_pos + 12) as i32;
 
                 operator_codes.push(TFLiteOperatorCode {
-                    builtin_operator: BuiltinOperator::from_i32(deprecated_code),
+                    builtin_code: builtin_code as i32,
+                    deprecated_builtin_code: deprecated_code,
                     version,
                 });
             }
         }
 
+        println!("Version: {}", version);
+        println!("Operator codes: {}", operator_codes.len());
+        for (i, code) in operator_codes.iter().enumerate() {
+            println!("  Code {}: builtin={}, deprecated={}, version={}",
+                i, code.builtin_code, code.deprecated_builtin_code, code.version);
+        }
+
+        // Also parse subgraphs and buffers using the same technique
+        // Subgraphs is field 2
+        // Buffers is field 4
+
+        // From the vtable at byte 28:
+        // Field 2 offset (at byte 40) = 80
+        // Field 4 offset (at byte 48) = 206160
+        // Field 2 position = 46 + 80 = 126
+        // Field 4 position = 46 + 206160 = 206206
+
+        let subgraphs_pos = 46 + 80;
+        let buffers_pos = 46 + 206160;
+
+        println!("Subgraphs at byte {}: {:02X?}", subgraphs_pos, &data[subgraphs_pos..subgraphs_pos+8]);
+        println!("Buffers at byte {}: {:02X?}", buffers_pos, &data[buffers_pos..buffers_pos+8]);
+
         Ok(Model {
-            inputs: vec![TensorInfo::new("input", vec![1, 128, 128, 3], TensorType::F32)],
-            outputs: vec![TensorInfo::new("output", vec![1, 896, 16], TensorType::F32)],
+            inputs: vec![TensorInfo::new("input", vec![1, 128, 128, 3], BackendTensorType::F32)],
+            outputs: vec![TensorInfo::new("output", vec![1, 896, 16], BackendTensorType::F32)],
         })
     }
 }

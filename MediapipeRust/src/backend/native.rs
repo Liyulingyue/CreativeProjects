@@ -68,7 +68,7 @@ impl InferenceBackend for NativeBackend {
             });
         }
 
-        super::tflite::TFLiteModelParser::parse(data)
+        super::tflite::TFLiteModelParser.parse(data)
     }
 
     fn create_session(&self, model: &Model) -> Result<Session, Error> {

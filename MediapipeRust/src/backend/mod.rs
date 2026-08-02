@@ -133,7 +133,7 @@ impl Session {
         match self {
             Session::Native(s) => s.set_input(index, tensor),
             #[cfg(feature = "onnxruntime")]
-            Session::OnnxRuntime(_) => Err(Error::NotImplemented("OnnxRuntime session not implemented".into())),
+            Session::OnnxRuntime(s) => s.set_input(index, tensor),
             #[cfg(feature = "mediapipe-cpp")]
             Session::MediaPipeCpp(_) => Err(Error::NotImplemented("MediaPipeCpp session not implemented".into())),
         }
@@ -143,7 +143,7 @@ impl Session {
         match self {
             Session::Native(s) => s.compute(),
             #[cfg(feature = "onnxruntime")]
-            Session::OnnxRuntime(_) => Err(Error::NotImplemented("OnnxRuntime session not implemented".into())),
+            Session::OnnxRuntime(s) => s.compute(),
             #[cfg(feature = "mediapipe-cpp")]
             Session::MediaPipeCpp(_) => Err(Error::NotImplemented("MediaPipeCpp session not implemented".into())),
         }
@@ -153,7 +153,7 @@ impl Session {
         match self {
             Session::Native(s) => s.get_output(index, tensor),
             #[cfg(feature = "onnxruntime")]
-            Session::OnnxRuntime(_) => Err(Error::NotImplemented("OnnxRuntime session not implemented".into())),
+            Session::OnnxRuntime(s) => s.get_output(index, tensor),
             #[cfg(feature = "mediapipe-cpp")]
             Session::MediaPipeCpp(_) => Err(Error::NotImplemented("MediaPipeCpp session not implemented".into())),
         }
