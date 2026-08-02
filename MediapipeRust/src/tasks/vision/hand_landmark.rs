@@ -1,4 +1,5 @@
 use crate::backend::{Class, InferenceBackend, Landmark, Model, Session, Tensor, TensorType, Error};
+use crate::labels::get_hand_label;
 use std::sync::Arc;
 
 pub struct HandLandmarkerBuilder<B: InferenceBackend> {
@@ -114,7 +115,22 @@ impl<'a, B: InferenceBackend> HandLandmarkerSession<'a, B> {
             ));
         }
 
-        let handedness = Class::new(0, 0.9, "Right");
+        // Read handedness from output if available (typically output 2)
+        let handedness = if self.landmarker.model.outputs.len() > 2 {
+            let mut handedness_tensor = Tensor::empty(TensorType::F32, self.landmarker.model.outputs[2].shape.clone());
+            self.session.get_output(2, &mut handedness_tensor)?;
+            let handedness_data = handedness_tensor.as_f32();
+            // handedness_data[0] = Left score, handedness_data[1] = Right score
+            let (class_id, score) = if handedness_data[0] > handedness_data[1] {
+                (0i32, handedness_data[0])
+            } else {
+                (1i32, handedness_data[1])
+            };
+            let label = get_hand_label(class_id as usize).unwrap_or("Unknown");
+            Class::new(class_id, score, label.to_string())
+        } else {
+            Class::new(0, 0.9, "Right") // fallback
+        };
 
         Ok(vec![HandLandmarkResult {
             landmarks,

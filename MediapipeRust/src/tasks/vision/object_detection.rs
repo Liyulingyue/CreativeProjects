@@ -1,10 +1,19 @@
 use crate::backend::{BoundingBox, CategoriesFilter, Class, Detection, InferenceBackend, Model, Session, Tensor, TensorType, Error};
+use crate::labels::get_coco_label;
 use std::sync::Arc;
+
+#[derive(Clone, Debug)]
+pub enum LabelSource {
+    Coco,
+    Custom(Vec<String>),
+    None,
+}
 
 pub struct ObjectDetectorBuilder<B: InferenceBackend> {
     backend: B,
     max_results: i32,
     options: ObjectDetectorOptions,
+    label_source: LabelSource,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -22,6 +31,7 @@ impl<B: InferenceBackend> ObjectDetectorBuilder<B> {
             backend,
             max_results: 10,
             options: ObjectDetectorOptions::default(),
+            label_source: LabelSource::Coco,
         }
     }
 
@@ -40,6 +50,11 @@ impl<B: InferenceBackend> ObjectDetectorBuilder<B> {
         self
     }
 
+    pub fn label_source(mut self, source: LabelSource) -> Self {
+        self.label_source = source;
+        self
+    }
+
     pub fn build_from_file(self, path: &str) -> Result<ObjectDetector<B>, Error> {
         let data = std::fs::read(path)?;
         self.build_from_buffer(data)
@@ -52,6 +67,7 @@ impl<B: InferenceBackend> ObjectDetectorBuilder<B> {
             model: Arc::new(model),
             max_results: self.max_results,
             options: self.options,
+            label_source: self.label_source,
         })
     }
 }
@@ -61,6 +77,7 @@ pub struct ObjectDetector<B: InferenceBackend> {
     model: Arc<Model>,
     max_results: i32,
     options: ObjectDetectorOptions,
+    label_source: LabelSource,
 }
 
 impl<B: InferenceBackend> ObjectDetector<B> {
@@ -89,6 +106,36 @@ impl<'a, B: InferenceBackend> ObjectDetectorSession<'a, B> {
         self.session.set_input(0, &input_tensor)?;
         self.session.compute()?;
 
+        // Check if this is TFLite_Detection_PostProcess format (4 outputs)
+        let is_tflite_format = self.detector.model.outputs.len() >= 4
+            && self.detector.model.outputs[3].shape == vec![1];
+
+        if is_tflite_format {
+            // TFLite_Detection_PostProcess format:
+            // 0: [batch, num_boxes, 4] - boxes
+            // 1: [batch, num_boxes] - scores
+            // 2: [batch, num_boxes] - class IDs
+            // 3: [batch] - num detections
+
+            let num_boxes = self.detector.model.outputs[0].shape[1];
+
+            let mut boxes_tensor = Tensor::empty(TensorType::F32, self.detector.model.outputs[0].shape.clone());
+            let mut scores_tensor = Tensor::empty(TensorType::F32, self.detector.model.outputs[1].shape.clone());
+            let mut classes_tensor = Tensor::empty(TensorType::F32, self.detector.model.outputs[2].shape.clone());
+            let mut num_det_tensor = Tensor::empty(TensorType::F32, self.detector.model.outputs[3].shape.clone());
+
+            self.session.get_output(0, &mut boxes_tensor)?;
+            self.session.get_output(1, &mut scores_tensor)?;
+            self.session.get_output(2, &mut classes_tensor)?;
+            self.session.get_output(3, &mut num_det_tensor)?;
+
+            let detections = self.postprocess_tflite_format(
+                &boxes_tensor, &scores_tensor, &classes_tensor, num_boxes, width, height
+            )?;
+            return Ok(detections);
+        }
+
+        // Generic format: raw boxes and scores
         let boxes_size = self.detector.model.outputs[0].shape.iter().product();
         let scores_size = self.detector.model.outputs[1].shape.iter().product();
 
@@ -128,6 +175,7 @@ impl<'a, B: InferenceBackend> ObjectDetectorSession<'a, B> {
             }
 
             let j = i * 4;
+            let label = self.get_label(0, i);
             let detection = Detection {
                 bounding_box: BoundingBox::new(
                     boxes_data[j] * img_width as f32,
@@ -135,13 +183,70 @@ impl<'a, B: InferenceBackend> ObjectDetectorSession<'a, B> {
                     boxes_data[j + 2] * img_width as f32,
                     boxes_data[j + 3] * img_height as f32,
                 ),
-                categories: vec![Class::new(0, score, format!("object_{}", i))],
+                categories: vec![Class::new(0, score, label)],
             };
             detections.push(detection);
         }
 
         self.apply_nms(&mut detections);
         Ok(detections)
+    }
+
+    fn postprocess_tflite_format(
+        &self,
+        boxes: &Tensor,
+        scores: &Tensor,
+        classes: &Tensor,
+        num_boxes: usize,
+        img_width: u32,
+        img_height: u32,
+    ) -> Result<Vec<Detection>, Error> {
+        let boxes_data = boxes.as_f32();
+        let scores_data = scores.as_f32();
+        let classes_data = classes.as_f32();
+
+        let mut detections = Vec::new();
+        let num_detections = num_boxes.min(self.detector.max_results as usize);
+
+        for i in 0..num_detections {
+            let score = scores_data[i];
+            if score < self.detector.options.min_score_threshold {
+                continue;
+            }
+
+            let class_id = classes_data[i] as i32;
+            let j = i * 4;
+            let label = self.get_label(class_id, i);
+
+            // TFLite boxes are [ymin, xmin, ymax, xmax] normalized
+            let detection = Detection {
+                bounding_box: BoundingBox::new(
+                    boxes_data[j] * img_height as f32,      // ymin
+                    boxes_data[j + 1] * img_width as f32,   // xmin
+                    boxes_data[j + 2] * img_height as f32,  // ymax
+                    boxes_data[j + 3] * img_width as f32,   // xmax
+                ),
+                categories: vec![Class::new(class_id, score, label)],
+            };
+            detections.push(detection);
+        }
+
+        self.apply_nms(&mut detections);
+        Ok(detections)
+    }
+
+    fn get_label(&self, class_id: i32, _index: usize) -> String {
+        match &self.detector.label_source {
+            LabelSource::Coco => {
+                get_coco_label(class_id as usize).unwrap_or("unknown").to_string()
+            }
+            LabelSource::Custom(labels) => {
+                labels.get(class_id as usize).cloned().unwrap_or_else(|| format!("class_{}", class_id))
+            }
+            LabelSource::None => {
+                format!("object_{}", class_id)
+            }
+        }
     }
 
     fn apply_nms(&self, detections: &mut Vec<Detection>) {
