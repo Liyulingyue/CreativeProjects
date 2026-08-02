@@ -88,19 +88,47 @@ impl<'a, B: InferenceBackend> ImageSegmenterSession<'a, B> {
         self.session.set_input(0, &input_tensor)?;
         self.session.compute()?;
 
-        let mut mask_tensor = Tensor::empty(TensorType::U8, self.segmenter.model.outputs[0].shape.clone());
+        // Check output type - could be U8 (category mask) or F32 (logits)
+        let output_type = self.segmenter.model.outputs[0].tensor_type;
+        let output_shape = self.segmenter.model.outputs[0].shape.clone();
+
+        let mut mask_tensor = Tensor::empty(output_type, output_shape.clone());
         self.session.get_output(0, &mut mask_tensor)?;
 
-        let output_shape = &self.segmenter.model.outputs[0].shape;
-        let (mask_width, mask_height) = if output_shape.len() >= 3 {
-            (output_shape[1] as u32, output_shape[2] as u32)
+        let (mask_width, mask_height, num_classes) = if output_shape.len() >= 3 {
+            (output_shape[1] as u32, output_shape[2] as u32, output_shape[3] as usize)
         } else {
-            (width, height)
+            (width, height, 0)
         };
+
+        // Convert to category mask based on output type
+        let category_mask: Vec<u8> = if output_type == TensorType::U8 {
+            mask_tensor.data.clone()
+        } else {
+            // F32 logits - convert to category mask by taking argmax
+            let data = mask_tensor.as_f32();
+            let pixels = (mask_width * mask_height) as usize;
+            let mut mask = Vec::with_capacity(pixels);
+
+            for i in 0..pixels {
+                let mut max_val = f32::MIN;
+                let mut max_class = 0;
+                for c in 0..num_classes {
+                    let idx = i + c * pixels;
+                    if idx < data.len() && data[idx] > max_val {
+                        max_val = data[idx];
+                        max_class = c;
+                    }
+                }
+                mask.push(max_class as u8);
+            }
+            mask
+        };
+
         let mask = SegmentationMask {
             width: mask_width,
             height: mask_height,
-            category_mask: mask_tensor.data.clone(),
+            category_mask,
             confidence_mask: None,
         };
 

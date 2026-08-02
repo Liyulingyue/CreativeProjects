@@ -7,6 +7,7 @@ pub mod hand_landmark;
 pub mod gesture_recognition;
 pub mod image_segmentation;
 pub mod image_embedding;
+pub mod pose_landmark;
 
 pub use image_classification::*;
 pub use object_detection::*;
@@ -17,6 +18,7 @@ pub use hand_landmark::*;
 pub use gesture_recognition::*;
 pub use image_segmentation::*;
 pub use image_embedding::*;
+pub use pose_landmark::*;
 
 use crate::backend::{BoundingBox, CategoriesFilter, Class, Detection, Embedding, Error, Landmark, SegmentationMask};
 
