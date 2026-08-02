@@ -48,6 +48,7 @@ impl InferenceBackend for OnnxRuntimeBackend {
             .map(|input| {
                 let name = input.name().to_string();
                 let tensor_type = TensorType::F32;
+                // TODO: properly read shape from model metadata
                 TensorInfo::new(name, vec![1, 224, 224, 3], tensor_type)
             })
             .collect();
@@ -58,6 +59,7 @@ impl InferenceBackend for OnnxRuntimeBackend {
             .map(|output| {
                 let name = output.name().to_string();
                 let tensor_type = TensorType::F32;
+                // TODO: properly read shape from model metadata
                 TensorInfo::new(name, vec![1, 1000], tensor_type)
             })
             .collect();
@@ -96,16 +98,16 @@ impl OnnxSession {
             input_shape.iter().map(|&s| s as i64).collect::<Vec<_>>(),
             input_data.into_boxed_slice(),
         ))
-        .map_err(|e| Error::Inference(format!("Failed to create input tensor: {}", e)))?;
+        .map_err(|e| Error::Inference(format!("Failed to create tensor: {}", e)))?;
 
         let outputs: ort::session::SessionOutputs = self.session
             .run(ort::inputs![input_tensor])
             .map_err(|e| Error::Inference(format!("ONNX inference failed: {}", e)))?;
 
-        let output_tensor = &outputs[0];
-        let (shape, data) = output_tensor
+        let output = &outputs[0];
+        let (shape, data) = output
             .try_extract_tensor::<f32>()
-            .map_err(|e| Error::Inference(format!("Failed to extract output tensor: {}", e)))?;
+            .map_err(|e| Error::Inference(format!("Failed to extract tensor: {}", e)))?;
 
         let output_size: usize = shape.iter().map(|&s| s as usize).product();
         self.output_data = Some(data[..output_size].to_vec());
@@ -119,10 +121,12 @@ impl SessionBackend for OnnxSession {
         if tensor.tensor_type != TensorType::F32 {
             return Err(Error::Inference("Only F32 tensors are supported".into()));
         }
+
         let data: Vec<f32> = tensor.data
             .chunks(4)
             .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
             .collect();
+
         self.input_data = Some(data);
         self.input_shape = Some(tensor.shape.clone());
         Ok(())
@@ -133,11 +137,12 @@ impl SessionBackend for OnnxSession {
     }
 
     fn get_output(&mut self, _index: usize, tensor: &mut Tensor) -> Result<(), Error> {
-        if let Some(ref data) = self.output_data {
+        if let Some(data) = self.output_data.take() {
             let bytes: Vec<u8> = data.iter()
                 .flat_map(|&f| f.to_le_bytes().to_vec())
                 .collect();
             tensor.data = bytes;
+            tensor.tensor_type = TensorType::F32;
             Ok(())
         } else {
             Err(Error::Inference("No output available".into()))
