@@ -58,7 +58,9 @@ impl InferenceBackend for OnnxRuntimeBackend {
                 };
                 let shape: Vec<usize> = dtype
                     .tensor_shape()
-                    .map(|s| s.iter().map(|&d| d as usize).collect())
+                    .map(|s| s.iter().map(|&d| {
+                        if d <= 0 { 1 } else { d as usize }
+                    }).collect())
                     .unwrap_or_else(|| vec![1, 224, 224, 3]);
                 TensorInfo::new(name, shape, tensor_type)
             })
@@ -77,7 +79,9 @@ impl InferenceBackend for OnnxRuntimeBackend {
                 };
                 let shape: Vec<usize> = dtype
                     .tensor_shape()
-                    .map(|s| s.iter().map(|&d| d as usize).collect())
+                    .map(|s| s.iter().map(|&d| {
+                        if d <= 0 { 1 } else { d as usize }
+                    }).collect())
                     .unwrap_or_else(|| vec![1, 1000]);
                 TensorInfo::new(name, shape, tensor_type)
             })
