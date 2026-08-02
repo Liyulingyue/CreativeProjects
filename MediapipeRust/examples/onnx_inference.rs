@@ -121,12 +121,10 @@ fn run_object_detection(model_path: &str, image_path: &str) -> Result<(), Box<dy
                 Tensor::new(TensorType::U8, vec![1, height, width, channels], pixels)
             } else {
                 let mut pixels: Vec<f32> = Vec::with_capacity((width * height * channels) as usize);
-                for _ in 0..(width * height * channels) as usize / 3 {
-                    for pixel in rgb.pixels() {
-                        pixels.push(pixel[0] as f32 / 255.0);
-                        pixels.push(pixel[1] as f32 / 255.0);
-                        pixels.push(pixel[2] as f32 / 255.0);
-                    }
+                for pixel in rgb.pixels() {
+                    pixels.push(pixel[0] as f32 / 255.0);
+                    pixels.push(pixel[1] as f32 / 255.0);
+                    pixels.push(pixel[2] as f32 / 255.0);
                 }
                 let data: Vec<u8> = pixels.iter().flat_map(|&f| f.to_le_bytes()).collect();
                 Tensor::new(TensorType::F32, vec![1, height, width, channels], data)
@@ -140,19 +138,75 @@ fn run_object_detection(model_path: &str, image_path: &str) -> Result<(), Box<dy
             onnx_session.set_input(0, &tensor)?;
             onnx_session.compute()?;
 
-            // Get first output only (backend only stores one output)
-            let mut output_tensor = Tensor::empty(TensorType::F32, model.outputs[0].shape.clone());
-            onnx_session.get_output(0, &mut output_tensor)?;
+            // Check if this is TFLite_Detection_PostProcess format (4 outputs)
+            if model.outputs.len() >= 4 && model.outputs[3].shape == vec![1] {
+                // TFLite_Detection_PostProcess outputs:
+                // 0: [batch, num_boxes, 4] - boxes (ymin, xmin, ymax, xmax) normalized
+                // 1: [batch, num_boxes] - scores
+                // 2: [batch, num_boxes] - class ids
+                // 3: [batch] - num_detections
 
-            let output_data: Vec<f32> = output_tensor.data.chunks(4)
-                .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-                .collect();
+                let mut boxes_tensor = Tensor::empty(TensorType::F32, model.outputs[0].shape.clone());
+                onnx_session.get_output(0, &mut boxes_tensor)?;
+                let boxes: Vec<f32> = boxes_tensor.data.chunks(4)
+                    .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                    .collect();
 
-            println!("\nOutput 0: shape={:?}, len={}", model.outputs[0].shape, output_data.len());
-            if output_data.len() <= 20 {
-                println!("  Values: {:?}", output_data);
+                let mut scores_tensor = Tensor::empty(TensorType::F32, model.outputs[1].shape.clone());
+                onnx_session.get_output(1, &mut scores_tensor)?;
+                let scores: Vec<f32> = scores_tensor.data.chunks(4)
+                    .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                    .collect();
+
+                let mut classes_tensor = Tensor::empty(TensorType::F32, model.outputs[2].shape.clone());
+                onnx_session.get_output(2, &mut classes_tensor)?;
+                let classes: Vec<f32> = classes_tensor.data.chunks(4)
+                    .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                    .collect();
+
+                let mut num_det_tensor = Tensor::empty(TensorType::F32, model.outputs[3].shape.clone());
+                onnx_session.get_output(3, &mut num_det_tensor)?;
+                let num_detections: f32 = f32::from_le_bytes([
+                    num_det_tensor.data[0], num_det_tensor.data[1],
+                    num_det_tensor.data[2], num_det_tensor.data[3]
+                ]) as f32;
+
+                println!("\nDetections ({} total):", num_detections as i32);
+                let num_boxes = model.outputs[0].shape[1]; // typically 10
+
+                for i in 0..num_boxes.min(num_detections as usize) {
+                    let score = scores[i];
+                    let class_id = classes[i] as i32;
+                    let ymin = boxes[i * 4];
+                    let xmin = boxes[i * 4 + 1];
+                    let ymax = boxes[i * 4 + 2];
+                    let xmax = boxes[i * 4 + 3];
+
+                    // Denormalize coordinates
+                    let ymin_px = (ymin * height as f32) as i32;
+                    let xmin_px = (xmin * width as f32) as i32;
+                    let ymax_px = (ymax * height as f32) as i32;
+                    let xmax_px = (xmax * width as f32) as i32;
+
+                    println!("  Box {}: class={}, score={:.3}, bbox=[({}, {}) x ({}, {})]",
+                        i, class_id, score, xmin_px, ymin_px, xmax_px, ymax_px);
+                }
             } else {
-                println!("  First 10 values: {:?}", &output_data[..10]);
+                // Generic output display for other detection formats
+                println!("\nOutputs:");
+                for (i, output) in model.outputs.iter().enumerate() {
+                    let mut output_tensor = Tensor::empty(TensorType::F32, output.shape.clone());
+                    onnx_session.get_output(i, &mut output_tensor)?;
+                    let data: Vec<f32> = output_tensor.data.chunks(4)
+                        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                        .collect();
+                    println!("  Output {}: shape={:?}, len={}", i, output.shape, data.len());
+                    if data.len() <= 10 {
+                        println!("    Values: {:?}", data);
+                    } else {
+                        println!("    First 10 values: {:?}", &data[..10]);
+                    }
+                }
             }
         }
         _ => return Err("Expected OnnxRuntime session".into()),

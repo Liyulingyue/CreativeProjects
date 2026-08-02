@@ -47,10 +47,20 @@ impl InferenceBackend for OnnxRuntimeBackend {
             .iter()
             .map(|input| {
                 let name = input.name().to_string();
-                // TODO: properly read type from model metadata
-                // For now, default to F32
-                let tensor_type = TensorType::F32;
-                TensorInfo::new(name, vec![1, 224, 224, 3], tensor_type)
+                let dtype = input.dtype();
+                let tensor_type = match dtype.tensor_type() {
+                    Some(ort::value::TensorElementType::Float32) => TensorType::F32,
+                    Some(ort::value::TensorElementType::Uint8) => TensorType::U8,
+                    Some(ort::value::TensorElementType::Int8) => TensorType::I32,
+                    Some(ort::value::TensorElementType::Int32) => TensorType::I32,
+                    Some(_) => TensorType::F32,
+                    None => TensorType::F32,
+                };
+                let shape: Vec<usize> = dtype
+                    .tensor_shape()
+                    .map(|s| s.iter().map(|&d| d as usize).collect())
+                    .unwrap_or_else(|| vec![1, 224, 224, 3]);
+                TensorInfo::new(name, shape, tensor_type)
             })
             .collect();
 
@@ -59,8 +69,17 @@ impl InferenceBackend for OnnxRuntimeBackend {
             .iter()
             .map(|output| {
                 let name = output.name().to_string();
-                let tensor_type = TensorType::F32;
-                TensorInfo::new(name, vec![1, 1000], tensor_type)
+                let dtype = output.dtype();
+                let tensor_type = match dtype.tensor_type() {
+                    Some(ort::value::TensorElementType::Float32) => TensorType::F32,
+                    Some(ort::value::TensorElementType::Uint8) => TensorType::U8,
+                    _ => TensorType::F32,
+                };
+                let shape: Vec<usize> = dtype
+                    .tensor_shape()
+                    .map(|s| s.iter().map(|&d| d as usize).collect())
+                    .unwrap_or_else(|| vec![1, 1000]);
+                TensorInfo::new(name, shape, tensor_type)
             })
             .collect();
 
@@ -75,7 +94,8 @@ pub struct OnnxSession {
     session: ort::session::Session,
     input_data: Option<InputData>,
     input_shape: Option<Vec<usize>>,
-    output_data: Option<Vec<f32>>,
+    output_data: Vec<Vec<f32>>,
+    output_index: usize,
 }
 
 enum InputData {
@@ -89,7 +109,8 @@ impl OnnxSession {
             session,
             input_data: None,
             input_shape: None,
-            output_data: None,
+            output_data: Vec::new(),
+            output_index: 0,
         }
     }
 
@@ -124,13 +145,15 @@ impl OnnxSession {
             }
         };
 
-        let output = &outputs[0];
-        let (shape, data) = output
-            .try_extract_tensor::<f32>()
-            .map_err(|e| Error::Inference(format!("Failed to extract tensor: {}", e)))?;
-
-        let output_size: usize = shape.iter().map(|&s| s as usize).product();
-        self.output_data = Some(data[..output_size].to_vec());
+        self.output_data = (0..outputs.len())
+            .filter_map(|i| {
+                let output = &outputs[i];
+                let (shape, data) = output.try_extract_tensor::<f32>().ok()?;
+                let output_size: usize = shape.iter().map(|&s| s as usize).product();
+                Some(data[..output_size].to_vec())
+            })
+            .collect();
+        self.output_index = 0;
 
         Ok(())
     }
@@ -163,8 +186,9 @@ impl SessionBackend for OnnxSession {
         self.run_inference()
     }
 
-    fn get_output(&mut self, _index: usize, tensor: &mut Tensor) -> Result<(), Error> {
-        if let Some(data) = self.output_data.take() {
+    fn get_output(&mut self, index: usize, tensor: &mut Tensor) -> Result<(), Error> {
+        if index < self.output_data.len() {
+            let data = self.output_data[index].clone();
             let bytes: Vec<u8> = data.iter()
                 .flat_map(|&f| f.to_le_bytes().to_vec())
                 .collect();
@@ -172,7 +196,7 @@ impl SessionBackend for OnnxSession {
             tensor.tensor_type = TensorType::F32;
             Ok(())
         } else {
-            Err(Error::Inference("No output available".into()))
+            Err(Error::Inference(format!("Output index {} out of range", index)).into())
         }
     }
 }
