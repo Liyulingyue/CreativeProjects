@@ -47,8 +47,9 @@ impl InferenceBackend for OnnxRuntimeBackend {
             .iter()
             .map(|input| {
                 let name = input.name().to_string();
+                // TODO: properly read type from model metadata
+                // For now, default to F32
                 let tensor_type = TensorType::F32;
-                // TODO: properly read shape from model metadata
                 TensorInfo::new(name, vec![1, 224, 224, 3], tensor_type)
             })
             .collect();
@@ -59,7 +60,6 @@ impl InferenceBackend for OnnxRuntimeBackend {
             .map(|output| {
                 let name = output.name().to_string();
                 let tensor_type = TensorType::F32;
-                // TODO: properly read shape from model metadata
                 TensorInfo::new(name, vec![1, 1000], tensor_type)
             })
             .collect();
@@ -73,9 +73,14 @@ impl InferenceBackend for OnnxRuntimeBackend {
 
 pub struct OnnxSession {
     session: ort::session::Session,
-    input_data: Option<Vec<f32>>,
+    input_data: Option<InputData>,
     input_shape: Option<Vec<usize>>,
     output_data: Option<Vec<f32>>,
+}
+
+enum InputData {
+    F32(Vec<f32>),
+    U8(Vec<u8>),
 }
 
 impl OnnxSession {
@@ -94,15 +99,30 @@ impl OnnxSession {
         let input_shape = self.input_shape.take()
             .ok_or_else(|| Error::Inference("No input shape set".into()))?;
 
-        let input_tensor: ort::value::Tensor<f32> = ort::value::Tensor::from_array((
-            input_shape.iter().map(|&s| s as i64).collect::<Vec<_>>(),
-            input_data.into_boxed_slice(),
-        ))
-        .map_err(|e| Error::Inference(format!("Failed to create tensor: {}", e)))?;
+        let outputs: ort::session::SessionOutputs = match input_data {
+            InputData::F32(data) => {
+                let input_tensor: ort::value::Tensor<f32> = ort::value::Tensor::from_array((
+                    input_shape.iter().map(|&s| s as i64).collect::<Vec<_>>(),
+                    data.into_boxed_slice(),
+                ))
+                .map_err(|e| Error::Inference(format!("Failed to create tensor: {}", e)))?;
 
-        let outputs: ort::session::SessionOutputs = self.session
-            .run(ort::inputs![input_tensor])
-            .map_err(|e| Error::Inference(format!("ONNX inference failed: {}", e)))?;
+                self.session
+                    .run(ort::inputs![input_tensor])
+                    .map_err(|e| Error::Inference(format!("ONNX inference failed: {}", e)))?
+            }
+            InputData::U8(data) => {
+                let input_tensor: ort::value::Tensor<u8> = ort::value::Tensor::from_array((
+                    input_shape.iter().map(|&s| s as i64).collect::<Vec<_>>(),
+                    data.into_boxed_slice(),
+                ))
+                .map_err(|e| Error::Inference(format!("Failed to create tensor: {}", e)))?;
+
+                self.session
+                    .run(ort::inputs![input_tensor])
+                    .map_err(|e| Error::Inference(format!("ONNX inference failed: {}", e)))?
+            }
+        };
 
         let output = &outputs[0];
         let (shape, data) = output
@@ -118,14 +138,21 @@ impl OnnxSession {
 
 impl SessionBackend for OnnxSession {
     fn set_input(&mut self, _index: usize, tensor: &Tensor) -> Result<(), Error> {
-        if tensor.tensor_type != TensorType::F32 {
-            return Err(Error::Inference("Only F32 tensors are supported".into()));
-        }
-
-        let data: Vec<f32> = tensor.data
-            .chunks(4)
-            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-            .collect();
+        let data = match tensor.tensor_type {
+            TensorType::F32 => {
+                let f32_data: Vec<f32> = tensor.data
+                    .chunks(4)
+                    .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                    .collect();
+                InputData::F32(f32_data)
+            }
+            TensorType::U8 => {
+                InputData::U8(tensor.data.clone())
+            }
+            _ => {
+                return Err(Error::Inference(format!("Unsupported input type: {:?}", tensor.tensor_type)));
+            }
+        };
 
         self.input_data = Some(data);
         self.input_shape = Some(tensor.shape.clone());

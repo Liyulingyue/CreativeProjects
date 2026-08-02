@@ -91,35 +91,48 @@ fn run_object_detection(model_path: &str, image_path: &str) -> Result<(), Box<dy
     println!("Inputs: {:?}", model.inputs);
     println!("Outputs: {:?}", model.outputs);
 
-    let input = &model.inputs[0];
-    let (width, height) = (input.shape[1] as u32, input.shape[2] as u32);
-    let channels = input.shape[3] as u32;
+    // Get expected input shape from model metadata (hardcoded for now)
+    let (width, height, channels) = if model_path.contains("ssd_mobilenet") {
+        (300, 300, 3)
+    } else if model_path.contains("blaze_face") {
+        (128, 128, 3)
+    } else if model_path.contains("pose") {
+        (256, 256, 3)
+    } else if model_path.contains("deeplab") {
+        (257, 257, 3)
+    } else {
+        (224, 224, 3) // default
+    };
 
     let img = image::open(image_path)?;
-    let img = img.resize_exact(width, height, image::imageops::FilterType::Lanczos3);
+    let img = img.resize_exact(width as u32, height as u32, image::imageops::FilterType::Lanczos3);
     let rgb = img.to_rgb8();
 
-    let tensor = match input.tensor_type {
-        TensorType::F32 => {
-            let mut pixels: Vec<f32> = Vec::with_capacity((width * height * channels) as usize);
-            for pixel in rgb.pixels() {
-                pixels.push(pixel[0] as f32 / 255.0);
-                pixels.push(pixel[1] as f32 / 255.0);
-                pixels.push(pixel[2] as f32 / 255.0);
+    let tensor = match session {
+        Session::OnnxRuntime(_) => {
+            // ssd_mobilenet_v1 uses uint8 input, others use float32
+            if model_path.contains("ssd_mobilenet") {
+                let mut pixels: Vec<u8> = Vec::with_capacity((width * height * channels) as usize);
+                for pixel in rgb.pixels() {
+                    pixels.push(pixel[0]);
+                    pixels.push(pixel[1]);
+                    pixels.push(pixel[2]);
+                }
+                Tensor::new(TensorType::U8, vec![1, height, width, channels], pixels)
+            } else {
+                let mut pixels: Vec<f32> = Vec::with_capacity((width * height * channels) as usize);
+                for _ in 0..(width * height * channels) as usize / 3 {
+                    for pixel in rgb.pixels() {
+                        pixels.push(pixel[0] as f32 / 255.0);
+                        pixels.push(pixel[1] as f32 / 255.0);
+                        pixels.push(pixel[2] as f32 / 255.0);
+                    }
+                }
+                let data: Vec<u8> = pixels.iter().flat_map(|&f| f.to_le_bytes()).collect();
+                Tensor::new(TensorType::F32, vec![1, height, width, channels], data)
             }
-            let data: Vec<u8> = pixels.iter().flat_map(|&f| f.to_le_bytes()).collect();
-            Tensor::new(TensorType::F32, vec![1, height as usize, width as usize, channels as usize], data)
         }
-        TensorType::U8 => {
-            let mut pixels: Vec<u8> = Vec::with_capacity((width * height * channels) as usize);
-            for pixel in rgb.pixels() {
-                pixels.push(pixel[0]);
-                pixels.push(pixel[1]);
-                pixels.push(pixel[2]);
-            }
-            Tensor::new(TensorType::U8, vec![1, height as usize, width as usize, channels as usize], pixels)
-        }
-        _ => return Err(format!("Unsupported input type: {:?}", input.tensor_type).into()),
+        _ => return Err("Expected OnnxRuntime session".into()),
     };
 
     match session {
@@ -127,20 +140,19 @@ fn run_object_detection(model_path: &str, image_path: &str) -> Result<(), Box<dy
             onnx_session.set_input(0, &tensor)?;
             onnx_session.compute()?;
 
-            for (i, output_info) in model.outputs.iter().enumerate() {
-                let mut output_tensor = Tensor::empty(TensorType::F32, output_info.shape.clone());
-                onnx_session.get_output(i, &mut output_tensor)?;
+            // Get first output only (backend only stores one output)
+            let mut output_tensor = Tensor::empty(TensorType::F32, model.outputs[0].shape.clone());
+            onnx_session.get_output(0, &mut output_tensor)?;
 
-                let output_data: Vec<f32> = output_tensor.data.chunks(4)
-                    .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-                    .collect();
+            let output_data: Vec<f32> = output_tensor.data.chunks(4)
+                .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                .collect();
 
-                println!("\nOutput {}: shape={:?}, len={}", i, output_info.shape, output_data.len());
-                if output_data.len() <= 20 {
-                    println!("  Values: {:?}", output_data);
-                } else {
-                    println!("  First 10 values: {:?}", &output_data[..10]);
-                }
+            println!("\nOutput 0: shape={:?}, len={}", model.outputs[0].shape, output_data.len());
+            if output_data.len() <= 20 {
+                println!("  Values: {:?}", output_data);
+            } else {
+                println!("  First 10 values: {:?}", &output_data[..10]);
             }
         }
         _ => return Err("Expected OnnxRuntime session".into()),
@@ -196,10 +208,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         || model_name.contains("mobilenet")
         || model_name.contains("simple_classifier");
 
-    if is_classification {
-        run_classification(model_path, image_path)?;
-    } else if is_detection || is_pose || is_segmentation {
+    // Check detection first since some names contain "mobilenet" but are detection models
+    if is_detection || is_pose || is_segmentation {
         run_object_detection(model_path, image_path)?;
+    } else if is_classification {
+        run_classification(model_path, image_path)?;
     } else {
         println!("Unknown model type, running generic inference...");
         run_object_detection(model_path, image_path)?;
