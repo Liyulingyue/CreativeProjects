@@ -125,23 +125,26 @@ impl<'a, B: InferenceBackend> PoseLandmarkerSession<'a, B> {
 
         let landmarks_data = landmarks_tensor.as_f32();
 
-        // MediaPipe Pose output format: [batch, 195] where 195 = 33 keypoints * (3 xyz + 1 visibility + 1 presence)
-        // Or [batch, 33, 5] if properly structured
+        // MediaPipe Pose output format: [batch, 195] where 195 = 33 keypoints * 5 values + 30 padding
+        // Format: [x, y, z, visibility, presence] for each keypoint (5 values per keypoint)
         let num_keypoints = 33;
+        let values_per_keypoint = 5;
         let mut landmarks = Vec::with_capacity(num_keypoints);
 
-        // Try to detect format based on data length
-        if landmarks_data.len() == num_keypoints * 5 {
+        // Calculate how many values to use per keypoint from the actual data length
+        let total_landmark_values = num_keypoints * values_per_keypoint;
+
+        if landmarks_data.len() >= total_landmark_values {
             // Format: [x, y, z, visibility, presence] for each keypoint
             for i in 0..num_keypoints {
-                let idx = i * 5;
+                let idx = i * values_per_keypoint;
                 landmarks.push(Landmark::new(
                     landmarks_data[idx],
                     landmarks_data[idx + 1],
                     landmarks_data[idx + 2],
                 ));
             }
-        } else if landmarks_data.len() == num_keypoints * 3 {
+        } else if landmarks_data.len() >= num_keypoints * 3 {
             // Format: [x, y, z] for each keypoint
             for i in 0..num_keypoints {
                 let idx = i * 3;

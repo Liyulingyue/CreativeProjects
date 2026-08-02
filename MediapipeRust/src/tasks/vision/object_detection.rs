@@ -176,13 +176,15 @@ impl<'a, B: InferenceBackend> ObjectDetectorSession<'a, B> {
 
             let j = i * 4;
             let label = self.get_label(0, i);
+
+            // TFLite format: [ymin, xmin, ymax, xmax] - convert to BoundingBox [left, top, right, bottom]
+            let ymin = boxes_data[j] * img_height as f32;
+            let xmin = boxes_data[j + 1] * img_width as f32;
+            let ymax = boxes_data[j + 2] * img_height as f32;
+            let xmax = boxes_data[j + 3] * img_width as f32;
+
             let detection = Detection {
-                bounding_box: BoundingBox::new(
-                    boxes_data[j] * img_width as f32,
-                    boxes_data[j + 1] * img_height as f32,
-                    boxes_data[j + 2] * img_width as f32,
-                    boxes_data[j + 3] * img_height as f32,
-                ),
+                bounding_box: BoundingBox::new(xmin, ymin, xmax, ymax),
                 categories: vec![Class::new(0, score, label)],
             };
             detections.push(detection);
@@ -219,13 +221,14 @@ impl<'a, B: InferenceBackend> ObjectDetectorSession<'a, B> {
             let label = self.get_label(class_id, i);
 
             // TFLite boxes are [ymin, xmin, ymax, xmax] normalized
+            // BoundingBox::new expects [left, top, right, bottom]
+            let ymin = boxes_data[j] * img_height as f32;
+            let xmin = boxes_data[j + 1] * img_width as f32;
+            let ymax = boxes_data[j + 2] * img_height as f32;
+            let xmax = boxes_data[j + 3] * img_width as f32;
+
             let detection = Detection {
-                bounding_box: BoundingBox::new(
-                    boxes_data[j] * img_height as f32,      // ymin
-                    boxes_data[j + 1] * img_width as f32,   // xmin
-                    boxes_data[j + 2] * img_height as f32,  // ymax
-                    boxes_data[j + 3] * img_width as f32,   // xmax
-                ),
+                bounding_box: BoundingBox::new(xmin, ymin, xmax, ymax),
                 categories: vec![Class::new(class_id, score, label)],
             };
             detections.push(detection);
