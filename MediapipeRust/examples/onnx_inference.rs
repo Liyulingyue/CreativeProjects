@@ -154,9 +154,14 @@ fn run_object_detection(model_path: &str, image_path: &str) -> Result<(), Box<dy
 
                 let mut scores_tensor = Tensor::empty(TensorType::F32, model.outputs[1].shape.clone());
                 onnx_session.get_output(1, &mut scores_tensor)?;
-                let scores: Vec<f32> = scores_tensor.data.chunks(4)
+                let mut scores: Vec<f32> = scores_tensor.data.chunks(4)
                     .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                     .collect();
+
+                // TFLite_Detection_PostProcess outputs logits, apply sigmoid to get probabilities
+                for score in scores.iter_mut() {
+                    *score = 1.0 / (1.0 + (-*score).exp());
+                }
 
                 let mut classes_tensor = Tensor::empty(TensorType::F32, model.outputs[2].shape.clone());
                 onnx_session.get_output(2, &mut classes_tensor)?;

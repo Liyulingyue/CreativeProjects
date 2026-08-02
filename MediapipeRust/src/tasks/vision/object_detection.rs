@@ -204,8 +204,11 @@ impl<'a, B: InferenceBackend> ObjectDetectorSession<'a, B> {
         img_height: u32,
     ) -> Result<Vec<Detection>, Error> {
         let boxes_data = boxes.as_f32();
-        let scores_data = scores.as_f32();
+        let mut scores_data = scores.as_f32().to_vec();
         let classes_data = classes.as_f32();
+
+        // TFLite_Detection_PostProcess outputs logits, apply sigmoid to get probabilities
+        crate::postprocess::Sigmoid::apply(&mut scores_data);
 
         let mut detections = Vec::new();
         let num_detections = num_boxes.min(self.detector.max_results as usize);
