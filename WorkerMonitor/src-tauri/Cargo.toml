@@ -1,7 +1,7 @@
 [package]
 name = "worker-monitor"
 version = "0.1.0"
-description = "Health monitor that reminds you to take breaks from work"
+description = "WorkerMonitor Tauri Shell"
 edition = "2021"
 
 [build-dependencies]
@@ -9,13 +9,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
-tauri-plugin-notification = "2"
-tauri-plugin-autostart = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["full"] }
-chrono = { version = "0.4", features = ["serde"] }
-dirs = "5"
 
 [profile.release]
 panic = "abort"

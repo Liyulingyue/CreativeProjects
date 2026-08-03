@@ -4,8 +4,6 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "notification:default",
-    "autostart:default",
     "core:window:allow-set-always-on-top",
     "core:window:allow-set-size",
     "core:window:allow-set-decorations",

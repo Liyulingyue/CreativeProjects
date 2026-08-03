@@ -1,19 +1,15 @@
 {
-  "name": "worker-monitor",
+  "name": "worker-monitor-frontend",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview",
-    "tauri": "tauri"
+    "preview": "vite preview"
   },
   "dependencies": {
-    "@mediapipe/tasks-vision": "^0.10.35",
     "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-autostart": "^2",
-    "@tauri-apps/plugin-notification": "^2",
     "react": "^19",
     "react-dom": "^19"
   },

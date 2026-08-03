@@ -51,7 +51,8 @@ pub fn load_config() -> AppConfig {
 pub fn save_config(config: &AppConfig) -> Result<(), String> {
     let dir = config_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
-    let data = serde_json::to_string_pretty(config).map_err(|e| format!("序列化配置失败: {e}"))?;
+    let data =
+        serde_json::to_string_pretty(config).map_err(|e| format!("序列化配置失败: {e}"))?;
     fs::write(config_path(), data).map_err(|e| format!("写入配置失败: {e}"))?;
     Ok(())
 }

@@ -26,12 +26,12 @@ const SLOUCH_THRESHOLD = 20;
 
 export function analyzePosture(landmarks: Landmark[]): PostureResult {
   const nose = landmarks[0];
-  const leftEar = landmarks[7];
-  const rightEar = landmarks[8];
-  const leftShoulder = landmarks[11];
-  const rightShoulder = landmarks[12];
-  const leftHip = landmarks[23];
-  const rightHip = landmarks[24];
+  const leftEar = landmarks[3];
+  const rightEar = landmarks[4];
+  const leftShoulder = landmarks[5];
+  const rightShoulder = landmarks[6];
+  const leftHip = landmarks[11];
+  const rightHip = landmarks[12];
 
   const headForwardAngle = calcHeadForward(leftEar, rightEar, leftShoulder, rightShoulder);
   const headTiltAngle = calcHeadTilt(nose, leftEar, rightEar, leftShoulder, rightShoulder);

@@ -1,5 +1,6 @@
 node_modules/
 dist/
+backend/target/
 src-tauri/target/
 
 *.exe
@@ -11,3 +12,6 @@ dist_package/
 
 .env
 .env.local
+
+# Model files (auto-downloaded)
+backend/resource/*.onnx

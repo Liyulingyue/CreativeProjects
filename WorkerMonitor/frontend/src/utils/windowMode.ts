@@ -1,7 +1,16 @@
-import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+declare global {
+  interface Window {
+    __TAURI__?: object;
+  }
+}
 
 export async function enterCompactMode() {
+  if (!window.__TAURI__) {
+    console.warn("[windowMode] Not in Tauri, skipping enterCompactMode");
+    return;
+  }
   try {
+    const { getCurrentWindow, LogicalSize } = await import("@tauri-apps/api/window");
     const win = getCurrentWindow();
     await win.setDecorations(false);
     await win.setAlwaysOnTop(true);
@@ -14,7 +23,12 @@ export async function enterCompactMode() {
 }
 
 export async function enterExpandedMode() {
+  if (!window.__TAURI__) {
+    console.warn("[windowMode] Not in Tauri, skipping enterExpandedMode");
+    return;
+  }
   try {
+    const { getCurrentWindow, LogicalSize } = await import("@tauri-apps/api/window");
     const win = getCurrentWindow();
     await win.setDecorations(true);
     await win.setAlwaysOnTop(false);
@@ -27,7 +41,12 @@ export async function enterExpandedMode() {
 }
 
 export async function hideToTray() {
+  if (!window.__TAURI__) {
+    console.warn("[windowMode] Not in Tauri, skipping hideToTray");
+    return;
+  }
   try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
     const win = getCurrentWindow();
     await win.hide();
   } catch (err) {

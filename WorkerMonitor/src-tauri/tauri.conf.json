@@ -4,10 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.workermonitor.app",
   "build": {
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build",
-    "devUrl": "http://localhost:1420",
-    "frontendDist": "../dist"
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../frontend/dist"
   },
   "app": {
     "windows": [
@@ -17,9 +15,7 @@
         "width": 1024,
         "height": 720,
         "resizable": true,
-        "center": true,
-        "minWidth": 640,
-        "minHeight": 480
+        "center": true
       }
     ]
   },

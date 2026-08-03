@@ -1,10 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use std::time::Instant;
-use tauri::{AppHandle, Emitter};
-use tauri_plugin_notification::NotificationExt;
 
 use crate::config;
+use crate::rtmpose::{Keypoint, PoseOutput};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -27,6 +26,18 @@ pub struct MonitorSnapshot {
     pub has_alert: bool,
     pub has_posture_alert: bool,
     pub work_threshold_secs: f64,
+    pub detection: Option<DetectionInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DetectionInfo {
+    pub person_detected: bool,
+    pub keypoints: Vec<Keypoint>,
+    pub score: u32,
+    pub head_forward: bool,
+    pub head_tilt: bool,
+    pub shoulder_uneven: bool,
+    pub slouching: bool,
 }
 
 struct MonitorInner {
@@ -43,12 +54,13 @@ struct MonitorInner {
     has_posture_alert: bool,
     last_notification: Option<Instant>,
     last_posture_notification: Option<Instant>,
+    detection: Option<DetectionInfo>,
 }
 
 impl MonitorInner {
-    fn new(config: config::AppConfig) -> Self {
+    fn new(cfg: config::AppConfig) -> Self {
         Self {
-            config,
+            config: cfg,
             status: MonitorStatus::Idle,
             is_present: false,
             is_monitoring: false,
@@ -61,13 +73,13 @@ impl MonitorInner {
             has_posture_alert: false,
             last_notification: None,
             last_posture_notification: None,
+            detection: None,
         }
     }
 
     fn snapshot(&self) -> MonitorSnapshot {
         let work_duration_secs = self.current_work_secs();
         let break_duration_secs = self.current_break_secs();
-
         MonitorSnapshot {
             status: self.status.clone(),
             is_monitoring: self.is_monitoring,
@@ -79,6 +91,7 @@ impl MonitorInner {
             has_alert: self.has_alert,
             has_posture_alert: self.has_posture_alert,
             work_threshold_secs: self.config.work_threshold_minutes as f64 * 60.0,
+            detection: self.detection.clone(),
         }
     }
 
@@ -101,16 +114,15 @@ impl MonitorInner {
     }
 }
 
-#[allow(private_interfaces)]
-pub struct MonitorState(pub(crate) Mutex<MonitorInner>);
+pub struct MonitorState(pub Mutex<MonitorInner>);
 
 impl MonitorState {
     pub fn new() -> Self {
-        let config = config::load_config();
-        Self(Mutex::new(MonitorInner::new(config)))
+        let cfg = config::load_config();
+        Self(Mutex::new(MonitorInner::new(cfg)))
     }
 
-    pub fn start(&self, app: AppHandle) -> Result<(), String> {
+    pub fn start(&self) -> Result<(), String> {
         let mut inner = self.0.lock().map_err(|e| e.to_string())?;
         if inner.is_monitoring {
             return Ok(());
@@ -127,9 +139,7 @@ impl MonitorState {
         inner.has_posture_alert = false;
         inner.last_notification = None;
         inner.last_posture_notification = None;
-        drop(inner);
-
-        let _ = app.emit("monitor-status-changed", ());
+        inner.detection = None;
         Ok(())
     }
 
@@ -148,14 +158,116 @@ impl MonitorState {
             inner.break_start = None;
             inner.has_alert = false;
             inner.has_posture_alert = false;
+            inner.detection = None;
         }
     }
 
-    pub fn update_presence(
-        &self,
-        present: bool,
-        app: AppHandle,
-    ) -> Result<MonitorSnapshot, String> {
+    pub fn update_detection(&self, pose: PoseOutput) -> Result<(), String> {
+        let mut inner = self.0.lock().map_err(|e| e.to_string())?;
+        let person_detected = pose.person_detected;
+        let keypoints = pose.keypoints;
+
+        let (score, head_forward, head_tilt, shoulder_uneven, slouching) =
+            if person_detected {
+                let info = self.analyze_posture(&keypoints);
+                (info.score, info.head_forward, info.head_tilt, info.shoulder_uneven, info.slouching)
+            } else {
+                (0, false, false, false, false)
+            };
+
+        inner.detection = Some(DetectionInfo {
+            person_detected,
+            keypoints,
+            score,
+            head_forward,
+            head_tilt,
+            shoulder_uneven,
+            slouching,
+        });
+
+        inner.is_present = person_detected;
+        Ok(())
+    }
+
+    fn analyze_posture(&self, keypoints: &[Keypoint]) -> DetectionInfo {
+        if keypoints.len() < 17 {
+            return DetectionInfo {
+                person_detected: false,
+                keypoints: keypoints.to_vec(),
+                score: 0,
+                head_forward: false,
+                head_tilt: false,
+                shoulder_uneven: false,
+                slouching: false,
+            };
+        }
+
+        let nose = &keypoints[0];
+        let left_ear = &keypoints[3];
+        let right_ear = &keypoints[4];
+        let left_shoulder = &keypoints[5];
+        let right_shoulder = &keypoints[6];
+        let left_hip = &keypoints[11];
+        let right_hip = &keypoints[12];
+
+        let avg = |a: &Keypoint, b: &Keypoint| Keypoint {
+            x: (a.x + b.x) / 2.0,
+            y: (a.y + b.y) / 2.0,
+            confidence: (a.confidence + b.confidence) / 2.0,
+        };
+
+        let ear_mid_x = (left_ear.x + right_ear.x) / 2.0;
+        let shoulder_mid_x = (left_shoulder.x + right_shoulder.x) / 2.0;
+        let ear_mid_y = (left_ear.y + right_ear.y) / 2.0;
+        let shoulder_mid_y = (left_shoulder.y + right_shoulder.y) / 2.0;
+
+        let dx = (ear_mid_x - shoulder_mid_x).abs();
+        let dy = (ear_mid_y - shoulder_mid_y).abs();
+        let head_forward_angle = if dy > 0.001 {
+            (dx / dy).atan() * 180.0 / std::f32::consts::PI
+        } else {
+            0.0
+        };
+        let head_forward = head_forward_angle > 15.0;
+
+        let shoulder_diff = (left_shoulder.y - right_shoulder.y).abs();
+        let shoulder_uneven = shoulder_diff > 0.04;
+
+        let mid_shoulder = avg(left_shoulder, right_shoulder);
+        let mid_hip = avg(left_hip, right_hip);
+        let slouch_dx = (mid_shoulder.x - mid_hip.x).abs();
+        let slouch_dy = (mid_shoulder.y - mid_hip.y).abs();
+        let slouch_angle = if slouch_dy > 0.001 {
+            (slouch_dx / slouch_dy).atan() * 180.0 / std::f32::consts::PI
+        } else {
+            0.0
+        };
+        let slouching = slouch_angle > 20.0;
+
+        let mut penalty = 0;
+        if head_forward {
+            penalty += 25;
+        }
+        if slouching {
+            penalty += 30;
+        }
+        if shoulder_uneven {
+            penalty += 15;
+        }
+        let score = (100 - penalty).max(0) as u32;
+
+        DetectionInfo {
+            person_detected: true,
+            keypoints: keypoints.to_vec(),
+            score,
+            head_forward,
+            head_tilt: false,
+            shoulder_uneven,
+            slouching,
+        }
+    }
+
+    pub fn update_presence(&self, present: bool) -> Result<MonitorSnapshot, String> {
         let mut inner = self.0.lock().map_err(|e| e.to_string())?;
         if !inner.is_monitoring {
             return Ok(inner.snapshot());
@@ -164,7 +276,6 @@ impl MonitorState {
         let now = Instant::now();
         let was_present = inner.is_present;
         inner.is_present = present;
-        inner.last_detected = if present { Some(now) } else { inner.last_detected };
 
         if present && !was_present {
             if inner.status == MonitorStatus::Away {
@@ -172,9 +283,6 @@ impl MonitorState {
                     let break_secs = start.elapsed().as_secs_f64();
                     inner.total_break_secs += break_secs;
                     inner.break_start = None;
-                    drop(inner);
-                    let _ = app.emit("break-ended", break_secs);
-                    inner = self.0.lock().map_err(|e| e.to_string())?;
                 }
             }
             if inner.work_start.is_none() {
@@ -209,48 +317,20 @@ impl MonitorState {
                     };
                     if should_notify {
                         inner.last_notification = Some(now);
-                        drop(inner);
-                        let _ = app.emit("work-threshold-exceeded", work_secs);
-                        let _ = app.notification()
-                            .builder()
-                            .title("该休息了！")
-                            .body(&format!("你已经连续工作了 {} 分钟，起来活动一下吧！", work_secs as u64 / 60))
-                            .show();
-                        inner = self.0.lock().map_err(|e| e.to_string())?;
-                    }
-                }
-
-                let remind_interval_secs = inner.config.remind_interval_minutes as f64 * 60.0;
-                if inner.status == MonitorStatus::Overworked && remind_interval_secs > 0.0 {
-                    if let Some(last) = inner.last_notification {
-                        if last.elapsed().as_secs_f64() >= remind_interval_secs {
-                            inner.last_notification = Some(now);
-                            drop(inner);
-                            let _ = app.emit("work-threshold-exceeded", work_secs);
-                            let _ = app.notification()
-                                .builder()
-                                .title("还在工作？")
-                                .body(&format!("你已经连续工作 {} 分钟了，请尽快休息！", work_secs as u64 / 60))
-                                .show();
-                            inner = self.0.lock().map_err(|e| e.to_string())?;
-                        }
+                        eprintln!(
+                            "ALERT: Work threshold exceeded - {} minutes",
+                            work_secs as u64 / 60
+                        );
                     }
                 }
             }
         }
 
-        let snap = inner.snapshot();
-        drop(inner);
-
-        let _ = app.emit("monitor-status-changed", ());
-        crate::update_tray_tooltip(&app, &snap);
-
-        Ok(snap)
+        Ok(inner.snapshot())
     }
 
     pub fn report_posture(
         &self,
-        app: AppHandle,
         score: u32,
         head_forward: bool,
         head_tilt: bool,
@@ -272,8 +352,7 @@ impl MonitorState {
                 Some(last) => last.elapsed().as_secs() >= 120,
             };
             if should_notify {
-                let now = Instant::now();
-                inner.last_posture_notification = Some(now);
+                inner.last_posture_notification = Some(Instant::now());
                 let mut issues = Vec::new();
                 if head_forward {
                     issues.push("探颈");
@@ -292,20 +371,11 @@ impl MonitorState {
                 } else {
                     format!("检测到{}，请注意调整坐姿", issues.join("、"))
                 };
-                drop(inner);
-                let _ = app.emit("posture-alert", score);
-                let _ = app.notification()
-                    .builder()
-                    .title("注意坐姿！")
-                    .body(&body)
-                    .show();
-                inner = self.0.lock().map_err(|e| e.to_string())?;
+                eprintln!("POSTURE ALERT: {}", body);
             }
         } else if !is_bad {
             inner.has_posture_alert = false;
         }
-
-        drop(inner);
         Ok(())
     }
 
@@ -319,12 +389,10 @@ impl MonitorState {
         Ok(inner.config.clone())
     }
 
-    pub fn save_config(&self, config: config::AppConfig, app: AppHandle) -> Result<(), String> {
-        config::save_config(&config)?;
+    pub fn save_config(&self, cfg: config::AppConfig) -> Result<(), String> {
+        config::save_config(&cfg)?;
         let mut inner = self.0.lock().map_err(|e| e.to_string())?;
-        inner.config = config;
-        drop(inner);
-        let _ = app.emit("config-changed", ());
+        inner.config = cfg;
         Ok(())
     }
 

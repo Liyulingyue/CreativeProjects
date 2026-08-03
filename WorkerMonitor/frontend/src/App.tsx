@@ -66,14 +66,14 @@ export default function App() {
   useEffect(() => {
     if (!(isMonitoring && isCameraReady && isPoseReady)) return;
 
-    const doDetection = () => {
+    const doDetection = async () => {
       const video = videoRef.current;
       if (!video) return;
       const now = performance.now();
       if (now === lastTimestampRef.current) return;
       lastTimestampRef.current = now;
 
-      const result = detect(video, now);
+      const result = await detect(video, now);
       setPersonDetected(result.personDetected);
       setPosture(result.posture);
       reportPresence(result.personDetected);
