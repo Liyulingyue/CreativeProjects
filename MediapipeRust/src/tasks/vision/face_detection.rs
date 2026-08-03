@@ -1,4 +1,4 @@
-use crate::backend::{BoundingBox, CategoriesFilter, Class, Detection, InferenceBackend, Model, Session, Tensor, TensorType, Error};
+use crate::backend::{BoundingBox, Class, Detection, InferenceBackend, Model, Session, Tensor, TensorType, Error};
 use std::sync::Arc;
 
 pub struct FaceDetectorBuilder<B: InferenceBackend> {

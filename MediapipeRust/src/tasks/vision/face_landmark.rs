@@ -1,10 +1,4 @@
 use crate::backend::{Class, InferenceBackend, Landmark, Model, Session, Tensor, TensorType, Error};
-use std::sync::Arc;
-
-pub struct FaceLandmarkerBuilder<B: InferenceBackend> {
-    backend: B,
-    options: FaceLandmarkerOptions,
-}
 
 #[derive(Clone, Debug, Default)]
 pub struct FaceLandmarkerOptions {
@@ -15,10 +9,13 @@ pub struct FaceLandmarkerOptions {
     pub output_face_blendshapes: bool,
 }
 
-impl<B: InferenceBackend> FaceLandmarkerBuilder<B> {
-    pub fn new(backend: B) -> Self {
+pub struct FaceLandmarkerBuilder {
+    options: FaceLandmarkerOptions,
+}
+
+impl FaceLandmarkerBuilder {
+    pub fn new() -> Self {
         Self {
-            backend,
             options: FaceLandmarkerOptions::default(),
         }
     }
@@ -43,45 +40,25 @@ impl<B: InferenceBackend> FaceLandmarkerBuilder<B> {
         self
     }
 
-    pub fn build_from_file(self, path: &str) -> Result<FaceLandmarker<B>, Error> {
+    pub fn build_from_file<B: InferenceBackend>(self, backend: &B, path: &str) -> Result<FaceLandmarker, Error> {
         let data = std::fs::read(path)?;
-        self.build_from_buffer(data)
+        self.build_from_buffer(backend, data)
     }
 
-    pub fn build_from_buffer(self, buffer: Vec<u8>) -> Result<FaceLandmarker<B>, Error> {
-        let model = self.backend.load_model(&buffer)?;
+    pub fn build_from_buffer<B: InferenceBackend>(self, backend: &B, buffer: Vec<u8>) -> Result<FaceLandmarker, Error> {
+        let (model, session) = backend.load_model_and_session(&buffer)?;
         Ok(FaceLandmarker {
-            backend: self.backend,
-            model: Arc::new(model),
+            model,
+            session,
             options: self.options,
         })
     }
 }
 
-pub struct FaceLandmarker<B: InferenceBackend> {
-    backend: B,
-    model: Arc<Model>,
-    options: FaceLandmarkerOptions,
-}
-
-impl<B: InferenceBackend> FaceLandmarker<B> {
-    pub fn new_session(&self) -> Result<FaceLandmarkerSession<'_, B>, Error> {
-        let session = self.backend.create_session(&*self.model)?;
-        Ok(FaceLandmarkerSession {
-            landmarker: self,
-            session,
-        })
-    }
-
-    pub fn detect(&self, image_data: &[u8], width: u32, height: u32) -> Result<Vec<FaceLandmarkResult>, Error> {
-        let mut session = self.new_session()?;
-        session.detect(image_data, width, height)
-    }
-}
-
-pub struct FaceLandmarkerSession<'a, B: InferenceBackend> {
-    landmarker: &'a FaceLandmarker<B>,
+pub struct FaceLandmarker {
+    model: Model,
     session: Session,
+    options: FaceLandmarkerOptions,
 }
 
 #[derive(Debug, Clone)]
@@ -91,17 +68,17 @@ pub struct FaceLandmarkResult {
     pub bounding_box: Option<crate::backend::BoundingBox>,
 }
 
-impl<'a, B: InferenceBackend> FaceLandmarkerSession<'a, B> {
-    pub fn detect(&mut self, image_data: &[u8], width: u32, height: u32) -> Result<Vec<FaceLandmarkResult>, Error> {
+impl FaceLandmarker {
+    pub fn detect(&mut self, image_data: &[u8], _width: u32, _height: u32) -> Result<Vec<FaceLandmarkResult>, Error> {
         let input_tensor = Tensor::new(
-            self.landmarker.model.inputs[0].tensor_type,
-            self.landmarker.model.inputs[0].shape.clone(),
+            self.model.inputs[0].tensor_type,
+            self.model.inputs[0].shape.clone(),
             image_data.to_vec(),
         );
         self.session.set_input(0, &input_tensor)?;
         self.session.compute()?;
 
-        let mut landmarks_tensor = Tensor::empty(TensorType::F32, self.landmarker.model.outputs[0].shape.clone());
+        let mut landmarks_tensor = Tensor::empty(TensorType::F32, self.model.outputs[0].shape.clone());
         self.session.get_output(0, &mut landmarks_tensor)?;
 
         let landmarks_data = landmarks_tensor.as_f32();
@@ -122,8 +99,8 @@ impl<'a, B: InferenceBackend> FaceLandmarkerSession<'a, B> {
             bounding_box: None,
         };
 
-        if self.landmarker.options.output_face_blendshapes && self.landmarker.model.outputs.len() > 1 {
-            let mut blendshapes_tensor = Tensor::empty(TensorType::F32, self.landmarker.model.outputs[1].shape.clone());
+        if self.options.output_face_blendshapes && self.model.outputs.len() > 1 {
+            let mut blendshapes_tensor = Tensor::empty(TensorType::F32, self.model.outputs[1].shape.clone());
             self.session.get_output(1, &mut blendshapes_tensor)?;
             let blendshapes_data = blendshapes_tensor.as_f32();
             let blendshapes: Vec<Class> = blendshapes_data

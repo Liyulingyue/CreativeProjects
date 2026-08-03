@@ -90,7 +90,7 @@ pub trait Backend: Send + Sync {
 pub trait InferenceBackend: Backend + Send + Sync {
     fn load_model(&self, data: &[u8]) -> Result<Model, Error>;
     fn create_session(&self, model: &Model) -> Result<Session, Error>;
-    fn load_model_and_session(&self, data: &[u8]) -> Result<(Model, Session), Error> {
+    fn load_model_and_session(&self, _data: &[u8]) -> Result<(Model, Session), Error> {
         Err(Error::NotImplemented("Backend does not support load_model_and_session".into()))
     }
 }

@@ -133,17 +133,49 @@ impl TensorConverter {
         let channels = 4;
         let mut output = vec![0u8; (self.target_width * self.target_height * channels) as usize];
 
+        let scale_x = width as f32 / self.target_width as f32;
+        let scale_y = height as f32 / self.target_height as f32;
+
         for y in 0..self.target_height {
             for x in 0..self.target_width {
-                let src_x = (x as f32 * width as f32 / self.target_width as f32) as u32;
-                let src_y = (y as f32 * height as f32 / self.target_height as f32) as u32;
+                let src_x = x as f32 * scale_x;
+                let src_y = y as f32 * scale_y;
 
-                let src_idx = (src_y * width + src_x) * channels as u32;
+                let x0 = src_x as u32;
+                let y0 = src_y as u32;
+                let x1 = (x0 + 1).min(width - 1);
+                let y1 = (y0 + 1).min(height - 1);
+
+                let x_frac = src_x - x0 as f32;
+                let y_frac = src_y - y0 as f32;
+
+                let get_pixel = |px: u32, py: u32| -> [f32; 4] {
+                    let idx = (py * width + px) * channels as u32;
+                    if (idx as usize + 3) < data.len() {
+                        [
+                            data[idx as usize] as f32,
+                            data[idx as usize + 1] as f32,
+                            data[idx as usize + 2] as f32,
+                            data[idx as usize + 3] as f32,
+                        ]
+                    } else {
+                        [0.0, 0.0, 0.0, 255.0]
+                    }
+                };
+
+                let p00 = get_pixel(x0, y0);
+                let p01 = get_pixel(x0, y1);
+                let p10 = get_pixel(x1, y0);
+                let p11 = get_pixel(x1, y1);
+
                 let dst_idx = (y * self.target_width + x) * channels as u32;
 
-                if (src_idx as usize) < data.len() && (dst_idx as usize) < output.len() {
-                    output[dst_idx as usize..dst_idx as usize + 4]
-                        .copy_from_slice(&data[src_idx as usize..src_idx as usize + 4]);
+                for c in 0..4 {
+                    let val = p00[c] * (1.0 - x_frac) * (1.0 - y_frac)
+                            + p10[c] * x_frac * (1.0 - y_frac)
+                            + p01[c] * (1.0 - x_frac) * y_frac
+                            + p11[c] * x_frac * y_frac;
+                    output[(dst_idx + c as u32) as usize] = val as u8;
                 }
             }
         }

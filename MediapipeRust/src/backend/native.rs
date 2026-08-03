@@ -78,6 +78,7 @@ impl InferenceBackend for NativeBackend {
 
 #[derive(Debug)]
 pub struct NativeSession {
+    #[allow(dead_code)]
     model: Option<Model>,
     input_buffer: Vec<u8>,
     output_buffers: Vec<Vec<u8>>,

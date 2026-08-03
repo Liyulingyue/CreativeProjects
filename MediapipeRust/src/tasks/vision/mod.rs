@@ -8,6 +8,8 @@ pub mod gesture_recognition;
 pub mod image_segmentation;
 pub mod image_embedding;
 pub mod pose_landmark;
+pub mod selfie_segmentation;
+pub mod iris_tracking;
 
 pub use image_classification::*;
 pub use object_detection::*;
@@ -16,11 +18,13 @@ pub use face_landmark::*;
 pub use hand_detection::*;
 pub use hand_landmark::*;
 pub use gesture_recognition::*;
-pub use image_segmentation::*;
 pub use image_embedding::*;
 pub use pose_landmark::*;
+pub use selfie_segmentation::{SelfieSegmenter, SelfieSegmenterBuilder, SelfieSegmenterOptions, SegmentationOutputType};
+pub use image_segmentation::{ImageSegmenter, ImageSegmenterBuilder, ImageSegmenterOptions, ImageSegmenterOutputType};
+pub use iris_tracking::{IrisTracker, IrisTrackerBuilder, IrisResult};
 
-use crate::backend::{BoundingBox, CategoriesFilter, Class, Detection, Embedding, Error, Landmark, SegmentationMask};
+use crate::backend::{BoundingBox, Error};
 
 #[derive(Clone, Debug)]
 pub struct ImageProcessingOptions {

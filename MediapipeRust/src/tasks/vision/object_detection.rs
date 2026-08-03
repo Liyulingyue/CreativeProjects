@@ -1,6 +1,5 @@
-use crate::backend::{BoundingBox, CategoriesFilter, Class, Detection, InferenceBackend, Model, Session, Tensor, TensorType, Error};
+use crate::backend::{BoundingBox, Class, Detection, InferenceBackend, Model, Session, Tensor, TensorType, Error};
 use crate::labels::get_coco_label;
-use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub enum LabelSource {
@@ -9,14 +8,7 @@ pub enum LabelSource {
     None,
 }
 
-pub struct ObjectDetectorBuilder<B: InferenceBackend> {
-    backend: B,
-    max_results: i32,
-    options: ObjectDetectorOptions,
-    label_source: LabelSource,
-}
-
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ObjectDetectorOptions {
     pub min_score_threshold: f32,
     pub min_suppression_threshold: f32,
@@ -25,10 +17,27 @@ pub struct ObjectDetectorOptions {
     pub num_classes: u32,
 }
 
-impl<B: InferenceBackend> ObjectDetectorBuilder<B> {
-    pub fn new(backend: B) -> Self {
+impl Default for ObjectDetectorOptions {
+    fn default() -> Self {
         Self {
-            backend,
+            min_score_threshold: 0.5,
+            min_suppression_threshold: 0.5,
+            label_allow_list: Vec::new(),
+            label_deny_list: Vec::new(),
+            num_classes: 90,
+        }
+    }
+}
+
+pub struct ObjectDetectorBuilder {
+    max_results: i32,
+    options: ObjectDetectorOptions,
+    label_source: LabelSource,
+}
+
+impl ObjectDetectorBuilder {
+    pub fn new() -> Self {
+        Self {
             max_results: 10,
             options: ObjectDetectorOptions::default(),
             label_source: LabelSource::Coco,
@@ -55,16 +64,16 @@ impl<B: InferenceBackend> ObjectDetectorBuilder<B> {
         self
     }
 
-    pub fn build_from_file(self, path: &str) -> Result<ObjectDetector<B>, Error> {
+    pub fn build_from_file<B: InferenceBackend>(self, backend: &B, path: &str) -> Result<ObjectDetector, Error> {
         let data = std::fs::read(path)?;
-        self.build_from_buffer(data)
+        self.build_from_buffer(backend, data)
     }
 
-    pub fn build_from_buffer(self, buffer: Vec<u8>) -> Result<ObjectDetector<B>, Error> {
-        let model = self.backend.load_model(&buffer)?;
+    pub fn build_from_buffer<B: InferenceBackend>(self, backend: &B, buffer: Vec<u8>) -> Result<ObjectDetector, Error> {
+        let (model, session) = backend.load_model_and_session(&buffer)?;
         Ok(ObjectDetector {
-            backend: self.backend,
-            model: Arc::new(model),
+            model,
+            session,
             max_results: self.max_results,
             options: self.options,
             label_source: self.label_source,
@@ -72,87 +81,56 @@ impl<B: InferenceBackend> ObjectDetectorBuilder<B> {
     }
 }
 
-pub struct ObjectDetector<B: InferenceBackend> {
-    backend: B,
-    model: Arc<Model>,
+pub struct ObjectDetector {
+    model: Model,
+    session: Session,
     max_results: i32,
     options: ObjectDetectorOptions,
     label_source: LabelSource,
 }
 
-impl<B: InferenceBackend> ObjectDetector<B> {
-    pub fn new_session(&self) -> Result<ObjectDetectorSession<'_, B>, Error> {
-        let session = self.backend.create_session(&*self.model)?;
-        Ok(ObjectDetectorSession {
-            detector: self,
-            session,
-        })
-    }
-
-    pub fn detect(&self, image_data: &[u8], width: u32, height: u32) -> Result<Vec<Detection>, Error> {
-        let mut session = self.new_session()?;
-        session.detect(image_data, width, height)
-    }
-}
-
-pub struct ObjectDetectorSession<'a, B: InferenceBackend> {
-    detector: &'a ObjectDetector<B>,
-    session: Session,
-}
-
-impl<'a, B: InferenceBackend> ObjectDetectorSession<'a, B> {
+impl ObjectDetector {
     pub fn detect(&mut self, image_data: &[u8], width: u32, height: u32) -> Result<Vec<Detection>, Error> {
         let input_tensor = self.prepare_input(image_data, width, height)?;
         self.session.set_input(0, &input_tensor)?;
         self.session.compute()?;
 
-        // Check if this is TFLite_Detection_PostProcess format (4 outputs)
-        let is_tflite_format = self.detector.model.outputs.len() >= 4
-            && self.detector.model.outputs[3].shape == vec![1];
+        let is_tflite_format = self.model.outputs.len() >= 4
+            && self.model.outputs[3].shape == vec![1];
 
         if is_tflite_format {
-            // TFLite_Detection_PostProcess format:
-            // 0: [batch, num_boxes, 4] - boxes
-            // 1: [batch, num_boxes] - scores
-            // 2: [batch, num_boxes] - class IDs
-            // 3: [batch] - num detections
+            let num_boxes = self.model.outputs[0].shape[1];
 
-            let num_boxes = self.detector.model.outputs[0].shape[1];
-
-            let mut boxes_tensor = Tensor::empty(TensorType::F32, self.detector.model.outputs[0].shape.clone());
-            let mut scores_tensor = Tensor::empty(TensorType::F32, self.detector.model.outputs[1].shape.clone());
-            let mut classes_tensor = Tensor::empty(TensorType::F32, self.detector.model.outputs[2].shape.clone());
-            let mut num_det_tensor = Tensor::empty(TensorType::F32, self.detector.model.outputs[3].shape.clone());
+            let mut boxes_tensor = Tensor::empty(TensorType::F32, self.model.outputs[0].shape.clone());
+            let mut scores_tensor = Tensor::empty(TensorType::F32, self.model.outputs[1].shape.clone());
+            let mut classes_tensor = Tensor::empty(TensorType::F32, self.model.outputs[2].shape.clone());
+            let mut _num_det_tensor = Tensor::empty(TensorType::F32, self.model.outputs[3].shape.clone());
 
             self.session.get_output(0, &mut boxes_tensor)?;
             self.session.get_output(1, &mut scores_tensor)?;
             self.session.get_output(2, &mut classes_tensor)?;
-            self.session.get_output(3, &mut num_det_tensor)?;
+            self.session.get_output(3, &mut _num_det_tensor)?;
 
-            let detections = self.postprocess_tflite_format(
-                &boxes_tensor, &scores_tensor, &classes_tensor, num_boxes, width, height
-            )?;
-            return Ok(detections);
+            self.postprocess_tflite_format(&boxes_tensor, &scores_tensor, &classes_tensor, num_boxes, width, height)
+        } else {
+            let boxes_size = self.model.outputs[0].shape.iter().product();
+            let scores_size = self.model.outputs[1].shape.iter().product();
+
+            let mut boxes_tensor = Tensor::empty(TensorType::F32, vec![boxes_size]);
+            let mut scores_tensor = Tensor::empty(TensorType::F32, vec![scores_size]);
+
+            self.session.get_output(0, &mut boxes_tensor)?;
+            self.session.get_output(1, &mut scores_tensor)?;
+
+            self.postprocess_output(&boxes_tensor, &scores_tensor, width, height)
         }
-
-        // Generic format: raw boxes and scores
-        let boxes_size = self.detector.model.outputs[0].shape.iter().product();
-        let scores_size = self.detector.model.outputs[1].shape.iter().product();
-
-        let mut boxes_tensor = Tensor::empty(TensorType::F32, vec![boxes_size]);
-        let mut scores_tensor = Tensor::empty(TensorType::F32, vec![scores_size]);
-
-        self.session.get_output(0, &mut boxes_tensor)?;
-        self.session.get_output(1, &mut scores_tensor)?;
-
-        let detections = self.postprocess_output(&boxes_tensor, &scores_tensor, width, height)?;
-        Ok(detections)
     }
 
-    fn prepare_input(&self, image_data: &[u8], width: u32, height: u32) -> Result<Tensor, Error> {
-        let input_shape = &self.detector.model.inputs[0].shape;
-        let input_type = self.detector.model.inputs[0].tensor_type;
-        Ok(Tensor::new(input_type, input_shape.clone(), image_data.to_vec()))
+    fn prepare_input(&self, image_data: &[u8], _width: u32, _height: u32) -> Result<Tensor, Error> {
+        let input_shape = &self.model.inputs[0].shape;
+        let input_type = self.model.inputs[0].tensor_type;
+        let tensor = Tensor::new(input_type, input_shape.clone(), image_data.to_vec());
+        Ok(tensor)
     }
 
     fn postprocess_output(
@@ -166,18 +144,17 @@ impl<'a, B: InferenceBackend> ObjectDetectorSession<'a, B> {
         let scores_data = scores.as_f32();
 
         let mut detections = Vec::new();
-        let num_detections = (boxes_data.len() / 4).min(self.detector.max_results as usize);
+        let num_detections = (boxes_data.len() / 4).min(self.max_results as usize);
 
         for i in 0..num_detections {
             let score = scores_data[i];
-            if score < self.detector.options.min_score_threshold {
+            if score < self.options.min_score_threshold {
                 continue;
             }
 
             let j = i * 4;
             let label = self.get_label(0, i);
 
-            // TFLite format: [ymin, xmin, ymax, xmax] - convert to BoundingBox [left, top, right, bottom]
             let ymin = boxes_data[j] * img_height as f32;
             let xmin = boxes_data[j + 1] * img_width as f32;
             let ymax = boxes_data[j + 2] * img_height as f32;
@@ -207,15 +184,14 @@ impl<'a, B: InferenceBackend> ObjectDetectorSession<'a, B> {
         let mut scores_data = scores.as_f32().to_vec();
         let classes_data = classes.as_f32();
 
-        // TFLite_Detection_PostProcess outputs logits, apply sigmoid to get probabilities
         crate::postprocess::Sigmoid::apply(&mut scores_data);
 
         let mut detections = Vec::new();
-        let num_detections = num_boxes.min(self.detector.max_results as usize);
+        let num_detections = num_boxes.min(self.max_results as usize);
 
         for i in 0..num_detections {
             let score = scores_data[i];
-            if score < self.detector.options.min_score_threshold {
+            if score < self.options.min_score_threshold {
                 continue;
             }
 
@@ -223,8 +199,6 @@ impl<'a, B: InferenceBackend> ObjectDetectorSession<'a, B> {
             let j = i * 4;
             let label = self.get_label(class_id, i);
 
-            // TFLite boxes are [ymin, xmin, ymax, xmax] normalized
-            // BoundingBox::new expects [left, top, right, bottom]
             let ymin = boxes_data[j] * img_height as f32;
             let xmin = boxes_data[j + 1] * img_width as f32;
             let ymax = boxes_data[j + 2] * img_height as f32;
@@ -242,7 +216,7 @@ impl<'a, B: InferenceBackend> ObjectDetectorSession<'a, B> {
     }
 
     fn get_label(&self, class_id: i32, _index: usize) -> String {
-        match &self.detector.label_source {
+        match &self.label_source {
             LabelSource::Coco => {
                 get_coco_label(class_id as usize).unwrap_or("unknown").to_string()
             }
@@ -256,7 +230,7 @@ impl<'a, B: InferenceBackend> ObjectDetectorSession<'a, B> {
     }
 
     fn apply_nms(&self, detections: &mut Vec<Detection>) {
-        let threshold = self.detector.options.min_suppression_threshold;
+        let threshold = self.options.min_suppression_threshold;
         detections.sort_by(|a, b| {
             b.categories[0].score.partial_cmp(&a.categories[0].score).unwrap()
         });
