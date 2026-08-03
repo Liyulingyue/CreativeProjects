@@ -1,10 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { PostureResult, analyzePosture, Landmark } from "../utils/postureAnalysis";
+import { postFrame } from "../api";
 
 export interface PoseDetectionResult {
   personDetected: boolean;
-  posture: PostureResult | null;
+  posture: null;
 }
 
 interface UsePoseDetectorResult {
@@ -12,17 +11,6 @@ interface UsePoseDetectorResult {
   isLoading: boolean;
   error: string | null;
   detect: (video: HTMLVideoElement, timestamp: number) => Promise<PoseDetectionResult>;
-}
-
-interface RustKeypoint {
-  x: number;
-  y: number;
-  confidence: number;
-}
-
-interface RustPoseOutput {
-  keypoints: RustKeypoint[];
-  person_detected: boolean;
 }
 
 export function usePoseDetector(): UsePoseDetectorResult {
@@ -59,25 +47,9 @@ export function usePoseDetector(): UsePoseDetectorResult {
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
 
-        const result = await invoke<RustPoseOutput>("detect_pose", { frame: dataUrl });
+        await postFrame(dataUrl);
 
-        const landmarks: Landmark[] = result.keypoints.map((kp) => ({
-          x: kp.x / 192,
-          y: kp.y / 256,
-          z: 0,
-          visibility: kp.confidence,
-        }));
-
-        const posture = result.person_detected
-          ? analyzePosture(landmarks)
-          : null;
-
-        const detectionResult: PoseDetectionResult = {
-          personDetected: result.person_detected,
-          posture,
-        };
-        lastResultRef.current = detectionResult;
-        return detectionResult;
+        return lastResultRef.current;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         setError(msg);

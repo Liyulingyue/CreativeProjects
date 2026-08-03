@@ -9,6 +9,23 @@ export interface MonitorSnapshot {
   has_alert: boolean;
   has_posture_alert: boolean;
   work_threshold_secs: number;
+  detection: DetectionResult | null;
+}
+
+export interface Keypoint {
+  x: number;
+  y: number;
+  confidence: number;
+}
+
+export interface DetectionResult {
+  person_detected: boolean;
+  keypoints: Keypoint[];
+  score: number;
+  head_forward: boolean;
+  head_tilt: boolean;
+  shoulder_uneven: boolean;
+  slouching: boolean;
 }
 
 export interface AppConfig {

@@ -9,7 +9,7 @@ async function post<T, R>(path: string, body: T): Promise<R> {
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`${path} failed: ${res.status}`);
-  return res.json();
+  return res.json() as unknown as R;
 }
 
 async function get<R>(path: string): Promise<R> {
@@ -60,4 +60,20 @@ export async function reportPosture(
     shoulder_uneven: shoulderUneven,
     slouching,
   });
+}
+
+export interface PostFrameResponse {
+  ok: boolean;
+  person_detected?: boolean;
+  error?: string;
+}
+
+export async function postFrame(frame: string): Promise<PostFrameResponse> {
+  const res = await fetch(`${BASE}/api/frame`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ frame }),
+  });
+  if (!res.ok) throw new Error(`post frame failed: ${res.status}`);
+  return res.json() as Promise<PostFrameResponse>;
 }

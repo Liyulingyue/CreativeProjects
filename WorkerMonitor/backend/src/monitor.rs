@@ -202,7 +202,7 @@ impl MonitorState {
             };
         }
 
-        let nose = &keypoints[0];
+        let _nose = &keypoints[0];
         let left_ear = &keypoints[3];
         let right_ear = &keypoints[4];
         let left_shoulder = &keypoints[5];

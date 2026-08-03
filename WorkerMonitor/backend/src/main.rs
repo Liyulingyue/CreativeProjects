@@ -1,16 +1,11 @@
 mod config;
 mod monitor;
 mod rtmpose;
-mod camera;
-
-use std::sync::Arc;
-use std::time::Duration;
 
 use std::sync::Arc;
 use actix_cors::Cors;
 use actix_web::{web, App, HttpResponse, HttpServer};
 
-use crate::camera::CameraCapture;
 use crate::monitor::MonitorState;
 
 async fn health() -> HttpResponse {
@@ -47,7 +42,7 @@ async fn save_config(
 ) -> HttpResponse {
     match data.get_ref().save_config(cfg.into_inner()) {
         Ok(()) => HttpResponse::Ok().json(serde_json::json!({ "ok": true })),
-        Err(_) => HttpResponse::InternalServerError().json(serde_json::json!({ "ok": false })),
+        Err(_) => HttpResponse::Ok().json(serde_json::json!({ "ok": false })),
     }
 }
 
@@ -56,22 +51,28 @@ async fn dismiss_break_alert(data: web::Data<std::sync::Arc<MonitorState>>) -> H
     HttpResponse::Ok().json(serde_json::json!({ "ok": true }))
 }
 
-fn start_detection_loop(
-    monitor: Arc<MonitorState>,
-    camera: Arc<CameraCapture>,
-) {
-    std::thread::spawn(move || {
-        loop {
-            if let Some(frame_bytes) = camera.latest_frame() {
-                if let Ok(pose) = rtmpose::detect_pose_from_bytes(&frame_bytes) {
-                    if let Err(e) = monitor.update_detection(pose) {
-                        eprintln!("[Detection] update error: {}", e);
-                    }
-                }
+#[derive(serde::Deserialize)]
+struct FramePayload {
+    frame: String,
+}
+
+async fn post_frame(
+    payload: web::Json<FramePayload>,
+    data: web::Data<std::sync::Arc<MonitorState>>,
+) -> HttpResponse {
+    match rtmpose::detect_pose_from_base64(&payload.frame) {
+        Ok(pose) => {
+            if !pose.person_detected {
+                let _ = data.get_ref().update_detection(pose);
+                return HttpResponse::Ok().json(serde_json::json!({ "ok": true, "person_detected": false }));
             }
-            std::thread::sleep(Duration::from_millis(200));
+            match data.get_ref().update_detection(pose) {
+                Ok(()) => HttpResponse::Ok().json(serde_json::json!({ "ok": true })),
+                Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e})),
+            }
         }
-    });
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e})),
+    }
 }
 
 #[actix_web::main]
@@ -85,20 +86,6 @@ async fn main() -> std::io::Result<()> {
     }
 
     let monitor_state = Arc::new(MonitorState::new());
-
-    let camera = match CameraCapture::new() {
-        Ok(cam) => {
-            eprintln!("[Camera] initialized");
-            Arc::new(cam)
-        }
-        Err(e) => {
-            eprintln!("[Camera] failed to init: {}", e);
-            std::sync::Arc::new(CameraCapture::new().expect("fallback"))
-        }
-    };
-
-    camera.start();
-    start_detection_loop(monitor_state.clone(), camera.clone());
 
     eprintln!("WorkerMonitor backend running on http://127.0.0.1:8080");
 
@@ -119,6 +106,7 @@ async fn main() -> std::io::Result<()> {
             .route("/api/config", web::get().to(get_config))
             .route("/api/config", web::post().to(save_config))
             .route("/api/alert/dismiss", web::post().to(dismiss_break_alert))
+            .route("/api/frame", web::post().to(post_frame))
     })
     .bind(("127.0.0.1", 8080))?
     .run()

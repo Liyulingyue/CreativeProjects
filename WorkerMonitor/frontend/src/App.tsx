@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useCamera } from "./hooks/useCamera";
 import { usePoseDetector } from "./hooks/usePoseDetector";
 import { useMonitor } from "./hooks/useMonitor";
-import { getConfig, saveConfig, dismissBreakAlert, reportPosture } from "./api";
+import { getConfig, saveConfig, dismissBreakAlert } from "./api";
 import { enterCompactMode, enterExpandedMode, hideToTray } from "./utils/windowMode";
 import { AppConfig, PostureResult } from "./types";
 import MonitorView from "./components/MonitorView";
@@ -16,7 +16,7 @@ import "./App.css";
 export default function App() {
   const { videoRef, canvasRef, isCameraReady, cameraError, startCamera, stopCamera } = useCamera();
   const { isReady: isPoseReady, isLoading: isPoseLoading, error: poseError, detect } = usePoseDetector();
-  const { snapshot, isMonitoring, toggleMonitoring, reportPresence } = useMonitor();
+  const { snapshot, isMonitoring, toggleMonitoring } = useMonitor();
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [view, setView] = useState<"monitor" | "settings" | "compact">("monitor");
   const [breakAlertInfo, setBreakAlertInfo] = useState<{ workSecs: number } | null>(null);
@@ -33,6 +33,30 @@ export default function App() {
   useEffect(() => {
     getConfig().then(setConfig).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!snapshot) return;
+    const det = snapshot.detection;
+    if (det && det.person_detected) {
+      setPersonDetected(true);
+      setPosture({
+        score: det.score,
+        headForward: det.head_forward,
+        headTilt: det.head_tilt,
+        shoulderUneven: det.shoulder_uneven,
+        slouching: det.slouching,
+        details: {
+          headForwardAngle: 0,
+          headTiltAngle: 0,
+          shoulderDiff: 0,
+          slouchAngle: 0,
+        },
+      });
+    } else {
+      setPersonDetected(false);
+      setPosture(null);
+    }
+  }, [snapshot]);
 
   useEffect(() => {
     const unlisten1 = listen<number>("work-threshold-exceeded", (e) => {
@@ -75,25 +99,13 @@ export default function App() {
 
       const result = await detect(video, now);
       setPersonDetected(result.personDetected);
-      setPosture(result.posture);
-      reportPresence(result.personDetected);
-
-      if (result.personDetected && result.posture) {
-        reportPosture(
-          result.posture.score,
-          result.posture.headForward,
-          result.posture.headTilt,
-          result.posture.shoulderUneven,
-          result.posture.slouching
-        ).catch(() => {});
-      }
     };
 
     doDetection();
     const interval = (config?.check_interval_seconds ?? 5) * 1000;
     const timer = setInterval(doDetection, interval);
     return () => clearInterval(timer);
-  }, [isMonitoring, isCameraReady, isPoseReady, config, detect, reportPresence]);
+  }, [isMonitoring, isCameraReady, isPoseReady, config, detect]);
 
   const handleToggleMonitoring = useCallback(async () => {
     const current = isMonitoringRef.current;
