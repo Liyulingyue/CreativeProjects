@@ -47,7 +47,11 @@ export function usePoseDetector(): UsePoseDetectorResult {
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
 
-        await postFrame(dataUrl);
+        const result = await postFrame(dataUrl);
+        lastResultRef.current = {
+          personDetected: result.person_detected ?? false,
+          posture: null,
+        };
 
         return lastResultRef.current;
       } catch (err) {
