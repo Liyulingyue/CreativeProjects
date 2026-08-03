@@ -199,10 +199,10 @@ impl ObjectDetector {
             let j = i * 4;
             let label = self.get_label(class_id, i);
 
-            let ymin = boxes_data[j] * img_height as f32;
-            let xmin = boxes_data[j + 1] * img_width as f32;
-            let ymax = boxes_data[j + 2] * img_height as f32;
-            let xmax = boxes_data[j + 3] * img_width as f32;
+            let xmin = boxes_data[j] * img_width as f32;
+            let ymin = boxes_data[j + 1] * img_height as f32;
+            let xmax = boxes_data[j + 2] * img_width as f32;
+            let ymax = boxes_data[j + 3] * img_height as f32;
 
             let detection = Detection {
                 bounding_box: BoundingBox::new(xmin, ymin, xmax, ymax),
