@@ -1,0 +1,32 @@
+[package]
+name = "mixpiperust"
+version = "0.1.0"
+edition = "2024"
+description = "A composable inference pipeline framework for Rust, inspired by MediaPipe"
+license = "MIT"
+repository = "https://github.com/anomalyco/MixPipeRust"
+keywords = ["ml", "inference", "pipeline", "mediapipe", "onnx", "pose", "cv"]
+categories = ["multimedia", "graphics", "science"]
+
+[features]
+default = ["camera", "onnx"]
+camera = ["xcap"]
+onnx = ["ort"]
+
+[dependencies]
+anyhow = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+image = "0.25"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dependencies.ort]
+package = "ort"
+version = "2.0.0-rc.13"
+optional = true
+features = ["ndarray"]
+
+[dependencies.xcap]
+version = "0.0.14"
+optional = true
