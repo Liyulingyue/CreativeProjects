@@ -1,4 +1,4 @@
-use crate::node::{Frame, FrameData, Node, Result};
+use crate::node::{Frame, Node, Result};
 use std::any::Any;
 
 pub struct Resize {

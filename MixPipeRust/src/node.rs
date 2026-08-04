@@ -1,6 +1,5 @@
 use std::any::Any;
 use std::collections::HashMap;
-use std::sync::Arc;
 
 pub trait Node: Send + Sync {
     fn process(&self, frame: Frame) -> Result<Frame>;

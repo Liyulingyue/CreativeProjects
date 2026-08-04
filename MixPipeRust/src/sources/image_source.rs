@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use image::GenericImageView;
 
-use crate::node::{Frame, FrameData, FrameMeta, ImageData, MediaType, Node, NodeError, PixelFormat, Result};
+use crate::node::{Frame, FrameData, FrameMeta, ImageData, MediaType, NodeError};
 use crate::sources::Source;
 
 pub struct ImageSource {
@@ -17,10 +17,8 @@ impl ImageSource {
             running: Arc::new(AtomicBool::new(false)),
         }
     }
-}
 
-impl Node for ImageSource {
-    fn process(&self, _frame: Frame) -> Result<Frame> {
+    pub fn load_frame(&self) -> Result<Frame, NodeError> {
         let img = image::open(&self.path).map_err(|e| NodeError::Source(e.to_string()))?;
         let (w, h) = img.dimensions();
         let rgba = img.to_rgba8();
@@ -29,7 +27,7 @@ impl Node for ImageSource {
         let frame_data = FrameData::Image(ImageData {
             width: w,
             height: h,
-            format: PixelFormat::Rgba,
+            format: crate::node::PixelFormat::Rgba,
             pixels,
         });
 
@@ -41,10 +39,6 @@ impl Node for ImageSource {
         };
 
         Ok(Frame::new(frame_data, meta))
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 
