@@ -1104,20 +1104,22 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
         if step < input_tokens.len() - 1 { continue; }
 
         let logits = &mut scratch.logits;
-        if temperature > 0.0 {
+        let chosen = if temperature <= 0.0 {
+            logits.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).map(|(i, _)| i).unwrap_or(0)
+        } else {
             for l in logits.iter_mut() { *l /= temperature; }
-        }
-        let top = sample_top_k(logits, 40);
-
-        let mut rng = 0u64;
-        for &t in &all_tokens { rng = rng.wrapping_mul(6364136223846793005).wrapping_add(t as u64); }
-        let r = ((rng >> 33) as f32) / (1u64 << 31) as f32;
-        let mut cum = 0.0f32;
-        let mut chosen = top[0].0;
-        for &(idx, prob) in &top {
-            cum += prob;
-            if cum >= r { chosen = idx; break; }
-        }
+            let top = sample_top_k(logits, 40);
+            let mut rng = 0u64;
+            for &t in &all_tokens { rng = rng.wrapping_mul(6364136223846793005).wrapping_add(t as u64); }
+            let r = ((rng >> 33) as f32) / (1u64 << 31) as f32;
+            let mut cum = 0.0f32;
+            let mut chosen = top[0].0;
+            for &(idx, prob) in &top {
+                cum += prob;
+                if cum >= r { chosen = idx; break; }
+            }
+            chosen
+        };
 
         if chosen == eos_id as usize || chosen == im_end_id as usize { break; }
         if generated_tokens.len() >= max_tokens { break; }
