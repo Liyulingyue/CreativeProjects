@@ -19,7 +19,13 @@ export function useMonitor(): UseMonitorResult {
   useEffect(() => {
     if (initialized.current) return;
     initialized.current = true;
-    getMonitorStatus().then(setSnapshot).catch(() => {});
+    getMonitorStatus().then((snap) => {
+      setSnapshot(snap);
+      if (snap.is_monitoring) {
+        setIsMonitoring(true);
+        isMonitoringRef.current = true;
+      }
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {

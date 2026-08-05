@@ -2,8 +2,7 @@ import { RefObject, useState, useEffect } from "react";
 import { PostureResult } from "../types";
 
 interface MonitorViewProps {
-  videoRef: RefObject<HTMLVideoElement | null>;
-  canvasRef: RefObject<HTMLCanvasElement | null>;
+  videoRef: RefObject<HTMLImageElement | null>;
   isCameraReady: boolean;
   cameraError: string | null;
   status: "idle" | "present" | "away" | "overworked";
@@ -17,6 +16,7 @@ interface MonitorViewProps {
   isPoseReady: boolean;
   isPoseLoading: boolean;
   poseError: string | null;
+  mirrorVideo: boolean;
   onToggleMonitoring: () => void;
   onCompact: () => void;
   onSettings: () => void;
@@ -89,7 +89,6 @@ function PostureCircle({ score }: { score: number }) {
 
 export default function MonitorView({
   videoRef,
-  canvasRef,
   isCameraReady,
   cameraError,
   status,
@@ -103,6 +102,7 @@ export default function MonitorView({
   isPoseReady,
   isPoseLoading,
   poseError,
+  mirrorVideo,
   onToggleMonitoring,
   onCompact,
   onSettings,
@@ -164,8 +164,7 @@ export default function MonitorView({
               </span>
             </div>
             <div className="camera-wrapper">
-              <video ref={videoRef} playsInline muted />
-              <canvas ref={canvasRef} style={{ display: "none" }} />
+              <img ref={videoRef} alt="" style={{ transform: mirrorVideo ? "scaleX(-1)" : "none" }} />
               {!isCameraReady && !cameraError && (
                 <div className="camera-overlay">点击下方按钮启动监控</div>
               )}

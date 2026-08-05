@@ -79,6 +79,17 @@ export default function Settings({ config, onSave, onClose }: SettingsProps) {
       </div>
 
       <div className="setting-group">
+        <h3>摄像头</h3>
+        <div className="setting-item">
+          <label>画面镜像</label>
+          <button
+            className={`toggle ${local.mirror_video ? "active" : ""}`}
+            onClick={() => update("mirror_video", !local.mirror_video)}
+          />
+        </div>
+      </div>
+
+      <div className="setting-group">
         <h3>坐姿检测</h3>
         <div className="setting-item">
           <div>
@@ -178,5 +189,6 @@ function defaultConfig(): AppConfig {
     posture_alert_threshold: 50,
     auto_start_monitoring: true,
     notification_sound: true,
+    mirror_video: true,
   };
 }

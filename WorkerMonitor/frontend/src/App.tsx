@@ -14,7 +14,7 @@ import BreakAlert from "./components/BreakAlert";
 import "./App.css";
 
 export default function App() {
-  const { videoRef, canvasRef, isCameraReady, cameraError, startCamera, stopCamera } = useCamera();
+  const { videoRef, isCameraReady, cameraError, startCamera, stopCamera } = useCamera();
   const { isReady: isPoseReady, isLoading: isPoseLoading, error: poseError, detect } = usePoseDetector();
   const { snapshot, isMonitoring, toggleMonitoring } = useMonitor();
   const [config, setConfig] = useState<AppConfig | null>(null);
@@ -24,7 +24,6 @@ export default function App() {
   const [posture, setPosture] = useState<PostureResult | null>(null);
   const [personDetected, setPersonDetected] = useState(false);
 
-  const lastTimestampRef = useRef<number>(0);
   const toggleFnRef = useRef(toggleMonitoring);
   toggleFnRef.current = toggleMonitoring;
   const isMonitoringRef = useRef(isMonitoring);
@@ -59,17 +58,23 @@ export default function App() {
   }, [snapshot]);
 
   useEffect(() => {
-    const unlisten1 = listen<number>("work-threshold-exceeded", (e) => {
-      setBreakAlertInfo({ workSecs: e.payload });
-    });
-    const unlisten2 = listen<number>("break-ended", (e) => {
-      setWelcomeBack({ breakSecs: e.payload });
-    });
-    const unlisten3 = listen<number>("posture-alert", () => {});
+    let ignore = false;
+
+    const setup = async () => {
+      try {
+        await listen<number>("work-threshold-exceeded", (e) => {
+          if (!ignore) setBreakAlertInfo({ workSecs: e.payload });
+        });
+        await listen<number>("break-ended", (e) => {
+          if (!ignore) setWelcomeBack({ breakSecs: e.payload });
+        });
+        await listen<number>("posture-alert", () => {});
+      } catch {}
+    };
+    setup();
+
     return () => {
-      unlisten1.then((f) => f());
-      unlisten2.then((f) => f());
-      unlisten3.then((f) => f());
+      ignore = true;
     };
   }, []);
 
@@ -88,16 +93,10 @@ export default function App() {
   }, [welcomeBack]);
 
   useEffect(() => {
-    if (!(isMonitoring && isCameraReady && isPoseReady)) return;
+    if (!(isMonitoring && isPoseReady)) return;
 
     const doDetection = async () => {
-      const video = videoRef.current;
-      if (!video) return;
-      const now = performance.now();
-      if (now === lastTimestampRef.current) return;
-      lastTimestampRef.current = now;
-
-      const result = await detect(video, now);
+      const result = await detect();
       setPersonDetected(result.personDetected);
     };
 
@@ -105,7 +104,15 @@ export default function App() {
     const interval = (config?.check_interval_seconds ?? 5) * 1000;
     const timer = setInterval(doDetection, interval);
     return () => clearInterval(timer);
-  }, [isMonitoring, isCameraReady, isPoseReady, config, detect]);
+  }, [isMonitoring, isPoseReady, config, detect]);
+
+  useEffect(() => {
+    if (isMonitoring && !isCameraReady) {
+      startCamera();
+    } else if (!isMonitoring && isCameraReady) {
+      stopCamera();
+    }
+  }, [isMonitoring]);
 
   const handleToggleMonitoring = useCallback(async () => {
     const current = isMonitoringRef.current;
@@ -152,8 +159,7 @@ export default function App() {
 
   const cameraPortal = createPortal(
     <>
-      <video ref={videoRef} playsInline muted style={{ position: "fixed", top: 0, left: 0, width: 0, height: 0, pointerEvents: "none", visibility: "hidden" }} />
-      <canvas ref={canvasRef} style={{ display: "none" }} />
+      <img ref={videoRef} alt="" style={{ position: "fixed", top: 0, left: 0, width: 0, height: 0, pointerEvents: "none", visibility: "hidden" }} />
     </>,
     document.body
   );
@@ -206,7 +212,6 @@ export default function App() {
         <div className="app">
           <MonitorView
             videoRef={videoRef}
-            canvasRef={canvasRef}
             isCameraReady={isCameraReady}
             cameraError={cameraError}
             status={status}
@@ -220,6 +225,7 @@ export default function App() {
             isPoseReady={isPoseReady}
             isPoseLoading={isPoseLoading}
             poseError={poseError}
+            mirrorVideo={config?.mirror_video ?? true}
             onToggleMonitoring={handleToggleMonitoring}
             onCompact={handleEnterCompact}
             onSettings={() => setView("settings")}

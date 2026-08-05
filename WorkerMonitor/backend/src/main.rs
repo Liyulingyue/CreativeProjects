@@ -1,3 +1,4 @@
+mod camera;
 mod config;
 mod monitor;
 mod rtmpose;
@@ -6,6 +7,7 @@ use std::sync::Arc;
 use actix_cors::Cors;
 use actix_web::{web, App, HttpResponse, HttpServer};
 
+use crate::camera::CameraState;
 use crate::monitor::MonitorState;
 
 async fn health() -> HttpResponse {
@@ -19,13 +21,23 @@ async fn get_status(data: web::Data<std::sync::Arc<MonitorState>>) -> HttpRespon
     }
 }
 
-async fn start_monitoring(data: web::Data<std::sync::Arc<MonitorState>>) -> HttpResponse {
+async fn start_monitoring(
+    data: web::Data<std::sync::Arc<MonitorState>>,
+    camera: web::Data<Arc<CameraState>>,
+) -> HttpResponse {
+    if let Err(e) = camera.start() {
+        return HttpResponse::InternalServerError().json(serde_json::json!({"error": format!("camera start failed: {}", e)}));
+    }
     let _ = data.get_ref().start();
     HttpResponse::Ok().json(serde_json::json!({ "ok": true }))
 }
 
-async fn stop_monitoring(data: web::Data<std::sync::Arc<MonitorState>>) -> HttpResponse {
+async fn stop_monitoring(
+    data: web::Data<std::sync::Arc<MonitorState>>,
+    camera: web::Data<Arc<CameraState>>,
+) -> HttpResponse {
     data.get_ref().stop();
+    camera.stop();
     HttpResponse::Ok().json(serde_json::json!({ "ok": true }))
 }
 
@@ -51,16 +63,58 @@ async fn dismiss_break_alert(data: web::Data<std::sync::Arc<MonitorState>>) -> H
     HttpResponse::Ok().json(serde_json::json!({ "ok": true }))
 }
 
-#[derive(serde::Deserialize)]
-struct FramePayload {
-    frame: String,
+async fn video_stream(camera: web::Data<Arc<CameraState>>) -> HttpResponse {
+    if !camera.is_running() {
+        return HttpResponse::ServiceUnavailable().body("Camera not started");
+    }
+
+    let camera = camera.get_ref().clone();
+
+    let stream = futures_util::stream::unfold((), move |_| {
+        let cam = camera.clone();
+        async move {
+            tokio::time::sleep(std::time::Duration::from_millis(33)).await;
+            let frame = match cam.get_frame() {
+                Some(f) => f,
+                None => return None,
+            };
+            let header = format!(
+                "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
+                frame.len()
+            );
+            let mut data = header.into_bytes();
+            data.extend(frame);
+            data.extend(b"\r\n");
+            Some((Ok::<_, actix_web::Error>(bytes::Bytes::from(data)), ()))
+        }
+    });
+
+    HttpResponse::Ok()
+        .content_type("multipart/x-mixed-replace; boundary=frame")
+        .streaming(stream)
 }
 
 async fn post_frame(
-    payload: web::Json<FramePayload>,
     data: web::Data<std::sync::Arc<MonitorState>>,
+    camera: web::Data<Arc<CameraState>>,
 ) -> HttpResponse {
-    match rtmpose::detect_pose_from_base64(&payload.frame) {
+    if !camera.is_running() {
+        if let Err(e) = camera.start() {
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": format!("camera start failed: {}", e)}));
+        }
+    }
+
+    let frame = match camera.get_frame() {
+        Some(f) => f,
+        None => {
+            return HttpResponse::Ok().json(serde_json::json!({ "ok": true, "person_detected": false }));
+        }
+    };
+
+    let base64_frame = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &frame);
+    let data_url = format!("data:image/jpeg;base64,{}", base64_frame);
+
+    match rtmpose::detect_pose_from_base64(&data_url) {
         Ok(pose) => {
             if !pose.person_detected {
                 let _ = data.get_ref().update_detection(pose);
@@ -77,15 +131,15 @@ async fn post_frame(
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let model_path = std::env::var("RTMPOSE_MODEL")
-        .unwrap_or_else(|_| "resource/end2end.onnx".to_string());
-
-    if let Err(e) = rtmpose::init_model(&model_path) {
-        eprintln!("Failed to initialize RTMPose model: {}", e);
+    eprintln!("Initializing models (downloading if needed)...");
+    if let Err(e) = rtmpose::init_model("") {
+        eprintln!("Failed to initialize models: {}", e);
         std::process::exit(1);
     }
+    eprintln!("Models initialized successfully!");
 
     let monitor_state = Arc::new(MonitorState::new());
+    let camera_state = Arc::new(CameraState::new());
 
     eprintln!("WorkerMonitor backend running on http://127.0.0.1:8080");
 
@@ -99,7 +153,9 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .wrap(cors)
             .app_data(web::Data::new(monitor_state.clone()))
+            .app_data(web::Data::new(camera_state.clone()))
             .route("/health", web::get().to(health))
+            .route("/stream", web::get().to(video_stream))
             .route("/api/status", web::get().to(get_status))
             .route("/api/monitoring/start", web::post().to(start_monitoring))
             .route("/api/monitoring/stop", web::post().to(stop_monitoring))

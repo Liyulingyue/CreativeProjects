@@ -36,6 +36,7 @@ export interface AppConfig {
   posture_alert_threshold: number;
   auto_start_monitoring: boolean;
   notification_sound: boolean;
+  mirror_video: boolean;
 }
 
 export interface PostureResult {

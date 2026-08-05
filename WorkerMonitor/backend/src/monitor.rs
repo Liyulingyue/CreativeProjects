@@ -164,6 +164,10 @@ impl MonitorState {
 
     pub fn update_detection(&self, pose: PoseOutput) -> Result<(), String> {
         let mut inner = self.0.lock().map_err(|e| e.to_string())?;
+        if !inner.is_monitoring {
+            return Ok(());
+        }
+
         let person_detected = pose.person_detected;
         let keypoints = pose.keypoints;
 
@@ -185,7 +189,59 @@ impl MonitorState {
             slouching,
         });
 
+        let was_present = inner.is_present;
         inner.is_present = person_detected;
+        let now = Instant::now();
+
+        if person_detected && !was_present {
+            if inner.status == MonitorStatus::Away {
+                if let Some(start) = inner.break_start {
+                    let break_secs = start.elapsed().as_secs_f64();
+                    inner.total_break_secs += break_secs;
+                    inner.break_start = None;
+                }
+            }
+            if inner.work_start.is_none() {
+                inner.work_start = Some(now);
+            }
+            if inner.status == MonitorStatus::Overworked {
+                inner.has_alert = false;
+            }
+            inner.status = MonitorStatus::Present;
+        } else if !person_detected && was_present {
+            if let Some(start) = inner.work_start {
+                let work_secs = start.elapsed().as_secs_f64();
+                inner.total_work_secs += work_secs;
+                inner.work_start = None;
+            }
+            inner.break_start = Some(now);
+            inner.has_alert = false;
+            inner.has_posture_alert = false;
+            inner.status = MonitorStatus::Away;
+        }
+
+        if person_detected {
+            if let Some(start) = inner.work_start {
+                let work_secs = start.elapsed().as_secs_f64();
+                let threshold_secs = inner.config.work_threshold_minutes as f64 * 60.0;
+                if work_secs >= threshold_secs && inner.status != MonitorStatus::Overworked {
+                    inner.status = MonitorStatus::Overworked;
+                    inner.has_alert = true;
+                    let should_notify = match inner.last_notification {
+                        None => true,
+                        Some(last) => last.elapsed().as_secs() >= 300,
+                    };
+                    if should_notify {
+                        inner.last_notification = Some(now);
+                        eprintln!(
+                            "ALERT: Work threshold exceeded - {} minutes",
+                            work_secs as u64 / 60
+                        );
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
