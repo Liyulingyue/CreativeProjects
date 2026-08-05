@@ -63,7 +63,7 @@ impl PretrainedModel {
 }
 
 pub fn get_cache_dir() -> Option<PathBuf> {
-    dirs::data_local_dir().map(|p| p.join("mixpiperust").join("models"))
+    dirs::data_local_dir().map(|p| p.join("mixpipe").join("models"))
 }
 
 pub fn get_model_path(model: PretrainedModel) -> Option<PathBuf> {

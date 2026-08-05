@@ -20,7 +20,7 @@
 ### 方式一：使用预训练模型（推荐）
 
 ```rust
-use mixpiperust::{RtmDet, RtmPose, PretrainedModel, Frame};
+use mixpipe::{RtmDet, RtmPose, PretrainedModel, Frame};
 
 let detector = RtmDet::from_pretrained(PretrainedModel::RtmDetTiny)?;
 let pose = RtmPose::from_pretrained(PretrainedModel::RtmPoseWholeBody)?;
@@ -34,7 +34,7 @@ let frame = detector.process(frame)?;
 ### 方式二：使用 Pipeline（检测+姿态一体化）
 
 ```rust
-use mixpiperust::{Pipeline, PretrainedModel};
+use mixpipe::{Pipeline, PretrainedModel};
 
 let pipeline = Pipeline::builder()
     .detector(PretrainedModel::RtmDetTiny)
@@ -99,7 +99,7 @@ pub enum PretrainedModel {
 ```rust
 // 获取缓存目录
 pub fn get_cache_dir() -> Option<PathBuf>
-// 返回: Windows: %LOCALAPPDATA%\mixpiperust\models
+// 返回: Windows: %LOCALAPPDATA%\mixpipe\models
 
 // 获取特定模型的缓存路径
 pub fn get_model_path(model: PretrainedModel) -> Option<PathBuf>
@@ -118,7 +118,7 @@ pub fn download_model_blocking(model: PretrainedModel) -> anyhow::Result<PathBuf
 **示例：**
 
 ```rust
-use mixpiperust::{download_model_blocking, get_model_path, PretrainedModel};
+use mixpipe::{download_model_blocking, get_model_path, PretrainedModel};
 
 // 检查模型是否已缓存
 if let Some(path) = get_model_path(PretrainedModel::RtmDetTiny) {
@@ -258,7 +258,7 @@ pub fn crop_frame(frame: &Frame, bbox: &[f32; 4]) -> Result<Frame>
 ### 创建实例
 
 ```rust
-use mixpiperust::{RtmDet, PretrainedModel};
+use mixpipe::{RtmDet, PretrainedModel};
 
 impl RtmDet {
     // 从本地 ONNX 文件加载
@@ -292,7 +292,7 @@ impl Node for RtmDet {
 ### 示例
 
 ```rust
-use mixpiperust::{RtmDet, PretrainedModel, Frame};
+use mixpipe::{RtmDet, PretrainedModel, Frame};
 
 let detector = RtmDet::from_pretrained(PretrainedModel::RtmDetTiny)?;
 let frame = Frame::from_rgb(pixels, width, height);
@@ -312,7 +312,7 @@ if let Some(dets) = frame.detections() {
 ### 创建实例
 
 ```rust
-use mixpiperust::{RtmPose, PretrainedModel};
+use mixpipe::{RtmPose, PretrainedModel};
 
 impl RtmPose {
     // 从本地 ONNX 文件加载
@@ -357,7 +357,7 @@ impl Node for RtmPose {
 ### 示例
 
 ```rust
-use mixpiperust::{RtmPose, PretrainedModel, Frame};
+use mixpipe::{RtmPose, PretrainedModel, Frame};
 
 let pose = RtmPose::from_pretrained(PretrainedModel::RtmPoseWholeBody)?;
 
@@ -428,7 +428,7 @@ pub fn run(&self, pixels: &[u8], width: u32, height: u32) -> Result<Vec<Person>>
 ### 示例
 
 ```rust
-use mixpiperust::{Pipeline, PretrainedModel};
+use mixpipe::{Pipeline, PretrainedModel};
 
 let pipeline = Pipeline::builder()
     .detector(PretrainedModel::RtmDetTiny)
@@ -447,12 +447,12 @@ for person in &persons {
 
 ## 图像处理 (Processors)
 
-处理器模块 `mixpiperust::processors` 包含图像预处理节点。
+处理器模块 `mixpipe::processors` 包含图像预处理节点。
 
 ### Resize 调整尺寸
 
 ```rust
-use mixpiperust::processors::Resize;
+use mixpipe::processors::Resize;
 use crate::node::Node;
 
 let resize = Resize::new(640, 480);
@@ -462,7 +462,7 @@ let resized_frame = resize.process(frame)?;
 ### Normalize 归一化
 
 ```rust
-use mixpiperust::processors::Normalize;
+use mixpipe::processors::Normalize;
 
 let normalize = Normalize::new([123.675, 116.28, 103.53], [58.395, 57.12, 57.375]);
 // 或使用 ImageNet 标准
@@ -472,8 +472,8 @@ let normalize = Normalize::imagenet();
 ### ColorConvert 颜色转换
 
 ```rust
-use mixpiperust::processors::ColorConvert;
-use mixpiperust::node::PixelFormat;
+use mixpipe::processors::ColorConvert;
+use mixpipe::node::PixelFormat;
 
 let converter = ColorConvert::new(PixelFormat::Rgba);
 let rgba_frame = converter.process(rgb_frame)?;
@@ -488,7 +488,7 @@ let rgba_frame = converter.process(rgb_frame)?;
 `examples/detection.rs`
 
 ```rust
-use mixpiperust::{RtmDet, PretrainedModel, Frame};
+use mixpipe::{RtmDet, PretrainedModel, Frame};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let detector = RtmDet::from_pretrained(PretrainedModel::RtmDetTiny)?;
@@ -517,7 +517,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 `examples/pose_estimation.rs`
 
 ```rust
-use mixpiperust::{RtmPose, PretrainedModel, Frame};
+use mixpipe::{RtmPose, PretrainedModel, Frame};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pose = RtmPose::from_pretrained(PretrainedModel::RtmPoseWholeBody)?;
@@ -543,7 +543,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 `examples/pipeline.rs`
 
 ```rust
-use mixpiperust::{Pipeline, PretrainedModel};
+use mixpipe::{Pipeline, PretrainedModel};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pipeline = Pipeline::builder()
@@ -575,7 +575,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 创建 Visualizer
 
 ```rust
-use mixpiperust::Visualizer;
+use mixpipe::Visualizer;
 
 // COCO 17 点（人体）
 let viz = Visualizer::coco17();
@@ -609,7 +609,7 @@ pub fn draw_skeleton(&self, image: &mut RgbImage, keypoints: &[Keypoint])
 ### 可视化示例
 
 ```rust
-use mixpiperust::{Pipeline, PretrainedModel, Visualizer};
+use mixpipe::{Pipeline, PretrainedModel, Visualizer};
 use image::RgbImage;
 
 let pipeline = Pipeline::builder()
@@ -653,7 +653,7 @@ output.save("output.png")?;
 
 ```rust
 // 完整导入
-use mixpiperust::{
+use mixpipe::{
     // 核心类型
     Node, Frame, FrameMeta, FrameData, ImageData, AudioData, TextData, VideoData,
     MediaType, PixelFormat, NodeError, Result,
@@ -672,5 +672,5 @@ use mixpiperust::{
 };
 
 // prelude（常用导入）
-use mixpiperust::prelude::*;
+use mixpipe::prelude::*;
 ```

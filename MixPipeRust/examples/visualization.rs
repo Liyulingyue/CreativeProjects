@@ -1,4 +1,4 @@
-use mixpiperust::{Pipeline, PretrainedModel, Visualizer};
+use mixpipe::{Pipeline, PretrainedModel, Visualizer};
 
 fn main() -> anyhow::Result<()> {
     println!("=== MixPipeRust: Visualization Demo ===\n");
@@ -11,8 +11,8 @@ fn main() -> anyhow::Result<()> {
 
     // 方式二：使用本地模型（如果用户已自行下载）
     // let pipeline = Pipeline::builder()
-    //     .detector("path/to/your/rtmdet-tiny-mmdeploy.onnx")
-    //     .pose("path/to/your/rtmpose-tiny-mmdeploy.onnx")
+    //     .detector("path/to/your/rtmdet.onnx")
+    //     .pose("path/to/your/rtmpose.onnx")
     //     .build()?;
 
     println!("Pipeline built successfully!\n");

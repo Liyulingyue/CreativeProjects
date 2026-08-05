@@ -1,4 +1,4 @@
-use mixpiperust::{Pipeline, PretrainedModel};
+use mixpipe::{Pipeline, PretrainedModel};
 
 fn main() -> anyhow::Result<()> {
     println!("=== MixPipeRust: Detection + Pose Pipeline ===\n");

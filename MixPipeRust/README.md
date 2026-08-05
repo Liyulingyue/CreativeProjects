@@ -23,7 +23,7 @@
 ## 快速开始
 
 ```rust
-use mixpiperust::{RtmDet, RtmPose, PretrainedModel, Pipeline};
+use mixpipe::{RtmDet, RtmPose, PretrainedModel, Pipeline};
 
 // 方式一：自动下载（推荐，首次使用时自动从 ModelScope 下载）
 let model = RtmDet::from_pretrained(PretrainedModel::RtmDetTiny)?;
@@ -61,7 +61,7 @@ for person in persons {
 
 ```toml
 [dependencies]
-mixpiperust = "0.1"
+mixpipe = "0.1"
 image = "0.25"  # 用于图片加载
 ```
 
@@ -84,7 +84,7 @@ cargo run --example visualization
 ## 可视化
 
 ```rust
-use mixpiperust::{Pipeline, PretrainedModel, Visualizer};
+use mixpipe::{Pipeline, PretrainedModel, Visualizer};
 
 let pipeline = Pipeline::builder()
     .detector_model(PretrainedModel::RtmDetTiny)

@@ -1,5 +1,5 @@
 [package]
-name = "mixpiperust"
+name = "mixpipe"
 version = "0.1.0"
 edition = "2024"
 description = "A composable inference pipeline framework for Rust, inspired by MediaPipe"

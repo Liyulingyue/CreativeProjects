@@ -1,4 +1,4 @@
-use mixpiperust::{RtmDet, PretrainedModel, RtmPose};
+use mixpipe::{RtmDet, PretrainedModel, RtmPose};
 
 fn main() -> anyhow::Result<()> {
     println!("=== MixPipeRust: Object Detection ===\n");

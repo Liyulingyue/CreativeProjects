@@ -1,4 +1,4 @@
-use mixpiperust::{RtmPose, PretrainedModel};
+use mixpipe::{RtmPose, PretrainedModel};
 
 fn main() -> anyhow::Result<()> {
     println!("=== MixPipeRust: Pose Estimation ===\n");
