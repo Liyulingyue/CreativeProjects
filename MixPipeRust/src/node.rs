@@ -24,6 +24,42 @@ impl Frame {
     pub fn new(data: FrameData, meta: FrameMeta) -> Self {
         Self { data, meta }
     }
+
+    pub fn from_rgb(pixels: Vec<u8>, width: u32, height: u32) -> Self {
+        Self {
+            data: FrameData::Image(ImageData {
+                width,
+                height,
+                format: PixelFormat::Rgb,
+                pixels,
+            }),
+            meta: FrameMeta::default(),
+        }
+    }
+
+    pub fn detections(&self) -> Option<Vec<Detection>> {
+        self.meta.custom.get("detections")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+    }
+
+    pub fn keypoints(&self) -> Option<Vec<Keypoint>> {
+        self.meta.custom.get("keypoints")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+    }
+
+    pub fn set_detections(&mut self, detections: Vec<Detection>) {
+        self.meta.custom.insert(
+            "detections".to_string(),
+            serde_json::to_value(detections).unwrap(),
+        );
+    }
+
+    pub fn set_keypoints(&mut self, keypoints: Vec<Keypoint>) {
+        self.meta.custom.insert(
+            "keypoints".to_string(),
+            serde_json::to_value(keypoints).unwrap(),
+        );
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,6 +131,26 @@ impl Default for FrameMeta {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Detection {
+    pub bbox: [f32; 4],
+    pub score: f32,
+    pub label: i32,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Keypoint {
+    pub x: f32,
+    pub y: f32,
+    pub confidence: f32,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Person {
+    pub bbox: [f32; 4],
+    pub keypoints: Vec<Keypoint>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum NodeError {
     #[error("processing error: {0}")]
@@ -110,3 +166,35 @@ pub enum NodeError {
 }
 
 pub type Result<T> = std::result::Result<T, NodeError>;
+
+pub fn crop_frame(frame: &Frame, bbox: &[f32; 4]) -> Result<Frame> {
+    let img = match &frame.data {
+        FrameData::Image(img) => img,
+        _ => return Err(NodeError::UnsupportedMediaType(frame.meta.media_type.clone())),
+    };
+
+    let [x1, y1, x2, y2] = *bbox;
+    let x1 = x1.max(0.0) as u32;
+    let y1 = y1.max(0.0) as u32;
+    let x2 = x2.min(img.width as f32) as u32;
+    let y2 = y2.min(img.height as f32) as u32;
+
+    let crop_w = x2 - x1;
+    let crop_h = y2 - y1;
+
+    if crop_w == 0 || crop_h == 0 {
+        return Err(NodeError::Process("Invalid crop size".to_string()));
+    }
+
+    let mut crop_pixels = Vec::with_capacity((crop_w * crop_h * 3) as usize);
+    for y in y1..y2 {
+        for x in x1..x2 {
+            let idx = ((y * img.width + x) * 3) as usize;
+            crop_pixels.push(img.pixels[idx]);
+            crop_pixels.push(img.pixels[idx + 1]);
+            crop_pixels.push(img.pixels[idx + 2]);
+        }
+    }
+
+    Ok(Frame::from_rgb(crop_pixels, crop_w, crop_h))
+}
