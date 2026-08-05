@@ -5,7 +5,7 @@ edition = "2024"
 description = "A composable inference pipeline framework for Rust, inspired by MediaPipe"
 license = "MIT"
 repository = "https://github.com/anomalyco/MixPipeRust"
-keywords = ["ml", "inference", "pipeline", "mediapipe", "onnx", "pose", "cv"]
+keywords = ["ml", "inference", "pipeline", "onnx", "pose"]
 categories = ["multimedia", "graphics", "science"]
 
 [features]
