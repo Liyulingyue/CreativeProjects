@@ -1,12 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { updatePresence, getMonitorStatus, startMonitoring, stopMonitoring } from "../api";
+import { getMonitorStatus, startMonitoring, stopMonitoring } from "../api";
 import { MonitorSnapshot } from "../types";
 
 interface UseMonitorResult {
   snapshot: MonitorSnapshot | null;
   isMonitoring: boolean;
   toggleMonitoring: () => Promise<void>;
-  reportPresence: (present: boolean) => Promise<void>;
 }
 
 export function useMonitor(): UseMonitorResult {
@@ -66,17 +65,9 @@ export function useMonitor(): UseMonitorResult {
     }
   }, []);
 
-  const reportPresence = useCallback(async (present: boolean) => {
-    try {
-      const snap = await updatePresence(present);
-      setSnapshot(snap);
-    } catch {}
-  }, []);
-
   return {
     snapshot,
     isMonitoring,
     toggleMonitoring,
-    reportPresence,
   };
 }

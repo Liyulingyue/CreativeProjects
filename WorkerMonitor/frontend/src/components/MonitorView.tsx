@@ -13,6 +13,7 @@ interface MonitorViewProps {
   breakSecs: number;
   totalWork: number;
   totalBreak: number;
+  workThresholdSecs: number;
   isPoseReady: boolean;
   isPoseLoading: boolean;
   poseError: string | null;
@@ -99,6 +100,7 @@ export default function MonitorView({
   breakSecs,
   totalWork,
   totalBreak,
+  workThresholdSecs,
   isPoseReady,
   isPoseLoading,
   poseError,
@@ -124,9 +126,10 @@ export default function MonitorView({
     }
   }, [posture, personDetected]);
 
-  const workThresholdSecs = 45 * 60;
-  const workProgress = workSecs > 0 ? Math.min((workSecs / workThresholdSecs) * 100, 100) : 0;
+  const safeThresholdSecs = Math.max(workThresholdSecs, 1);
+  const workProgress = workSecs > 0 ? Math.min((workSecs / safeThresholdSecs) * 100, 100) : 0;
   const progressClass = workProgress < 60 ? "safe" : workProgress < 85 ? "warning" : "danger";
+  const thresholdMinutes = Math.max(1, Math.round(safeThresholdSecs / 60));
 
   const postureScore = posture?.score ?? 0;
   const postureClass = postureScore >= 70 ? "good" : postureScore >= 50 ? "fair" : "bad";
@@ -248,7 +251,7 @@ export default function MonitorView({
                 <div className="timer-progress-label">
                   <span>0</span>
                   <span>{Math.round(workProgress)}%</span>
-                  <span>45分钟</span>
+                  <span>{thresholdMinutes}分钟</span>
                 </div>
               </div>
             )}

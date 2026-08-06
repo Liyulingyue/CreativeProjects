@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use std::time::Instant;
 
-use crate::config;
-use crate::rtmpose::{Keypoint, PoseOutput};
+use super::config::AppConfig;
+use super::detector::{Keypoint, PoseOutput};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -12,6 +12,17 @@ pub enum MonitorStatus {
     Present,
     Away,
     Overworked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DetectionInfo {
+    pub person_detected: bool,
+    pub keypoints: Vec<Keypoint>,
+    pub score: u32,
+    pub head_forward: bool,
+    pub head_tilt: bool,
+    pub shoulder_uneven: bool,
+    pub slouching: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,19 +40,8 @@ pub struct MonitorSnapshot {
     pub detection: Option<DetectionInfo>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DetectionInfo {
-    pub person_detected: bool,
-    pub keypoints: Vec<Keypoint>,
-    pub score: u32,
-    pub head_forward: bool,
-    pub head_tilt: bool,
-    pub shoulder_uneven: bool,
-    pub slouching: bool,
-}
-
 struct MonitorInner {
-    config: config::AppConfig,
+    config: AppConfig,
     status: MonitorStatus,
     is_present: bool,
     is_monitoring: bool,
@@ -58,7 +58,7 @@ struct MonitorInner {
 }
 
 impl MonitorInner {
-    fn new(cfg: config::AppConfig) -> Self {
+    fn new(cfg: AppConfig) -> Self {
         Self {
             config: cfg,
             status: MonitorStatus::Idle,
@@ -114,17 +114,19 @@ impl MonitorInner {
     }
 }
 
-pub struct MonitorState(pub Mutex<MonitorInner>);
+pub struct Monitor(Mutex<MonitorInner>);
 
-impl MonitorState {
+impl Monitor {
     pub fn new() -> Self {
-        let cfg = config::load_config();
+        let cfg = super::config::load_config();
         Self(Mutex::new(MonitorInner::new(cfg)))
     }
 
     pub fn start(&self) -> Result<(), String> {
         let mut inner = self.0.lock().map_err(|e| e.to_string())?;
+        println!("[Monitor] Starting...");
         if inner.is_monitoring {
+            println!("[Monitor] Already monitoring");
             return Ok(());
         }
         inner.is_monitoring = true;
@@ -140,10 +142,12 @@ impl MonitorState {
         inner.last_notification = None;
         inner.last_posture_notification = None;
         inner.detection = None;
+        println!("[Monitor] Started");
         Ok(())
     }
 
     pub fn stop(&self) {
+        println!("[Monitor] Stopping...");
         if let Ok(mut inner) = self.0.lock() {
             if let Some(start) = inner.work_start {
                 inner.total_work_secs += start.elapsed().as_secs_f64();
@@ -160,6 +164,7 @@ impl MonitorState {
             inner.has_posture_alert = false;
             inner.detection = None;
         }
+        println!("[Monitor] Stopped");
     }
 
     pub fn update_detection(&self, pose: PoseOutput) -> Result<(), String> {
@@ -233,10 +238,7 @@ impl MonitorState {
                     };
                     if should_notify {
                         inner.last_notification = Some(now);
-                        eprintln!(
-                            "ALERT: Work threshold exceeded - {} minutes",
-                            work_secs as u64 / 60
-                        );
+                        println!("[Monitor] ALERT: Work threshold exceeded - {} minutes", work_secs as u64 / 60);
                     }
                 }
             }
@@ -258,7 +260,6 @@ impl MonitorState {
             };
         }
 
-        let _nose = &keypoints[0];
         let left_ear = &keypoints[3];
         let right_ear = &keypoints[4];
         let left_shoulder = &keypoints[5];
@@ -323,133 +324,14 @@ impl MonitorState {
         }
     }
 
-    pub fn update_presence(&self, present: bool) -> Result<MonitorSnapshot, String> {
-        let mut inner = self.0.lock().map_err(|e| e.to_string())?;
-        if !inner.is_monitoring {
-            return Ok(inner.snapshot());
-        }
-
-        let now = Instant::now();
-        let was_present = inner.is_present;
-        inner.is_present = present;
-
-        if present && !was_present {
-            if inner.status == MonitorStatus::Away {
-                if let Some(start) = inner.break_start {
-                    let break_secs = start.elapsed().as_secs_f64();
-                    inner.total_break_secs += break_secs;
-                    inner.break_start = None;
-                }
-            }
-            if inner.work_start.is_none() {
-                inner.work_start = Some(now);
-            }
-            if inner.status == MonitorStatus::Overworked {
-                inner.has_alert = false;
-            }
-            inner.status = MonitorStatus::Present;
-        } else if !present && was_present {
-            if let Some(start) = inner.work_start {
-                let work_secs = start.elapsed().as_secs_f64();
-                inner.total_work_secs += work_secs;
-                inner.work_start = None;
-            }
-            inner.break_start = Some(now);
-            inner.has_alert = false;
-            inner.has_posture_alert = false;
-            inner.status = MonitorStatus::Away;
-        }
-
-        if present {
-            if let Some(start) = inner.work_start {
-                let work_secs = start.elapsed().as_secs_f64();
-                let threshold_secs = inner.config.work_threshold_minutes as f64 * 60.0;
-                if work_secs >= threshold_secs && inner.status != MonitorStatus::Overworked {
-                    inner.status = MonitorStatus::Overworked;
-                    inner.has_alert = true;
-                    let should_notify = match inner.last_notification {
-                        None => true,
-                        Some(last) => last.elapsed().as_secs() >= 300,
-                    };
-                    if should_notify {
-                        inner.last_notification = Some(now);
-                        eprintln!(
-                            "ALERT: Work threshold exceeded - {} minutes",
-                            work_secs as u64 / 60
-                        );
-                    }
-                }
-            }
-        }
-
-        Ok(inner.snapshot())
-    }
-
-    pub fn report_posture(
-        &self,
-        score: u32,
-        head_forward: bool,
-        head_tilt: bool,
-        shoulder_uneven: bool,
-        slouching: bool,
-    ) -> Result<(), String> {
-        let mut inner = self.0.lock().map_err(|e| e.to_string())?;
-        if !inner.is_monitoring || !inner.is_present {
-            return Ok(());
-        }
-
-        let threshold = inner.config.posture_alert_threshold;
-        let is_bad = score < threshold;
-
-        if is_bad && !inner.has_posture_alert {
-            inner.has_posture_alert = true;
-            let should_notify = match inner.last_posture_notification {
-                None => true,
-                Some(last) => last.elapsed().as_secs() >= 120,
-            };
-            if should_notify {
-                inner.last_posture_notification = Some(Instant::now());
-                let mut issues = Vec::new();
-                if head_forward {
-                    issues.push("探颈");
-                }
-                if head_tilt {
-                    issues.push("歪头");
-                }
-                if shoulder_uneven {
-                    issues.push("肩膀不平");
-                }
-                if slouching {
-                    issues.push("含胸驼背");
-                }
-                let body = if issues.is_empty() {
-                    "坐姿评分较低，请注意调整坐姿".to_string()
-                } else {
-                    format!("检测到{}，请注意调整坐姿", issues.join("、"))
-                };
-                eprintln!("POSTURE ALERT: {}", body);
-            }
-        } else if !is_bad {
-            inner.has_posture_alert = false;
-        }
-        Ok(())
-    }
-
     pub fn snapshot(&self) -> Result<MonitorSnapshot, String> {
         let inner = self.0.lock().map_err(|e| e.to_string())?;
         Ok(inner.snapshot())
     }
 
-    pub fn get_config(&self) -> Result<config::AppConfig, String> {
+    pub fn get_config(&self) -> Result<AppConfig, String> {
         let inner = self.0.lock().map_err(|e| e.to_string())?;
         Ok(inner.config.clone())
-    }
-
-    pub fn save_config(&self, cfg: config::AppConfig) -> Result<(), String> {
-        config::save_config(&cfg)?;
-        let mut inner = self.0.lock().map_err(|e| e.to_string())?;
-        inner.config = cfg;
-        Ok(())
     }
 
     pub fn dismiss_alert(&self) {

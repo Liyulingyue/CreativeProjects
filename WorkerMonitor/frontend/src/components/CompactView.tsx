@@ -7,6 +7,7 @@ interface CompactViewProps {
   personDetected: boolean;
   workSecs: number;
   breakSecs: number;
+  workThresholdSecs: number;
   onExpand: () => void;
   onToggleMonitoring: () => void;
   onHide: () => void;
@@ -35,12 +36,14 @@ export default function CompactView({
   personDetected,
   workSecs,
   breakSecs,
+  workThresholdSecs,
   onExpand,
   onToggleMonitoring,
   onHide,
 }: CompactViewProps) {
   const timerValue = status === "away" ? breakSecs : workSecs;
   const postureScore = posture?.score ?? -1;
+  const safeThresholdSecs = Math.max(workThresholdSecs, 1);
 
   return (
     <div className="compact">
@@ -62,7 +65,7 @@ export default function CompactView({
           <div className="compact-progress">
             <div
               className={`compact-progress-fill ${status === "overworked" ? "danger" : "safe"}`}
-              style={{ width: `${Math.min((workSecs / (45 * 60)) * 100, 100)}%` }}
+              style={{ width: `${Math.min((workSecs / safeThresholdSecs) * 100, 100)}%` }}
             />
           </div>
         )}

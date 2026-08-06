@@ -1,17 +1,17 @@
-node_modules/
-dist/
-backend/target/
-src-tauri/target/
+# Build outputs
+/target/
+frontend/dist/
+frontend/node_modules/
 
-*.exe
-*.msi
-*.nupkg
-
-src-tauri/target/release/bundle/
-dist_package/
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
 
 .env
 .env.local
 
-# Model files (auto-downloaded)
-backend/resource/*.onnx
+# OS
+.DS_Store
+Thumbs.db

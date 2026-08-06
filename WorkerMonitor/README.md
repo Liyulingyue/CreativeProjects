@@ -1,74 +1,72 @@
 # WorkerMonitor
 
-健康监控桌面应用，带摄像头姿态检测和休息提醒。
+一个基于 Rust + React 的桌面健康监控应用，包含摄像头姿态识别与久坐提醒。
 
-## 项目结构
+## 当前真实结构
 
 ```
 WorkerMonitor/
-├── backend/          # Rust HTTP API 服务器
-│   └── resource/    # 放置 end2end.onnx 模型文件
-├── frontend/         # React UI
-├── src-tauri/       # Tauri 桌面壳
+├── Cargo.toml            # Rust 桌面主程序（wry + tao）
+├── src/                  # Rust 核心逻辑（监控、摄像头、姿态检测）
+├── frontend/             # React + Vite 前端
+│   ├── src/
+│   └── package.json
+├── icons/
 └── README.md
 ```
 
+## 环境要求
+
+- Node.js 18+
+- Rust stable toolchain
+- Windows 下建议安装 Visual Studio Build Tools（C++ 工具链）
+
 ## 快速开始
 
-### 1. 安装依赖
+### 1. 安装前端依赖
 
-```bash
-# 安装前端依赖
-cd frontend && npm install && cd ..
-
-# 安装 Rust 依赖
-cd backend && cargo build --release && cd ..
-```
-
-### 2. 获取模型文件
-
-模型文件不在仓库中，首次编译前需要下载：
-
-**自动下载（推荐）**：
-```powershell
-# 在 backend 目录下运行
-.\scripts\download-model.ps1
-```
-
-**手动下载**：
-1. 下载地址：https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-t_simcc-body7_pt-body7_420e-256x192-026a1439_20230504.zip
-2. 解压后找到 `end2end.onnx`，复制到 `backend/resource/end2end.onnx`
-
-### 3. 运行
-
-**开发模式**（需要同时启动 backend 和 frontend）：
-
-终端 1 - 启动后端：
-```bash
-cd backend
-cargo run
-```
-
-终端 2 - 启动前端：
 ```bash
 cd frontend
-npm run dev
+npm install
+cd ..
 ```
 
-**生产模式**：
+### 2. 开发调试
+
+启动前端开发服务器：
+
+```bash
+npm run dev:web
+```
+
+另开一个终端启动桌面端：
+
+```bash
+npm run dev:desktop
+```
+
+说明：桌面端在 `DEV_MODE=1` 时默认连接 `http://localhost:5175`（与当前 Vite 配置一致）。
+
+### 3. 构建
+
 ```bash
 npm run build
 ```
 
-## 模型说明
+该命令会先构建前端，再执行 Rust release 构建。
 
-使用 RTMPose-t 模型进行人体姿态检测，输入 `[1x3x256x192]`，输出 COCO 17 点关键点。
+如果出现 `failed to remove ... worker-monitor.exe` 或 `拒绝访问 (os error 5)`，通常是旧版程序仍在运行（含托盘中）。先退出正在运行的 WorkerMonitor，再重新执行构建。
 
-模型来源：OpenMMLab MMDeploy RTMPose ONNX SDK
+## 常用命令
+
+- `npm run dev:web`：启动前端开发服务器
+- `npm run dev:desktop`：启动 Rust 桌面程序
+- `npm run build:web`：仅构建前端
+- `npm run build`：前端 + Rust release 构建
+- `npm run check`：Rust 检查
 
 ## 技术栈
 
-- **前端**: React + Vite + TypeScript
-- **后端**: Rust + Actix-web + ONNX Runtime
-- **桌面**: Tauri 2
-- **姿态检测**: RTMPose ONNX
+- 前端：React + Vite + TypeScript
+- 桌面：Rust + wry + tao
+- 摄像头：nokhwa

@@ -59,22 +59,31 @@ export default function App() {
 
   useEffect(() => {
     let ignore = false;
+    const unlisteners: Array<() => void> = [];
 
     const setup = async () => {
       try {
-        await listen<number>("work-threshold-exceeded", (e) => {
+        const unlistenWork = await listen<number>("work-threshold-exceeded", (e) => {
           if (!ignore) setBreakAlertInfo({ workSecs: e.payload });
         });
-        await listen<number>("break-ended", (e) => {
+        unlisteners.push(unlistenWork);
+
+        const unlistenBreak = await listen<number>("break-ended", (e) => {
           if (!ignore) setWelcomeBack({ breakSecs: e.payload });
         });
-        await listen<number>("posture-alert", () => {});
+        unlisteners.push(unlistenBreak);
+
+        const unlistenPosture = await listen<number>("posture-alert", () => {});
+        unlisteners.push(unlistenPosture);
       } catch {}
     };
     setup();
 
     return () => {
       ignore = true;
+      for (const unlisten of unlisteners) {
+        unlisten();
+      }
     };
   }, []);
 
@@ -156,6 +165,7 @@ export default function App() {
   const breakSecs = snapshot?.break_duration_secs ?? 0;
   const totalWork = snapshot?.total_work_secs ?? 0;
   const totalBreak = snapshot?.total_break_secs ?? 0;
+  const workThresholdSecs = snapshot?.work_threshold_secs ?? ((config?.work_threshold_minutes ?? 45) * 60);
 
   const cameraPortal = createPortal(
     <>
@@ -177,6 +187,7 @@ export default function App() {
             personDetected={personDetected}
             workSecs={workSecs}
             breakSecs={breakSecs}
+            workThresholdSecs={workThresholdSecs}
             onExpand={handleEnterExpanded}
             onToggleMonitoring={handleToggleMonitoring}
             onHide={handleHideToTray}
@@ -222,6 +233,7 @@ export default function App() {
             breakSecs={breakSecs}
             totalWork={totalWork}
             totalBreak={totalBreak}
+            workThresholdSecs={workThresholdSecs}
             isPoseReady={isPoseReady}
             isPoseLoading={isPoseLoading}
             poseError={poseError}

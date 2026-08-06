@@ -1,14 +1,27 @@
 use nokhwa::utils::{CameraIndex, RequestedFormat, RequestedFormatType};
-use nokhwa::Camera;
+use nokhwa::Camera as NokhwaCamera;
+use nokhwa::pixel_format::RgbFormat;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+use image::ImageEncoder;
 
-pub struct CameraState {
+#[derive(Clone)]
+pub struct FrameReader {
+    latest_frame: Arc<Mutex<Option<Vec<u8>>>>,
+}
+
+impl FrameReader {
+    pub fn get_frame(&self) -> Option<Vec<u8>> {
+        self.latest_frame.lock().unwrap().clone()
+    }
+}
+
+pub struct Camera {
     sender: Mutex<Option<mpsc::Sender<CameraCommand>>>,
     is_running: std::sync::atomic::AtomicBool,
-    latest_frame: Arc<Mutex<Option<Vec<u8>>>>,
+    frame_reader: FrameReader,
 }
 
 #[derive(Debug)]
@@ -16,41 +29,53 @@ enum CameraCommand {
     Stop,
 }
 
-impl CameraState {
+impl Camera {
     pub fn new() -> Self {
+        let latest_frame = Arc::new(Mutex::new(None));
         Self {
             sender: Mutex::new(None),
             is_running: std::sync::atomic::AtomicBool::new(false),
-            latest_frame: Arc::new(Mutex::new(None)),
+            frame_reader: FrameReader { latest_frame: latest_frame.clone() },
         }
     }
 
     pub fn start(&self) -> Result<(), String> {
         if self.is_running.load(std::sync::atomic::Ordering::SeqCst) {
+            println!("[Camera] Already running");
             return Ok(());
         }
 
         let (tx, rx) = mpsc::channel();
         *self.sender.lock().unwrap() = Some(tx);
-        let latest_frame = self.latest_frame.clone();
 
+        let frame_reader = self.frame_reader.clone();
+
+        println!("[Camera] Starting camera thread...");
         thread::spawn(move || {
-            camera_thread_fn(rx, latest_frame);
+            camera_thread_fn(rx, frame_reader);
         });
 
         self.is_running.store(true, std::sync::atomic::Ordering::SeqCst);
+        println!("[Camera] Camera started");
         Ok(())
     }
 
     pub fn stop(&self) {
+        println!("[Camera] Stopping...");
         self.is_running.store(false, std::sync::atomic::Ordering::SeqCst);
         if let Some(sender) = self.sender.lock().unwrap().take() {
             let _ = sender.send(CameraCommand::Stop);
         }
+        println!("[Camera] Stopped");
     }
 
     pub fn get_frame(&self) -> Option<Vec<u8>> {
-        self.latest_frame.lock().unwrap().clone()
+        self.frame_reader.get_frame()
+    }
+
+    #[allow(dead_code)]
+    pub fn frame_reader(&self) -> FrameReader {
+        self.frame_reader.clone()
     }
 
     pub fn is_running(&self) -> bool {
@@ -58,30 +83,30 @@ impl CameraState {
     }
 }
 
-impl Drop for CameraState {
+impl Drop for Camera {
     fn drop(&mut self) {
         self.stop();
     }
 }
 
-fn camera_thread_fn(rx: mpsc::Receiver<CameraCommand>, latest_frame: Arc<Mutex<Option<Vec<u8>>>>) {
-    use nokhwa::pixel_format::RgbFormat;
+fn camera_thread_fn(rx: mpsc::Receiver<CameraCommand>, frame_reader: FrameReader) {
     let requested = RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestFrameRate);
 
-    let mut camera = match Camera::new(CameraIndex::Index(0), requested) {
+    println!("[Camera] Opening camera...");
+    let mut camera = match NokhwaCamera::new(CameraIndex::Index(0), requested) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Failed to open camera: {}", e);
+            eprintln!("[Camera] Failed to open camera: {}", e);
             return;
         }
     };
 
     if let Err(e) = camera.open_stream() {
-        eprintln!("Failed to open stream: {}", e);
+        eprintln!("[Camera] Failed to open stream: {}", e);
         return;
     }
 
-    eprintln!("Camera opened successfully!");
+    println!("[Camera] Camera stream opened successfully!");
 
     loop {
         match rx.try_recv() {
@@ -97,14 +122,15 @@ fn camera_thread_fn(rx: mpsc::Receiver<CameraCommand>, latest_frame: Arc<Mutex<O
                     let height = rgb.height();
 
                     let mut buf = Vec::new();
-                    if let Ok(()) = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 85)
-                        .encode(rgb_img, width, height, image::ExtendedColorType::Rgb8) {
-                        *latest_frame.lock().unwrap() = Some(buf);
+                    let mut cursor = std::io::Cursor::new(&mut buf);
+                    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 85);
+                    if encoder.write_image(rgb_img, width, height, image::ColorType::Rgb8).is_ok() {
+                        *frame_reader.latest_frame.lock().unwrap() = Some(buf);
                     }
                 }
             }
             Err(e) => {
-                eprintln!("Frame error: {}", e);
+                eprintln!("[Camera] Frame error: {}", e);
             }
         }
 

@@ -16,16 +16,10 @@ export function useCamera(): UseCameraResult {
   const startCamera = useCallback(async () => {
     setCameraError(null);
     setIsCameraReady(true);
-    if (videoRef.current) {
-      videoRef.current.src = "http://127.0.0.1:8080/stream";
-    }
   }, []);
 
   const stopCamera = useCallback(() => {
     setIsCameraReady(false);
-    if (videoRef.current) {
-      videoRef.current.src = "";
-    }
   }, []);
 
   return {

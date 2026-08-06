@@ -1,0 +1,15 @@
+{
+  "name": "worker-monitor",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev:web": "npm --prefix frontend run dev",
+    "dev:desktop": "cargo run",
+    "build:web": "npm --prefix frontend run build",
+    "build": "npm run build:web && cargo build --release",
+    "check": "cargo check"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4"
+  }
+}
