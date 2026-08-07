@@ -9,6 +9,7 @@ use base64::Engine;
 use wry::http::{Response, StatusCode};
 use tray_icon::{menu::{Menu, MenuItem}, TrayIconBuilder};
 use include_dir::{include_dir, Dir};
+use std::thread;
 
 static FRONTEND_DIST: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/frontend/dist");
 
@@ -17,7 +18,7 @@ struct AppState {
     camera: Arc<Mutex<core::Camera>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct IpcRequest {
     id: Option<String>,
     method: String,
@@ -185,6 +186,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     let tx_clone = tx.clone();
 
+    let (ipc_req_tx, ipc_req_rx) = std::sync::mpsc::channel::<IpcRequest>();
+    let (ipc_res_tx, ipc_res_rx) = std::sync::mpsc::channel::<(Option<String>, Result<serde_json::Value, String>)>();
+    let app_state_worker = app_state.clone();
+
+    thread::spawn(move || {
+        while let Ok(req) = ipc_req_rx.recv() {
+            let req_id = req.id.clone();
+            let result = handle_ipc(app_state_worker.as_ref(), &req);
+            if ipc_res_tx.send((req_id, result)).is_err() {
+                break;
+            }
+        }
+    });
+
     let webview = wry::webview::WebViewBuilder::new(window)?
         .with_custom_protocol("workermonitor".into(), move |request| {
             asset_protocol_handler(&request)
@@ -207,8 +222,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let webview = webview.build()?;
     eprintln!("[WorkerMonitor] WebView built successfully");
-    let app_state_clone = app_state.clone();
-
     event_loop.run(move |event, _, control_flow| {
         *control_flow = tao::event_loop::ControlFlow::Poll;
         use tao::event::{Event, WindowEvent};
@@ -222,28 +235,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
                 };
-
-                let response = handle_ipc(&app_state_clone, &req);
-
-                let response_json = match &response {
-                    Ok(result) => serde_json::json!({
-                        "id": req.id,
-                        "ok": true,
-                        "result": result
-                    }),
-                    Err(err) => serde_json::json!({
-                        "id": req.id,
-                        "ok": false,
-                        "error": err
-                    })
-                };
-
-                let js = format!(
-                    "(window.__workerMonitorOnResponse && window.__workerMonitorOnResponse({0})) || (window.ipc && window.ipc.onResponse && window.ipc.onResponse({0}))",
-                    response_json
-                );
-                let _ = webview.evaluate_script(&js);
+                if ipc_req_tx.send(req).is_err() {
+                    eprintln!("[IPC] Worker thread not available");
+                }
             }
+        }
+
+        while let Ok((req_id, response)) = ipc_res_rx.try_recv() {
+            let response_json = match &response {
+                Ok(result) => serde_json::json!({
+                    "id": req_id,
+                    "ok": true,
+                    "result": result
+                }),
+                Err(err) => serde_json::json!({
+                    "id": req_id,
+                    "ok": false,
+                    "error": err
+                })
+            };
+
+            let js = format!(
+                "(window.__workerMonitorOnResponse && window.__workerMonitorOnResponse({0})) || (window.ipc && window.ipc.onResponse && window.ipc.onResponse({0}))",
+                response_json
+            );
+            let _ = webview.evaluate_script(&js);
         }
 
         while let Ok(menu_event) = tray_icon::menu::menu_event_receiver().try_recv() {

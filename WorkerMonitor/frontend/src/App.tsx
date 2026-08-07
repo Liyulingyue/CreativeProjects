@@ -104,9 +104,16 @@ export default function App() {
   useEffect(() => {
     if (!(isMonitoring && isPoseReady)) return;
 
+    let inFlight = false;
+
     const doDetection = async () => {
+      if (inFlight) {
+        return;
+      }
+      inFlight = true;
       const result = await detect();
       setPersonDetected(result.personDetected);
+      inFlight = false;
     };
 
     doDetection();
