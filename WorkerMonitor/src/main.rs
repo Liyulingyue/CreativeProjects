@@ -238,7 +238,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     })
                 };
 
-                let js = format!("window.ipc && window.ipc.onResponse && window.ipc.onResponse({})", response_json);
+                let js = format!(
+                    "(window.__workerMonitorOnResponse && window.__workerMonitorOnResponse({0})) || (window.ipc && window.ipc.onResponse && window.ipc.onResponse({0}))",
+                    response_json
+                );
                 let _ = webview.evaluate_script(&js);
             }
         }

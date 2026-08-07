@@ -2,6 +2,7 @@ import { MonitorSnapshot, AppConfig } from "./types";
 
 let requestId = 0;
 const IPC_TIMEOUT_MS = 15000;
+const RESPONSE_HANDLER_KEY = "__workerMonitorOnResponse";
 const pendingRequests = new Map<string, {
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
@@ -23,13 +24,30 @@ interface IpcResponse {
 
 declare global {
   interface Window {
-    ipc: {
+    ipc?: {
       postMessage: (msg: string) => void;
-      invoke: (method: string, params?: unknown) => Promise<unknown>;
-      onResponse: (response: IpcResponse) => void;
     };
+    __workerMonitorOnResponse?: (response: IpcResponse) => void;
   }
 }
+
+function handleResponse(response: IpcResponse): void {
+  if (!response.id) {
+    return;
+  }
+  const pending = pendingRequests.get(response.id);
+  if (pending) {
+    clearTimeout(pending.timeout);
+    pendingRequests.delete(response.id);
+    if (response.ok) {
+      pending.resolve(response.result);
+    } else {
+      pending.reject(new Error(response.error || "unknown error"));
+    }
+  }
+}
+
+window[RESPONSE_HANDLER_KEY] = handleResponse;
 
 function sendIpc(method: string, params?: unknown): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -58,37 +76,12 @@ function sendIpc(method: string, params?: unknown): Promise<unknown> {
   });
 }
 
-if (!window.ipc) {
-  window.ipc = {
-    postMessage: () => {
-      throw new Error("IPC bridge unavailable. Please run inside WorkerMonitor desktop app.");
-    },
-    invoke: async () => {
-      throw new Error("IPC bridge unavailable. Please run inside WorkerMonitor desktop app.");
-    },
-    onResponse: () => {},
-  };
-}
-
-window.ipc.invoke = async (method: string, params?: unknown): Promise<unknown> => sendIpc(method, params);
-window.ipc.onResponse = (response: IpcResponse) => {
-  if (!response.id) {
-    return;
-  }
-  const pending = pendingRequests.get(response.id);
-  if (pending) {
-    clearTimeout(pending.timeout);
-    pendingRequests.delete(response.id);
-    if (response.ok) {
-      pending.resolve(response.result);
-    } else {
-      pending.reject(new Error(response.error || "unknown error"));
-    }
-  }
-};
-
 export async function startMonitoring(): Promise<void> {
   await sendIpc("start_monitoring");
+}
+
+export async function invokeIpc(method: string, params?: unknown): Promise<unknown> {
+  return sendIpc(method, params);
 }
 
 export async function stopMonitoring(): Promise<void> {
