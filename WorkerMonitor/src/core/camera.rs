@@ -7,6 +7,16 @@ use std::thread;
 use std::time::Duration;
 use image::ImageEncoder;
 
+fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, name: &str) -> std::sync::MutexGuard<'a, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            eprintln!("[Camera] Mutex poisoned, recovering: {}", name);
+            poisoned.into_inner()
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct FrameReader {
     latest_frame: Arc<Mutex<Option<Vec<u8>>>>,
@@ -14,7 +24,7 @@ pub struct FrameReader {
 
 impl FrameReader {
     pub fn get_frame(&self) -> Option<Vec<u8>> {
-        self.latest_frame.lock().unwrap().clone()
+        lock_or_recover(&self.latest_frame, "latest_frame").clone()
     }
 }
 
@@ -46,7 +56,7 @@ impl Camera {
         }
 
         let (tx, rx) = mpsc::channel();
-        *self.sender.lock().unwrap() = Some(tx);
+        *lock_or_recover(&self.sender, "sender") = Some(tx);
 
         let frame_reader = self.frame_reader.clone();
 
@@ -63,7 +73,7 @@ impl Camera {
     pub fn stop(&self) {
         println!("[Camera] Stopping...");
         self.is_running.store(false, std::sync::atomic::Ordering::SeqCst);
-        if let Some(sender) = self.sender.lock().unwrap().take() {
+        if let Some(sender) = lock_or_recover(&self.sender, "sender").take() {
             let _ = sender.send(CameraCommand::Stop);
         }
         println!("[Camera] Stopped");
@@ -125,7 +135,7 @@ fn camera_thread_fn(rx: mpsc::Receiver<CameraCommand>, frame_reader: FrameReader
                     let mut cursor = std::io::Cursor::new(&mut buf);
                     let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 85);
                     if encoder.write_image(rgb_img, width, height, image::ColorType::Rgb8).is_ok() {
-                        *frame_reader.latest_frame.lock().unwrap() = Some(buf);
+                        *lock_or_recover(&frame_reader.latest_frame, "latest_frame") = Some(buf);
                     }
                 }
             }

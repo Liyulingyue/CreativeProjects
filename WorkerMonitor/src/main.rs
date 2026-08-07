@@ -9,9 +9,126 @@ use base64::Engine;
 use wry::http::{Response, StatusCode};
 use tray_icon::{menu::{Menu, MenuItem}, TrayIconBuilder};
 use include_dir::{include_dir, Dir};
+use once_cell::sync::OnceCell;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
+use std::time::{Duration, Instant};
+use tracing::{error, info, warn};
+use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::EnvFilter;
 
 static FRONTEND_DIST: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/frontend/dist");
+static LOG_GUARD: OnceCell<WorkerGuard> = OnceCell::new();
+static LOCAL_REQ_ID_SEQ: AtomicU64 = AtomicU64::new(1);
+
+struct RuntimeStats {
+    ipc_fast_total: AtomicU64,
+    ipc_fast_fail: AtomicU64,
+    ipc_fast_latency_ms_sum: AtomicU64,
+    ipc_heavy_total: AtomicU64,
+    ipc_heavy_fail: AtomicU64,
+    ipc_heavy_latency_ms_sum: AtomicU64,
+    detect_total: AtomicU64,
+    detect_fail: AtomicU64,
+    detect_latency_ms_sum: AtomicU64,
+    frame_fetch_total: AtomicU64,
+    frame_fetch_miss: AtomicU64,
+}
+
+impl RuntimeStats {
+    fn new() -> Self {
+        Self {
+            ipc_fast_total: AtomicU64::new(0),
+            ipc_fast_fail: AtomicU64::new(0),
+            ipc_fast_latency_ms_sum: AtomicU64::new(0),
+            ipc_heavy_total: AtomicU64::new(0),
+            ipc_heavy_fail: AtomicU64::new(0),
+            ipc_heavy_latency_ms_sum: AtomicU64::new(0),
+            detect_total: AtomicU64::new(0),
+            detect_fail: AtomicU64::new(0),
+            detect_latency_ms_sum: AtomicU64::new(0),
+            frame_fetch_total: AtomicU64::new(0),
+            frame_fetch_miss: AtomicU64::new(0),
+        }
+    }
+
+    fn record_ipc(&self, queue: IpcQueue, elapsed_ms: u64, ok: bool) {
+        match queue {
+            IpcQueue::Fast => {
+                self.ipc_fast_total.fetch_add(1, Ordering::Relaxed);
+                self.ipc_fast_latency_ms_sum.fetch_add(elapsed_ms, Ordering::Relaxed);
+                if !ok {
+                    self.ipc_fast_fail.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            IpcQueue::Heavy => {
+                self.ipc_heavy_total.fetch_add(1, Ordering::Relaxed);
+                self.ipc_heavy_latency_ms_sum.fetch_add(elapsed_ms, Ordering::Relaxed);
+                if !ok {
+                    self.ipc_heavy_fail.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+    }
+
+    fn record_detect(&self, elapsed_ms: u64, ok: bool) {
+        self.detect_total.fetch_add(1, Ordering::Relaxed);
+        self.detect_latency_ms_sum.fetch_add(elapsed_ms, Ordering::Relaxed);
+        if !ok {
+            self.detect_fail.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn record_frame_fetch(&self, hit: bool) {
+        self.frame_fetch_total.fetch_add(1, Ordering::Relaxed);
+        if !hit {
+            self.frame_fetch_miss.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum IpcQueue {
+    Fast,
+    Heavy,
+}
+
+fn avg_ms(sum: u64, count: u64) -> u64 {
+    if count == 0 { 0 } else { sum / count }
+}
+
+fn init_logging() {
+    let log_root = dirs::data_local_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("WorkerMonitor")
+        .join("logs");
+
+    if let Err(err) = std::fs::create_dir_all(&log_root) {
+        eprintln!("[WorkerMonitor] Failed to create log dir {}: {}", log_root.display(), err);
+        return;
+    }
+
+    let file_appender = tracing_appender::rolling::daily(&log_root, "worker-monitor.log");
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+    let _ = LOG_GUARD.set(guard);
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    if let Err(err) = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_ansi(false)
+        .with_writer(non_blocking)
+        .json()
+        .flatten_event(true)
+        .with_current_span(false)
+        .with_span_list(false)
+        .try_init()
+    {
+        eprintln!("[WorkerMonitor] Failed to init logging subscriber: {}", err);
+        return;
+    }
+
+    info!("logging initialized at {}", log_root.display());
+}
 
 struct AppState {
     monitor: Arc<Mutex<core::Monitor>>,
@@ -25,7 +142,7 @@ struct IpcRequest {
     params: Option<serde_json::Value>,
 }
 
-fn handle_ipc(state: &AppState, req: &IpcRequest) -> Result<serde_json::Value, String> {
+fn handle_ipc(state: &AppState, req: &IpcRequest, stats: &RuntimeStats) -> Result<serde_json::Value, String> {
     match req.method.as_str() {
         "get_status" => {
             let monitor = state.monitor.lock().map_err(|e| e.to_string())?;
@@ -89,7 +206,16 @@ fn handle_ipc(state: &AppState, req: &IpcRequest) -> Result<serde_json::Value, S
             if !camera.is_running() {
                 camera.start()?;
             }
-            let frame = camera.get_frame().ok_or("no frame available")?;
+            let frame = match camera.get_frame() {
+                Some(data) => {
+                    stats.record_frame_fetch(true);
+                    data
+                }
+                None => {
+                    stats.record_frame_fetch(false);
+                    return Err("no frame available".to_string());
+                }
+            };
                 Ok(serde_json::json!({
                 "frame": base64::engine::general_purpose::STANDARD.encode(&frame)
             }))
@@ -99,6 +225,134 @@ fn handle_ipc(state: &AppState, req: &IpcRequest) -> Result<serde_json::Value, S
         }
         _ => Err(format!("unknown method: {}", req.method)),
     }
+}
+
+fn is_heavy_ipc_method(method: &str) -> bool {
+    matches!(method, "init_detector" | "detect_frame")
+}
+
+fn request_id_for_log(req: &IpcRequest) -> String {
+    req.id
+        .clone()
+        .unwrap_or_else(|| format!("local-{}", LOCAL_REQ_ID_SEQ.fetch_add(1, Ordering::Relaxed)))
+}
+
+fn spawn_background_detection_worker(app_state: Arc<AppState>, stats: Arc<RuntimeStats>) {
+    thread::spawn(move || {
+        loop {
+            let (is_monitoring, check_interval_secs) = {
+                let monitor = match app_state.monitor.lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => {
+                        warn!("[DetectLoop] monitor lock poisoned, recovering");
+                        poisoned.into_inner()
+                    }
+                };
+
+                let snapshot = match monitor.snapshot() {
+                    Ok(snap) => snap,
+                    Err(err) => {
+                        warn!("[DetectLoop] snapshot error: {}", err);
+                        thread::sleep(Duration::from_millis(500));
+                        continue;
+                    }
+                };
+
+                let cfg = monitor.get_config().ok();
+                let interval = cfg.map(|c| c.check_interval_seconds.max(1)).unwrap_or(2);
+                (snapshot.is_monitoring, interval)
+            };
+
+            if !is_monitoring {
+                thread::sleep(Duration::from_millis(250));
+                continue;
+            }
+
+            let frame = {
+                let camera = match app_state.camera.lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => {
+                        warn!("[DetectLoop] camera lock poisoned, recovering");
+                        poisoned.into_inner()
+                    }
+                };
+
+                if !camera.is_running() {
+                    if let Err(err) = camera.start() {
+                        warn!("[DetectLoop] camera start failed: {}", err);
+                        thread::sleep(Duration::from_millis(500));
+                        continue;
+                    }
+                }
+
+                camera.get_frame()
+            };
+
+            if let Some(frame) = frame {
+                let t0 = Instant::now();
+                let mut ok = true;
+                match core::PoseDetector::detect(&frame) {
+                    Ok(pose) => {
+                        let monitor = match app_state.monitor.lock() {
+                            Ok(guard) => guard,
+                            Err(poisoned) => {
+                                warn!("[DetectLoop] monitor lock poisoned on update, recovering");
+                                poisoned.into_inner()
+                            }
+                        };
+                        if let Err(err) = monitor.update_detection(pose) {
+                            ok = false;
+                            warn!("[DetectLoop] update_detection failed: {}", err);
+                        }
+                    }
+                    Err(err) => {
+                        ok = false;
+                        warn!("[DetectLoop] detect failed: {}", err);
+                    }
+                }
+                let elapsed_ms = t0.elapsed().as_millis() as u64;
+                stats.record_detect(elapsed_ms, ok);
+            }
+
+            thread::sleep(Duration::from_secs(u64::from(check_interval_secs)));
+        }
+    });
+}
+
+fn spawn_metrics_reporter(stats: Arc<RuntimeStats>) {
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_secs(60));
+
+        let ipc_fast_total = stats.ipc_fast_total.swap(0, Ordering::Relaxed);
+        let ipc_fast_fail = stats.ipc_fast_fail.swap(0, Ordering::Relaxed);
+        let ipc_fast_latency_sum = stats.ipc_fast_latency_ms_sum.swap(0, Ordering::Relaxed);
+
+        let ipc_heavy_total = stats.ipc_heavy_total.swap(0, Ordering::Relaxed);
+        let ipc_heavy_fail = stats.ipc_heavy_fail.swap(0, Ordering::Relaxed);
+        let ipc_heavy_latency_sum = stats.ipc_heavy_latency_ms_sum.swap(0, Ordering::Relaxed);
+
+        let detect_total = stats.detect_total.swap(0, Ordering::Relaxed);
+        let detect_fail = stats.detect_fail.swap(0, Ordering::Relaxed);
+        let detect_latency_sum = stats.detect_latency_ms_sum.swap(0, Ordering::Relaxed);
+
+        let frame_fetch_total = stats.frame_fetch_total.swap(0, Ordering::Relaxed);
+        let frame_fetch_miss = stats.frame_fetch_miss.swap(0, Ordering::Relaxed);
+
+        info!(
+            "[Metrics][1m] ipc_fast={{total:{},fail:{},avg_ms:{}}} ipc_heavy={{total:{},fail:{},avg_ms:{}}} detect={{total:{},fail:{},avg_ms:{}}} frame_fetch={{total:{},miss:{}}}",
+            ipc_fast_total,
+            ipc_fast_fail,
+            avg_ms(ipc_fast_latency_sum, ipc_fast_total),
+            ipc_heavy_total,
+            ipc_heavy_fail,
+            avg_ms(ipc_heavy_latency_sum, ipc_heavy_total),
+            detect_total,
+            detect_fail,
+            avg_ms(detect_latency_sum, detect_total),
+            frame_fetch_total,
+            frame_fetch_miss
+        );
+    });
 }
 
 fn asset_protocol_handler(
@@ -142,15 +396,21 @@ fn asset_protocol_handler(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    init_logging();
     std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--remote-debugging-port=9222");
+
+    let stats = Arc::new(RuntimeStats::new());
+    spawn_metrics_reporter(stats.clone());
 
     let app_state = Arc::new(AppState {
         monitor: Arc::new(Mutex::new(core::Monitor::new())),
         camera: Arc::new(Mutex::new(core::Camera::new())),
     });
 
+    spawn_background_detection_worker(app_state.clone(), stats.clone());
+
     if let Err(e) = core::PoseDetector::init() {
-        eprintln!("[WorkerMonitor] Detector init failed: {}", e);
+        warn!("[WorkerMonitor] Detector init failed: {}", e);
     }
 
     let dev_mode = std::env::var("DEV_MODE").unwrap_or_default() == "1";
@@ -186,15 +446,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     let tx_clone = tx.clone();
 
-    let (ipc_req_tx, ipc_req_rx) = std::sync::mpsc::channel::<IpcRequest>();
+    let (ipc_req_tx_fast, ipc_req_rx_fast) = std::sync::mpsc::channel::<IpcRequest>();
+    let (ipc_req_tx_heavy, ipc_req_rx_heavy) = std::sync::mpsc::channel::<IpcRequest>();
     let (ipc_res_tx, ipc_res_rx) = std::sync::mpsc::channel::<(Option<String>, Result<serde_json::Value, String>)>();
-    let app_state_worker = app_state.clone();
+    let app_state_fast = app_state.clone();
+    let app_state_heavy = app_state.clone();
+    let stats_fast = stats.clone();
+    let stats_heavy = stats.clone();
+    let ipc_res_tx_fast = ipc_res_tx.clone();
+    let ipc_res_tx_heavy = ipc_res_tx.clone();
 
     thread::spawn(move || {
-        while let Ok(req) = ipc_req_rx.recv() {
+        while let Ok(req) = ipc_req_rx_fast.recv() {
+            let request_id = request_id_for_log(&req);
+            let method = req.method.clone();
             let req_id = req.id.clone();
-            let result = handle_ipc(app_state_worker.as_ref(), &req);
-            if ipc_res_tx.send((req_id, result)).is_err() {
+            let t0 = Instant::now();
+            let result = handle_ipc(app_state_fast.as_ref(), &req, stats_fast.as_ref());
+            let elapsed_ms = t0.elapsed().as_millis() as u64;
+            stats_fast.record_ipc(IpcQueue::Fast, elapsed_ms, result.is_ok());
+            info!(
+                event = "ipc_request",
+                request_id = %request_id,
+                method = %method,
+                queue = "fast",
+                elapsed_ms,
+                ok = result.is_ok(),
+                "IPC handled"
+            );
+            if ipc_res_tx_fast.send((req_id, result)).is_err() {
+                break;
+            }
+        }
+    });
+
+    thread::spawn(move || {
+        while let Ok(req) = ipc_req_rx_heavy.recv() {
+            let request_id = request_id_for_log(&req);
+            let method = req.method.clone();
+            let req_id = req.id.clone();
+            let t0 = Instant::now();
+            let result = handle_ipc(app_state_heavy.as_ref(), &req, stats_heavy.as_ref());
+            let elapsed_ms = t0.elapsed().as_millis() as u64;
+            stats_heavy.record_ipc(IpcQueue::Heavy, elapsed_ms, result.is_ok());
+            info!(
+                event = "ipc_request",
+                request_id = %request_id,
+                method = %method,
+                queue = "heavy",
+                elapsed_ms,
+                ok = result.is_ok(),
+                "IPC handled"
+            );
+            if ipc_res_tx_heavy.send((req_id, result)).is_err() {
                 break;
             }
         }
@@ -235,8 +539,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
                 };
-                if ipc_req_tx.send(req).is_err() {
-                    eprintln!("[IPC] Worker thread not available");
+                let method = req.method.clone();
+                let send_result = if is_heavy_ipc_method(&method) {
+                    ipc_req_tx_heavy.send(req)
+                } else {
+                    ipc_req_tx_fast.send(req)
+                };
+
+                if send_result.is_err() {
+                    error!("[IPC] Worker thread not available for method: {}", method);
                 }
             }
         }

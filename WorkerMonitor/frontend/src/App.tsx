@@ -15,7 +15,7 @@ import "./App.css";
 
 export default function App() {
   const { videoRef, isCameraReady, cameraError, startCamera, stopCamera } = useCamera();
-  const { isReady: isPoseReady, isLoading: isPoseLoading, error: poseError, detect } = usePoseDetector();
+  const { isReady: isPoseReady, isLoading: isPoseLoading, error: poseError } = usePoseDetector();
   const { snapshot, isMonitoring, toggleMonitoring } = useMonitor();
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [view, setView] = useState<"monitor" | "settings" | "compact">("monitor");
@@ -100,27 +100,6 @@ export default function App() {
       return () => clearTimeout(t);
     }
   }, [welcomeBack]);
-
-  useEffect(() => {
-    if (!(isMonitoring && isPoseReady)) return;
-
-    let inFlight = false;
-
-    const doDetection = async () => {
-      if (inFlight) {
-        return;
-      }
-      inFlight = true;
-      const result = await detect();
-      setPersonDetected(result.personDetected);
-      inFlight = false;
-    };
-
-    doDetection();
-    const interval = (config?.check_interval_seconds ?? 5) * 1000;
-    const timer = setInterval(doDetection, interval);
-    return () => clearInterval(timer);
-  }, [isMonitoring, isPoseReady, config, detect]);
 
   useEffect(() => {
     if (isMonitoring && !isCameraReady) {

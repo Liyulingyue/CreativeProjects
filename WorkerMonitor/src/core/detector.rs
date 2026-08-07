@@ -67,7 +67,13 @@ impl PoseDetector {
 
     pub fn detect(image_bytes: &[u8]) -> Result<PoseOutput, String> {
         let pipeline = PIPELINE.get().ok_or_else(|| "pipeline not initialized".to_string())?;
-        let pipeline = pipeline.lock().map_err(|e| format!("lock failed: {}", e))?;
+        let pipeline = match pipeline.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                eprintln!("[Detector] Pipeline mutex poisoned, recovering");
+                poisoned.into_inner()
+            }
+        };
 
         let img = image::load_from_memory(image_bytes)
             .map_err(|e| format!("image decode failed: {}", e))?;
@@ -100,26 +106,24 @@ impl PoseDetector {
 }
 
 fn download_file(url: &str, path: &std::path::Path) -> Result<(), String> {
-    let result = std::thread::scope(|s| {
-        s.spawn(|| {
-            let client = reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(300))
-                .user_agent("Mozilla/5.0")
-                .build()
-                .expect("failed to build client");
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .user_agent("Mozilla/5.0")
+        .build()
+        .map_err(|e| format!("failed to build client: {}", e))?;
 
-            let mut response = client.get(url)
-                .send()
-                .expect("download failed");
+    let mut response = client.get(url)
+        .send()
+        .map_err(|e| format!("download failed: {}", e))?;
 
-            if !response.status().is_success() {
-                panic!("download failed: {}", response.status());
-            }
+    if !response.status().is_success() {
+        return Err(format!("download failed: {}", response.status()));
+    }
 
-            let mut file = std::fs::File::create(path).expect("file create error");
-            std::io::copy(&mut response, &mut file).expect("file write error");
-        }).join()
-    });
+    let mut file = std::fs::File::create(path)
+        .map_err(|e| format!("file create error: {}", e))?;
+    std::io::copy(&mut response, &mut file)
+        .map_err(|e| format!("file write error: {}", e))?;
 
-    result.map_err(|e| format!("thread panicked: {:?}", e))
+    Ok(())
 }
