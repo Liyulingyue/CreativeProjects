@@ -648,12 +648,6 @@ unsafe fn matmul_q8_0_vs_q8_0_avx2(weight: &[u8], input_q8: &[u8], input_scales:
         let mut cv2 = _mm256_setzero_ps();
         let mut cv3 = _mm256_setzero_ps();
         for b in 0..blocks_per_row {
-            if b + 1 < blocks_per_row {
-                _mm_prefetch(w_ptr.add(off0 + (b + 1) * 34) as *const i8, _MM_HINT_T0);
-                _mm_prefetch(w_ptr.add(off1 + (b + 1) * 34) as *const i8, _MM_HINT_T0);
-                _mm_prefetch(w_ptr.add(off2 + (b + 1) * 34) as *const i8, _MM_HINT_T0);
-                _mm_prefetch(w_ptr.add(off3 + (b + 1) * 34) as *const i8, _MM_HINT_T0);
-            }
             let qy = _mm256_loadu_si256(input_q8.as_ptr().add(b * 32) as *const __m256i);
             let bd = *sc_ptr.add(b);
 
@@ -661,13 +655,13 @@ unsafe fn matmul_q8_0_vs_q8_0_avx2(weight: &[u8], input_q8: &[u8], input_scales:
             let p1 = w_ptr.add(off1 + b * 34);
             let p2 = w_ptr.add(off2 + b * 34);
             let p3 = w_ptr.add(off3 + b * 34);
-            let a0_d = u16::from_le_bytes([*p0, *p0.add(1)]);
-            let a1_d = u16::from_le_bytes([*p1, *p1.add(1)]);
-            let a2_d = u16::from_le_bytes([*p2, *p2.add(1)]);
-            let a3_d = u16::from_le_bytes([*p3, *p3.add(1)]);
-            let packed_d = _mm_set_epi16(0, 0, 0, 0, a3_d as i16, a2_d as i16, a1_d as i16, a0_d as i16);
-            let da = _mm_cvtph_ps(packed_d);
-            let da = _mm_mul_ps(da, _mm_set1_ps(bd));
+
+            let a0_d = std::ptr::read_unaligned(p0 as *const u16);
+            let a1_d = std::ptr::read_unaligned(p1 as *const u16);
+            let a2_d = std::ptr::read_unaligned(p2 as *const u16);
+            let a3_d = std::ptr::read_unaligned(p3 as *const u16);
+
+            let da = _mm_mul_ps(_mm_cvtph_ps(_mm_set_epi16(0, 0, 0, 0, a3_d as i16, a2_d as i16, a1_d as i16, a0_d as i16)), _mm_set1_ps(bd));
             let s0 = _mm256_broadcastss_ps(da);
             let s1 = _mm256_broadcastss_ps(_mm_shuffle_ps(da, da, 0x55));
             let s2 = _mm256_broadcastss_ps(_mm_shuffle_ps(da, da, 0xAA));
@@ -704,7 +698,8 @@ unsafe fn matmul_q8_0_vs_q8_0_avx2(weight: &[u8], input_q8: &[u8], input_scales:
         let mut acc = _mm256_setzero_ps();
         for b in 0..blocks_per_row {
             let w_off = row_off + b * 34;
-            let d = f16_to_f32(u16::from_le_bytes([*w_ptr.add(w_off), *w_ptr.add(w_off + 1)])) * *sc_ptr.add(b);
+            let wd = std::ptr::read_unaligned(w_ptr.add(w_off) as *const u16);
+            let d = _mm_cvtss_f32(_mm_cvtph_ps(_mm_set1_epi16(wd as i16))) * *sc_ptr.add(b);
             let d_v = _mm256_set1_ps(d);
             let qx = _mm256_loadu_si256(w_ptr.add(w_off + 2) as *const __m256i);
             let qy = _mm256_loadu_si256(input_q8.as_ptr().add(b * 32) as *const __m256i);

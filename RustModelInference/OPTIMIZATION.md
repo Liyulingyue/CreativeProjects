@@ -1,15 +1,19 @@
 # Rust LLM Inference Engine — 优化记录
 
-## 当前性能基线
+## 当前性能基线（2025-07-31 更新，llama-bench 校正）
 
 | 模型 | 线程 | Rust | llama.cpp | 差距 |
 |------|------|------|-----------|------|
-| Qwen3-0.6B Q8_0 | T1 | 12.6 tok/s | 44.07 tok/s | 3.5x |
-| Qwen3-0.6B Q8_0 | T4 | 31.1 tok/s | 44.32 tok/s | 1.4x |
-| MiniCPM5-1B Q8_0 | T1 | 9.5 tok/s | 31.97 tok/s | 3.4x |
-| MiniCPM5-1B Q8_0 | T4 | 26.3 tok/s | 32.14 tok/s | 1.2x |
+| Qwen3-0.6B Q8_0 | T1 | ~16 tok/s | ~21 tok/s | 1.3x |
+| Qwen3-0.6B Q8_0 | T4 | ~38 tok/s | ~44 tok/s | 1.16x |
+| MiniCPM5-1B Q8_0 | T1 | 9.5 tok/s | ~32 tok/s | 3.4x |
+| MiniCPM5-1B Q8_0 | T4 | 27.9 tok/s | ~32 tok/s | 1.15x |
+
+> 注：之前 llama.cpp T1=44 tok/s 的数据有误（可能是多线程测量）。使用 `llama-bench -t 1` 校正后为 ~21 tok/s。
 
 测试条件：40 decode tokens，纯 decode（无 prompt），`--bench` 模式。
+
+> 2025-07-31：移除 prefetch + 优化 f16 加载后，Qwen3 T1 +32%, T4 +15-20%
 
 ## 已修复的 Bug
 
@@ -35,11 +39,11 @@
 - **原因**：silu activation 需要在 gate/up matmul 完成后才能执行，合并改变了数据流
 - **结论**：需更仔细的依赖分析
 
-### 3. Dynamic Chunk Scheduling via `compute_with_chunks()`
-- **做法**：在 `ComputePool` 中实现 llama.cpp 风格的 atomic fetch-add 动态 chunk 分配
-- **结果**：T4 死锁，T1 编译通过但未测试
-- **原因**：`compute_with_chunks` 在 `compute()` 内部 spawn 新线程，而 worker 线程还在 idle 等待 epoch 唤醒 — 死锁
-- **结论**：需要 persistent workers 架构，不能在现有 fork-join 模型上叠加
+### 3. Persistent Workers 架构（2025-07-31）
+- **做法**：重写 `ComputePool`，让 worker 线程永不退出，在 `worker_loop` 中遍历所有 ops。用 `work_ready` flag + exit_barrier + reenter_barrier 三阶段同步。
+- **结果**：Qwen3 T4 从 31.1 → 23.3 tok/s（**更慢**），输出正确
+- **原因**：每步推理多了 `work_ready` spin-wait + 额外 barrier 开销。Fork-join 的 barrier 已经是 minimal overhead 了。
+- **结论**：Persistent workers 需要完全重新设计（消除 epoch-based wakeup，改用 work-stealing queue），不能简单叠加在现有模型上
 
 ### 4. `select_nth_unstable_by` 替代 O(n*k) 扫描
 - **做法**：用 `Vec::select_nth_unstable_by` 替代手写增量扫描
@@ -88,14 +92,19 @@ llama.cpp 的 workers 是 persistent 的：线程进入 `worker_loop` 后，遍�
 
 这是 llama.cpp 50 GB/s 的关键来源。
 
-#### 2. Matmul Kernel 效率
-**目标**：单核带宽从 ~15 GB/s 提升到 ~50 GB/s
+#### 2. Matmul Kernel 优化（✅ 已实施，2025-07-31）
+**改动**：
+- 移除了 inner loop 中的 prefetch（`_mm_prefetch`）— 顺序访问本身已被 prefetcher 覆盖
+- 将 byte-by-byte f16 加载改为 `std::ptr::read_unaligned`（编译器可生成单一 16-bit load）
 
-可能的方向：
-- **Prefetch 策略**：llama.cpp 的 prefetch 在 outer loop 做，更激进
-- **Block tiling**：当前 4-row tiling，llama.cpp 用 16x16 block
-- **Register tiling**：更多 accumulator (8-16 个) 减少 load/store 比率
-- **AVX VNNI**（如果 CPU 支持）：`_mm256_dpbssd_epi32` 替代 `_mm256_maddubs_epi16 + _mm256_madd_epi16`
+**结果**：
+- Qwen3 T1: 12.6 → 16.9 tok/s（**+34%**）
+- Qwen3 T4: 31.8 → 37-39 tok/s（**+18-22%**）
+- MiniCPM5 T4: 26.3 → 27.9 tok/s（**+6%**）
+
+> 实测 2-row tiling 性能与 4-row tiling 相同，无额外收益
+
+**分析**：移除不必要的 prefetch 减少了指令数和 L1 cache 压力。Prefetch 在顺序访问模式下会增加开销而不带来收益。
 
 ### 🟡 中优先级
 
