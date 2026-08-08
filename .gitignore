@@ -8,3 +8,5 @@ build/
 __pycache__/
 .venv/
 .env
+references/
+SearchBenchmark/references/
