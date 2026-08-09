@@ -1,6 +1,6 @@
 use crate::clip_config::ClipVisionConfig;
 use crate::model::GGUFLoader;
-use crate::ops::{dot_f32, dot_f16_f32, rope_mrope_interleaved, softmax};
+use crate::ops::{dot_f32, dot_f16_f32, rope_mrope_interleaved, softmax, vec_mad_f32};
 use rayon::prelude::*;
 
 struct Q8Weight {
@@ -532,11 +532,13 @@ impl<'a> VisionEncoder<'a> {
                         }
                     }
                     #[cfg(not(target_arch = "x86_64"))]
-                    for s in 0..n_tokens {
-                        let k_ptr = attn_buf.as_ptr().add(k_base + s * d_head);
-                        let mut sum = 0.0f32;
-                        for i in 0..d_head { sum += *q_ptr.add(i) * *k_ptr.add(i); }
-                        score_slice[t * n_tokens + s] = sum * scale;
+                    {
+                        let q_slice = std::slice::from_raw_parts(q_ptr, d_head);
+                        for s in 0..n_tokens {
+                            let k_ptr = attn_buf.as_ptr().add(k_base + s * d_head);
+                            let k_slice = std::slice::from_raw_parts(k_ptr, d_head);
+                            score_slice[t * n_tokens + s] = dot_f32(q_slice, k_slice, d_head) * scale;
+                        }
                     }
                     softmax(&mut score_slice[t * n_tokens..t * n_tokens + n_tokens]);
 
@@ -561,11 +563,13 @@ impl<'a> VisionEncoder<'a> {
                     }
                     #[cfg(not(target_arch = "x86_64"))]
                     for s in 0..n_tokens {
-                        let sc = score_slice[t * n_tokens + s];
                         let v_ptr = attn_buf.as_ptr().add(v_base + s * d_head);
-                        for d in 0..d_head {
-                            out_slice[out_base + d] += sc * *v_ptr.add(d);
-                        }
+                        let value = std::slice::from_raw_parts(v_ptr, d_head);
+                        vec_mad_f32(
+                            &mut out_slice[out_base..out_base + d_head],
+                            value,
+                            score_slice[t * n_tokens + s],
+                        );
                     }
                 }
             }
@@ -1023,7 +1027,31 @@ fn sum_f32(x: &[f32]) -> f32 {
             return unsafe { sum_f32_avx2(x) };
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if crate::ops::has_neon() {
+            return unsafe { sum_f32_neon(x) };
+        }
+    }
     x.iter().sum()
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn sum_f32_neon(x: &[f32]) -> f32 {
+    use std::arch::aarch64::*;
+    let mut acc = vdupq_n_f32(0.0);
+    let mut i = 0;
+    while i + 4 <= x.len() {
+        acc = vaddq_f32(acc, vld1q_f32(x.as_ptr().add(i)));
+        i += 4;
+    }
+    let mut sum = vaddvq_f32(acc);
+    while i < x.len() {
+        sum += x[i];
+        i += 1;
+    }
+    sum
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1051,7 +1079,34 @@ fn sum_sq_centered_f32(x: &[f32], mean: f32) -> f32 {
             return unsafe { sum_sq_centered_f32_avx2(x, mean) };
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if crate::ops::has_neon() {
+            return unsafe { sum_sq_centered_f32_neon(x, mean) };
+        }
+    }
     x.iter().map(|&v| (v - mean) * (v - mean)).sum()
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn sum_sq_centered_f32_neon(x: &[f32], mean: f32) -> f32 {
+    use std::arch::aarch64::*;
+    let mean_v = vdupq_n_f32(mean);
+    let mut acc = vdupq_n_f32(0.0);
+    let mut i = 0;
+    while i + 4 <= x.len() {
+        let delta = vsubq_f32(vld1q_f32(x.as_ptr().add(i)), mean_v);
+        acc = vfmaq_f32(acc, delta, delta);
+        i += 4;
+    }
+    let mut sum = vaddvq_f32(acc);
+    while i < x.len() {
+        let delta = x[i] - mean;
+        sum += delta * delta;
+        i += 1;
+    }
+    sum
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1082,8 +1137,41 @@ fn layer_norm_scale_bias(x: &mut [f32], w: &[f32], b: &[f32], mean: f32, inv: f3
             return;
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if crate::ops::has_neon() {
+            unsafe { layer_norm_scale_bias_neon(x, w, b, mean, inv); }
+            return;
+        }
+    }
     for i in 0..x.len() {
         x[i] = (x[i] - mean) * inv * w[i] + b[i];
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn layer_norm_scale_bias_neon(
+    x: &mut [f32],
+    weight: &[f32],
+    bias: &[f32],
+    mean: f32,
+    inv: f32,
+) {
+    use std::arch::aarch64::*;
+    let mean_v = vdupq_n_f32(mean);
+    let inv_v = vdupq_n_f32(inv);
+    let mut i = 0;
+    while i + 4 <= x.len() {
+        let centered = vsubq_f32(vld1q_f32(x.as_ptr().add(i)), mean_v);
+        let normalized = vmulq_f32(vmulq_f32(centered, inv_v), vld1q_f32(weight.as_ptr().add(i)));
+        let value = vaddq_f32(normalized, vld1q_f32(bias.as_ptr().add(i)));
+        vst1q_f32(x.as_mut_ptr().add(i), value);
+        i += 4;
+    }
+    while i < x.len() {
+        x[i] = (x[i] - mean) * inv * weight[i] + bias[i];
+        i += 1;
     }
 }
 
@@ -1116,8 +1204,34 @@ fn layer_norm_scale(x: &mut [f32], w: &[f32], mean: f32, inv: f32) {
             return;
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if crate::ops::has_neon() {
+            unsafe { layer_norm_scale_neon(x, w, mean, inv); }
+            return;
+        }
+    }
     for i in 0..x.len() {
         x[i] = (x[i] - mean) * inv * w[i];
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn layer_norm_scale_neon(x: &mut [f32], weight: &[f32], mean: f32, inv: f32) {
+    use std::arch::aarch64::*;
+    let mean_v = vdupq_n_f32(mean);
+    let inv_v = vdupq_n_f32(inv);
+    let mut i = 0;
+    while i + 4 <= x.len() {
+        let centered = vsubq_f32(vld1q_f32(x.as_ptr().add(i)), mean_v);
+        let value = vmulq_f32(vmulq_f32(centered, inv_v), vld1q_f32(weight.as_ptr().add(i)));
+        vst1q_f32(x.as_mut_ptr().add(i), value);
+        i += 4;
+    }
+    while i < x.len() {
+        x[i] = (x[i] - mean) * inv * weight[i];
+        i += 1;
     }
 }
 
@@ -1284,5 +1398,47 @@ unsafe fn attn_scaled_add_avx2(out: &mut [f32], v: *const f32, scale: f32, d: us
     while i < d {
         *out_ptr.add(i) += scale * *v.add(i);
         i += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn close(a: f32, b: f32) {
+        assert!((a - b).abs() <= 1e-4 + 1e-4 * b.abs(), "a={a} b={b}");
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_layer_norm_helpers_match_scalar() {
+        let input: Vec<f32> = (0..13).map(|i| i as f32 * 0.1 - 0.7).collect();
+        let weight: Vec<f32> = (0..13).map(|i| 0.9 + i as f32 * 0.01).collect();
+        let bias: Vec<f32> = (0..13).map(|i| i as f32 * -0.005).collect();
+        let mean = input.iter().sum::<f32>() / input.len() as f32;
+        let inv = 1.0 / (input.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / input.len() as f32 + 1e-6).sqrt();
+        let mut expected = input.clone();
+        for i in 0..expected.len() {
+            expected[i] = (expected[i] - mean) * inv * weight[i] + bias[i];
+        }
+        let mut actual = input.clone();
+        unsafe { layer_norm_scale_bias_neon(&mut actual, &weight, &bias, mean, inv) };
+        for i in 0..actual.len() {
+            close(actual[i], expected[i]);
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn shared_neon_attention_ops_match_scalar() {
+        let q: Vec<f32> = (0..13).map(|i| i as f32 * 0.07 - 0.3).collect();
+        let k: Vec<f32> = (0..13).map(|i| 0.4 - i as f32 * 0.02).collect();
+        let expected: f32 = q.iter().zip(&k).map(|(x, y)| x * y).sum();
+        close(dot_f32(&q, &k, q.len()), expected);
+        let mut out = vec![0.25f32; 13];
+        vec_mad_f32(&mut out, &k, 0.5);
+        for i in 0..13 {
+            close(out[i], 0.25 + 0.5 * k[i]);
+        }
     }
 }
