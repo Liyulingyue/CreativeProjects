@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io::{self, Write};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rust_model_inference::*;
 
@@ -18,9 +18,24 @@ fn resolve_thread_count(requested: usize, available: usize) -> usize {
     }
 }
 
+fn inference_step_budget(prompt_tokens: usize, max_tokens: usize, bench: bool) -> usize {
+    prompt_tokens
+        + if bench {
+            max_tokens
+        } else {
+            max_tokens.saturating_sub(1)
+        }
+}
+
+fn per_second(count: usize, elapsed: Duration) -> f64 {
+    let seconds = elapsed.as_secs_f64();
+    if seconds > 0.0 { count as f64 / seconds } else { 0.0 }
+}
+
 #[cfg(test)]
 mod cli_tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn default_threads_are_capped_but_explicit_value_wins() {
@@ -28,6 +43,18 @@ mod cli_tests {
         assert_eq!(resolve_thread_count(0, 4), 4);
         assert_eq!(resolve_thread_count(0, 0), 1);
         assert_eq!(resolve_thread_count(12, 16), 12);
+    }
+
+    #[test]
+    fn normal_generation_does_not_run_the_final_unused_forward() {
+        assert_eq!(inference_step_budget(5, 32, false), 36);
+        assert_eq!(inference_step_budget(5, 0, false), 5);
+    }
+
+    #[test]
+    fn bench_budget_has_exact_decode_eval_count() {
+        assert_eq!(inference_step_budget(5, 32, true), 37);
+        assert_eq!(per_second(32, Duration::from_millis(250)), 128.0);
     }
 }
 
@@ -862,8 +889,14 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
     io::stdout().flush().unwrap();
 
     let t_infer = Instant::now();
+    let total_steps = inference_step_budget(input_tokens.len(), max_tokens, bench);
+    let mut prefill_evals = 0usize;
+    let mut prefill_time = Duration::ZERO;
+    let mut decode_evals = 0usize;
+    let mut decode_time = Duration::ZERO;
 
-    for step in 0..(input_tokens.len() + max_tokens) {
+    for step in 0..total_steps {
+        let eval_started = Instant::now();
         let token_id = if step < input_tokens.len() {
             input_tokens[step]
         } else {
@@ -1131,6 +1164,15 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
             t_logits += t0.elapsed().as_secs_f64();
         }
 
+        let eval_elapsed = eval_started.elapsed();
+        if step < input_tokens.len() {
+            prefill_evals += 1;
+            prefill_time += eval_elapsed;
+        } else {
+            decode_evals += 1;
+            decode_time += eval_elapsed;
+        }
+
         if step < input_tokens.len() - 1 { continue; }
 
         let logits = &mut scratch.logits;
@@ -1151,7 +1193,7 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
             chosen
         };
 
-        if chosen == eos_id as usize || chosen == im_end_id as usize { break; }
+        if !bench && (chosen == eos_id as usize || chosen == im_end_id as usize) { break; }
         if generated_tokens.len() >= max_tokens { break; }
 
         generated_tokens.push(chosen as u32);
@@ -1169,6 +1211,20 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
     let infer_ms = t_infer.elapsed().as_millis();
     let tok_s = if infer_ms > 0 { generated_tokens.len() as f64 / infer_ms as f64 * 1000.0 } else { 0.0 };
     let total = t_norm + _t_quant + t_qkv + t_wo + t_ffn1 + t_logits;
+    if bench {
+        eprintln!(
+            "BENCH: pp {} evals in {:.3}s | {:.1} eval/s",
+            prefill_evals,
+            prefill_time.as_secs_f64(),
+            per_second(prefill_evals, prefill_time),
+        );
+        eprintln!(
+            "BENCH: tg {} evals in {:.3}s | {:.1} eval/s",
+            decode_evals,
+            decode_time.as_secs_f64(),
+            per_second(decode_evals, decode_time),
+        );
+    }
     if profile {
         eprintln!("PROFILE: norm={:.1}% quant={:.1}% qkv+attn={:.1}% wo={:.1}% ffn={:.1}% logits={:.1}%",
             t_norm/total*100.0, _t_quant/total*100.0, t_qkv/total*100.0, t_wo/total*100.0, t_ffn1/total*100.0, t_logits/total*100.0);
@@ -1176,7 +1232,7 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
             t_norm, _t_quant, t_qkv, t_wo, t_ffn1, t_logits);
     }
     println!();
-    println!("[{} tokens in {}ms | {:.1} tok/s]", generated_tokens.len(), infer_ms, tok_s);
+    println!("[end-to-end: {} output tokens in {}ms | {:.1} tok/s]", generated_tokens.len(), infer_ms, tok_s);
 }
 
 fn detect_special_tokens(_loader: &GGUFLoader, tokenizer: &BPETokenizer) -> HashMap<String, u32> {
