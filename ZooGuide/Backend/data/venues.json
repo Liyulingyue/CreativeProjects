@@ -202,7 +202,7 @@
         "desc": "单张照片评分 90+",
         "icon": "🌟",
         "category": "photo",
-        "criteria_type": "best_vibe",
+        "criteria_type": "best_score",
         "threshold": 90
       },
       {
@@ -256,7 +256,7 @@
         "desc": "第一次 GPS 定位",
         "icon": "📍",
         "category": "gps",
-        "criteria_type": "checkin_count",
+        "criteria_type": "gps_count",
         "threshold": 1
       },
       {
@@ -265,7 +265,7 @@
         "desc": "GPS 定位 5 次",
         "icon": "🛰️",
         "category": "gps",
-        "criteria_type": "checkin_count",
+        "criteria_type": "gps_count",
         "threshold": 5
       }
     ],

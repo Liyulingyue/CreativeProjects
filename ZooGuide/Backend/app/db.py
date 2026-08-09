@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS achievements (
     description TEXT NOT NULL,
     icon TEXT NOT NULL,
     category TEXT NOT NULL,
-    criteria_type TEXT NOT NULL,    -- photo_count / checkin_count / best_vibe / consecutive_days / venues_unique
+    criteria_type TEXT NOT NULL,    -- photo_count / checkin_count / best_score / consecutive_days / venues_unique / gps_count
     criteria_threshold INTEGER NOT NULL,
     sort_order INTEGER DEFAULT 0
 );

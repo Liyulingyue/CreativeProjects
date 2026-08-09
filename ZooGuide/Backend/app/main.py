@@ -407,7 +407,7 @@ async def photo_evaluate(
     user_id = current_user["id"] if current_user else None
     sid = session_id or (f"u{user_id}" if user_id else "anon")
 
-    result = await photo.evaluate_photo_for_wall(contents, suffix)
+    result = await photo.evaluate_photo_for_wall(contents, suffix, user_id=user_id, session_id=sid)
     result["source"] = "wall"
     result["thumbnail"] = thumbnail or ""
     result["preview"] = preview or ""

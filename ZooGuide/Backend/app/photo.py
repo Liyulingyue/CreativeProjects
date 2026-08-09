@@ -73,19 +73,19 @@ async def evaluate_photo_with_expected(
         return _fallback_checkin(reason="no_expected_venue")
 
     if not llm_client.is_llm_enabled():
-        return _fallback_checkin(reason="USE_LLM=false", expected_venue=expected_venue)
+        return _fallback_checkin(reason="USE_LLM=false", expected_venue=expected_venue, user_id=user_id, session_id=session_id)
 
     try:
-        result = await _checkin_with_llm(image_bytes, suffix, expected_venue)
+        result = await _checkin_with_llm(image_bytes, suffix, expected_venue, user_id=user_id, session_id=session_id)
     except BaseException as e:
-        return _fallback_checkin(reason=f"LLM error: {e}", expected_venue=expected_venue)
+        return _fallback_checkin(reason=f"LLM error: {e}", expected_venue=expected_venue, user_id=user_id, session_id=session_id)
 
     result["matched_venue_id"] = expected_venue.get("id", "")
     result["matched_venue_name"] = expected_venue.get("name", "")
     return result
 
 
-async def _checkin_with_llm(image_bytes: bytes, suffix: str, expected_venue: dict) -> dict:
+async def _checkin_with_llm(image_bytes: bytes, suffix: str, expected_venue: dict, user_id: Optional[int] = None, session_id: Optional[str] = None) -> dict:
     expected_animals = ", ".join(expected_venue.get("animals", [])) or "该馆常见动物"
     expected_name = expected_venue.get("name", "未指定")
     user_text = (
@@ -108,11 +108,11 @@ async def _checkin_with_llm(image_bytes: bytes, suffix: str, expected_venue: dic
         "fallback": False,
         "ts": datetime.now().isoformat(timespec="seconds"),
     }
-    db.insert_photo_eval(eval_id, result)
+    db.insert_photo_eval(eval_id, result, user_id=user_id, session_id=session_id)
     return result
 
 
-async def _wall_with_llm(image_bytes: bytes, suffix: str) -> dict:
+async def _wall_with_llm(image_bytes: bytes, suffix: str, user_id: Optional[int] = None, session_id: Optional[str] = None) -> dict:
     user_text = "请看这张在动物园拍的照片，分析里面的动物和照片质量。"
     data = await _call_llm_photo(
         image_bytes, suffix, user_text,
@@ -135,7 +135,7 @@ async def _wall_with_llm(image_bytes: bytes, suffix: str) -> dict:
     return result
 
 
-def _fallback_checkin(reason: str = "", expected_venue: Optional[dict] = None) -> dict:
+def _fallback_checkin(reason: str = "", expected_venue: Optional[dict] = None, user_id: Optional[int] = None, session_id: Optional[str] = None) -> dict:
     eval_id = uuid.uuid4().hex[:8]
     matched_venue = expected_venue
     if not matched_venue:
@@ -160,7 +160,7 @@ def _fallback_checkin(reason: str = "", expected_venue: Optional[dict] = None) -
         "fallback_reason": reason,
         "ts": datetime.now().isoformat(timespec="seconds"),
     }
-    db.insert_photo_eval(eval_id, result)
+    db.insert_photo_eval(eval_id, result, user_id=user_id, session_id=session_id)
     return result
 
 
@@ -171,18 +171,20 @@ def _fallback_checkin(reason: str = "", expected_venue: Optional[dict] = None) -
 async def evaluate_photo_for_wall(
     image_bytes: bytes,
     suffix: str = ".jpg",
+    user_id: Optional[int] = None,
+    session_id: Optional[str] = None,
 ) -> dict:
     """Fun evaluation for photo wall — focus on animal + photo quality."""
     if not llm_client.is_llm_enabled():
-        return _fallback_wall(reason="USE_LLM=false")
+        return _fallback_wall(reason="USE_LLM=false", user_id=user_id, session_id=session_id)
 
     try:
-        return await _wall_with_llm(image_bytes, suffix)
+        return await _wall_with_llm(image_bytes, suffix, user_id=user_id, session_id=session_id)
     except BaseException as e:
-        return _fallback_wall(reason=f"LLM error: {e}")
+        return _fallback_wall(reason=f"LLM error: {e}", user_id=user_id, session_id=session_id)
 
 
-async def _wall_with_llm(image_bytes: bytes, suffix: str) -> dict:
+async def _wall_with_llm(image_bytes: bytes, suffix: str, user_id: Optional[int] = None, session_id: Optional[str] = None) -> dict:
     user_text = "请看这张在动物园拍的照片，分析里面的动物和照片质量。"
     data = await _call_llm_photo(
         image_bytes, suffix, user_text,
@@ -201,11 +203,11 @@ async def _wall_with_llm(image_bytes: bytes, suffix: str) -> dict:
         "fallback": False,
         "ts": datetime.now().isoformat(timespec="seconds"),
     }
-    db.insert_photo_eval(eval_id, result)
+    db.insert_photo_eval(eval_id, result, user_id=user_id, session_id=session_id)
     return result
 
 
-def _fallback_wall(reason: str = "") -> dict:
+def _fallback_wall(reason: str = "", user_id: Optional[int] = None, session_id: Optional[str] = None) -> dict:
     eval_id = uuid.uuid4().hex[:8]
     result = {
         "evaluation_id": eval_id,
@@ -218,7 +220,7 @@ def _fallback_wall(reason: str = "") -> dict:
         "fallback_reason": reason,
         "ts": datetime.now().isoformat(timespec="seconds"),
     }
-    db.insert_photo_eval(eval_id, result)
+    db.insert_photo_eval(eval_id, result, user_id=user_id, session_id=session_id)
     return result
 
 
