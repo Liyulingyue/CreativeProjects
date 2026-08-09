@@ -1211,6 +1211,7 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
     let infer_ms = t_infer.elapsed().as_millis();
     let tok_s = if infer_ms > 0 { generated_tokens.len() as f64 / infer_ms as f64 * 1000.0 } else { 0.0 };
     let total = t_norm + _t_quant + t_qkv + t_wo + t_ffn1 + t_logits;
+    if bench || profile { eprintln!(); }
     if bench {
         eprintln!(
             "BENCH: pp {} evals in {:.3}s | {:.1} eval/s",
