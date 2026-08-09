@@ -25,10 +25,12 @@
 采用目标相关静态派发并只移植实际热路径：
 
 1. `x86_64` 保持当前 AVX2/FMA/F16C 路径；
-2. `aarch64` 优先使用 NEON，Apple Silicon 支持时使用 FP16 和 DotProd 子路径；
+2. `aarch64` 优先使用稳定 Rust 支持的 NEON 与 FP16 转换指令；
 3. 其他目标或不可用 CPU 特性使用现有标量实现。
 
 不引入 SIMD trait、backend 工厂或第三方 SIMD 依赖。现有公开推理 API 不变。
+
+Rust 1.97 的 `vdotq_s32` 仍是不稳定 intrinsic，本次不引入 nightly 或内联汇编；Q8 整数点积使用稳定的 `vmull_s8`、`vmull_high_s8` 和 `vpaddlq_s16` 实现。
 
 ## 架构设计
 
@@ -37,7 +39,7 @@
 `ops.rs` 继续作为公共算子入口。特性探测本身按目标编译：
 
 - 只有 `x86_64` 构建会展开 `is_x86_feature_detected!`；
-- 只有 `aarch64` 构建会展开 `is_aarch64_feature_detected!`；
+- `aarch64` 构建直接启用其架构基线包含的 NEON；
 - 非对应目标的查询函数直接返回 `false`；
 - 公共算子按 `x86 SIMD -> ARM SIMD -> scalar` 的顺序选择实现。
 
