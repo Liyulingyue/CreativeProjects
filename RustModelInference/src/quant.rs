@@ -37,29 +37,22 @@ pub struct BlockQ8K {
 }
 
 pub fn quantize_row_q8_k(x: &[f32]) -> Vec<BlockQ8K> {
+    #[cfg(target_arch = "x86_64")]
     if crate::ops::has_avx2_fma() {
-        #[target_feature(enable = "avx2")]
-        unsafe fn inner(x: &[f32]) -> Vec<BlockQ8K> {
-            quantize_row_q8_k_avx2(x)
-        }
-        unsafe { inner(x) }
-    } else {
-        quantize_row_q8_k_scalar(x)
+        return unsafe { quantize_row_q8_k_avx2(x) };
     }
+    quantize_row_q8_k_scalar(x)
 }
 
 pub fn quantize_row_q8_k_into(x: &[f32], buf: &mut [BlockQ8K]) {
     let nb = x.len() / QK_K;
     debug_assert!(buf.len() >= nb);
+    #[cfg(target_arch = "x86_64")]
     if crate::ops::has_avx2_fma() {
-        #[target_feature(enable = "avx2")]
-        unsafe fn inner(x: &[f32], buf: &mut [BlockQ8K]) {
-            quantize_row_q8_k_avx2_into(x, buf)
-        }
-        unsafe { inner(x, buf) }
-    } else {
-        quantize_row_q8_k_scalar_into(x, buf);
+        unsafe { quantize_row_q8_k_avx2_into(x, buf) };
+        return;
     }
+    quantize_row_q8_k_scalar_into(x, buf);
 }
 
 fn quantize_row_q8_k_scalar(x: &[f32]) -> Vec<BlockQ8K> {
@@ -111,6 +104,7 @@ fn quantize_row_q8_k_scalar_into(x: &[f32], buf: &mut [BlockQ8K]) {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn quantize_row_q8_k_avx2(x: &[f32]) -> Vec<BlockQ8K> {
     let nb = x.len() / QK_K;
@@ -119,6 +113,7 @@ unsafe fn quantize_row_q8_k_avx2(x: &[f32]) -> Vec<BlockQ8K> {
     result
 }
 
+#[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn quantize_row_q8_k_avx2_into(x: &[f32], buf: &mut [BlockQ8K]) {
     use std::arch::x86_64::*;
@@ -181,15 +176,11 @@ unsafe fn quantize_row_q8_k_avx2_into(x: &[f32], buf: &mut [BlockQ8K]) {
 }
 
 pub fn vec_dot_q4k_q8k(q4k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
+    #[cfg(target_arch = "x86_64")]
     if crate::ops::has_avx2_fma() {
-        #[target_feature(enable = "avx2")]
-        unsafe fn inner(q4k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
-            vec_dot_q4k_q8k_avx2(q4k_data, q8k)
-        }
-        unsafe { inner(q4k_data, q8k) }
-    } else {
-        vec_dot_q4k_q8k_scalar(q4k_data, q8k)
+        return unsafe { vec_dot_q4k_q8k_avx2(q4k_data, q8k) };
     }
+    vec_dot_q4k_q8k_scalar(q4k_data, q8k)
 }
 
 pub fn vec_dot_q4k_q8k_scalar(q4k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
@@ -274,15 +265,11 @@ pub fn vec_dot_q4k_q8k_scalar(q4k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
 }
 
 pub fn vec_dot_q5k_q8k(q5k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
+    #[cfg(target_arch = "x86_64")]
     if crate::ops::has_avx2_fma() {
-        #[target_feature(enable = "avx2")]
-        unsafe fn inner(q5k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
-            vec_dot_q5k_q8k_avx2(q5k_data, q8k)
-        }
-        unsafe { inner(q5k_data, q8k) }
-    } else {
-        vec_dot_q5k_q8k_scalar(q5k_data, q8k)
+        return unsafe { vec_dot_q5k_q8k_avx2(q5k_data, q8k) };
     }
+    vec_dot_q5k_q8k_scalar(q5k_data, q8k)
 }
 
 pub fn vec_dot_q5k_q8k_scalar(q5k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
@@ -680,10 +667,12 @@ pub fn vec_dot_q6k_q8k_scalar(q6k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
     sumf
 }
 
+#[cfg(target_arch = "x86_64")]
 pub unsafe fn vec_dot_q4k_q8k_avx2_direct(q4k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
     vec_dot_q4k_q8k_avx2(q4k_data, q8k)
 }
 
+#[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn vec_dot_q4k_q8k_avx2(q4k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
     use std::arch::x86_64::*;
@@ -786,6 +775,7 @@ unsafe fn vec_dot_q4k_q8k_avx2(q4k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
 }
 
 #[inline]
+#[cfg(target_arch = "x86_64")]
 fn f16_to_f32(bits: u16) -> f32 {
     let sign = if bits & 0x8000 != 0 { -1.0f32 } else { 1.0f32 };
     let exp = ((bits >> 10) & 0x1F) as i32;
@@ -795,10 +785,12 @@ fn f16_to_f32(bits: u16) -> f32 {
     else { sign * (1.0 + frac) * 2.0f32.powi(exp - 15) }
 }
 
+#[cfg(target_arch = "x86_64")]
 pub unsafe fn vec_dot_q5k_q8k_avx2_direct(q5k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
     vec_dot_q5k_q8k_avx2(q5k_data, q8k)
 }
 
+#[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn vec_dot_q5k_q8k_avx2(q5k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
     use std::arch::x86_64::*;
@@ -920,15 +912,11 @@ unsafe fn vec_dot_q5k_q8k_avx2(q5k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
 }
 
 pub fn vec_dot_q6k_q8k(q6k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
+    #[cfg(target_arch = "x86_64")]
     if crate::ops::has_avx2_fma() {
-        #[target_feature(enable = "avx2")]
-        unsafe fn inner(q6k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
-            vec_dot_q6k_q8k_avx2(q6k_data, q8k)
-        }
-        unsafe { inner(q6k_data, q8k) }
-    } else {
-        vec_dot_q6k_q8k_scalar(q6k_data, q8k)
+        return unsafe { vec_dot_q6k_q8k_avx2(q6k_data, q8k) };
     }
+    vec_dot_q6k_q8k_scalar(q6k_data, q8k)
 }
 
 pub fn matmul_q6k_q8k(weight_data: &[u8], input: &[f32], n_cols: usize, n_rows: usize) -> Vec<f32> {
@@ -942,10 +930,12 @@ pub fn matmul_q6k_q8k(weight_data: &[u8], input: &[f32], n_cols: usize, n_rows: 
     output
 }
 
+#[cfg(target_arch = "x86_64")]
 pub unsafe fn vec_dot_q6k_q8k_avx2_direct(q6k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
     vec_dot_q6k_q8k_avx2(q6k_data, q8k)
 }
 
+#[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn vec_dot_q6k_q8k_avx2(q6k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
     use std::arch::x86_64::*;

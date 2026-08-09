@@ -1208,37 +1208,25 @@ fn quantize_row_q8_k_cached(input: &[f32]) -> Vec<BlockQ8K> {
 }
 
 fn vec_dot_q4k_q8k_fast(q4k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
+    #[cfg(target_arch = "x86_64")]
     if crate::ops::has_avx2_fma() {
-        #[target_feature(enable = "avx2")]
-        unsafe fn inner(q4k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
-            quant::vec_dot_q4k_q8k_avx2_direct(q4k_data, q8k)
-        }
-        unsafe { inner(q4k_data, q8k) }
-    } else {
-        quant::vec_dot_q4k_q8k_scalar(q4k_data, q8k)
+        return unsafe { quant::vec_dot_q4k_q8k_avx2_direct(q4k_data, q8k) };
     }
+    quant::vec_dot_q4k_q8k_scalar(q4k_data, q8k)
 }
 
 fn vec_dot_q5k_q8k_fast(q5k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
+    #[cfg(target_arch = "x86_64")]
     if crate::ops::has_avx2_fma() {
-        #[target_feature(enable = "avx2")]
-        unsafe fn inner(q5k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
-            quant::vec_dot_q5k_q8k_avx2_direct(q5k_data, q8k)
-        }
-        unsafe { inner(q5k_data, q8k) }
-    } else {
-        quant::vec_dot_q5k_q8k_scalar(q5k_data, q8k)
+        return unsafe { quant::vec_dot_q5k_q8k_avx2_direct(q5k_data, q8k) };
     }
+    quant::vec_dot_q5k_q8k_scalar(q5k_data, q8k)
 }
 
 fn vec_dot_q6k_q8k_fast(q6k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
+    #[cfg(target_arch = "x86_64")]
     if crate::ops::has_avx2_fma() {
-        #[target_feature(enable = "avx2")]
-        unsafe fn inner(q6k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
-            quant::vec_dot_q6k_q8k_avx2_direct(q6k_data, q8k)
-        }
-        unsafe { inner(q6k_data, q8k) }
-    } else {
-        quant::vec_dot_q6k_q8k_scalar(q6k_data, q8k)
+        return unsafe { quant::vec_dot_q6k_q8k_avx2_direct(q6k_data, q8k) };
     }
+    quant::vec_dot_q6k_q8k_scalar(q6k_data, q8k)
 }

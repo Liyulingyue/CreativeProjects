@@ -507,6 +507,7 @@ impl<'a> VisionEncoder<'a> {
 
         let sw = PtrWrap(scores);
         let ow = PtrWrap(out_buf);
+        #[cfg(target_arch = "x86_64")]
         let use_avx2 = crate::ops::has_avx2_fma();
 
         (0..n_head).into_par_iter().for_each(move |h| {
@@ -519,6 +520,7 @@ impl<'a> VisionEncoder<'a> {
                 let out_slice = ow.slice(h * n_tokens * d_head, n_tokens * d_head);
                 for t in 0..n_tokens {
                     let q_ptr = attn_buf.as_ptr().add(q_base + t * d_head);
+                    #[cfg(target_arch = "x86_64")]
                     if use_avx2 {
                         unsafe { attention_qk_avx2(q_ptr, attn_buf.as_ptr().add(k_base), &mut score_slice[t * n_tokens..t * n_tokens + n_tokens], n_tokens, d_head, scale); }
                     } else {
@@ -529,12 +531,20 @@ impl<'a> VisionEncoder<'a> {
                             score_slice[t * n_tokens + s] = sum * scale;
                         }
                     }
+                    #[cfg(not(target_arch = "x86_64"))]
+                    for s in 0..n_tokens {
+                        let k_ptr = attn_buf.as_ptr().add(k_base + s * d_head);
+                        let mut sum = 0.0f32;
+                        for i in 0..d_head { sum += *q_ptr.add(i) * *k_ptr.add(i); }
+                        score_slice[t * n_tokens + s] = sum * scale;
+                    }
                     softmax(&mut score_slice[t * n_tokens..t * n_tokens + n_tokens]);
 
                     let out_base = t * d_head;
                     for d in 0..d_head {
                         out_slice[out_base + d] = 0.0;
                     }
+                    #[cfg(target_arch = "x86_64")]
                     if use_avx2 {
                         for s in 0..n_tokens {
                             let sc = score_slice[t * n_tokens + s];
@@ -545,8 +555,16 @@ impl<'a> VisionEncoder<'a> {
                             let sc = score_slice[t * n_tokens + s];
                             let v_ptr = attn_buf.as_ptr().add(v_base + s * d_head);
                             for d in 0..d_head {
-                                out_slice[out_base + d] += sc * unsafe { *v_ptr.add(d) };
+                                out_slice[out_base + d] += sc * *v_ptr.add(d);
                             }
+                        }
+                    }
+                    #[cfg(not(target_arch = "x86_64"))]
+                    for s in 0..n_tokens {
+                        let sc = score_slice[t * n_tokens + s];
+                        let v_ptr = attn_buf.as_ptr().add(v_base + s * d_head);
+                        for d in 0..d_head {
+                            out_slice[out_base + d] += sc * *v_ptr.add(d);
                         }
                     }
                 }
@@ -1249,17 +1267,6 @@ unsafe fn attention_qk_avx2(q: *const f32, k_base: *const f32, scores: &mut [f32
     }
 }
 
-#[cfg(not(target_arch = "x86_64"))]
-unsafe fn attention_qk_avx2(q: *const f32, k_base: *const f32, scores: &mut [f32], n_tokens: usize, d_head: usize, scale: f32) {
-    let d_stride = d_head as isize;
-    for s in 0..n_tokens {
-        let k_ptr = k_base.offset((s as isize) * d_stride);
-        let mut sum = 0.0f32;
-        for i in 0..d_head { sum += *q.add(i) * *k_ptr.add(i); }
-        scores[s] = sum * scale;
-    }
-}
-
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn attn_scaled_add_avx2(out: &mut [f32], v: *const f32, scale: f32, d: usize) {
@@ -1278,11 +1285,4 @@ unsafe fn attn_scaled_add_avx2(out: &mut [f32], v: *const f32, scale: f32, d: us
         *out_ptr.add(i) += scale * *v.add(i);
         i += 1;
     }
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-unsafe fn attention_dot_avx2(q: *const f32, k: *const f32, d: usize) -> f32 {
-    let mut sum = 0.0f32;
-    for i in 0..d { sum += *q.add(i) * *k.add(i); }
-    sum
 }

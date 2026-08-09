@@ -1,9 +1,14 @@
+#[cfg(target_arch = "x86_64")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(target_arch = "x86_64")]
 static HAS_AVX2_FMA: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "x86_64")]
 static HAS_F16C: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "x86_64")]
 static INIT_DONE: AtomicBool = AtomicBool::new(false);
 
+#[cfg(target_arch = "x86_64")]
 fn init_cpu_features() {
     if INIT_DONE.load(Ordering::Relaxed) { return; }
     let avx2_fma = is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma");
@@ -13,21 +18,31 @@ fn init_cpu_features() {
     INIT_DONE.store(true, Ordering::Relaxed);
 }
 
+#[cfg(target_arch = "x86_64")]
 #[inline(always)]
 pub fn has_avx2_fma() -> bool {
     if !INIT_DONE.load(Ordering::Relaxed) { init_cpu_features(); }
     HAS_AVX2_FMA.load(Ordering::Relaxed)
 }
 
+#[cfg(not(target_arch = "x86_64"))]
+#[inline(always)]
+pub const fn has_avx2_fma() -> bool { false }
+
+#[cfg(target_arch = "x86_64")]
 #[inline(always)]
 pub fn has_f16c() -> bool {
     if !INIT_DONE.load(Ordering::Relaxed) { init_cpu_features(); }
     HAS_F16C.load(Ordering::Relaxed)
 }
 
+#[cfg(not(target_arch = "x86_64"))]
+#[inline(always)]
+pub const fn has_f16c() -> bool { false }
+
 #[inline]
 pub fn f16_to_f32(bits: u16) -> f32 {
-    #[cfg(target_feature = "f16c")]
+    #[cfg(all(target_arch = "x86_64", target_feature = "f16c"))]
     {
         unsafe {
             use std::arch::x86_64::*;
@@ -35,7 +50,7 @@ pub fn f16_to_f32(bits: u16) -> f32 {
             _mm_cvtss_f32(_mm_cvtph_ps(v))
         }
     }
-    #[cfg(not(target_feature = "f16c"))]
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "f16c")))]
     {
         let sign = (bits >> 15) as u32;
         let exp = ((bits >> 10) & 0x1F) as u32;
@@ -59,7 +74,7 @@ pub fn f16_to_f32(bits: u16) -> f32 {
 
 #[inline]
 pub fn f32_to_f16(v: f32) -> u16 {
-    #[cfg(target_feature = "f16c")]
+    #[cfg(all(target_arch = "x86_64", target_feature = "f16c"))]
     {
         unsafe {
             use std::arch::x86_64::*;
@@ -68,7 +83,7 @@ pub fn f32_to_f16(v: f32) -> u16 {
             _mm_extract_epi16(hv, 0) as u16
         }
     }
-    #[cfg(not(target_feature = "f16c"))]
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "f16c")))]
     {
         let bits = v.to_bits();
         let sign = (bits >> 31) as u16;
@@ -625,6 +640,7 @@ pub fn quantize_q8_0(input: &[f32], n: usize) -> (Vec<u8>, Vec<f32>) {
     (q8, scales)
 }
 
+#[cfg(target_arch = "x86_64")]
 #[inline(never)]
 unsafe fn matmul_q8_0_vs_q8_0_avx2(weight: &[u8], input_q8: &[u8], input_scales: &[f32], output: &mut [f32], n_in: usize, row_start: usize, row_end: usize) {
     use std::arch::x86_64::*;
@@ -713,6 +729,7 @@ unsafe fn matmul_q8_0_vs_q8_0_avx2(weight: &[u8], input_q8: &[u8], input_scales:
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 unsafe fn matmul_q8_0_avx2_range(weight: &[u8], input: &[f32], output: &mut [f32], n_in: usize, row_start: usize, row_end: usize) {
     use std::arch::x86_64::*;
     let blocks_per_row = n_in / 32;
@@ -746,6 +763,7 @@ unsafe fn matmul_q8_0_avx2_range(weight: &[u8], input: &[f32], output: &mut [f32
 }
 
 #[inline]
+#[cfg(target_arch = "x86_64")]
 pub unsafe fn hsum_ps(v: std::arch::x86_64::__m256) -> f32 {
     use std::arch::x86_64::*;
     let hi = _mm256_extractf128_ps(v, 1);
@@ -766,24 +784,7 @@ pub fn matmul_q8_0_via_q8(weight: &[u8], input: &[f32], output: &mut [f32], n_in
             return;
         }
     }
-    let blocks_per_row = n_in / 32;
-    let row_stride = blocks_per_row * 34;
-    for j in 0..n_out {
-        let row_off = j * row_stride;
-        let mut sum = 0.0f32;
-        for b in 0..blocks_per_row {
-            let w_off = row_off + b * 34;
-            let wd = f16_to_f32(u16::from_le_bytes([weight[w_off], weight[w_off + 1]]));
-            let id = scale_buf[b];
-            let d = wd * id;
-            let qs = &weight[w_off + 2..w_off + 34];
-            let inp = &q8_buf[b * 32..(b + 1) * 32];
-            let mut local = 0i32;
-            for k in 0..32 { local += (qs[k] as i8 as i32) * (inp[k] as i8 as i32); }
-            sum += d * local as f32;
-        }
-        output[j] = sum;
-    }
+    matmul_q8_0_quantized_scalar_range(weight, q8_buf, scale_buf, output, n_in, 0, n_out);
 }
 
 pub fn matmul_q8_0_via_q8_parallel(weight: &[u8], input: &[f32], output: &mut [f32], n_in: usize, n_out: usize, q8_buf: &mut [u8], scale_buf: &mut [f32]) {
@@ -820,24 +821,33 @@ pub fn matmul_q8_0_quantized(weight: &[u8], input_q8: &[u8], input_scales: &[f32
             return;
         }
     }
+    matmul_q8_0_quantized_scalar_range(weight, input_q8, input_scales, output, n_in, 0, n_out);
+}
+
+fn matmul_q8_0_quantized_scalar_range(
+    weight: &[u8],
+    input_q8: &[u8],
+    input_scales: &[f32],
+    output: &mut [f32],
+    n_in: usize,
+    row_start: usize,
+    row_end: usize,
+) {
     let blocks_per_row = n_in / 32;
     let row_stride = blocks_per_row * 34;
-    for j in 0..n_out {
-        let out_idx = j;
-        let row_off = j * row_stride;
+    for (out_idx, row) in (row_start..row_end).enumerate() {
+        let row_off = row * row_stride;
         let mut sum = 0.0f32;
-        for b in 0..blocks_per_row {
-            let w_off = row_off + b * 34;
-            let wd = f16_to_f32(u16::from_le_bytes([weight[w_off], weight[w_off + 1]]));
-            let id = input_scales[b];
-            let d = wd * id;
-            let qs = &weight[w_off + 2..w_off + 34];
-            let inp = &input_q8[b * 32..(b + 1) * 32];
-            let mut local = 0i32;
-            for k in 0..32 {
-                local += (qs[k] as i8 as i32) * (inp[k] as i8 as i32);
+        for block in 0..blocks_per_row {
+            let off = row_off + block * 34;
+            let wd = f16_to_f32(u16::from_le_bytes([weight[off], weight[off + 1]]));
+            let qx = &weight[off + 2..off + 34];
+            let qy = &input_q8[block * 32..(block + 1) * 32];
+            let mut dot = 0i32;
+            for lane in 0..32 {
+                dot += (qx[lane] as i8 as i32) * (qy[lane] as i8 as i32);
             }
-            sum += d * local as f32;
+            sum += wd * input_scales[block] * dot as f32;
         }
         output[out_idx] = sum;
     }
@@ -880,52 +890,26 @@ pub fn matmul_q8_0_quantized_dynamic(weight: &[u8], input_q8: &[u8], input_scale
 
 pub fn matmul_q8_0_quantized_range(weight: &[u8], input_q8: &[u8], input_scales: &[f32], output: &mut [f32], n_in: usize, row_start: usize, row_end: usize) {
     debug_assert_eq!(output.len(), row_end - row_start);
-    let use_avx2 = has_avx2_fma();
-    if use_avx2 {
+    #[cfg(target_arch = "x86_64")]
+    if has_avx2_fma() {
         unsafe { matmul_q8_0_vs_q8_0_avx2(weight, input_q8, input_scales, output, n_in, row_start, row_end); }
-    } else {
-        let blocks_per_row = n_in / 32;
-        let row_stride = blocks_per_row * 34;
-        for (out_idx, j) in (row_start..row_end).enumerate() {
-            let row_off = j * row_stride;
-            let mut sum = 0.0f32;
-            for b in 0..blocks_per_row {
-                let w_off = row_off + b * 34;
-                let wd = f16_to_f32(u16::from_le_bytes([weight[w_off], weight[w_off + 1]]));
-                let id = input_scales[b];
-                let d = wd * id;
-                let qs = &weight[w_off + 2..w_off + 34];
-                let inp = &input_q8[b * 32..(b + 1) * 32];
-                let mut local = 0i32;
-                for k in 0..32 { local += (qs[k] as i8 as i32) * (inp[k] as i8 as i32); }
-                sum += d * local as f32;
-            }
-            output[out_idx] = sum;
-        }
+        return;
     }
+    matmul_q8_0_quantized_scalar_range(weight, input_q8, input_scales, output, n_in, row_start, row_end);
 }
 
-pub fn q8_0_dot_row(weight: &[u8], input_q8: &[u8], input_scales: &[f32], n_in: usize, row: usize, use_avx2: bool) -> f32 {
+pub fn q8_0_dot_row(weight: &[u8], input_q8: &[u8], input_scales: &[f32], n_in: usize, row: usize, _use_avx2: bool) -> f32 {
+    #[cfg(target_arch = "x86_64")]
     let blocks_per_row = n_in / 32;
+    #[cfg(target_arch = "x86_64")]
     let row_stride = blocks_per_row * 34;
-    if use_avx2 {
-        unsafe { q8_0_dot_row_avx2(weight, input_q8, input_scales, n_in, row, blocks_per_row, row_stride) }
-    } else {
-        let row_off = row * row_stride;
-        let mut sum = 0.0f32;
-        for b in 0..blocks_per_row {
-            let w_off = row_off + b * 34;
-            let wd = f16_to_f32(u16::from_le_bytes([weight[w_off], weight[w_off + 1]]));
-            let id = input_scales[b];
-            let d = wd * id;
-            let qs = &weight[w_off + 2..w_off + 34];
-            let inp = &input_q8[b * 32..(b + 1) * 32];
-            let mut local = 0i32;
-            for k in 0..32 { local += (qs[k] as i8 as i32) * (inp[k] as i8 as i32); }
-            sum += d * local as f32;
-        }
-        sum
+    #[cfg(target_arch = "x86_64")]
+    if _use_avx2 {
+        return unsafe { q8_0_dot_row_avx2(weight, input_q8, input_scales, n_in, row, blocks_per_row, row_stride) };
     }
+    let mut output = [0.0];
+    matmul_q8_0_quantized_scalar_range(weight, input_q8, input_scales, &mut output, n_in, row, row + 1);
+    output[0]
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -950,24 +934,6 @@ unsafe fn q8_0_dot_row_avx2(weight: &[u8], input_q8: &[u8], input_scales: &[f32]
     hsum_ps(acc)
 }
 
-#[cfg(not(target_arch = "x86_64"))]
-unsafe fn q8_0_dot_row_avx2(weight: &[u8], input_q8: &[u8], input_scales: &[f32], n_in: usize, row: usize, blocks_per_row: usize, row_stride: usize) -> f32 {
-    let row_off = row * row_stride;
-    let mut sum = 0.0f32;
-    for b in 0..blocks_per_row {
-        let w_off = row_off + b * 34;
-        let wd = f16_to_f32(u16::from_le_bytes([weight[w_off], weight[w_off + 1]]));
-        let id = input_scales[b];
-        let d = wd * id;
-        let qs = &weight[w_off + 2..w_off + 34];
-        let inp = &input_q8[b * 32..(b + 1) * 32];
-        let mut local = 0i32;
-        for k in 0..32 { local += (qs[k] as i8 as i32) * (inp[k] as i8 as i32); }
-        sum += d * local as f32;
-    }
-    sum
-}
-
 pub fn matmul_q8_0_quantized_parallel(weight: &[u8], input_q8: &[u8], input_scales: &[f32], output: &mut [f32], n_in: usize, n_out: usize) {
     let use_avx2 = has_avx2_fma();
     let min_rows = 64;
@@ -977,28 +943,12 @@ pub fn matmul_q8_0_quantized_parallel(weight: &[u8], input_q8: &[u8], input_scal
 fn parallel_range(weight: &[u8], input_q8: &[u8], input_scales: &[f32], output: &mut [f32], n_in: usize, row_start: usize, row_end: usize, use_avx2: bool, min_rows: usize) {
     let n = row_end - row_start;
     if n <= min_rows {
+        #[cfg(target_arch = "x86_64")]
         if use_avx2 {
             unsafe { matmul_q8_0_vs_q8_0_avx2(weight, input_q8, input_scales, output, n_in, row_start, row_end); }
-        } else {
-            let blocks_per_row = n_in / 32;
-            let row_stride = blocks_per_row * 34;
-            for (out_idx, j) in (row_start..row_end).enumerate() {
-                let row_off = j * row_stride;
-                let mut sum = 0.0f32;
-                for b in 0..blocks_per_row {
-                    let w_off = row_off + b * 34;
-                    let wd = f16_to_f32(u16::from_le_bytes([weight[w_off], weight[w_off + 1]]));
-                    let id = input_scales[b];
-                    let d = wd * id;
-                    let qs = &weight[w_off + 2..w_off + 34];
-                    let inp = &input_q8[b * 32..(b + 1) * 32];
-                    let mut local = 0i32;
-                    for k in 0..32 { local += (qs[k] as i8 as i32) * (inp[k] as i8 as i32); }
-                    sum += d * local as f32;
-                }
-                output[out_idx] = sum;
-            }
+            return;
         }
+        matmul_q8_0_quantized_scalar_range(weight, input_q8, input_scales, output, n_in, row_start, row_end);
         return;
     }
     let mid_row = row_start + n / 2;
@@ -1023,16 +973,18 @@ pub fn matmul_q8_0(weight: &[u8], input: &[f32], output: &mut [f32], n_in: usize
 
 pub fn matmul_q8_0_parallel(weight: &[u8], input: &[f32], output: &mut [f32], n_in: usize, n_out: usize, _n_threads: usize) {
     use rayon::prelude::*;
+    #[cfg(target_arch = "x86_64")]
     let use_avx2 = has_avx2_fma();
     let chunk = 128;
     output.par_chunks_mut(chunk).enumerate().for_each(|(i, out_slice)| {
         let rs = i * chunk;
         let re = (rs + chunk).min(n_out);
+        #[cfg(target_arch = "x86_64")]
         if use_avx2 {
             unsafe { matmul_q8_0_avx2_range(weight, input, out_slice, n_in, rs, re); }
-        } else {
-            matmul_q8_0_fallback_range(weight, input, out_slice, n_in, rs, re);
+            return;
         }
+        matmul_q8_0_fallback_range(weight, input, out_slice, n_in, rs, re);
     });
 }
 
@@ -1046,6 +998,7 @@ pub struct MatmulTask<'a> {
 
 pub fn matmul_q8_0_batch(tasks: &mut [MatmulTask<'_>]) {
     use rayon::prelude::*;
+    #[cfg(target_arch = "x86_64")]
     let use_avx2 = has_avx2_fma();
     let chunk = 128;
     struct TaskInfo {
@@ -1077,11 +1030,12 @@ pub fn matmul_q8_0_batch(tasks: &mut [MatmulTask<'_>]) {
         let weight = unsafe { std::slice::from_raw_parts(info.w_ptr as *const u8, info.w_len) };
         let input = unsafe { std::slice::from_raw_parts(info.i_ptr as *const f32, info.i_len) };
         let out_slice = unsafe { std::slice::from_raw_parts_mut((info.o_ptr as *mut f32).add(rs), re - rs) };
+        #[cfg(target_arch = "x86_64")]
         if use_avx2 {
             unsafe { matmul_q8_0_avx2_range(weight, input, out_slice, info.n_in, rs, re); }
-        } else {
-            matmul_q8_0_fallback_range(weight, input, out_slice, info.n_in, rs, re);
+            return;
         }
+        matmul_q8_0_fallback_range(weight, input, out_slice, info.n_in, rs, re);
     });
 }
 
