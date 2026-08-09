@@ -21,10 +21,28 @@ A from-scratch LLM inference engine that loads GGUF files via mmap and performs 
 cargo build --release
 
 # Inference
-cargo run --release -- --model models/Qwen3-0.6B-Q8_0.gguf --prompt "The capital of France is" --max-tokens 30
+cargo run --release --bin rust-model-inference -- --model models/Qwen3-0.6B-Q8_0.gguf --prompt "The capital of France is" --max-tokens 30
 
 # Interactive mode
-cargo run --release -- --model models/Qwen3-0.6B-Q8_0.gguf
+cargo run --release --bin rust-model-inference -- --model models/Qwen3-0.6B-Q8_0.gguf
+```
+
+### Apple Silicon (ARM64)
+
+Apple Silicon builds natively and selects stable Rust NEON kernels automatically; Rosetta and external C/C++ libraries are not required. Scalar fallbacks remain available for operators without an ARM SIMD path.
+
+```bash
+cargo check --all-targets
+cargo test --all-targets
+cargo build --release --all-targets
+cargo run --release --bin rust-model-inference -- --model models/Qwen3-0.6B-Q8_0.gguf --prompt "2 + 3 =" --max-tokens 4 --temp 0 --bench
+cargo run --release --bin micro-bench
+```
+
+On a fixed Apple Silicon performance machine, enforce the Q8_0 NEON gate explicitly:
+
+```bash
+cargo run --release --bin micro-bench -- --check
 ```
 
 ### CLI Options
@@ -47,10 +65,10 @@ cargo run --release -- --model models/Qwen3-0.6B-Q8_0.gguf
 ## Example Output
 
 ```
-$ cargo run --release -- --model models/Qwen3-0.6B-Q8_0.gguf --prompt "The capital of France is"
+$ cargo run --release --bin rust-model-inference -- --model models/Qwen3-0.6B-Q8_0.gguf --prompt "The capital of France is"
 Output:  Paris. The capital of France is located in the southern part of France...
 
-$ cargo run --release -- --model models/Qwen3-0.6B-Q8_0.gguf --prompt "2 + 3 ="
+$ cargo run --release --bin rust-model-inference -- --model models/Qwen3-0.6B-Q8_0.gguf --prompt "2 + 3 ="
 Output:  5, 3 + 4 = 
 ```
 

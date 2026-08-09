@@ -149,3 +149,53 @@ MiniCPM5 在 chat 模式下输出乱码（`--bench` 正常），chat template �
 - `references/ggml/src/ggml-cpu/ggml-cpu.c` — 调度器
 - `references/ggml/src/ggml-cpu/arch/x86/quants.c` — Q8_0 AVX2 内核
 - `references/llama.cpp/src/llama-context.cpp` — llama 上下文和线程管理
+
+## Apple Silicon NEON（2026-08-09）
+
+测试环境：
+
+```text
+$ uname -m
+arm64
+
+$ sysctl -n machdep.cpu.brand_string
+Apple M3 Max
+
+$ sw_vers
+ProductName:		macOS
+ProductVersion:		26.6.1
+BuildVersion:		25G76
+
+$ rustc -vV
+rustc 1.97.0 (2d8144b78 2026-07-07)
+binary: rustc
+commit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3
+commit-date: 2026-07-07
+host: aarch64-apple-darwin
+release: 1.97.0
+LLVM version: 22.1.6
+```
+
+Q8_0 NEON 固定机器门禁（`1024 x 3072`，15 个样本取中位数，每个样本 20 次迭代）：
+
+```text
+architecture=aarch64 backend=NEON
+gate=1024x3072 scalar_median=0.867ms auto_median=0.109ms speedup=7.980x auto=57.91GFLOPS/30.81GB/s threshold=1.10x
+```
+
+Qwen3-0.6B Q8_0，4 线程，32-token 确定性推理：
+
+```text
+Model: qwen3 | n_embd=1024 n_layer=28 n_head=16 n_head_kv=8 n_ff=3072 | loaded in 71ms
+Prompt: 2 + 3 = (5 tokens)
+Output:
+ 5, 5 + 4 = 9, 9 + 5 = 14, 14 + 6 = 20
+PROFILE: norm=0.0% quant=0.0% qkv+attn=26.2% wo=9.5% ffn=41.6% logits=22.6%
+PROFILE: norm=0.000s quant=0.000s qkv+attn=0.069s wo=0.025s ffn=0.110s logits=0.060s
+[32 tokens in 268ms | 119.4 tok/s]
+```
+
+该模型在 `--max-tokens 1` 时首个解码 token 是换行；生成 4 个 token 时输出包含确定性的 `5`，因此不将首 token 误记为 ` 5`。
+
+数值正确性由 NEON/标量单元测试和 Qwen3-0.6B Q8_0 确定性推理冒烟验证。
+x86_64 本次仅完成交叉编译与 AVX2/FMA/F16C 路径静态核对，未执行 x86 硬件性能测试。
