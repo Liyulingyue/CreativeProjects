@@ -14,7 +14,7 @@ import BreakAlert from "./components/BreakAlert";
 import "./App.css";
 
 export default function App() {
-  const { videoRef, isCameraReady, cameraError, startCamera, stopCamera } = useCamera();
+  const { videoRef, isCameraReady, cameraError, cameraTransportMode, startCamera, stopCamera } = useCamera();
   const { isReady: isPoseReady, isLoading: isPoseLoading, error: poseError } = usePoseDetector();
   const { snapshot, isMonitoring, toggleMonitoring } = useMonitor();
   const [config, setConfig] = useState<AppConfig | null>(null);
@@ -40,6 +40,7 @@ export default function App() {
     if (det && det.person_detected) {
       setPersonDetected(true);
       setPosture({
+        sampleSeq: det.sample_seq,
         score: det.score,
         headForward: det.head_forward,
         headTilt: det.head_tilt,
@@ -228,6 +229,7 @@ export default function App() {
             videoRef={videoRef}
             isCameraReady={isCameraReady}
             cameraError={cameraError}
+            cameraTransportMode={cameraTransportMode}
             status={status}
             isMonitoring={isMonitoring}
             personDetected={personDetected}

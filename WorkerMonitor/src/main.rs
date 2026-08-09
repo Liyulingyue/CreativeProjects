@@ -4,6 +4,7 @@ mod core;
 
 use std::sync::{Arc, Mutex};
 use std::borrow::Cow;
+use std::io::{Read, Write};
 use serde::Deserialize;
 use base64::Engine;
 use tao::platform::windows::WindowExtWindows;
@@ -11,6 +12,7 @@ use wry::http::{Response, StatusCode};
 use tray_icon::{menu::{Menu, MenuItem}, TrayIconBuilder};
 use include_dir::{include_dir, Dir};
 use once_cell::sync::OnceCell;
+use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -98,7 +100,19 @@ fn avg_ms(sum: u64, count: u64) -> u64 {
     if count == 0 { 0 } else { sum / count }
 }
 
-fn init_logging() {
+fn init_logging() -> bool {
+    let enabled = matches!(
+        std::env::var("WORKER_MONITOR_ENABLE_LOG")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    );
+
+    if !enabled {
+        return false;
+    }
+
     let log_root = dirs::data_local_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("WorkerMonitor")
@@ -106,7 +120,7 @@ fn init_logging() {
 
     if let Err(err) = std::fs::create_dir_all(&log_root) {
         eprintln!("[WorkerMonitor] Failed to create log dir {}: {}", log_root.display(), err);
-        return;
+        return false;
     }
 
     let file_appender = tracing_appender::rolling::daily(&log_root, "worker-monitor.log");
@@ -125,15 +139,112 @@ fn init_logging() {
         .try_init()
     {
         eprintln!("[WorkerMonitor] Failed to init logging subscriber: {}", err);
-        return;
+        return false;
     }
 
     info!("logging initialized at {}", log_root.display());
+    true
 }
 
 struct AppState {
     monitor: Arc<Mutex<core::Monitor>>,
     camera: Arc<Mutex<core::Camera>>,
+}
+
+const CAMERA_STREAM_ADDR: &str = "127.0.0.1:18181";
+
+fn spawn_camera_stream_server(frame_reader: core::camera::FrameReader) {
+    thread::spawn(move || {
+        let listener = match TcpListener::bind(CAMERA_STREAM_ADDR) {
+            Ok(listener) => listener,
+            Err(err) => {
+                eprintln!("[CameraStream] Failed to bind {}: {}", CAMERA_STREAM_ADDR, err);
+                return;
+            }
+        };
+
+        info!("camera stream server listening on {}", CAMERA_STREAM_ADDR);
+
+        for incoming in listener.incoming() {
+            match incoming {
+                Ok(stream) => {
+                    let frame_reader = frame_reader.clone();
+                    thread::spawn(move || handle_camera_stream_connection(stream, frame_reader));
+                }
+                Err(err) => {
+                    warn!("[CameraStream] incoming connection error: {}", err);
+                }
+            }
+        }
+    });
+}
+
+fn handle_camera_stream_connection(mut stream: TcpStream, frame_reader: core::camera::FrameReader) {
+    let mut request_buf = [0_u8; 1024];
+    let read_len = match stream.read(&mut request_buf) {
+        Ok(len) => len,
+        Err(err) => {
+            warn!("[CameraStream] failed to read request: {}", err);
+            return;
+        }
+    };
+
+    let request_text = String::from_utf8_lossy(&request_buf[..read_len]);
+    let request_line = request_text.lines().next().unwrap_or_default();
+    let raw_path = request_line.split_whitespace().nth(1).unwrap_or("/");
+    let path = raw_path.split('?').next().unwrap_or("/");
+
+    if path != "/camera.mjpg" && path != "/" {
+        let _ = write!(
+            stream,
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        return;
+    }
+
+    let header = concat!(
+        "HTTP/1.1 200 OK\r\n",
+        "Connection: close\r\n",
+        "Cache-Control: no-cache, no-store, must-revalidate\r\n",
+        "Pragma: no-cache\r\n",
+        "Expires: 0\r\n",
+        "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n"
+    );
+
+    if stream.write_all(header.as_bytes()).is_err() {
+        return;
+    }
+
+    let _ = stream.flush();
+
+    loop {
+        let frame = frame_reader.get_frame();
+
+        let Some(frame) = frame else {
+            thread::sleep(Duration::from_millis(20));
+            continue;
+        };
+
+        let part_header = format!(
+            "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
+            frame.len()
+        );
+
+        if stream.write_all(part_header.as_bytes()).is_err() {
+            break;
+        }
+        if stream.write_all(&frame).is_err() {
+            break;
+        }
+        if stream.write_all(b"\r\n").is_err() {
+            break;
+        }
+        if stream.flush().is_err() {
+            break;
+        }
+
+        thread::sleep(Duration::from_millis(16));
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -411,11 +522,13 @@ fn load_window_icon() -> Result<tao::window::Icon, Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    init_logging();
+    let logging_enabled = init_logging();
     std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--remote-debugging-port=9222");
 
     let stats = Arc::new(RuntimeStats::new());
-    spawn_metrics_reporter(stats.clone());
+    if logging_enabled {
+        spawn_metrics_reporter(stats.clone());
+    }
 
     let app_state = Arc::new(AppState {
         monitor: Arc::new(Mutex::new(core::Monitor::new())),
@@ -423,6 +536,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     spawn_background_detection_worker(app_state.clone(), stats.clone());
+    let frame_reader = {
+        let camera = match app_state.camera.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        camera.frame_reader()
+    };
+    spawn_camera_stream_server(frame_reader);
 
     if let Err(e) = core::PoseDetector::init() {
         warn!("[WorkerMonitor] Detector init failed: {}", e);

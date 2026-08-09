@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -16,6 +18,7 @@ pub enum MonitorStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectionInfo {
+    pub sample_seq: u64,
     pub person_detected: bool,
     pub keypoints: Vec<Keypoint>,
     pub score: u32,
@@ -40,6 +43,42 @@ pub struct MonitorSnapshot {
     pub detection: Option<DetectionInfo>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PersistedTotals {
+    total_work_secs: f64,
+    total_break_secs: f64,
+}
+
+fn stats_dir() -> PathBuf {
+    let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
+    base.join("WorkerMonitor")
+}
+
+fn totals_path() -> PathBuf {
+    stats_dir().join("totals.json")
+}
+
+fn load_persisted_totals() -> PersistedTotals {
+    let path = totals_path();
+    if let Ok(data) = fs::read_to_string(path) {
+        if let Ok(totals) = serde_json::from_str::<PersistedTotals>(&data) {
+            return totals;
+        }
+    }
+    PersistedTotals::default()
+}
+
+fn save_persisted_totals(total_work_secs: f64, total_break_secs: f64) -> Result<(), String> {
+    let dir = stats_dir();
+    fs::create_dir_all(&dir).map_err(|e| format!("创建统计目录失败: {e}"))?;
+    let payload = PersistedTotals {
+        total_work_secs,
+        total_break_secs,
+    };
+    let data = serde_json::to_string_pretty(&payload).map_err(|e| format!("序列化统计失败: {e}"))?;
+    fs::write(totals_path(), data).map_err(|e| format!("写入统计失败: {e}"))
+}
+
 struct MonitorInner {
     config: AppConfig,
     status: MonitorStatus,
@@ -54,11 +93,13 @@ struct MonitorInner {
     has_posture_alert: bool,
     last_notification: Option<Instant>,
     last_posture_notification: Option<Instant>,
+    detection_seq: u64,
     detection: Option<DetectionInfo>,
 }
 
 impl MonitorInner {
     fn new(cfg: AppConfig) -> Self {
+        let persisted = load_persisted_totals();
         Self {
             config: cfg,
             status: MonitorStatus::Idle,
@@ -67,12 +108,13 @@ impl MonitorInner {
             work_start: None,
             break_start: None,
             last_detected: None,
-            total_work_secs: 0.0,
-            total_break_secs: 0.0,
+            total_work_secs: persisted.total_work_secs,
+            total_break_secs: persisted.total_break_secs,
             has_alert: false,
             has_posture_alert: false,
             last_notification: None,
             last_posture_notification: None,
+            detection_seq: 0,
             detection: None,
         }
     }
@@ -139,6 +181,7 @@ impl Monitor {
         inner.has_posture_alert = false;
         inner.last_notification = None;
         inner.last_posture_notification = None;
+        inner.detection_seq = 0;
         inner.detection = None;
         println!("[Monitor] Started");
         Ok(())
@@ -146,6 +189,9 @@ impl Monitor {
 
     pub fn stop(&self) {
         println!("[Monitor] Stopping...");
+        let mut should_persist = false;
+        let mut work_total = 0.0;
+        let mut break_total = 0.0;
         if let Ok(mut inner) = self.0.lock() {
             if let Some(start) = inner.work_start {
                 inner.total_work_secs += start.elapsed().as_secs_f64();
@@ -161,6 +207,13 @@ impl Monitor {
             inner.has_alert = false;
             inner.has_posture_alert = false;
             inner.detection = None;
+
+            should_persist = true;
+            work_total = inner.total_work_secs;
+            break_total = inner.total_break_secs;
+        }
+        if should_persist {
+            let _ = save_persisted_totals(work_total, break_total);
         }
         println!("[Monitor] Stopped");
     }
@@ -182,7 +235,10 @@ impl Monitor {
                 (0, false, false, false, false)
             };
 
+        inner.detection_seq = inner.detection_seq.saturating_add(1);
+
         inner.detection = Some(DetectionInfo {
+            sample_seq: inner.detection_seq,
             person_detected,
             keypoints,
             score,
@@ -196,12 +252,14 @@ impl Monitor {
         inner.is_present = person_detected;
         let now = Instant::now();
 
+        let mut should_persist = false;
         if person_detected && !was_present {
             if inner.status == MonitorStatus::Away {
                 if let Some(start) = inner.break_start {
                     let break_secs = start.elapsed().as_secs_f64();
                     inner.total_break_secs += break_secs;
                     inner.break_start = None;
+                    should_persist = true;
                 }
             }
             if inner.work_start.is_none() {
@@ -216,6 +274,7 @@ impl Monitor {
                 let work_secs = start.elapsed().as_secs_f64();
                 inner.total_work_secs += work_secs;
                 inner.work_start = None;
+                should_persist = true;
             }
             inner.break_start = Some(now);
             inner.has_alert = false;
@@ -242,12 +301,17 @@ impl Monitor {
             }
         }
 
+        if should_persist {
+            let _ = save_persisted_totals(inner.total_work_secs, inner.total_break_secs);
+        }
+
         Ok(())
     }
 
     fn analyze_posture(&self, keypoints: &[Keypoint]) -> DetectionInfo {
         if keypoints.len() < 17 {
             return DetectionInfo {
+                sample_seq: 0,
                 person_detected: false,
                 keypoints: keypoints.to_vec(),
                 score: 0,
@@ -312,6 +376,7 @@ impl Monitor {
         let score = (100 - penalty).max(0) as u32;
 
         DetectionInfo {
+            sample_seq: 0,
             person_detected: true,
             keypoints: keypoints.to_vec(),
             score,

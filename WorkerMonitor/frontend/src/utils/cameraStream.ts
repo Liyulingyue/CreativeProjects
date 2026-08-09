@@ -1,0 +1,1 @@
+export const CAMERA_STREAM_URL = "http://localhost:18181/camera.mjpg";

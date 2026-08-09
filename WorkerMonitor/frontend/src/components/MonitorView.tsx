@@ -1,10 +1,12 @@
-import { MouseEvent, RefObject, useState, useEffect } from "react";
+import { MouseEvent, RefObject, useRef, useState, useEffect } from "react";
 import { PostureResult } from "../types";
+import { CameraTransportMode } from "../hooks/useCamera";
 
 interface MonitorViewProps {
   videoRef: RefObject<HTMLImageElement | null>;
   isCameraReady: boolean;
   cameraError: string | null;
+  cameraTransportMode: CameraTransportMode;
   status: "idle" | "present" | "away" | "overworked";
   isMonitoring: boolean;
   personDetected: boolean;
@@ -95,6 +97,7 @@ export default function MonitorView({
   videoRef,
   isCameraReady,
   cameraError,
+  cameraTransportMode,
   status,
   isMonitoring,
   personDetected,
@@ -116,6 +119,7 @@ export default function MonitorView({
 }: MonitorViewProps) {
   const [postureHistory, setPostureHistory] = useState<number[]>([]);
   const [currentTime, setCurrentTime] = useState(new Date());
+  const lastSampleSeqRef = useRef<number>(-1);
 
   useEffect(() => {
     const t = setInterval(() => setCurrentTime(new Date()), 1000);
@@ -124,12 +128,17 @@ export default function MonitorView({
 
   useEffect(() => {
     if (posture && personDetected) {
+      const sampleSeq = posture.sampleSeq ?? -1;
+      if (sampleSeq === lastSampleSeqRef.current) {
+        return;
+      }
+      lastSampleSeqRef.current = sampleSeq;
       setPostureHistory(prev => {
         const next = [...prev, posture.score];
         return next.slice(-20);
       });
     }
-  }, [posture, personDetected]);
+  }, [posture?.sampleSeq, posture?.score, personDetected]);
 
   const safeThresholdSecs = Math.max(workThresholdSecs, 1);
   const workProgress = workSecs > 0 ? Math.min((workSecs / safeThresholdSecs) * 100, 100) : 0;
@@ -168,9 +177,14 @@ export default function MonitorView({
           <div className="dash-card camera-card">
             <div className="dash-card-header">
               <span className="dash-card-title">摄像头</span>
-              <span className={`dash-card-badge ${personDetected ? "green" : "yellow"}`}>
-                {personDetected ? "检测到人员" : "未检测"}
-              </span>
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <span className={`dash-card-badge ${personDetected ? "green" : "yellow"}`}>
+                  {personDetected ? "检测到人员" : "未检测"}
+                </span>
+                <span className={`dash-card-badge ${cameraTransportMode === "stream" ? "blue" : cameraTransportMode === "fallback-polling" ? "yellow" : "red"}`} title="摄像头预览链路">
+                  {cameraTransportMode === "stream" ? "STREAM" : cameraTransportMode === "fallback-polling" ? "FALLBACK" : "IDLE"}
+                </span>
+              </div>
             </div>
             <div className="camera-wrapper">
               <img ref={videoRef} alt="" style={{ transform: mirrorVideo ? "scaleX(-1)" : "none" }} />
