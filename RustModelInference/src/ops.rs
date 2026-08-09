@@ -40,6 +40,14 @@ pub fn has_f16c() -> bool {
 #[inline(always)]
 pub const fn has_f16c() -> bool { false }
 
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub const fn has_neon() -> bool { true }
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline(always)]
+pub const fn has_neon() -> bool { false }
+
 #[inline]
 pub fn f16_to_f32(bits: u16) -> f32 {
     #[cfg(all(target_arch = "x86_64", target_feature = "f16c"))]
@@ -52,23 +60,7 @@ pub fn f16_to_f32(bits: u16) -> f32 {
     }
     #[cfg(not(all(target_arch = "x86_64", target_feature = "f16c")))]
     {
-        let sign = (bits >> 15) as u32;
-        let exp = ((bits >> 10) & 0x1F) as u32;
-        let frac = (bits & 0x3FF) as u32;
-        if exp == 0 {
-            if frac == 0 {
-                f32::from_bits(sign << 31)
-            } else {
-                let mut e = 0u32;
-                let mut f = frac;
-                while f & 0x400 == 0 { f <<= 1; e += 1; }
-                f32::from_bits((sign << 31) | ((112 - e) << 23) | ((f & 0x3FF) << 13))
-            }
-        } else if exp == 31 {
-            f32::from_bits((sign << 31) | (0xFF << 23) | (frac << 13))
-        } else {
-            f32::from_bits((sign << 31) | ((exp + 112) << 23) | (frac << 13))
-        }
+        half::f16::from_bits(bits).to_f32()
     }
 }
 
@@ -85,24 +77,7 @@ pub fn f32_to_f16(v: f32) -> u16 {
     }
     #[cfg(not(all(target_arch = "x86_64", target_feature = "f16c")))]
     {
-        let bits = v.to_bits();
-        let sign = (bits >> 31) as u16;
-        let exp = ((bits >> 23) & 0xFF) as i32;
-        let frac = (bits & 0x7FFFFF) as i32;
-        if exp == 0 {
-            sign << 15
-        } else if exp == 255 {
-            sign << 15 | if frac != 0 { 0x0200 } else { 0x7C00 }
-        } else {
-            let new_exp = exp - 127 + 15;
-            if new_exp <= 0 {
-                sign << 15
-            } else if new_exp >= 31 {
-                sign << 15 | 0x7C00
-            } else {
-                sign << 15 | ((new_exp as u16) << 10) | ((frac >> 13) as u16)
-            }
-        }
+        half::f16::from_f32(v).to_bits()
     }
 }
 
@@ -115,8 +90,31 @@ pub fn f32_slice_to_f16(src: &[f32], dst: &mut [u16]) {
             return;
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if has_neon() {
+            unsafe { f32_slice_to_f16_neon(src, dst); }
+            return;
+        }
+    }
     for i in 0..src.len() {
         dst[i] = f32_to_f16(src[i]);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn f32_slice_to_f16_neon(src: &[f32], dst: &mut [u16]) {
+    use std::arch::aarch64::*;
+    let mut i = 0;
+    while i + 4 <= src.len() {
+        let halves = vreinterpret_u16_f16(vcvt_f16_f32(vld1q_f32(src.as_ptr().add(i))));
+        vst1_u16(dst.as_mut_ptr().add(i), halves);
+        i += 4;
+    }
+    while i < src.len() {
+        dst[i] = f32_to_f16(src[i]);
+        i += 1;
     }
 }
 
@@ -160,7 +158,32 @@ fn sum_sq_f32(x: &[f32]) -> f32 {
             return unsafe { sum_sq_f32_avx2(x) };
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if has_neon() {
+            return unsafe { sum_sq_f32_neon(x) };
+        }
+    }
     x.iter().map(|&v| v * v).sum()
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn sum_sq_f32_neon(x: &[f32]) -> f32 {
+    use std::arch::aarch64::*;
+    let mut acc = vdupq_n_f32(0.0);
+    let mut i = 0;
+    while i + 4 <= x.len() {
+        let value = vld1q_f32(x.as_ptr().add(i));
+        acc = vfmaq_f32(acc, value, value);
+        i += 4;
+    }
+    let mut sum = vaddvq_f32(acc);
+    while i < x.len() {
+        sum += x[i] * x[i];
+        i += 1;
+    }
+    sum
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -189,7 +212,31 @@ fn scale_mul_inplace(scale: f32, weight: &[f32], x: &mut [f32]) {
             return;
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if has_neon() {
+            unsafe { scale_mul_neon(scale, weight, x); }
+            return;
+        }
+    }
     for i in 0..weight.len() { x[i] = x[i] * scale * weight[i]; }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn scale_mul_neon(scale: f32, weight: &[f32], x: &mut [f32]) {
+    use std::arch::aarch64::*;
+    let scale_v = vdupq_n_f32(scale);
+    let mut i = 0;
+    while i + 4 <= x.len() {
+        let value = vmulq_f32(vmulq_f32(vld1q_f32(x.as_ptr().add(i)), scale_v), vld1q_f32(weight.as_ptr().add(i)));
+        vst1q_f32(x.as_mut_ptr().add(i), value);
+        i += 4;
+    }
+    while i < x.len() {
+        x[i] = x[i] * scale * weight[i];
+        i += 1;
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -340,6 +387,24 @@ fn dot_f32_scalar(a: &[f32], b: &[f32], n: usize) -> f32 {
     s
 }
 
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn dot_f32_neon(a: &[f32], b: &[f32], n: usize) -> f32 {
+    use std::arch::aarch64::*;
+    let mut acc = vdupq_n_f32(0.0);
+    let mut i = 0;
+    while i + 4 <= n {
+        acc = vfmaq_f32(acc, vld1q_f32(a.as_ptr().add(i)), vld1q_f32(b.as_ptr().add(i)));
+        i += 4;
+    }
+    let mut sum = vaddvq_f32(acc);
+    while i < n {
+        sum += a[i] * b[i];
+        i += 1;
+    }
+    sum
+}
+
 pub fn dot_f16_f32(a: &[f32], b_f16: &[u16], n: usize) -> f32 {
     #[cfg(target_arch = "x86_64")]
     {
@@ -347,9 +412,34 @@ pub fn dot_f16_f32(a: &[f32], b_f16: &[u16], n: usize) -> f32 {
             return unsafe { dot_f16_f32_avx2(a, b_f16, n) };
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if has_neon() {
+            return unsafe { dot_f16_f32_neon(a, b_f16, n) };
+        }
+    }
     let mut s = 0.0f32;
     for i in 0..n { s += a[i] * f16_to_f32(b_f16[i]); }
     s
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn dot_f16_f32_neon(a: &[f32], b: &[u16], n: usize) -> f32 {
+    use std::arch::aarch64::*;
+    let mut acc = vdupq_n_f32(0.0);
+    let mut i = 0;
+    while i + 4 <= n {
+        let halves = vreinterpret_f16_u16(vld1_u16(b.as_ptr().add(i)));
+        acc = vfmaq_f32(acc, vld1q_f32(a.as_ptr().add(i)), vcvt_f32_f16(halves));
+        i += 4;
+    }
+    let mut sum = vaddvq_f32(acc);
+    while i < n {
+        sum += a[i] * f16_to_f32(b[i]);
+        i += 1;
+    }
+    sum
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -381,7 +471,32 @@ pub fn vec_mad_f16_f32(y: &mut [f32], x_f16: &[u16], v: f32) {
             return;
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if has_neon() {
+            unsafe { vec_mad_f16_f32_neon(y, x_f16, v); }
+            return;
+        }
+    }
     for i in 0..y.len() { y[i] += v * f16_to_f32(x_f16[i]); }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn vec_mad_f16_f32_neon(y: &mut [f32], x: &[u16], scale: f32) {
+    use std::arch::aarch64::*;
+    let scale_v = vdupq_n_f32(scale);
+    let mut i = 0;
+    while i + 4 <= y.len() {
+        let halves = vreinterpret_f16_u16(vld1_u16(x.as_ptr().add(i)));
+        let result = vfmaq_f32(vld1q_f32(y.as_ptr().add(i)), vcvt_f32_f16(halves), scale_v);
+        vst1q_f32(y.as_mut_ptr().add(i), result);
+        i += 4;
+    }
+    while i < y.len() {
+        y[i] += scale * f16_to_f32(x[i]);
+        i += 1;
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -419,6 +534,12 @@ pub fn dot_f32(a: &[f32], b: &[f32], n: usize) -> f32 {
             return unsafe { dot_f32_avx2(a, b, n) };
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if has_neon() {
+            return unsafe { dot_f32_neon(a, b, n) };
+        }
+    }
     dot_f32_scalar(a, b, n)
 }
 
@@ -431,7 +552,30 @@ pub fn vec_scale_f32(y: &mut [f32], v: f32) {
             return;
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if has_neon() {
+            unsafe { vec_scale_f32_neon(y, v); }
+            return;
+        }
+    }
     for y_i in y.iter_mut() { *y_i *= v; }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn vec_scale_f32_neon(y: &mut [f32], scale: f32) {
+    use std::arch::aarch64::*;
+    let scale_v = vdupq_n_f32(scale);
+    let mut i = 0;
+    while i + 4 <= y.len() {
+        vst1q_f32(y.as_mut_ptr().add(i), vmulq_f32(vld1q_f32(y.as_ptr().add(i)), scale_v));
+        i += 4;
+    }
+    while i < y.len() {
+        y[i] *= scale;
+        i += 1;
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -468,8 +612,32 @@ pub fn vec_mad_f32(y: &mut [f32], x: &[f32], v: f32) {
             return;
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if has_neon() {
+            unsafe { vec_mad_f32_neon(y, x, v); }
+            return;
+        }
+    }
     let vv = v;
     for i in 0..y.len() { y[i] += vv * x[i]; }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn vec_mad_f32_neon(y: &mut [f32], x: &[f32], scale: f32) {
+    use std::arch::aarch64::*;
+    let scale_v = vdupq_n_f32(scale);
+    let mut i = 0;
+    while i + 4 <= y.len() {
+        let result = vfmaq_f32(vld1q_f32(y.as_ptr().add(i)), vld1q_f32(x.as_ptr().add(i)), scale_v);
+        vst1q_f32(y.as_mut_ptr().add(i), result);
+        i += 4;
+    }
+    while i < y.len() {
+        y[i] += x[i] * scale;
+        i += 1;
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1229,7 +1397,30 @@ pub fn vec_mul_inplace(a: &[f32], b: &mut [f32]) {
             return;
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if has_neon() {
+            unsafe { vec_mul_neon(a, b); }
+            return;
+        }
+    }
     for i in 0..a.len() { b[i] *= a[i]; }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn vec_mul_neon(a: &[f32], b: &mut [f32]) {
+    use std::arch::aarch64::*;
+    let mut i = 0;
+    while i + 4 <= b.len() {
+        let value = vmulq_f32(vld1q_f32(a.as_ptr().add(i)), vld1q_f32(b.as_ptr().add(i)));
+        vst1q_f32(b.as_mut_ptr().add(i), value);
+        i += 4;
+    }
+    while i < b.len() {
+        b[i] *= a[i];
+        i += 1;
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1258,7 +1449,30 @@ pub fn vec_add_into(a: &[f32], b: &mut [f32]) {
             return;
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if has_neon() {
+            unsafe { vec_add_neon(a, b); }
+            return;
+        }
+    }
     for i in 0..a.len() { b[i] += a[i]; }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn vec_add_neon(a: &[f32], b: &mut [f32]) {
+    use std::arch::aarch64::*;
+    let mut i = 0;
+    while i + 4 <= b.len() {
+        let value = vaddq_f32(vld1q_f32(a.as_ptr().add(i)), vld1q_f32(b.as_ptr().add(i)));
+        vst1q_f32(b.as_mut_ptr().add(i), value);
+        i += 4;
+    }
+    while i < b.len() {
+        b[i] += a[i];
+        i += 1;
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1284,5 +1498,49 @@ pub fn conv1d_silu(kernel: &[f32], state: &[f32], d_conv: usize, conv_dim: usize
             conv_val += kernel[c * d_conv + k] * state[k * conv_dim + c];
         }
         output[c] = conv_val / (1.0 + (-conv_val).exp());
+    }
+}
+
+#[cfg(test)]
+mod neon_tests {
+    use super::*;
+
+    fn assert_close(actual: f32, expected: f32) {
+        let tolerance = 1e-4 + 1e-4 * expected.abs();
+        assert!((actual - expected).abs() <= tolerance, "actual={actual} expected={expected}");
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_f32_ops_match_scalar_with_tail() {
+        let a: Vec<f32> = (0..19).map(|i| i as f32 * 0.125 - 1.0).collect();
+        let b: Vec<f32> = (0..19).map(|i| 0.75 - i as f32 * 0.0625).collect();
+        let expected_dot: f32 = a.iter().zip(&b).map(|(x, y)| x * y).sum();
+        assert_close(unsafe { dot_f32_neon(&a, &b, a.len()) }, expected_dot);
+
+        let mut scaled = a.clone();
+        unsafe { vec_scale_f32_neon(&mut scaled, -0.25) };
+        for (actual, source) in scaled.iter().zip(&a) {
+            assert_close(*actual, source * -0.25);
+        }
+
+        let mut mad = a.clone();
+        unsafe { vec_mad_f32_neon(&mut mad, &b, 0.5) };
+        for i in 0..mad.len() {
+            assert_close(mad[i], a[i] + 0.5 * b[i]);
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_f16_ops_match_scalar_with_tail() {
+        let src: Vec<f32> = (0..13).map(|i| i as f32 * 0.2 - 1.1).collect();
+        let mut bits = vec![0u16; src.len()];
+        unsafe { f32_slice_to_f16_neon(&src, &mut bits) };
+        let expected: Vec<u16> = src.iter().map(|&v| f32_to_f16(v)).collect();
+        assert_eq!(bits, expected);
+
+        let expected_dot: f32 = src.iter().zip(&bits).map(|(x, h)| x * f16_to_f32(*h)).sum();
+        assert_close(unsafe { dot_f16_f32_neon(&src, &bits, src.len()) }, expected_dot);
     }
 }
