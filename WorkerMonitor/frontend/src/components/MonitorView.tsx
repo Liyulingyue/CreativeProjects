@@ -1,9 +1,9 @@
-import { MouseEvent, RefObject, useRef, useState, useEffect } from "react";
+import { MouseEvent, useRef, useState, useEffect } from "react";
 import { PostureResult } from "../types";
 import { CameraTransportMode } from "../hooks/useCamera";
 
 interface MonitorViewProps {
-  videoRef: RefObject<HTMLImageElement | null>;
+  videoRef: (node: HTMLImageElement | null) => void;
   isCameraReady: boolean;
   cameraError: string | null;
   cameraTransportMode: CameraTransportMode;

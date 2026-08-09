@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { createPortal } from "react-dom";
 import { useCamera } from "./hooks/useCamera";
 import { usePoseDetector } from "./hooks/usePoseDetector";
 import { useMonitor } from "./hooks/useMonitor";
@@ -170,17 +169,8 @@ export default function App() {
   const totalBreak = snapshot?.total_break_secs ?? 0;
   const workThresholdSecs = snapshot?.work_threshold_secs ?? ((config?.work_threshold_minutes ?? 45) * 60);
 
-  const cameraPortal = createPortal(
-    <>
-      <img ref={videoRef} alt="" style={{ position: "fixed", top: 0, left: 0, width: 0, height: 0, pointerEvents: "none", visibility: "hidden" }} />
-    </>,
-    document.body
-  );
-
   return (
     <>
-      {cameraPortal}
-
       {view === "compact" && (
         <div className="app-compact">
           <CompactView

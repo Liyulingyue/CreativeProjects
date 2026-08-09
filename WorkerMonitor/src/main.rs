@@ -523,7 +523,10 @@ fn load_window_icon() -> Result<tao::window::Icon, Box<dyn std::error::Error>> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let logging_enabled = init_logging();
-    std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--remote-debugging-port=9222");
+    std::env::set_var(
+        "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+        "--remote-debugging-port=9222 --allow-running-insecure-content --unsafely-treat-insecure-origin-as-secure=http://localhost:18181",
+    );
 
     let stats = Arc::new(RuntimeStats::new());
     if logging_enabled {

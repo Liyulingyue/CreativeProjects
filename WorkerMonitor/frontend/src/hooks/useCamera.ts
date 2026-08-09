@@ -6,7 +6,7 @@ const MAX_TRANSIENT_FAILURES = 6;
 export type CameraTransportMode = "idle" | "stream" | "fallback-polling";
 
 interface UseCameraResult {
-  videoRef: React.RefObject<HTMLImageElement | null>;
+  videoRef: (node: HTMLImageElement | null) => void;
   isCameraReady: boolean;
   cameraError: string | null;
   cameraTransportMode: CameraTransportMode;
@@ -15,7 +15,8 @@ interface UseCameraResult {
 }
 
 export function useCamera(): UseCameraResult {
-  const videoRef = useRef<HTMLImageElement | null>(null);
+  const videoNodeRef = useRef<HTMLImageElement | null>(null);
+  const [videoBindVersion, setVideoBindVersion] = useState(0);
   const failureCountRef = useRef(0);
   const [isCameraReady, setIsCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -27,6 +28,11 @@ export function useCamera(): UseCameraResult {
     transportModeRef.current = mode;
     setCameraTransportMode(mode);
     console.info(`[camera] transport mode => ${mode}`);
+  }, []);
+
+  const videoRef = useCallback((node: HTMLImageElement | null) => {
+    videoNodeRef.current = node;
+    setVideoBindVersion(v => v + 1);
   }, []);
 
   const startCamera = useCallback(async () => {
@@ -44,14 +50,14 @@ export function useCamera(): UseCameraResult {
 
   useEffect(() => {
     if (!isCameraReady) {
-      if (videoRef.current) {
-        videoRef.current.removeAttribute("src");
+      if (videoNodeRef.current) {
+        videoNodeRef.current.removeAttribute("src");
       }
       setTransportMode("idle");
       return;
     }
 
-    const img = videoRef.current;
+    const img = videoNodeRef.current;
     if (!img) {
       return;
     }
@@ -138,7 +144,7 @@ export function useCamera(): UseCameraResult {
         clearInterval(fallbackTimer);
       }
     };
-  }, [isCameraReady, setTransportMode]);
+  }, [isCameraReady, setTransportMode, videoBindVersion]);
 
   return {
     videoRef,
