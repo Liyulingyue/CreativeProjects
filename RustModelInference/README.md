@@ -35,9 +35,11 @@ Apple Silicon builds natively and selects stable Rust NEON kernels automatically
 cargo check --all-targets
 cargo test --all-targets
 cargo build --release --all-targets
-cargo run --release --bin rust-model-inference -- --model models/Qwen3-0.6B-Q8_0.gguf --prompt "2 + 3 =" --max-tokens 4 --temp 0 --bench
+cargo run --release --bin rust-model-inference -- --model models/Qwen3-0.6B-Q8_0.gguf --prompt "2 + 3 =" --max-tokens 4 --temp 0 --threads 8 --bench
 cargo run --release --bin micro-bench
 ```
+
+`--threads` defaults to `min(available_parallelism, 8)` and can be set explicitly. `--bench` reports prompt-processing (`BENCH: pp`) and token-generation (`BENCH: tg`) eval rates separately. For a fair CPU comparison, run llama.cpp with `llama-bench -ngl 0 -t 8`; `-ngl 99` uses the Metal backend and must be reported as a separate dataset.
 
 On a fixed Apple Silicon performance machine, enforce the Q8_0 NEON gate explicitly:
 
@@ -53,6 +55,8 @@ cargo run --release --bin micro-bench -- --check
 | `--prompt` | — | Input prompt (omit for interactive) |
 | `--max-tokens` | 128 | Max tokens to generate |
 | `--temp` | 0.6 | Sampling temperature |
+| `--threads` | `min(available_parallelism, 8)` | Compute threads; explicitly configurable |
+| `--bench` | off | Print separate `BENCH: pp` and `BENCH: tg` eval rates |
 
 ### Debug Flags (env vars)
 

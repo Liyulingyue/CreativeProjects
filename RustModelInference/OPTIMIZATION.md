@@ -1,6 +1,6 @@
 # Rust LLM Inference Engine — 优化记录
 
-## 当前性能基线（2025-07-31 更新，llama-bench 校正）
+## 历史性能基线（2025-07-31，llama-bench 校正）
 
 | 模型 | 线程 | Rust | llama.cpp | 差距 |
 |------|------|------|-----------|------|
@@ -199,3 +199,66 @@ PROFILE: norm=0.000s quant=0.000s qkv+attn=0.069s wo=0.025s ffn=0.110s logits=0.
 
 数值正确性由 NEON/标量单元测试和 Qwen3-0.6B Q8_0 确定性推理冒烟验证。
 x86_64 本次仅完成交叉编译与 AVX2/FMA/F16C 路径静态核对，未执行 x86 硬件性能测试。
+
+## Rust 与 llama.cpp 固定机器对比（2026-08-10）
+
+测试环境：macOS 26.6.1（Build 25G76），Apple M3 Max（12P+4E，16 核），Rust 1.97.0（`2d8144b78 2026-07-07`）。llama.cpp 固定在 `7ba604f1cb61cd14898138e9abc0b4ff2601f180`；CMake 配置确认 ARM `dotprod` 和 `i8mm` 均可用。
+
+Rust CPU T8 命令（五次独立进程，比较项仅取 `BENCH: tg`）：
+
+```bash
+for run in 1 2 3 4 5; do
+  ./target/release/rust-model-inference \
+    --model models/Qwen3-0.6B-Q8_0.gguf \
+    --prompt "2 + 3 =" \
+    --max-tokens 32 \
+    --temp 0 \
+    --threads 8 \
+    --bench \
+    --profile 2>&1 | rg 'BENCH: tg|PROFILE:'
+done
+```
+
+五次 `BENCH: tg 32 evals` 原始值为 `113.2, 102.8, 112.4, 106.1, 72.8 eval/s`，中位数为 `106.1 eval/s`。
+
+llama.cpp CPU-only 命令：
+
+```bash
+"$benchmark_checkout/build/bin/llama-bench" \
+  -m "$PWD/models/Qwen3-0.6B-Q8_0.gguf" \
+  -p 0 \
+  -n 32 \
+  -t 8 \
+  -r 5 \
+  -ngl 0 \
+  -ctk f16 \
+  -ctv f16 \
+  -o json
+```
+
+CPU JSON 记录 `n_gpu_layers: 0`，`samples_ts` 为 `[126.287, 124.324, 145.199, 146.637, 148.763]`，中位数为 `145.199 eval/s`。
+
+llama.cpp Metal 命令：
+
+```bash
+"$benchmark_checkout/build/bin/llama-bench" \
+  -m "$PWD/models/Qwen3-0.6B-Q8_0.gguf" \
+  -p 0 \
+  -n 32 \
+  -t 8 \
+  -r 5 \
+  -ngl 99 \
+  -ctk f16 \
+  -ctv f16 \
+  -o json
+```
+
+Metal JSON 记录 `n_gpu_layers: 99`，`samples_ts` 为 `[274.077, 273.657, 273.575, 273.576, 270.904]`，中位数为 `273.576 eval/s`。Metal 是不同后端，仅作信息记录，不参与 CPU 门禁。
+
+| 后端 | 线程 | decode 中位数 | CPU 差距 |
+|------|------|---------------|----------|
+| Rust CPU | T8 | 106.1 eval/s | — |
+| llama.cpp CPU（`-ngl 0`） | T8 | 145.199 eval/s | Rust 慢 26.93% |
+| llama.cpp Metal（`-ngl 99`） | T8 | 273.576 eval/s | 不参与 |
+
+CPU 差距按 `(145.199 - 106.1) / 145.199 = 26.93%` 计算，超过 10%，因此本次 CPU 门禁未通过。原始输出保留在任务报告中；后续必须先建立独立的 profiling/design 任务，再考虑性能实现。本计划没有实现 DotProd/I8MM、权重重排或线程池重写。
