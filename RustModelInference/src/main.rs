@@ -7,6 +7,30 @@ use rust_model_inference::*;
 #[derive(Clone, Copy, PartialEq)]
 enum KvFormat { F16, F32 }
 
+const DEFAULT_THREAD_CAP: usize = 8;
+
+fn resolve_thread_count(requested: usize, available: usize) -> usize {
+    if requested > 0 {
+        requested
+    } else {
+        // ponytail: avoid P/E-core barrier collapse; --threads remains the calibration knob.
+        available.clamp(1, DEFAULT_THREAD_CAP)
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn default_threads_are_capped_but_explicit_value_wins() {
+        assert_eq!(resolve_thread_count(0, 16), 8);
+        assert_eq!(resolve_thread_count(0, 4), 4);
+        assert_eq!(resolve_thread_count(0, 0), 1);
+        assert_eq!(resolve_thread_count(12, 16), 12);
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
@@ -145,7 +169,10 @@ fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_forma
     let vocab = tokenizer.vocab_size();
     let prompt_tokens = tokenizer.encode(prompt);
     let n_tokens = prompt_tokens.len();
-    let n_threads = if n_threads_arg > 0 { n_threads_arg } else { std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4) };
+    let available_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let n_threads = resolve_thread_count(n_threads_arg, available_threads);
 
     let max_n_in = n_embd_q.max(n_ff);
     let pool = std::sync::Arc::new(thread_pool::ComputePool::new(n_threads));
@@ -792,7 +819,10 @@ fn run_inference(model_path: &str, prompt: &str, max_tokens: usize, temperature:
 
     let vocab = tokenizer.vocab_size();
     let prompt_tokens = tokenizer.encode(prompt);
-    let n_threads = if n_threads_arg > 0 { n_threads_arg } else { std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4) };
+    let available_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let n_threads = resolve_thread_count(n_threads_arg, available_threads);
 
     let mut scratch = ExecutionScratchpad::new(n_embd, n_embd_q, n_embd_gqa, n_ff, vocab, n_threads, max_ctx);
     let pool = std::sync::Arc::new(thread_pool::ComputePool::new(n_threads));
