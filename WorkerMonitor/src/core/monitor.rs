@@ -135,8 +135,6 @@ impl Monitor {
         inner.work_start = None;
         inner.break_start = None;
         inner.last_detected = None;
-        inner.total_work_secs = 0.0;
-        inner.total_break_secs = 0.0;
         inner.has_alert = false;
         inner.has_posture_alert = false;
         inner.last_notification = None;

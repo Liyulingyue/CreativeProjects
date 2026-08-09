@@ -11,3 +11,11 @@ export async function enterExpandedMode() {
 export async function hideToTray() {
   await invokeIpc("hide_to_tray");
 }
+
+export async function startWindowDrag() {
+  await invokeIpc("start_window_drag");
+}
+
+export async function quitApp() {
+  await invokeIpc("quit_app");
+}

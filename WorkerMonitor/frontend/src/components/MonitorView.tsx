@@ -1,4 +1,4 @@
-import { RefObject, useState, useEffect } from "react";
+import { MouseEvent, RefObject, useState, useEffect } from "react";
 import { PostureResult } from "../types";
 
 interface MonitorViewProps {
@@ -21,6 +21,8 @@ interface MonitorViewProps {
   onToggleMonitoring: () => void;
   onCompact: () => void;
   onSettings: () => void;
+  onQuit: () => void;
+  onStartWindowDrag: (event: MouseEvent<HTMLElement>) => void;
 }
 
 function formatDuration(secs: number): string {
@@ -34,6 +36,7 @@ function formatDuration(secs: number): string {
 
 function formatShort(secs: number): string {
   const total = Math.floor(secs);
+  if (total < 60) return `${total}秒`;
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);
   if (h > 0) return `${h}小时${m}分`;
@@ -108,6 +111,8 @@ export default function MonitorView({
   onToggleMonitoring,
   onCompact,
   onSettings,
+  onQuit,
+  onStartWindowDrag,
 }: MonitorViewProps) {
   const [postureHistory, setPostureHistory] = useState<number[]>([]);
   const [currentTime, setCurrentTime] = useState(new Date());
@@ -139,7 +144,7 @@ export default function MonitorView({
 
   return (
     <>
-      <header className="app-header">
+      <header className="app-header" onMouseDown={onStartWindowDrag}>
         <div className="app-header-left">
           <span className="app-logo">🖥️</span>
           <span className="app-header-title">WorkerMonitor</span>
@@ -153,6 +158,7 @@ export default function MonitorView({
           <div className="header-actions">
             <button className="icon-btn" onClick={onCompact} title="紧凑模式">◻</button>
             <button className="icon-btn" onClick={onSettings} title="设置">⚙</button>
+            <button className="icon-btn" onClick={onQuit} title="退出">×</button>
           </div>
         </div>
       </header>
@@ -264,11 +270,11 @@ export default function MonitorView({
             <div className="stats-grid">
               <div className="stat-box">
                 <div className="stat-label">累计工作</div>
-                <div className="stat-value work">{formatShort(totalWork + workSecs)}</div>
+                <div className="stat-value work">{formatShort(totalWork)}</div>
               </div>
               <div className="stat-box">
                 <div className="stat-label">累计休息</div>
-                <div className="stat-value break">{formatShort(totalBreak + (status === "away" ? breakSecs : 0))}</div>
+                <div className="stat-value break">{formatShort(totalBreak)}</div>
               </div>
             </div>
           </div>

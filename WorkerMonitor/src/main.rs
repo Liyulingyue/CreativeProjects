@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::borrow::Cow;
 use serde::Deserialize;
 use base64::Engine;
+use tao::platform::windows::WindowExtWindows;
 use wry::http::{Response, StatusCode};
 use tray_icon::{menu::{Menu, MenuItem}, TrayIconBuilder};
 use include_dir::{include_dir, Dir};
@@ -220,7 +221,7 @@ fn handle_ipc(state: &AppState, req: &IpcRequest, stats: &RuntimeStats) -> Resul
                 "frame": base64::engine::general_purpose::STANDARD.encode(&frame)
             }))
         }
-        "enter_compact_mode" | "enter_expanded_mode" | "hide_to_tray" => {
+        "enter_compact_mode" | "enter_expanded_mode" | "hide_to_tray" | "start_window_drag" | "quit_app" => {
             Ok(serde_json::json!({ "ok": true }))
         }
         _ => Err(format!("unknown method: {}", req.method)),
@@ -395,6 +396,20 @@ fn asset_protocol_handler(
     }
 }
 
+fn load_tray_icon() -> Result<tray_icon::icon::Icon, Box<dyn std::error::Error>> {
+    let icon_bytes = include_bytes!("../icons/icon.png");
+    let image = image::load_from_memory(icon_bytes)?.into_rgba8();
+    let (width, height) = image.dimensions();
+    tray_icon::icon::Icon::from_rgba(image.into_raw(), width, height).map_err(|e| e.into())
+}
+
+fn load_window_icon() -> Result<tao::window::Icon, Box<dyn std::error::Error>> {
+    let icon_bytes = include_bytes!("../icons/icon.png");
+    let image = image::load_from_memory(icon_bytes)?.into_rgba8();
+    let (width, height) = image.dimensions();
+    tao::window::Icon::from_rgba(image.into_raw(), width, height).map_err(|e| e.into())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
     std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--remote-debugging-port=9222");
@@ -425,9 +440,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("[WorkerMonitor] Frontend dist path: {}", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("frontend/dist").display());
 
     let event_loop = tao::event_loop::EventLoop::new();
+    let window_icon = load_window_icon().ok();
     let window = tao::window::WindowBuilder::new()
         .with_title("WorkerMonitor")
         .with_inner_size(tao::dpi::LogicalSize::new(1024.0, 720.0))
+        .with_window_icon(window_icon)
+        .with_decorations(false)
         .with_resizable(true)
         .with_visible(true)
         .build(&event_loop)?;
@@ -439,9 +457,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let quit_id = quit_item.id();
     tray_menu.append_items(&[&show_item, &quit_item]);
 
-    let _tray = TrayIconBuilder::new()
-        .with_menu(Box::new(tray_menu))
-        .build()?;
+    let mut tray_builder = TrayIconBuilder::new().with_menu(Box::new(tray_menu));
+    if let Ok(icon) = load_tray_icon() {
+        tray_builder = tray_builder.with_icon(icon);
+    }
+    let _tray = tray_builder.build()?;
 
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     let tx_clone = tx.clone();
@@ -539,6 +559,79 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
                 };
+
+                let mut handled_in_ui = true;
+                let ui_result: Result<serde_json::Value, String> = match req.method.as_str() {
+                    "enter_compact_mode" => {
+                        let win = webview.window();
+                        let compact_size = tao::dpi::LogicalSize::new(220.0, 148.0);
+                        let _ = win.set_decorations(false);
+                        let _ = win.set_always_on_top(true);
+                        let _ = win.set_skip_taskbar(true);
+                        let _ = win.set_resizable(false);
+                        win.set_min_inner_size(Some(compact_size));
+                        win.set_max_inner_size(Some(compact_size));
+                        win.set_inner_size(compact_size);
+                        win.set_visible(true);
+                        let _ = win.set_focus();
+                        Ok(serde_json::json!({ "ok": true }))
+                    }
+                    "enter_expanded_mode" => {
+                        let win = webview.window();
+                        let expanded_size = tao::dpi::LogicalSize::new(1024.0, 720.0);
+                        let _ = win.set_decorations(false);
+                        let _ = win.set_always_on_top(false);
+                        let _ = win.set_skip_taskbar(false);
+                        let _ = win.set_resizable(true);
+                        win.set_min_inner_size(None::<tao::dpi::LogicalSize<f64>>);
+                        win.set_max_inner_size(None::<tao::dpi::LogicalSize<f64>>);
+                        win.set_inner_size(expanded_size);
+                        win.set_visible(true);
+                        let _ = win.set_focus();
+                        Ok(serde_json::json!({ "ok": true }))
+                    }
+                    "hide_to_tray" => {
+                        webview.window().set_visible(false);
+                        Ok(serde_json::json!({ "ok": true }))
+                    }
+                    "start_window_drag" => {
+                        match webview.window().drag_window() {
+                            Ok(_) => Ok(serde_json::json!({ "ok": true })),
+                            Err(err) => Err(err.to_string()),
+                        }
+                    }
+                    "quit_app" => {
+                        *control_flow = tao::event_loop::ControlFlow::Exit;
+                        Ok(serde_json::json!({ "ok": true }))
+                    }
+                    _ => {
+                        handled_in_ui = false;
+                        Ok(serde_json::Value::Null)
+                    }
+                };
+
+                if handled_in_ui {
+                    let response_json = match ui_result {
+                        Ok(result) => serde_json::json!({
+                            "id": req.id,
+                            "ok": true,
+                            "result": result
+                        }),
+                        Err(err) => serde_json::json!({
+                            "id": req.id,
+                            "ok": false,
+                            "error": err
+                        })
+                    };
+
+                    let js = format!(
+                        "(window.__workerMonitorOnResponse && window.__workerMonitorOnResponse({0})) || (window.ipc && window.ipc.onResponse && window.ipc.onResponse({0}))",
+                        response_json
+                    );
+                    let _ = webview.evaluate_script(&js);
+                    continue;
+                }
+
                 let method = req.method.clone();
                 let send_result = if is_heavy_ipc_method(&method) {
                     ipc_req_tx_heavy.send(req)
@@ -575,6 +668,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         while let Ok(menu_event) = tray_icon::menu::menu_event_receiver().try_recv() {
             if menu_event.id == show_id {
+                webview.window().set_visible(true);
+                let _ = webview.window().set_minimized(false);
                 let _ = webview.window().set_focus();
             } else if menu_event.id == quit_id {
                 *control_flow = tao::event_loop::ControlFlow::Exit;

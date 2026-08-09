@@ -1,12 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
-import { listen } from "@tauri-apps/api/event";
 import { useCamera } from "./hooks/useCamera";
 import { usePoseDetector } from "./hooks/usePoseDetector";
 import { useMonitor } from "./hooks/useMonitor";
 import { getConfig, saveConfig, dismissBreakAlert } from "./api";
-import { enterCompactMode, enterExpandedMode, hideToTray } from "./utils/windowMode";
-import { AppConfig, PostureResult } from "./types";
+import { enterCompactMode, enterExpandedMode, hideToTray, quitApp, startWindowDrag } from "./utils/windowMode";
+import { AppConfig, MonitorSnapshot, PostureResult } from "./types";
+import { playBreakAlertSound, playWelcomeBackSound } from "./utils/alertSound";
 import MonitorView from "./components/MonitorView";
 import CompactView from "./components/CompactView";
 import Settings from "./components/Settings";
@@ -28,6 +28,7 @@ export default function App() {
   toggleFnRef.current = toggleMonitoring;
   const isMonitoringRef = useRef(isMonitoring);
   isMonitoringRef.current = isMonitoring;
+  const prevSnapshotRef = useRef<MonitorSnapshot | null>(null);
 
   useEffect(() => {
     getConfig().then(setConfig).catch(() => {});
@@ -58,34 +59,34 @@ export default function App() {
   }, [snapshot]);
 
   useEffect(() => {
-    let ignore = false;
-    const unlisteners: Array<() => void> = [];
+    if (!snapshot) return;
 
-    const setup = async () => {
-      try {
-        const unlistenWork = await listen<number>("work-threshold-exceeded", (e) => {
-          if (!ignore) setBreakAlertInfo({ workSecs: e.payload });
-        });
-        unlisteners.push(unlistenWork);
+    const prev = prevSnapshotRef.current;
+    const soundEnabled = config?.notification_sound ?? true;
 
-        const unlistenBreak = await listen<number>("break-ended", (e) => {
-          if (!ignore) setWelcomeBack({ breakSecs: e.payload });
-        });
-        unlisteners.push(unlistenBreak);
-
-        const unlistenPosture = await listen<number>("posture-alert", () => {});
-        unlisteners.push(unlistenPosture);
-      } catch {}
-    };
-    setup();
-
-    return () => {
-      ignore = true;
-      for (const unlisten of unlisteners) {
-        unlisten();
+    if (prev) {
+      const overworkTriggered = !prev.has_alert && snapshot.has_alert && snapshot.status === "overworked";
+      if (overworkTriggered) {
+        setBreakAlertInfo({ workSecs: snapshot.work_duration_secs });
+        if (soundEnabled) {
+          playBreakAlertSound();
+        }
       }
-    };
-  }, []);
+
+      const breakEnded = prev.status === "away" && (snapshot.status === "present" || snapshot.status === "overworked");
+      if (breakEnded) {
+        const breakSecs = Math.floor(prev.break_duration_secs);
+        if (breakSecs > 0) {
+          setWelcomeBack({ breakSecs });
+          if (soundEnabled) {
+            playWelcomeBackSound();
+          }
+        }
+      }
+    }
+
+    prevSnapshotRef.current = snapshot;
+  }, [snapshot, config?.notification_sound]);
 
   useEffect(() => {
     if (breakAlertInfo) {
@@ -146,6 +147,21 @@ export default function App() {
     await hideToTray();
   };
 
+  const handleQuitApp = async () => {
+    await quitApp();
+  };
+
+  const handleHeaderDrag = async (event: React.MouseEvent<HTMLElement>) => {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement;
+    if (target.closest("button")) return;
+    try {
+      await startWindowDrag();
+    } catch {
+      // Keep CSS drag region as fallback.
+    }
+  };
+
   const status = snapshot?.status ?? "idle";
   const workSecs = snapshot?.work_duration_secs ?? 0;
   const breakSecs = snapshot?.break_duration_secs ?? 0;
@@ -177,6 +193,7 @@ export default function App() {
             onExpand={handleEnterExpanded}
             onToggleMonitoring={handleToggleMonitoring}
             onHide={handleHideToTray}
+            onQuit={handleQuitApp}
           />
           {welcomeBack && (
             <div className="welcome-back-toast compact-toast">
@@ -192,7 +209,7 @@ export default function App() {
 
       {view === "settings" && (
         <div className="app">
-          <header className="app-header">
+          <header className="app-header" onMouseDown={handleHeaderDrag}>
             <div className="app-header-left">
               <span className="app-logo">🖥️</span>
               <span className="app-header-title">WorkerMonitor</span>
@@ -227,6 +244,8 @@ export default function App() {
             onToggleMonitoring={handleToggleMonitoring}
             onCompact={handleEnterCompact}
             onSettings={() => setView("settings")}
+            onQuit={handleQuitApp}
+            onStartWindowDrag={handleHeaderDrag}
           />
         </div>
       )}

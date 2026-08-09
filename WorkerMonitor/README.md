@@ -2,6 +2,15 @@
 
 一个基于 Rust + React 的桌面健康监控应用，包含摄像头姿态识别与久坐提醒。
 
+## 单栈维护声明（重要）
+
+当前项目**只维护一套运行栈**：`wry + tao`。
+
+- 唯一桌面入口：`src/main.rs`
+- 唯一前端入口：`frontend/src`
+
+如果你使用 `cargo run` 或 `npm run dev:desktop`，实际运行的是 `src/main.rs` 这套实现。
+
 ## 当前真实结构
 
 ```
@@ -14,6 +23,11 @@ WorkerMonitor/
 ├── icons/
 └── README.md
 ```
+
+## 编辑边界
+
+- 修改托盘、窗口大小、紧凑模式、IPC：编辑 `src/main.rs`
+- 修改页面 UI：编辑 `frontend/src`
 
 ## 环境要求
 
