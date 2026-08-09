@@ -688,20 +688,14 @@ pub fn quantize_q8_0_into(input: &[f32], n: usize, q8: &mut [u8], scales: &mut [
             return;
         }
     }
-    for b in 0..blocks {
-        let slice = &input[b * 32..(b + 1) * 32];
-        let mut amax = 0.0f32;
-        for &v in slice {
-            let a = v.abs();
-            if a > amax { amax = a; }
-        }
-        let d = if amax == 0.0 { 0.0 } else { amax / 127.0 };
-        scales[b] = d;
-        let id = if d == 0.0 { 0.0 } else { 1.0 / d };
-        for (k, &v) in slice.iter().enumerate() {
-            q8[b * 32 + k] = (v * id).round().clamp(-128.0, 127.0) as i8 as u8;
+    #[cfg(target_arch = "aarch64")]
+    {
+        if has_neon() {
+            unsafe { quantize_q8_0_into_neon_range(input, q8, scales, 0, blocks); }
+            return;
         }
     }
+    quantize_q8_0_into_scalar_range(input, q8, scales, 0, blocks);
 }
 
 pub fn quantize_q8_0_into_parallel(input: &[f32], n: usize, q8: &mut [u8], scales: &mut [f32], ith: usize, nth: usize) {
@@ -715,19 +709,80 @@ pub fn quantize_q8_0_into_parallel(input: &[f32], n: usize, q8: &mut [u8], scale
             return;
         }
     }
-    for b in b_start..b_end {
-        let slice = &input[b * 32..(b + 1) * 32];
-        let mut amax = 0.0f32;
-        for &v in slice {
-            let a = v.abs();
-            if a > amax { amax = a; }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if has_neon() {
+            unsafe { quantize_q8_0_into_neon_range(input, q8, scales, b_start, b_end); }
+            return;
         }
-        let d = if amax == 0.0 { 0.0 } else { amax / 127.0 };
-        scales[b] = d;
-        let id = if d == 0.0 { 0.0 } else { 1.0 / d };
-        for (k, &v) in slice.iter().enumerate() {
-            q8[b * 32 + k] = (v * id).round().clamp(-128.0, 127.0) as i8 as u8;
+    }
+    quantize_q8_0_into_scalar_range(input, q8, scales, b_start, b_end);
+}
+
+fn quantize_q8_0_into_scalar_range(
+    input: &[f32],
+    q8: &mut [u8],
+    scales: &mut [f32],
+    block_start: usize,
+    block_end: usize,
+) {
+    for block in block_start..block_end {
+        let values = &input[block * 32..(block + 1) * 32];
+        let amax = values.iter().fold(0.0f32, |current, value| current.max(value.abs()));
+        let scale = if amax == 0.0 { 0.0 } else { amax / 127.0 };
+        let inverse = if scale == 0.0 { 0.0 } else { 1.0 / scale };
+        scales[block] = scale;
+        for lane in 0..32 {
+            q8[block * 32 + lane] = (values[lane] * inverse).round().clamp(-128.0, 127.0) as i8 as u8;
         }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn quantize_q8_0_into_neon_range(
+    input: &[f32],
+    q8: &mut [u8],
+    scales: &mut [f32],
+    block_start: usize,
+    block_end: usize,
+) {
+    use std::arch::aarch64::*;
+    for block in block_start..block_end {
+        let src = input.as_ptr().add(block * 32);
+        let v0 = vld1q_f32(src);
+        let v1 = vld1q_f32(src.add(4));
+        let v2 = vld1q_f32(src.add(8));
+        let v3 = vld1q_f32(src.add(12));
+        let v4 = vld1q_f32(src.add(16));
+        let v5 = vld1q_f32(src.add(20));
+        let v6 = vld1q_f32(src.add(24));
+        let v7 = vld1q_f32(src.add(28));
+        let m0 = vmaxq_f32(vmaxq_f32(vabsq_f32(v0), vabsq_f32(v1)), vmaxq_f32(vabsq_f32(v2), vabsq_f32(v3)));
+        let m1 = vmaxq_f32(vmaxq_f32(vabsq_f32(v4), vabsq_f32(v5)), vmaxq_f32(vabsq_f32(v6), vabsq_f32(v7)));
+        let amax = vmaxvq_f32(vmaxq_f32(m0, m1));
+        let scale = if amax == 0.0 { 0.0 } else { amax / 127.0 };
+        scales[block] = scale;
+        let inverse = vdupq_n_f32(if scale == 0.0 { 0.0 } else { 1.0 / scale });
+        let q0 = vcvtq_s32_f32(vrndaq_f32(vmulq_f32(v0, inverse)));
+        let q1 = vcvtq_s32_f32(vrndaq_f32(vmulq_f32(v1, inverse)));
+        let q2 = vcvtq_s32_f32(vrndaq_f32(vmulq_f32(v2, inverse)));
+        let q3 = vcvtq_s32_f32(vrndaq_f32(vmulq_f32(v3, inverse)));
+        let q4 = vcvtq_s32_f32(vrndaq_f32(vmulq_f32(v4, inverse)));
+        let q5 = vcvtq_s32_f32(vrndaq_f32(vmulq_f32(v5, inverse)));
+        let q6 = vcvtq_s32_f32(vrndaq_f32(vmulq_f32(v6, inverse)));
+        let q7 = vcvtq_s32_f32(vrndaq_f32(vmulq_f32(v7, inverse)));
+        let lo = vcombine_s8(
+            vqmovn_s16(vcombine_s16(vqmovn_s32(q0), vqmovn_s32(q1))),
+            vqmovn_s16(vcombine_s16(vqmovn_s32(q2), vqmovn_s32(q3))),
+        );
+        let hi = vcombine_s8(
+            vqmovn_s16(vcombine_s16(vqmovn_s32(q4), vqmovn_s32(q5))),
+            vqmovn_s16(vcombine_s16(vqmovn_s32(q6), vqmovn_s32(q7))),
+        );
+        let dst = q8.as_mut_ptr().add(block * 32) as *mut i8;
+        vst1q_s8(dst, lo);
+        vst1q_s8(dst.add(16), hi);
     }
 }
 
@@ -806,6 +861,53 @@ pub fn quantize_q8_0(input: &[f32], n: usize) -> (Vec<u8>, Vec<f32>) {
         }
     }
     (q8, scales)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn dot_i8x32_neon(a: *const u8, b: *const u8) -> i32 {
+    use std::arch::aarch64::*;
+    let a0 = vld1q_s8(a as *const i8);
+    let b0 = vld1q_s8(b as *const i8);
+    let a1 = vld1q_s8(a.add(16) as *const i8);
+    let b1 = vld1q_s8(b.add(16) as *const i8);
+    let p0 = vaddq_s32(
+        vpaddlq_s16(vmull_s8(vget_low_s8(a0), vget_low_s8(b0))),
+        vpaddlq_s16(vmull_high_s8(a0, b0)),
+    );
+    let p1 = vaddq_s32(
+        vpaddlq_s16(vmull_s8(vget_low_s8(a1), vget_low_s8(b1))),
+        vpaddlq_s16(vmull_high_s8(a1, b1)),
+    );
+    vaddvq_s32(vaddq_s32(p0, p1))
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn matmul_q8_0_vs_q8_0_neon(
+    weight: &[u8],
+    input_q8: &[u8],
+    input_scales: &[f32],
+    output: &mut [f32],
+    n_in: usize,
+    row_start: usize,
+    row_end: usize,
+) {
+    let blocks = n_in / 32;
+    let stride = blocks * 34;
+    for (out_idx, row) in (row_start..row_end).enumerate() {
+        let mut sum = 0.0f32;
+        for block in 0..blocks {
+            let off = row * stride + block * 34;
+            let wd = f16_to_f32(u16::from_le_bytes([weight[off], weight[off + 1]]));
+            let dot = dot_i8x32_neon(
+                weight.as_ptr().add(off + 2),
+                input_q8.as_ptr().add(block * 32),
+            );
+            sum += wd * input_scales[block] * dot as f32;
+        }
+        output[out_idx] = sum;
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -952,6 +1054,13 @@ pub fn matmul_q8_0_via_q8(weight: &[u8], input: &[f32], output: &mut [f32], n_in
             return;
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if has_neon() {
+            unsafe { matmul_q8_0_vs_q8_0_neon(weight, q8_buf, scale_buf, output, n_in, 0, n_out); }
+            return;
+        }
+    }
     matmul_q8_0_quantized_scalar_range(weight, q8_buf, scale_buf, output, n_in, 0, n_out);
 }
 
@@ -986,6 +1095,13 @@ pub fn matmul_q8_0_quantized(weight: &[u8], input_q8: &[u8], input_scales: &[f32
     {
         if has_avx2_fma() {
             unsafe { matmul_q8_0_vs_q8_0_avx2(weight, input_q8, input_scales, output, n_in, 0, n_out); }
+            return;
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if has_neon() {
+            unsafe { matmul_q8_0_vs_q8_0_neon(weight, input_q8, input_scales, output, n_in, 0, n_out); }
             return;
         }
     }
@@ -1063,6 +1179,11 @@ pub fn matmul_q8_0_quantized_range(weight: &[u8], input_q8: &[u8], input_scales:
         unsafe { matmul_q8_0_vs_q8_0_avx2(weight, input_q8, input_scales, output, n_in, row_start, row_end); }
         return;
     }
+    #[cfg(target_arch = "aarch64")]
+    if has_neon() {
+        unsafe { matmul_q8_0_vs_q8_0_neon(weight, input_q8, input_scales, output, n_in, row_start, row_end); }
+        return;
+    }
     matmul_q8_0_quantized_scalar_range(weight, input_q8, input_scales, output, n_in, row_start, row_end);
 }
 
@@ -1074,6 +1195,22 @@ pub fn q8_0_dot_row(weight: &[u8], input_q8: &[u8], input_scales: &[f32], n_in: 
     #[cfg(target_arch = "x86_64")]
     if _use_avx2 {
         return unsafe { q8_0_dot_row_avx2(weight, input_q8, input_scales, n_in, row, blocks_per_row, row_stride) };
+    }
+    #[cfg(target_arch = "aarch64")]
+    if has_neon() {
+        let mut output = [0.0];
+        unsafe {
+            matmul_q8_0_vs_q8_0_neon(
+                weight,
+                input_q8,
+                input_scales,
+                &mut output,
+                n_in,
+                row,
+                row + 1,
+            );
+        }
+        return output[0];
     }
     let mut output = [0.0];
     matmul_q8_0_quantized_scalar_range(weight, input_q8, input_scales, &mut output, n_in, row, row + 1);
@@ -1114,6 +1251,21 @@ fn parallel_range(weight: &[u8], input_q8: &[u8], input_scales: &[f32], output: 
         #[cfg(target_arch = "x86_64")]
         if use_avx2 {
             unsafe { matmul_q8_0_vs_q8_0_avx2(weight, input_q8, input_scales, output, n_in, row_start, row_end); }
+            return;
+        }
+        #[cfg(target_arch = "aarch64")]
+        if has_neon() {
+            unsafe {
+                matmul_q8_0_vs_q8_0_neon(
+                    weight,
+                    input_q8,
+                    input_scales,
+                    output,
+                    n_in,
+                    row_start,
+                    row_end,
+                );
+            }
             return;
         }
         matmul_q8_0_quantized_scalar_range(weight, input_q8, input_scales, output, n_in, row_start, row_end);
@@ -1542,5 +1694,52 @@ mod neon_tests {
 
         let expected_dot: f32 = src.iter().zip(&bits).map(|(x, h)| x * f16_to_f32(*h)).sum();
         assert_close(unsafe { dot_f16_f32_neon(&src, &bits, src.len()) }, expected_dot);
+    }
+
+    fn valid_q8_weights(n_in: usize, n_out: usize) -> Vec<u8> {
+        let blocks = n_in / 32;
+        let mut data = Vec::with_capacity(n_out * blocks * 34);
+        for row in 0..n_out {
+            for block in 0..blocks {
+                let scale = half::f16::from_f32(0.01 + (row + block) as f32 * 0.0001).to_bits();
+                data.extend_from_slice(&scale.to_le_bytes());
+                for lane in 0..32 {
+                    data.push((((row * 17 + block * 13 + lane * 7) % 255) as i16 - 127) as i8 as u8);
+                }
+            }
+        }
+        data
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_q8_quantization_matches_scalar() {
+        let input: Vec<f32> = (0..64).map(|i| ((i as i32 % 17) - 8) as f32 * 0.125).collect();
+        let mut scalar_q = vec![0u8; 64];
+        let mut scalar_s = vec![0.0f32; 2];
+        let mut neon_q = vec![0u8; 64];
+        let mut neon_s = vec![0.0f32; 2];
+        quantize_q8_0_into_scalar_range(&input, &mut scalar_q, &mut scalar_s, 0, 2);
+        unsafe { quantize_q8_0_into_neon_range(&input, &mut neon_q, &mut neon_s, 0, 2) };
+        assert_eq!(neon_q, scalar_q);
+        assert_eq!(neon_s, scalar_s);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_q8_matmul_matches_scalar_for_partial_row_range() {
+        let n_in = 64;
+        let weights = valid_q8_weights(n_in, 7);
+        let input: Vec<f32> = (0..n_in).map(|i| (i as f32 * 0.03).sin()).collect();
+        let mut q8 = vec![0u8; n_in];
+        let mut scales = vec![0.0f32; n_in / 32];
+        quantize_q8_0_into(&input, n_in, &mut q8, &mut scales);
+        let mut scalar = vec![0.0f32; 5];
+        let mut neon = vec![0.0f32; 5];
+        matmul_q8_0_quantized_scalar_range(&weights, &q8, &scales, &mut scalar, n_in, 1, 6);
+        unsafe { matmul_q8_0_vs_q8_0_neon(&weights, &q8, &scales, &mut neon, n_in, 1, 6) };
+        for i in 0..5 {
+            assert_close(neon[i], scalar[i]);
+        }
     }
 }
