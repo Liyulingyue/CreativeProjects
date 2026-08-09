@@ -202,7 +202,7 @@ x86_64 本次仅完成交叉编译与 AVX2/FMA/F16C 路径静态核对，未执�
 
 ## Rust 与 llama.cpp 固定机器对比（2026-08-10）
 
-测试环境：macOS 26.6.1（Build 25G76），Apple M3 Max（12P+4E，16 核），Rust 1.97.0（`2d8144b78 2026-07-07`）。llama.cpp 固定在 `7ba604f1cb61cd14898138e9abc0b4ff2601f180`；CMake 配置确认 ARM `dotprod` 和 `i8mm` 均可用。
+测试环境：macOS 26.6.1（Build 25G76），Apple M3 Max（12P+4E，16 核），Rust 1.97.0（`2d8144b78 2026-07-07`）。Rust CLI 的 KV cache 默认为 F16，固定对比仍显式传入 `--kv-cache f16`；llama.cpp 固定在 `7ba604f1cb61cd14898138e9abc0b4ff2601f180`，并显式使用 `-ctk f16 -ctv f16`。CMake 配置确认 ARM `dotprod` 和 `i8mm` 均可用。
 
 Rust CPU T8 命令（五次独立进程，比较项仅取 `BENCH: tg`）：
 
@@ -214,12 +214,37 @@ for run in 1 2 3 4 5; do
     --max-tokens 32 \
     --temp 0 \
     --threads 8 \
+    --kv-cache f16 \
     --bench \
     --profile 2>&1 | rg 'BENCH: tg|PROFILE:'
 done
 ```
 
-五次 `BENCH: tg 32 evals` 原始值为 `113.2, 102.8, 112.4, 106.1, 72.8 eval/s`，中位数为 `106.1 eval/s`。
+显式 F16 KV 的主验收批次中，五次 `BENCH: tg 32 evals` 原始值为 `157.6, 157.0, 158.5, 158.2, 148.7 eval/s`，中位数为 `157.6 eval/s`。
+
+同一机器上的批次间波动较大，不能把任一单批差距当作稳定复现值：
+
+| Rust T8 批次 | KV 证据 | 五次原始值（eval/s） | 中位数 | 对 llama.cpp CPU 145.199 的差距 |
+|---------------|---------|----------------------|--------|---------------------------------|
+| 主验收批次 | 显式 `--kv-cache f16` | 157.6, 157.0, 158.5, 158.2, 148.7 | 157.6 | -8.54%（Rust 单批更快） |
+| 初始批次 | CLI 默认 F16 | 113.2, 102.8, 112.4, 106.1, 72.8 | 106.1 | 26.93% |
+| controller 复跑 | CLI 默认 F16 | 124.6, 119.4, 125.2, 131.0, 136.6 | 125.2 | 13.77% |
+
+llama.cpp 复现准备（从 RustModelInference 仓库根目录运行；该块定义后续命令使用的 `$benchmark_checkout`）：
+
+```bash
+benchmark_checkout=$(mktemp -d /tmp/rmi-llama-bench.XXXXXX)
+git clone https://github.com/ggml-org/llama.cpp.git "$benchmark_checkout"
+git -C "$benchmark_checkout" checkout 7ba604f1cb61cd14898138e9abc0b4ff2601f180
+cmake -S "$benchmark_checkout" -B "$benchmark_checkout/build" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DLLAMA_BUILD_TESTS=OFF \
+  -DLLAMA_BUILD_TOOLS=ON \
+  -DLLAMA_BUILD_EXAMPLES=OFF \
+  -DLLAMA_BUILD_SERVER=OFF \
+  -DGGML_METAL=ON
+cmake --build "$benchmark_checkout/build" --target llama-bench -j 16
+```
 
 llama.cpp CPU-only 命令：
 
@@ -257,8 +282,8 @@ Metal JSON 记录 `n_gpu_layers: 99`，`samples_ts` 为 `[274.077, 273.657, 273.
 
 | 后端 | 线程 | decode 中位数 | CPU 差距 |
 |------|------|---------------|----------|
-| Rust CPU | T8 | 106.1 eval/s | — |
-| llama.cpp CPU（`-ngl 0`） | T8 | 145.199 eval/s | Rust 慢 26.93% |
-| llama.cpp Metal（`-ngl 99`） | T8 | 273.576 eval/s | 不参与 |
+| Rust CPU（显式 F16 KV 主批次） | T8 | 157.6 eval/s | -8.54%（单批） |
+| llama.cpp CPU（`-ngl 0`，F16 KV） | T8 | 145.199 eval/s | 基准 |
+| llama.cpp Metal（`-ngl 99`，F16 KV） | T8 | 273.576 eval/s | 不参与 |
 
-CPU 差距按 `(145.199 - 106.1) / 145.199 = 26.93%` 计算，超过 10%，因此本次 CPU 门禁未通过。原始输出保留在任务报告中；后续必须先建立独立的 profiling/design 任务，再考虑性能实现。本计划没有实现 DotProd/I8MM、权重重排或线程池重写。
+主批次的算术差距为 `(145.199 - 157.6) / 145.199 = -8.54%`，但三个 Rust 批次的中位数从 `106.1` 到 `157.6 eval/s`，结论互相冲突，因此**尚未证明稳定满足 10% CPU 门禁**。必须先进行测量环境与调度器 profiling，再考虑内核工作。本计划没有实现 DotProd/I8MM、权重重排或线程池重写。
