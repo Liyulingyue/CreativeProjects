@@ -154,6 +154,27 @@ pub struct Qwen35Config {
     pub value_length: usize,
 }
 
+fn unsigned_u64(value: &MetaValue) -> Option<u64> {
+    match value {
+        MetaValue::Uint8(value) => Some(*value as u64),
+        MetaValue::Uint16(value) => Some(*value as u64),
+        MetaValue::Uint32(value) => Some(*value as u64),
+        MetaValue::Uint64(value) => Some(*value),
+        _ => None,
+    }
+}
+
+fn full_attention_interval(value: Option<&MetaValue>) -> Result<Option<u64>, String> {
+    value
+        .map(|value| {
+            unsigned_u64(value)
+                .ok_or_else(|| {
+                    "Invalid qwen35.full_attention_interval: expected unsigned integer".into()
+                })
+        })
+        .transpose()
+}
+
 fn recurrent_layer_mask(
     n_layer: usize,
     recurrent_layers: Option<&MetaValue>,
@@ -174,7 +195,7 @@ fn recurrent_layer_mask(
             .enumerate()
             .map(|(index, value)| match value {
                 MetaValue::Bool(value) => Ok(*value),
-                value => match value.to_u64() {
+                value => match unsigned_u64(value) {
                     Some(0) => Ok(false),
                     Some(1) => Ok(true),
                     _ => Err(format!(
@@ -255,14 +276,8 @@ impl Qwen35Config {
         let ssm_n_group = get_u32("qwen35.ssm.group_count")? as usize;
         let ssm_dt_rank = get_u32("qwen35.ssm.time_step_rank")? as usize;
         let ssm_d_inner = get_u32("qwen35.ssm.inner_size")? as usize;
-        let full_attention_interval_raw = match loader.metadata("qwen35.full_attention_interval") {
-            None => None,
-            Some(value) => Some(
-                value
-                    .to_u64()
-                    .ok_or("Invalid qwen35.full_attention_interval: expected unsigned integer")?,
-            ),
-        };
+        let full_attention_interval_raw =
+            full_attention_interval(loader.metadata("qwen35.full_attention_interval"))?;
         let is_recurrent = recurrent_layer_mask(
             n_layer,
             loader.metadata("qwen35.attention.recurrent_layers"),
@@ -353,6 +368,27 @@ mod tests {
             vec![MetaValue::Uint32(1), MetaValue::Uint32(2)],
         );
         assert!(recurrent_layer_mask(2, Some(&invalid_selector), Some(4)).is_err());
+    }
+
+    #[test]
+    fn qwen35_recurrent_layers_reject_float_selectors() {
+        let float_selector = MetaValue::Array(
+            MetaValueType::Float32,
+            vec![MetaValue::Float32(0.5), MetaValue::Uint32(1)],
+        );
+        assert!(recurrent_layer_mask(2, Some(&float_selector), Some(4)).is_err());
+    }
+
+    #[test]
+    fn qwen35_rejects_float_interval_with_recurrent_layers() {
+        let recurrent_layers = MetaValue::Array(
+            MetaValueType::Uint32,
+            vec![MetaValue::Uint32(1), MetaValue::Uint32(0)],
+        );
+        let float_interval = MetaValue::Float32(4.0);
+        assert!(full_attention_interval(Some(&float_interval))
+            .and_then(|interval| recurrent_layer_mask(2, Some(&recurrent_layers), interval))
+            .is_err());
     }
 
     #[test]
