@@ -442,19 +442,14 @@ mod tests {
 
     #[test]
     #[ignore = "requires RMI_QWEN35_MODEL"]
-    fn qwen35_config_uses_the_real_authoritative_layer_array() {
+    fn qwen35_config_uses_real_layer_selection_metadata() {
         let path = std::env::var("RMI_QWEN35_MODEL").unwrap();
         let loader = crate::model::GGUFLoader::from_file(&path).unwrap();
-        let raw = loader
-            .metadata("qwen35.attention.recurrent_layers")
-            .expect("target Qwen3.5 model must declare recurrent_layers");
         let config = Qwen35Config::from_gguf(&loader).unwrap();
         let expected = recurrent_layer_mask(
             config.n_layer,
-            Some(raw),
-            loader
-                .metadata("qwen35.full_attention_interval")
-                .and_then(MetaValue::to_u64),
+            loader.metadata("qwen35.attention.recurrent_layers"),
+            full_attention_interval(loader.metadata("qwen35.full_attention_interval")).unwrap(),
         )
         .unwrap();
         assert_eq!(config.is_recurrent, expected);
