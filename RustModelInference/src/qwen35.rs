@@ -752,12 +752,12 @@ impl Qwen35Model {
             }
             #[cfg(feature = "parity-trace")]
             if first_dense_layer == Some(il) {
-                let _ = parity_trace::checkpoint(
+                parity_trace::report(parity_trace::checkpoint(
                     &format!("attn_norm-{il}"),
                     Some(il),
                     &[n_tokens, n_embd],
                     &scratch.normed_buf[..n_tokens * n_embd],
-                );
+                ));
             }
 
             let t0 = std::time::Instant::now();
@@ -854,12 +854,12 @@ impl Qwen35Model {
         let n = scratch.matmul_out.len().min(cfg.vocab_size);
         result[..n].copy_from_slice(&scratch.matmul_out[..n]);
         #[cfg(feature = "parity-trace")]
-        let _ = parity_trace::checkpoint(
+        parity_trace::report(parity_trace::checkpoint(
             "result_output",
             None,
             &[cfg.vocab_size],
             &result[..cfg.vocab_size],
-        );
+        ));
         Ok(result)
     }
 
@@ -925,18 +925,18 @@ impl Qwen35Model {
                     q_trace.extend_from_slice(&scratch.q_buf[offset..offset + n_embd_head]);
                 }
             }
-            let _ = parity_trace::checkpoint(
+            parity_trace::report(parity_trace::checkpoint(
                 &format!("Qcur_normed-{il}"),
                 Some(il),
                 &[n_tokens, n_head, n_embd_head],
                 &q_trace,
-            );
-            let _ = parity_trace::checkpoint(
+            ));
+            parity_trace::report(parity_trace::checkpoint(
                 &format!("Kcur_normed-{il}"),
                 Some(il),
                 &[n_tokens, n_head_kv, n_embd_head],
                 &scratch.k_buf[..n_tokens * k_dim],
-            );
+            ));
         }
 
         let kv_pos = kv_cache_pos(kv_cache, il, k_dim, cfg.n_layer);
@@ -971,18 +971,18 @@ impl Qwen35Model {
                     q_trace.extend_from_slice(&scratch.q_buf[offset..offset + n_embd_head]);
                 }
             }
-            let _ = parity_trace::checkpoint(
+            parity_trace::report(parity_trace::checkpoint(
                 &format!("Qcur-{il}"),
                 Some(il),
                 &[n_tokens, n_head, n_embd_head],
                 &q_trace,
-            );
-            let _ = parity_trace::checkpoint(
+            ));
+            parity_trace::report(parity_trace::checkpoint(
                 &format!("Kcur-{il}"),
                 Some(il),
                 &[n_tokens, n_head_kv, n_embd_head],
                 &scratch.k_buf[..n_tokens * k_dim],
-            );
+            ));
         }
 
         kv_cache_store(kv_cache, il, cfg.n_layer, &scratch.k_buf[..n_tokens * k_dim], &scratch.v_buf[..n_tokens * v_dim], k_dim, v_dim, kv_pos);
@@ -1127,12 +1127,12 @@ impl Qwen35Model {
         }
         #[cfg(feature = "parity-trace")]
         if trace_layer {
-            let _ = parity_trace::checkpoint(
+            parity_trace::report(parity_trace::checkpoint(
                 &format!("conv_output_raw-{il}"),
                 Some(il),
                 &[n_tokens, conv_dim],
                 &conv_raw,
-            );
+            ));
         }
 
         for t in 0..n_tokens {
@@ -1151,18 +1151,18 @@ impl Qwen35Model {
         }
         #[cfg(feature = "parity-trace")]
         if trace_layer {
-            let _ = parity_trace::checkpoint(
+            parity_trace::report(parity_trace::checkpoint(
                 &format!("q_conv_predelta-{il}"),
                 Some(il),
                 &[n_tokens, num_k_heads, head_k_dim],
                 &scratch.q_buf[..n_tokens * key_dim],
-            );
-            let _ = parity_trace::checkpoint(
+            ));
+            parity_trace::report(parity_trace::checkpoint(
                 &format!("k_conv_predelta-{il}"),
                 Some(il),
                 &[n_tokens, num_k_heads, head_k_dim],
                 &scratch.k_buf2[..n_tokens * key_dim],
-            );
+            ));
         }
 
         let tc = tc0.elapsed().as_secs_f64();
@@ -1177,12 +1177,12 @@ impl Qwen35Model {
         };
         #[cfg(feature = "parity-trace")]
         if let Some(state_before) = state_before.as_deref() {
-            let _ = parity_trace::checkpoint(
+            parity_trace::report(parity_trace::checkpoint(
                 &format!("state_predelta-{il}"),
                 Some(il),
                 &[num_v_heads, head_v_dim, head_v_dim],
                 state_before,
-            );
+            ));
         }
         let ssm_state = &mut scratch.ssm_states[il];
         for t in 0..n_tokens {
@@ -1212,12 +1212,12 @@ impl Qwen35Model {
         }
         #[cfg(feature = "parity-trace")]
         if trace_layer {
-            let _ = parity_trace::checkpoint(
+            parity_trace::report(parity_trace::checkpoint(
                 &format!("new_state-{il}"),
                 Some(il),
                 &[num_v_heads, head_v_dim, head_v_dim],
                 ssm_state,
-            );
+            ));
         }
 
         let tssm = ts0.elapsed().as_secs_f64();
@@ -1232,12 +1232,12 @@ impl Qwen35Model {
         }
         #[cfg(feature = "parity-trace")]
         if trace_layer {
-            let _ = parity_trace::checkpoint(
+            parity_trace::report(parity_trace::checkpoint(
                 &format!("final_output-{il}"),
                 Some(il),
                 &[n_tokens, num_v_heads, head_v_dim],
                 &scratch.attn_out_buf[..n_tokens * value_dim],
-            );
+            ));
         }
 
         let tnorm = tn0.elapsed().as_secs_f64();

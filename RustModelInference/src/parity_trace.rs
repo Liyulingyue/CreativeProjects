@@ -25,8 +25,26 @@ fn append(value: &serde_json::Value) -> io::Result<()> {
     file.write_all(b"\n")
 }
 
-fn full_f32(name: &str, values: &[f32]) -> io::Result<PathBuf> {
-    let path = PathBuf::from(format!("{}.{}.f32", trace_path()?.display(), name));
+fn occurrence(name: &str) -> io::Result<usize> {
+    let path = trace_path()?;
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error),
+    };
+    contents.lines().try_fold(0usize, |count, line| {
+        let value: serde_json::Value = serde_json::from_str(line)?;
+        Ok(count + usize::from(value["name"] == name))
+    })
+}
+
+fn full_f32(name: &str, occurrence: usize, values: &[f32]) -> io::Result<PathBuf> {
+    let trace = trace_path()?;
+    let path = if occurrence == 0 {
+        PathBuf::from(format!("{}.{}.f32", trace.display(), name))
+    } else {
+        PathBuf::from(format!("{}.{}.{}.f32", trace.display(), name, occurrence))
+    };
     let mut file = std::fs::File::create(&path)?;
     for value in values {
         file.write_all(&value.to_le_bytes())?;
@@ -63,6 +81,8 @@ pub fn checkpoint(
     let head: Vec<f32> = values.iter().copied().take(8).collect();
     let mut tail: Vec<f32> = values.iter().rev().copied().take(8).collect();
     tail.reverse();
+    let occurrence = occurrence(name)?;
+    let binary_path = full_f32(name, occurrence, values)?;
     append(&json!({
         "name": name,
         "layer": layer,
@@ -74,8 +94,22 @@ pub fn checkpoint(
         "max": max,
         "head": head,
         "tail": tail,
+        "occurrence": occurrence,
+        "binary_path": binary_path,
     }))?;
-    full_f32(name, values).map(Some)
+    Ok(Some(binary_path))
+}
+
+fn report_message<T>(result: io::Result<T>) -> Option<String> {
+    result.err().and_then(|error| {
+        std::env::var_os("RMI_PARITY_TRACE").map(|_| format!("parity trace error: {error}"))
+    })
+}
+
+pub fn report<T>(result: io::Result<T>) {
+    if let Some(message) = report_message(result) {
+        eprintln!("{message}");
+    }
 }
 
 pub fn token_ids(name: &str, values: &[u32]) -> io::Result<()> {
@@ -116,9 +150,13 @@ pub fn bool_values(name: &str, values: &[bool]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn checkpoint_schema_has_deterministic_stats_and_names() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
         let path = std::env::temp_dir().join(format!(
             "rmi-parity-trace-{}-{}.jsonl",
             std::process::id(),
@@ -149,6 +187,79 @@ mod tests {
         assert_eq!(std::fs::read(&binary).unwrap().len(), 8);
         std::fs::remove_file(binary).unwrap();
         std::fs::remove_file(path).unwrap();
+        std::env::remove_var("RMI_PARITY_TRACE");
+    }
+
+    #[test]
+    fn repeated_checkpoints_keep_every_full_buffer_and_record_its_sidecar() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let path = std::env::temp_dir().join(format!(
+            "rmi-parity-trace-{}-{}.jsonl",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_file(&path);
+        std::env::set_var("RMI_PARITY_TRACE", &path);
+
+        let first = checkpoint("result_output", None, &[2], &[1.0, 2.0])
+            .unwrap()
+            .unwrap();
+        let second = checkpoint("result_output", None, &[2], &[3.0, 4.0])
+            .unwrap()
+            .unwrap();
+        let records: Vec<serde_json::Value> = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+
+        assert_eq!(
+            first,
+            PathBuf::from(format!("{}.result_output.f32", path.display()))
+        );
+        assert_ne!(first, second);
+        assert_eq!(records[0]["name"], "result_output");
+        assert_eq!(records[1]["name"], "result_output");
+        assert_eq!(records[0]["occurrence"], 0);
+        assert_eq!(records[1]["occurrence"], 1);
+        assert_eq!(records[0]["binary_path"], first.to_string_lossy().as_ref());
+        assert_eq!(records[1]["binary_path"], second.to_string_lossy().as_ref());
+        assert_eq!(
+            std::fs::read(&first).unwrap(),
+            [1.0f32.to_le_bytes(), 2.0f32.to_le_bytes()].concat()
+        );
+        assert_eq!(
+            std::fs::read(&second).unwrap(),
+            [3.0f32.to_le_bytes(), 4.0f32.to_le_bytes()].concat()
+        );
+
+        std::fs::remove_file(first).unwrap();
+        std::fs::remove_file(second).unwrap();
+        std::fs::remove_file(path).unwrap();
+        std::env::remove_var("RMI_PARITY_TRACE");
+    }
+
+    #[test]
+    fn reporting_is_silent_only_when_trace_path_is_unset() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        std::env::remove_var("RMI_PARITY_TRACE");
+        assert_eq!(
+            report_message(Err::<(), _>(io::Error::new(
+                io::ErrorKind::NotFound,
+                "RMI_PARITY_TRACE is unset",
+            ))),
+            None
+        );
+
+        std::env::set_var("RMI_PARITY_TRACE", "configured.jsonl");
+        assert_eq!(
+            report_message(Err::<(), _>(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "configured failure",
+            )))
+            .as_deref(),
+            Some("parity trace error: configured failure")
+        );
         std::env::remove_var("RMI_PARITY_TRACE");
     }
 }

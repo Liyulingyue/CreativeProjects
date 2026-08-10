@@ -787,15 +787,15 @@ fn run_dump_logits(
 
     let input_tokens = prompt_tokens.clone();
     #[cfg(feature = "parity-trace")]
-    let _ = parity_trace::token_ids("prompt_ids", &input_tokens);
+    parity_trace::report(parity_trace::token_ids("prompt_ids", &input_tokens));
     #[cfg(feature = "parity-trace")]
     let qwen3_positions: Vec<usize> = (0..input_tokens.len()).collect();
     #[cfg(feature = "parity-trace")]
-    let _ = parity_trace::usize_values(
+    parity_trace::report(parity_trace::usize_values(
         "qwen3.positions",
         &[qwen3_positions.len()],
         &qwen3_positions,
-    );
+    ));
     let pool = std::sync::Arc::new(thread_pool::ComputePool::new(n_threads));
 
     let group_size = n_head / n_head_kv;
@@ -815,12 +815,12 @@ fn run_dump_logits(
 
         embedding_lookup_q8_0(embd_weight, token_id, n_embd, &mut scratch.x);
         #[cfg(feature = "parity-trace")]
-        let _ = parity_trace::checkpoint(
+        parity_trace::report(parity_trace::checkpoint(
             "model.input_embed",
             None,
             &[1, n_embd],
             &scratch.x[..n_embd],
-        );
+        ));
 
         for layer in 0..n_layer {
             let lw = &layers[layer];
@@ -856,12 +856,12 @@ fn run_dump_logits(
             rms_norm(x, &lw.attn_norm, normed, eps);
             #[cfg(feature = "parity-trace")]
             if layer == 0 {
-                let _ = parity_trace::checkpoint(
+                parity_trace::report(parity_trace::checkpoint(
                     "attn_norm-0",
                     Some(0),
                     &[1, n_embd],
                     normed,
-                );
+                ));
             }
             quantize_q8_0_into(
                 normed,
@@ -915,18 +915,18 @@ fn run_dump_logits(
 
                 #[cfg(feature = "parity-trace")]
                 if layer == 0 {
-                    let _ = parity_trace::checkpoint(
+                    parity_trace::report(parity_trace::checkpoint(
                         "Qcur_normed-0",
                         Some(0),
                         &[n_head, n_embd_head_k],
                         q,
-                    );
-                    let _ = parity_trace::checkpoint(
+                    ));
+                    parity_trace::report(parity_trace::checkpoint(
                         "Kcur_normed-0",
                         Some(0),
                         &[n_head_kv, n_embd_head_k],
                         k_new,
-                    );
+                    ));
                 }
 
                 for h in 0..n_head {
@@ -947,18 +947,18 @@ fn run_dump_logits(
                 }
                 #[cfg(feature = "parity-trace")]
                 if layer == 0 {
-                    let _ = parity_trace::checkpoint(
+                    parity_trace::report(parity_trace::checkpoint(
                         "Qcur-0",
                         Some(0),
                         &[n_head, n_embd_head_k],
                         q,
-                    );
-                    let _ = parity_trace::checkpoint(
+                    ));
+                    parity_trace::report(parity_trace::checkpoint(
                         "Kcur-0",
                         Some(0),
                         &[n_head_kv, n_embd_head_k],
                         k_new,
-                    );
+                    ));
                 }
 
                 let kb = layer * max_ctx * n_embd_gqa;
@@ -1063,12 +1063,12 @@ fn run_dump_logits(
             let attn_out = slice_from_mut!(attn_out_ptr, n_embd_q);
             #[cfg(feature = "parity-trace")]
             if layer == 0 {
-                let _ = parity_trace::checkpoint(
+                parity_trace::report(parity_trace::checkpoint(
                     "kqv_out-0",
                     Some(0),
                     &[n_head, n_embd_head_v],
                     attn_out,
-                );
+                ));
             }
             quantize_q8_0_into(
                 attn_out,
@@ -1152,12 +1152,12 @@ fn run_dump_logits(
             let x = slice_from_mut!(x_ptr, n_embd);
             #[cfg(feature = "parity-trace")]
             if layer == 0 {
-                let _ = parity_trace::checkpoint(
+                parity_trace::report(parity_trace::checkpoint(
                     "ffn_out-0",
                     Some(0),
                     &[1, n_embd],
                     down_buf,
-                );
+                ));
             }
             for i in 0..n_embd {
                 x[i] += down_buf[i];
@@ -1173,7 +1173,12 @@ fn run_dump_logits(
 
             rms_norm(x, &output_norm, normed, eps);
             #[cfg(feature = "parity-trace")]
-            let _ = parity_trace::checkpoint("result_norm", None, &[1, n_embd], normed);
+            parity_trace::report(parity_trace::checkpoint(
+                "result_norm",
+                None,
+                &[1, n_embd],
+                normed,
+            ));
             quantize_q8_0_into(
                 normed,
                 n_embd,
@@ -1199,12 +1204,12 @@ fn run_dump_logits(
                 );
             });
             #[cfg(feature = "parity-trace")]
-            let _ = parity_trace::checkpoint(
+            parity_trace::report(parity_trace::checkpoint(
                 "result_output",
                 None,
                 &[vocab],
                 &scratch.logits[..vocab],
-            );
+            ));
         }
 
         if step < input_tokens.len() - 1 {
@@ -1260,7 +1265,10 @@ fn run_dump_logits(
         all_tokens.push(chosen);
     }
     #[cfg(feature = "parity-trace")]
-    let _ = parity_trace::token_ids("generated_ids", &generated_tokens);
+    parity_trace::report(parity_trace::token_ids(
+        "generated_ids",
+        &generated_tokens,
+    ));
     Ok(())
 }
 
@@ -2308,12 +2316,12 @@ fn run_multimodal(
     #[cfg(feature = "parity-trace")]
     if let (Some(grid), Some([original_w, original_h])) = (image_grid, vision_original_size) {
         let projection_dim = llm.config.n_embd;
-        let _ = parity_trace::usize_values(
+        parity_trace::report(parity_trace::usize_values(
             "vision.original_size",
             &[2],
             &[original_w, original_h],
-        );
-        let _ = parity_trace::usize_values(
+        ));
+        parity_trace::report(parity_trace::usize_values(
             "vision.grid",
             &[5],
             &[
@@ -2323,34 +2331,37 @@ fn run_multimodal(
                 grid.patch_size,
                 grid.merge_size,
             ],
-        );
-        let _ = parity_trace::usize_values(
+        ));
+        parity_trace::report(parity_trace::usize_values(
             "vision.token_counts",
             &[3],
             &[n_vis_tokens, projected_count, grid.token_count()],
-        );
-        let _ = parity_trace::checkpoint(
+        ));
+        parity_trace::report(parity_trace::checkpoint(
             "vision.first_projected_embedding",
             None,
             &[projection_dim],
             &vis_embeddings[..projection_dim],
-        );
+        ));
     }
     #[cfg(feature = "parity-trace")]
-    let _ = parity_trace::token_ids("prompt_ids", &prompt_ids);
+    parity_trace::report(parity_trace::token_ids("prompt_ids", &prompt_ids));
     #[cfg(feature = "parity-trace")]
     let qwen35_positions_flat: Vec<usize> = prompt_positions
         .iter()
         .flat_map(|position| position.iter().copied())
         .collect();
     #[cfg(feature = "parity-trace")]
-    let _ = parity_trace::usize_values(
+    parity_trace::report(parity_trace::usize_values(
         "qwen35.positions",
         &[prompt_positions.len(), 4],
         &qwen35_positions_flat,
-    );
+    ));
     #[cfg(feature = "parity-trace")]
-    let _ = parity_trace::bool_values("qwen35.is_recurrent", &llm.config.is_recurrent);
+    parity_trace::report(parity_trace::bool_values(
+        "qwen35.is_recurrent",
+        &llm.config.is_recurrent,
+    ));
     let image_token_id = image_token_id
         .map(|id| i32::try_from(id).map_err(|_| format!("Token ID {id} exceeds i32")))
         .transpose()?;
@@ -2474,7 +2485,7 @@ fn run_multimodal(
         .map(|id| u32::try_from(id).expect("generated token IDs were validated at sampling"))
         .collect();
     #[cfg(feature = "parity-trace")]
-    let _ = parity_trace::token_ids("generated_ids", &generated_ids);
+    parity_trace::report(parity_trace::token_ids("generated_ids", &generated_ids));
 
     let gen_ms = t_gen_start.elapsed().as_millis();
     let n_gen = all_tokens.len() - n_prompt;
