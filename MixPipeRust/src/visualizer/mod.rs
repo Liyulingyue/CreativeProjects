@@ -178,6 +178,65 @@ impl Visualizer {
         self.draw_skeleton(image, &person.keypoints);
     }
 
+    pub fn draw_keypoints_colored(
+        &self,
+        image: &mut RgbImage,
+        keypoints: &[Keypoint],
+        radius: u32,
+        color: (u8, u8, u8),
+    ) {
+        let color = Rgb([color.0, color.1, color.2]);
+        for kp in keypoints.iter() {
+            if kp.confidence < 0.3 {
+                continue;
+            }
+            let x = kp.x as i32;
+            let y = kp.y as i32;
+            for dy in -(radius as i32)..=(radius as i32) {
+                for dx in -(radius as i32)..=(radius as i32) {
+                    if dx * dx + dy * dy <= (radius as i32) * (radius as i32) {
+                        let px = x + dx;
+                        let py = y + dy;
+                        if px >= 0
+                            && (px as u32) < image.width()
+                            && py >= 0
+                            && (py as u32) < image.height()
+                        {
+                            image.put_pixel(px as u32, py as u32, color);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn draw_skeleton_colored(
+        &self,
+        image: &mut RgbImage,
+        keypoints: &[Keypoint],
+        color: (u8, u8, u8),
+    ) {
+        let color = Rgb([color.0, color.1, color.2]);
+        for &(i, j) in &self.skeleton {
+            if i >= keypoints.len() || j >= keypoints.len() {
+                continue;
+            }
+            let kp1 = &keypoints[i];
+            let kp2 = &keypoints[j];
+            if kp1.confidence < 0.3 || kp2.confidence < 0.3 {
+                continue;
+            }
+            self.draw_line(
+                image,
+                kp1.x as f32,
+                kp1.y as f32,
+                kp2.x as f32,
+                kp2.y as f32,
+                color,
+            );
+        }
+    }
+
     fn draw_line(&self, image: &mut RgbImage, x1: f32, y1: f32, x2: f32, y2: f32, color: Rgb<u8>) {
         let x1 = x1.round() as i64;
         let y1 = y1.round() as i64;

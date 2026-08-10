@@ -19,8 +19,33 @@
 | RTMPose-Face | 人脸关键点检测 | 68 关键点 |
 | RTMPose-Hand | 手部关键点检测 | 21 关键点 |
 | RTMPose-WholeBody | 全身关键点检测 | 133 关键点 |
+| MoveNet-SinglePose-Lightning | 轻量级单人姿态估计 | 17 关键点 |
+| MoveNet-SinglePose-Thunder | 高精度单人姿态估计 | 17 关键点 |
+| MoveNet-MultiPose-Lightning | 多人姿态估计 | 最多 6 人 × 17 关键点 |
+
+## 预置 Pipeline
+
+> 单独使用MoveNet时无需使用Pipeline，直接使用MoveNet即可。
+
+| Pipeline | 检测模型 | 姿态模型 | 适用场景 | 备注 |
+|----------|----------|----------|----------|----------|
+| Body | RTMDet-Tiny | RTMPose-Body | 人体全身关键点 | - |
+| WholeBody | RTMDet-Tiny | RTMPose-WholeBody | 全身133关键点 | - |
+| Face | RTMDet-Tiny | RTMPose-Face | 人脸68关键点 | 不好使 |
+| Hand | RTMDet-Tiny | RTMPose-Hand | 手部21关键点 | 不好使 |
+
+```rust
+use mixpipe::{Pipeline, PretrainedModel};
+
+let pipeline = Pipeline::builder()
+    .detector_model(PretrainedModel::RtmDetTiny)
+    .pose_model(PretrainedModel::RtmPoseWholeBody)  // 或 Body, Face, Hand
+    .build()?;
+```
 
 ## 快速开始
+
+### RTMDet + RTMPose 流水线
 
 ```rust
 use mixpipe::{RtmDet, RtmPose, PretrainedModel, Pipeline};
@@ -32,7 +57,7 @@ let model = RtmDet::from_pretrained(PretrainedModel::RtmDetTiny)?;
 
 let detections = model.infer(&pixels, width, height)?;
 
-// 姿态估计流水线
+// 姿态估计流水线（自动下载模型）
 let pipeline = Pipeline::builder()
     .detector_model(PretrainedModel::RtmDetTiny)
     .pose_model(PretrainedModel::RtmPoseWholeBody)
@@ -49,6 +74,23 @@ for person in persons {
     println!("bbox={:?}", person.bbox);
     for kp in person.keypoints {
         println!("  ({:.1}, {:.1}) conf={:.3}", kp.x, kp.y, kp.confidence);
+    }
+}
+```
+
+### MoveNet 单独使用
+
+```rust
+use mixpipe::{MoveNet, MoveNetVariant, PretrainedModel, download_model_blocking};
+
+let model_path = download_model_blocking(PretrainedModel::MoveNetSinglePoseThunder)?;
+let model = MoveNet::from_file(&model_path, MoveNetVariant::SinglePoseThunder)?;
+
+let keypoints = model.infer(&pixels, width, height)?;
+for (i, person) in keypoints.iter().enumerate() {
+    println!("Person {}:", i);
+    for (j, kp) in person.iter().enumerate() {
+        println!("  kp{}: ({:.1}, {:.1}) conf={:.3}", j, kp.x, kp.y, kp.confidence);
     }
 }
 ```
@@ -79,9 +121,14 @@ cargo run --example pipeline
 
 # 可视化示例
 cargo run --example visualization
+
+# MoveNet 单人姿态估计示例
+cargo run --example movenet_test -- /path/to/image.png
 ```
 
 ## 可视化
+
+### RTMPose 可视化
 
 ```rust
 use mixpipe::{Pipeline, PretrainedModel, Visualizer};
@@ -99,6 +146,22 @@ let viz = Visualizer::coco17();  // 或 wholebody133(), face68(), hand21()
 for person in &persons {
     viz.draw_person(&mut img, person);
 }
+
+img.save("output.png")?;
+```
+
+### MoveNet 可视化
+
+```rust
+use mixpipe::{MoveNet, MoveNetVariant, PretrainedModel, download_model_blocking};
+
+let model_path = download_model_blocking(PretrainedModel::MoveNetSinglePoseThunder)?;
+let model = MoveNet::from_file(&model_path, MoveNetVariant::SinglePoseThunder)?;
+
+let keypoints = model.infer(&pixels, width, height)?;
+
+let mut img = image::open("input.jpg")?.to_rgb8();
+model.draw(&mut img, &keypoints);  // 内置绘制方法
 
 img.save("output.png")?;
 ```

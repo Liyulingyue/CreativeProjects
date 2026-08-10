@@ -3,6 +3,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::node::{Frame, FrameData, FrameMeta, Keypoint, Node, NodeError, Result};
+use crate::visualizer::Visualizer;
+use image::RgbImage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoveNetVariant {
@@ -81,6 +83,19 @@ impl MoveNet {
 
         Ok(persons)
     }
+
+    pub fn draw(&self, image: &mut RgbImage, keypoints: &[Vec<Keypoint>]) {
+        let viz = Visualizer::coco17();
+        for (i, person_kpts) in keypoints.iter().enumerate() {
+            let color = (
+                ((i as u8 + 1) * 50) % 255,
+                ((i as u8 + 1) * 100) % 255,
+                255,
+            );
+            viz.draw_keypoints_colored(image, person_kpts, 3, color);
+            viz.draw_skeleton_colored(image, person_kpts, color);
+        }
+    }
 }
 
 impl Clone for MoveNet {
@@ -136,8 +151,9 @@ fn preprocess_movenet(
     height: u32,
     input_h: usize,
     input_w: usize,
-) -> (ndarray::Array4<f32>, f32, f32, f32) {
-    let scale = (input_h as f32 / height as f32).min(input_w as f32 / width as f32);
+) -> (ndarray::Array4<i32>, f32, f32, f32) {
+    let scale =
+        (input_h as f32 / height as f32).min(input_w as f32 / width as f32);
     let new_w = (width as f32 * scale) as u32;
     let new_h = (height as f32 * scale) as u32;
 
@@ -161,7 +177,9 @@ fn preprocess_movenet(
     let mut padded = vec![127u8; (input_h as u32 * input_w as u32 * 3) as usize];
     for y in 0..new_h {
         for x in 0..new_w {
-            let dst_idx = (((pad_h_half as u32 + y) * input_w as u32) + pad_w_half as u32 + x) * 3;
+            let dst_idx =
+                (((pad_h_half as u32 + y) * input_w as u32) + pad_w_half as u32 + x)
+                    * 3;
             let src_idx = (y * new_w + x) * 3;
             padded[dst_idx as usize] = resized[src_idx as usize];
             padded[(dst_idx + 1) as usize] = resized[(src_idx + 1) as usize];
@@ -169,15 +187,9 @@ fn preprocess_movenet(
         }
     }
 
-    let mut blob = ndarray::Array4::<f32>::zeros((1, 3, input_h, input_w));
-    for y in 0..input_h {
-        for x in 0..input_w {
-            let idx = (y * input_w + x) * 3;
-            blob[[0, 0, y, x]] = (padded[idx] as f32 - 128.0) / 128.0;
-            blob[[0, 1, y, x]] = (padded[idx + 1] as f32 - 128.0) / 128.0;
-            blob[[0, 2, y, x]] = (padded[idx + 2] as f32 - 128.0) / 128.0;
-        }
-    }
+    let blob =
+        ndarray::Array4::<i32>::from_shape_vec((1, input_h, input_w, 3), padded.into_iter().map(|v| v as i32).collect())
+            .unwrap();
 
     (blob, scale, pad_h_half, pad_w_half)
 }
@@ -193,9 +205,6 @@ fn decode_movenet(
     pad_w: f32,
     scale: f32,
 ) -> Vec<Vec<Keypoint>> {
-    let shape = output.shape();
-    let data = output.as_slice().unwrap();
-
     match variant {
         MoveNetVariant::SinglePoseLightning | MoveNetVariant::SinglePoseThunder => {
             let num_kpts = 17;
@@ -203,9 +212,9 @@ fn decode_movenet(
             let mut person_kpts = Vec::with_capacity(num_kpts);
 
             for k in 0..num_kpts {
-                let y_val = data[k * 3];
-                let x_val = data[k * 3 + 1];
-                let score = data[k * 3 + 2];
+                let y_val = output[[0, 0, k, 0]];
+                let x_val = output[[0, 0, k, 1]];
+                let score = output[[0, 0, k, 2]];
 
                 let x_padded = x_val * input_w - pad_w;
                 let y_padded = y_val * input_h - pad_h;
@@ -224,23 +233,20 @@ fn decode_movenet(
         MoveNetVariant::MultiPoseLightning => {
             let max_persons = 6;
             let num_kpts = 17;
-            let stride = 3;
 
             let mut persons = Vec::new();
             for p in 0..max_persons {
-                let person_offset = p * num_kpts * stride;
-                let score = data[person_offset + num_kpts * stride - 1];
+                let score = output[[0, p, 51]];
 
-                if score < 0.2 {
+                if score < 0.3 {
                     continue;
                 }
 
                 let mut kpts = Vec::with_capacity(num_kpts);
                 for k in 0..num_kpts {
-                    let base_idx = person_offset + k * stride;
-                    let y_val = data[base_idx];
-                    let x_val = data[base_idx + 1];
-                    let kpt_score = data[base_idx + 2];
+                    let y_val = output[[0, p, k * 3]];
+                    let x_val = output[[0, p, k * 3 + 1]];
+                    let kpt_score = output[[0, p, k * 3 + 2]];
 
                     let x_padded = x_val * input_w - pad_w;
                     let y_padded = y_val * input_h - pad_h;
