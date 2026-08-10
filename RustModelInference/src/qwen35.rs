@@ -22,7 +22,7 @@ pub fn build_qwen35_positions(
             let grid = *image_grids
                 .get(grid_index)
                 .ok_or("Image placeholder has no matching vision grid")?;
-            let count = grid.token_count();
+            let count = grid.checked_token_count()?;
             let end = token
                 .checked_add(count)
                 .ok_or("Image placeholder range overflow")?;
@@ -1321,5 +1321,18 @@ mod tests {
             merge_size: 2,
         };
         assert!(build_qwen35_positions(&[10, 99, 99, 11], Some(99), &[grid]).is_err());
+    }
+
+    #[test]
+    fn qwen35_positions_reject_public_grid_token_overflow() {
+        let grid = VisionGrid {
+            grid_t: 1,
+            grid_h: usize::MAX,
+            grid_w: 2,
+            patch_size: 1,
+            merge_size: 1,
+        };
+
+        assert!(build_qwen35_positions(&[99], Some(99), &[grid]).is_err());
     }
 }

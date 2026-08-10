@@ -35,17 +35,30 @@ impl VisionGrid {
                 "Image {image_width}x{image_height} is not aligned to patch*merge={factor}"
             ));
         }
-        Ok(Self {
+        let grid = Self {
             grid_t,
             grid_h: image_height / factor,
             grid_w: image_width / factor,
             patch_size,
             merge_size,
-        })
+        };
+        grid.checked_token_count()?;
+        Ok(grid)
+    }
+
+    pub(crate) fn checked_token_count(self) -> Result<usize, String> {
+        if self.grid_t == 0 || self.grid_h == 0 || self.grid_w == 0 {
+            return Err("Vision grid dimensions must be nonzero".into());
+        }
+        self.grid_t
+            .checked_mul(self.grid_h)
+            .and_then(|count| count.checked_mul(self.grid_w))
+            .ok_or_else(|| "Vision grid token count overflow".into())
     }
 
     pub fn token_count(self) -> usize {
-        self.grid_t * self.grid_h * self.grid_w
+        self.checked_token_count()
+            .expect("Vision grid token count must be validated")
     }
 
     pub fn image_width(self) -> usize {
@@ -564,7 +577,7 @@ impl<'a> VisionEncoder<'a> {
             decoded_pos = decode_f32_slice(pos_data);
         } else {
             let raw = decode_f32_slice(pos_data);
-            decoded_pos = bilinear_resize_2d(&raw, pos_side, pos_side, n_embd, n_patches_x, n_patches_y);
+            decoded_pos = bilinear_resize_2d(&raw, pos_side, pos_side, n_embd, n_patches_y, n_patches_x);
         }
 
         let total = n_patches_x * n_patches_y * n_embd;
@@ -1722,6 +1735,50 @@ mod tests {
     #[test]
     fn vision_grid_rejects_unaligned_dimensions() {
         assert!(VisionGrid::from_image_size(1, 100, 64, 16, 2).is_err());
+    }
+
+    #[test]
+    fn vision_grid_rejects_token_count_overflow() {
+        assert!(VisionGrid::from_image_size(1, usize::MAX, 2, 1, 1).is_err());
+    }
+
+    #[test]
+    fn rectangular_position_embedding_keeps_width_and_height_orientation() {
+        let mut config = test_clip_config(1, 1, 1, 64);
+        config.n_embd = 1;
+        let encoder = VisionEncoder {
+            config,
+            patch_embd_weight: &[],
+            patch_embd_weight_1: None,
+            position_embd: None,
+            post_ln_weight: None,
+            post_ln_bias: None,
+            patch_bias: None,
+            layers: Vec::new(),
+            mm_0_weight: &[],
+            mm_0_bias: None,
+            mm_2_weight: &[],
+            mm_2_bias: None,
+            precomputed: None,
+        };
+        let position_data: Vec<u8> = [0.0f32, 10.0, 20.0, 30.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        let mut merged = vec![0.0; 6];
+        let mut position_buffer = vec![0.0; 6];
+
+        encoder.apply_position_embedding_merged(
+            &mut merged,
+            3,
+            2,
+            1,
+            1,
+            &position_data,
+            &mut position_buffer,
+        );
+
+        assert_eq!(merged, [0.0, 5.0, 10.0, 20.0, 25.0, 30.0]);
     }
 
     fn close(a: f32, b: f32) {
