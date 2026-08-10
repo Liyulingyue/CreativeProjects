@@ -5,6 +5,10 @@ edition = "2021"
 description = "Zero-allocation, mmap zero-copy LLM inference engine in pure Rust"
 license = "MIT"
 
+[features]
+default = []
+parity-trace = []
+
 [dependencies]
 memmap2 = "0.9"
 half = "2.4"

@@ -2,6 +2,9 @@ pub mod clip_config;
 pub mod memory;
 pub mod model;
 pub mod ops;
+#[cfg(feature = "parity-trace")]
+#[doc(hidden)]
+pub mod parity_trace;
 pub mod prompt;
 pub mod quant;
 pub mod qwen35;

@@ -3,6 +3,8 @@ use rayon::prelude::*;
 use crate::clip_config::Qwen35Config;
 use crate::model::{GGUFLoader, GGMLType};
 use crate::ops::{dot_f32, softmax, rope_neox, rope_mrope};
+#[cfg(feature = "parity-trace")]
+use crate::parity_trace;
 use crate::quant::{self, BlockQ8K, QK_K};
 use crate::thread_pool::ComputePool;
 use crate::vision::VisionGrid;
@@ -734,6 +736,10 @@ impl Qwen35Model {
         let profile = std::env::var("PROFILE_QWEN35").is_ok();
         let mut t_attn: f64 = 0.0;
         let mut t_ffn: f64 = 0.0;
+        #[cfg(feature = "parity-trace")]
+        let first_dense_layer = self.config.is_recurrent.iter().position(|value| !*value);
+        #[cfg(feature = "parity-trace")]
+        let first_recurrent_layer = self.config.is_recurrent.iter().position(|value| *value);
 
         for il in 0..n_layer {
             let layer = &self.layers[il];
@@ -744,16 +750,63 @@ impl Qwen35Model {
                 scratch.normed_buf[off..off + n_embd].copy_from_slice(&scratch.x[off..off + n_embd]);
                 crate::ops::rms_norm_inplace(&mut scratch.normed_buf[off..off + n_embd], &layer.attn_norm, eps);
             }
+            #[cfg(feature = "parity-trace")]
+            if first_dense_layer == Some(il) {
+                let _ = parity_trace::checkpoint(
+                    &format!("attn_norm-{il}"),
+                    Some(il),
+                    &[n_tokens, n_embd],
+                    &scratch.normed_buf[..n_tokens * n_embd],
+                );
+            }
 
             let t0 = std::time::Instant::now();
             let normed_ptr = scratch.normed_buf.as_ptr();
             let normed_len = n_tokens * n_embd;
             let attn_out = if is_recr {
                 let normed_input = unsafe { std::slice::from_raw_parts(normed_ptr, normed_len) };
-                self.forward_recurrent_layer(il, normed_input, n_tokens, scratch, pool)
+                #[cfg(feature = "parity-trace")]
+                {
+                    self.forward_recurrent_layer(
+                        il,
+                        normed_input,
+                        n_tokens,
+                        scratch,
+                        pool,
+                        first_recurrent_layer == Some(il),
+                    )
+                }
+                #[cfg(not(feature = "parity-trace"))]
+                {
+                    self.forward_recurrent_layer(il, normed_input, n_tokens, scratch, pool)
+                }
             } else {
                 let normed_input = unsafe { std::slice::from_raw_parts(normed_ptr, normed_len) };
-                self.forward_dense_attn_layer(il, normed_input, n_tokens, kv_cache, scratch, pool, mrope_positions)
+                #[cfg(feature = "parity-trace")]
+                {
+                    self.forward_dense_attn_layer(
+                        il,
+                        normed_input,
+                        n_tokens,
+                        kv_cache,
+                        scratch,
+                        pool,
+                        mrope_positions,
+                        first_dense_layer == Some(il),
+                    )
+                }
+                #[cfg(not(feature = "parity-trace"))]
+                {
+                    self.forward_dense_attn_layer(
+                        il,
+                        normed_input,
+                        n_tokens,
+                        kv_cache,
+                        scratch,
+                        pool,
+                        mrope_positions,
+                    )
+                }
             };
             t_attn += t0.elapsed().as_secs_f64();
 
@@ -800,6 +853,13 @@ impl Qwen35Model {
         let mut result = vec![0.0f32; cfg.vocab_size];
         let n = scratch.matmul_out.len().min(cfg.vocab_size);
         result[..n].copy_from_slice(&scratch.matmul_out[..n]);
+        #[cfg(feature = "parity-trace")]
+        let _ = parity_trace::checkpoint(
+            "result_output",
+            None,
+            &[cfg.vocab_size],
+            &result[..cfg.vocab_size],
+        );
         Ok(result)
     }
 
@@ -807,6 +867,7 @@ impl Qwen35Model {
         &self, il: usize, input: &[f32], n_tokens: usize,
         kv_cache: &mut crate::scratchpad::KvCache, scratch: &mut Qwen35Scratchpad,
         pool: &ComputePool, mrope_positions: &[[usize; 4]],
+        #[cfg(feature = "parity-trace")] trace_layer: bool,
     ) -> Vec<f32> {
         let profile = std::env::var("PROFILE_QWEN35").is_ok();
         let cfg = &self.config;
@@ -854,6 +915,29 @@ impl Qwen35Model {
             }
             for h in 0..n_head_kv { crate::ops::rms_norm_inplace(&mut scratch.k_buf[t * k_dim + h * n_embd_head..][..n_embd_head], k_norm_w, eps); }
         }
+        #[cfg(feature = "parity-trace")]
+        let mut q_trace = Vec::with_capacity(n_tokens * n_head * n_embd_head);
+        #[cfg(feature = "parity-trace")]
+        if trace_layer {
+            for token in 0..n_tokens {
+                for head in 0..n_head {
+                    let offset = token * q_dim + head * n_embd_head * 2;
+                    q_trace.extend_from_slice(&scratch.q_buf[offset..offset + n_embd_head]);
+                }
+            }
+            let _ = parity_trace::checkpoint(
+                &format!("Qcur_normed-{il}"),
+                Some(il),
+                &[n_tokens, n_head, n_embd_head],
+                &q_trace,
+            );
+            let _ = parity_trace::checkpoint(
+                &format!("Kcur_normed-{il}"),
+                Some(il),
+                &[n_tokens, n_head_kv, n_embd_head],
+                &scratch.k_buf[..n_tokens * k_dim],
+            );
+        }
 
         let kv_pos = kv_cache_pos(kv_cache, il, k_dim, cfg.n_layer);
         let sections = cfg.rope_dimension_sections;
@@ -876,6 +960,29 @@ impl Qwen35Model {
                     rope_neox(&mut scratch.k_buf[k_off..k_off + cfg.rope_dimension_count], positions[0], cfg.rope_dimension_count, cfg.rope_freq_base);
                 }
             }
+        }
+        #[cfg(feature = "parity-trace")]
+        let mut q_trace = Vec::with_capacity(n_tokens * n_head * n_embd_head);
+        #[cfg(feature = "parity-trace")]
+        if trace_layer {
+            for token in 0..n_tokens {
+                for head in 0..n_head {
+                    let offset = token * q_dim + head * n_embd_head * 2;
+                    q_trace.extend_from_slice(&scratch.q_buf[offset..offset + n_embd_head]);
+                }
+            }
+            let _ = parity_trace::checkpoint(
+                &format!("Qcur-{il}"),
+                Some(il),
+                &[n_tokens, n_head, n_embd_head],
+                &q_trace,
+            );
+            let _ = parity_trace::checkpoint(
+                &format!("Kcur-{il}"),
+                Some(il),
+                &[n_tokens, n_head_kv, n_embd_head],
+                &scratch.k_buf[..n_tokens * k_dim],
+            );
         }
 
         kv_cache_store(kv_cache, il, cfg.n_layer, &scratch.k_buf[..n_tokens * k_dim], &scratch.v_buf[..n_tokens * v_dim], k_dim, v_dim, kv_pos);
@@ -935,7 +1042,15 @@ impl Qwen35Model {
         result
     }
 
-    fn forward_recurrent_layer(&self, il: usize, input: &[f32], n_tokens: usize, scratch: &mut Qwen35Scratchpad, pool: &ComputePool) -> Vec<f32> {
+    fn forward_recurrent_layer(
+        &self,
+        il: usize,
+        input: &[f32],
+        n_tokens: usize,
+        scratch: &mut Qwen35Scratchpad,
+        pool: &ComputePool,
+        #[cfg(feature = "parity-trace")] trace_layer: bool,
+    ) -> Vec<f32> {
         let profile = std::env::var("PROFILE_QWEN35").is_ok();
         let cfg = &self.config;
         let n_embd = cfg.n_embd;
@@ -988,6 +1103,12 @@ impl Qwen35Model {
 
         let tc0 = std::time::Instant::now();
         let conv_state = &mut scratch.conv_states[il];
+        #[cfg(feature = "parity-trace")]
+        let mut conv_raw = if trace_layer {
+            vec![0.0f32; n_tokens * conv_dim]
+        } else {
+            Vec::new()
+        };
         for t in 0..n_tokens {
             let qkv_off = t * conv_dim;
             for c in 0..conv_dim {
@@ -997,8 +1118,21 @@ impl Qwen35Model {
             for c in 0..conv_dim {
                 let mut conv_val = 0.0f32;
                 for k in 0..d_conv { conv_val += ssm_conv1d[c * d_conv + k] * conv_state[k * conv_dim + c]; }
+                #[cfg(feature = "parity-trace")]
+                if trace_layer {
+                    conv_raw[t * conv_dim + c] = conv_val;
+                }
                 scratch.qkv_buf[qkv_off + c] = silu_f32(conv_val);
             }
+        }
+        #[cfg(feature = "parity-trace")]
+        if trace_layer {
+            let _ = parity_trace::checkpoint(
+                &format!("conv_output_raw-{il}"),
+                Some(il),
+                &[n_tokens, conv_dim],
+                &conv_raw,
+            );
         }
 
         for t in 0..n_tokens {
@@ -1015,11 +1149,41 @@ impl Qwen35Model {
                 l2_norm(&mut scratch.k_buf2[t * key_dim + h * head_k_dim..][..head_k_dim]);
             }
         }
+        #[cfg(feature = "parity-trace")]
+        if trace_layer {
+            let _ = parity_trace::checkpoint(
+                &format!("q_conv_predelta-{il}"),
+                Some(il),
+                &[n_tokens, num_k_heads, head_k_dim],
+                &scratch.q_buf[..n_tokens * key_dim],
+            );
+            let _ = parity_trace::checkpoint(
+                &format!("k_conv_predelta-{il}"),
+                Some(il),
+                &[n_tokens, num_k_heads, head_k_dim],
+                &scratch.k_buf2[..n_tokens * key_dim],
+            );
+        }
 
         let tc = tc0.elapsed().as_secs_f64();
 
         let ts0 = std::time::Instant::now();
         let q_scale = 1.0 / (head_k_dim as f32).sqrt();
+        #[cfg(feature = "parity-trace")]
+        let state_before = if trace_layer {
+            Some(scratch.ssm_states[il].clone())
+        } else {
+            None
+        };
+        #[cfg(feature = "parity-trace")]
+        if let Some(state_before) = state_before.as_deref() {
+            let _ = parity_trace::checkpoint(
+                &format!("state_predelta-{il}"),
+                Some(il),
+                &[num_v_heads, head_v_dim, head_v_dim],
+                state_before,
+            );
+        }
         let ssm_state = &mut scratch.ssm_states[il];
         for t in 0..n_tokens {
             let q_off = t * key_dim;
@@ -1046,6 +1210,15 @@ impl Qwen35Model {
                 crate::ops::ssm_matvec(&ssm_state[state_off..][..head_v_dim * head_v_dim], q_scaled, head_v_dim, head_v_dim, &mut scratch.attn_out_buf[out_off..out_off + head_v_dim]);
             }
         }
+        #[cfg(feature = "parity-trace")]
+        if trace_layer {
+            let _ = parity_trace::checkpoint(
+                &format!("new_state-{il}"),
+                Some(il),
+                &[num_v_heads, head_v_dim, head_v_dim],
+                ssm_state,
+            );
+        }
 
         let tssm = ts0.elapsed().as_secs_f64();
         let tn0 = std::time::Instant::now();
@@ -1056,6 +1229,15 @@ impl Qwen35Model {
             }
             let z_off = t * value_dim;
             crate::ops::silu_mul_inplace(&scratch.z_buf[z_off..z_off + value_dim], &mut scratch.attn_out_buf[t * value_dim..t * value_dim + value_dim]);
+        }
+        #[cfg(feature = "parity-trace")]
+        if trace_layer {
+            let _ = parity_trace::checkpoint(
+                &format!("final_output-{il}"),
+                Some(il),
+                &[n_tokens, num_v_heads, head_v_dim],
+                &scratch.attn_out_buf[..n_tokens * value_dim],
+            );
         }
 
         let tnorm = tn0.elapsed().as_secs_f64();
