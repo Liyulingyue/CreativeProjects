@@ -16,6 +16,39 @@ DATA_DIR.mkdir(exist_ok=True)
 SETTINGS_FILE = DATA_DIR / "settings.json"
 INDEX_STATS_FILE = DATA_DIR / "index_stats.json"
 
+EMBEDDING_DIM_MAP = {
+    "text-embedding-3-small": 1536,
+    "text-embedding-3-large": 3072,
+    "text-embedding-ada-002": 1538,
+}
+
+
+def _detect_embedding_dim(model: str, api_key: str, base_url: str) -> int:
+    try:
+        import httpx
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        resp = httpx.post(
+            base_url,
+            headers=headers,
+            json={"input": "test", "model": model},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            embedding = data.get("data", [{}])[0]
+            embedding_vector = embedding.get("embedding", [])
+            if embedding_vector:
+                return len(embedding_vector)
+        for known_model, dim in EMBEDDING_DIM_MAP.items():
+            if model.startswith(known_model):
+                return dim
+        return 1536
+    except Exception:
+        for known_model, dim in EMBEDDING_DIM_MAP.items():
+            if model.startswith(known_model):
+                return dim
+        return 1536
+
 
 def _load_json(path: Path, default=None):
     if not path.exists():
@@ -30,9 +63,31 @@ def _save_json(path: Path, data):
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
+def _get_default_settings() -> AppSettings:
+    embedding_dim_str = os.getenv("EMBEDDING_DIM", "AUTO")
+    embedding_api_key = os.getenv("EMBEDDING_API_KEY", "")
+    embedding_base_url = os.getenv("EMBEDDING_BASE_URL", "https://api.minimaxi.com/v1")
+    embedding_model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+
+    if embedding_dim_str == "AUTO":
+        embedding_dim_str = str(_detect_embedding_dim(embedding_model, embedding_api_key, embedding_base_url))
+
+    return AppSettings(
+        llm_api_key=os.getenv("LLM_API_KEY", ""),
+        llm_base_url=os.getenv("LLM_BASE_URL", "https://api.minimaxi.com/v1"),
+        llm_model=os.getenv("LLM_MODEL", "gpt-4o-mini"),
+        embedding_api_key=embedding_api_key,
+        embedding_base_url=embedding_base_url,
+        embedding_model=embedding_model,
+        embedding_dim=embedding_dim_str,
+        index_interval=int(os.getenv("INDEX_INTERVAL", "300")),
+        storage_path=os.getenv("STORAGE_PATH", "./data"),
+    )
+
+
 class AppState:
     def __init__(self):
-        self._settings: AppSettings = AppSettings()
+        self._settings: AppSettings = _get_default_settings()
         self._index_stats: IndexStats = IndexStats(
             total_files=0, total_dirs=0, indexed_files=0, indexed_dirs=0
         )
