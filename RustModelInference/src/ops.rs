@@ -137,8 +137,9 @@ unsafe fn f32_slice_to_f16_avx2(src: &[f32], dst: &mut [u16]) {
 
 pub fn rms_norm(input: &[f32], weight: &[f32], output: &mut [f32], eps: f32) {
     let n = input.len().min(weight.len()).min(output.len());
-    let sum_sq: f32 = input[..n].iter().map(|&x| x * x).sum();
-    let scale = 1.0f32 / (sum_sq / n as f32 + eps).sqrt();
+    let sum_sq: f64 = input[..n].iter().map(|&x| f64::from(x * x)).sum();
+    let mean_sq = (sum_sq / n as f64) as f32;
+    let scale = 1.0f32 / (mean_sq + eps).sqrt();
     for i in 0..n {
         output[i] = input[i] * scale * weight[i];
     }
@@ -1648,6 +1649,24 @@ mod neon_tests {
     fn assert_close(actual: f32, expected: f32) {
         let tolerance = 1e-4 + 1e-4 * expected.abs();
         assert!((actual - expected).abs() <= tolerance, "actual={actual} expected={expected}");
+    }
+
+    #[test]
+    fn rms_norm_accumulates_f32_squares_in_f64() {
+        let input = [
+            f32::from_bits(0x3f80_0000),
+            f32::from_bits(0x3980_0000),
+            f32::from_bits(0x3980_0000),
+        ];
+        let weight = [1.0f32; 3];
+        let mut output = [0.0f32; 3];
+
+        rms_norm(&input, &weight, &mut output, 0.0);
+
+        assert_eq!(
+            output.map(f32::to_bits),
+            [0x3fdd_b3d6, 0x39dd_b3d6, 0x39dd_b3d6],
+        );
     }
 
     #[cfg(target_arch = "aarch64")]
