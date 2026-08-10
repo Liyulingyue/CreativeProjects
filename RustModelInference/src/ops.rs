@@ -731,7 +731,7 @@ fn quantize_q8_0_into_scalar_range(
         let amax = values.iter().fold(0.0f32, |current, value| current.max(value.abs()));
         let scale = if amax == 0.0 { 0.0 } else { amax / 127.0 };
         let inverse = if scale == 0.0 { 0.0 } else { 1.0 / scale };
-        scales[block] = scale;
+        scales[block] = f16_to_f32(f32_to_f16(scale));
         for lane in 0..32 {
             q8[block * 32 + lane] = (values[lane] * inverse).round().clamp(-128.0, 127.0) as i8 as u8;
         }
@@ -762,16 +762,17 @@ unsafe fn quantize_q8_0_into_neon_range(
         let m1 = vmaxq_f32(vmaxq_f32(vabsq_f32(v4), vabsq_f32(v5)), vmaxq_f32(vabsq_f32(v6), vabsq_f32(v7)));
         let amax = vmaxvq_f32(vmaxq_f32(m0, m1));
         let scale = if amax == 0.0 { 0.0 } else { amax / 127.0 };
-        scales[block] = scale;
-        let inverse = vdupq_n_f32(if scale == 0.0 { 0.0 } else { 1.0 / scale });
-        let q0 = vcvtq_s32_f32(vrndaq_f32(vmulq_f32(v0, inverse)));
-        let q1 = vcvtq_s32_f32(vrndaq_f32(vmulq_f32(v1, inverse)));
-        let q2 = vcvtq_s32_f32(vrndaq_f32(vmulq_f32(v2, inverse)));
-        let q3 = vcvtq_s32_f32(vrndaq_f32(vmulq_f32(v3, inverse)));
-        let q4 = vcvtq_s32_f32(vrndaq_f32(vmulq_f32(v4, inverse)));
-        let q5 = vcvtq_s32_f32(vrndaq_f32(vmulq_f32(v5, inverse)));
-        let q6 = vcvtq_s32_f32(vrndaq_f32(vmulq_f32(v6, inverse)));
-        let q7 = vcvtq_s32_f32(vrndaq_f32(vmulq_f32(v7, inverse)));
+        let inverse = if scale == 0.0 { 0.0 } else { 1.0 / scale };
+        scales[block] = f16_to_f32(f32_to_f16(scale));
+        let inverse = vdupq_n_f32(inverse);
+        let q0 = vcvtnq_s32_f32(vmulq_f32(v0, inverse));
+        let q1 = vcvtnq_s32_f32(vmulq_f32(v1, inverse));
+        let q2 = vcvtnq_s32_f32(vmulq_f32(v2, inverse));
+        let q3 = vcvtnq_s32_f32(vmulq_f32(v3, inverse));
+        let q4 = vcvtnq_s32_f32(vmulq_f32(v4, inverse));
+        let q5 = vcvtnq_s32_f32(vmulq_f32(v5, inverse));
+        let q6 = vcvtnq_s32_f32(vmulq_f32(v6, inverse));
+        let q7 = vcvtnq_s32_f32(vmulq_f32(v7, inverse));
         let lo = vcombine_s8(
             vqmovn_s16(vcombine_s16(vqmovn_s32(q0), vqmovn_s32(q1))),
             vqmovn_s16(vcombine_s16(vqmovn_s32(q2), vqmovn_s32(q3))),
@@ -818,8 +819,8 @@ unsafe fn quantize_q8_0_into_avx2_range(input: &[f32], q8: &mut [u8], scales: &m
         let m3 = _mm_movehl_ps(shuf, m2);
         let amax = _mm_cvtss_f32(_mm_max_ss(m2, m3));
         let d = if amax == 0.0 { 0.0 } else { amax / 127.0 };
-        scales[b] = d;
         let id = if amax == 0.0 { 0.0 } else { 127.0 / amax };
+        scales[b] = f16_to_f32(f32_to_f16(d));
         let id_v = _mm256_set1_ps(id);
         let r0 = _mm256_round_ps(_mm256_mul_ps(v0, id_v), _MM_FROUND_TO_NEAREST_INT);
         let r1 = _mm256_round_ps(_mm256_mul_ps(v1, id_v), _MM_FROUND_TO_NEAREST_INT);
@@ -845,21 +846,8 @@ unsafe fn quantize_q8_0_into_avx2_range(input: &[f32], q8: &mut [u8], scales: &m
 pub fn quantize_q8_0(input: &[f32], n: usize) -> (Vec<u8>, Vec<f32>) {
     let blocks = n / 32;
     let mut q8 = vec![0u8; n];
-    let mut scales = Vec::with_capacity(blocks);
-    for b in 0..blocks {
-        let slice = &input[b * 32..(b + 1) * 32];
-        let mut amax = 0.0f32;
-        for &v in slice {
-            let a = v.abs();
-            if a > amax { amax = a; }
-        }
-        let d = if amax == 0.0 { 0.0 } else { amax / 127.0 };
-        scales.push(d);
-        let id = if d == 0.0 { 0.0 } else { 1.0 / d };
-        for (k, &v) in slice.iter().enumerate() {
-            q8[b * 32 + k] = (v * id).round().clamp(-128.0, 127.0) as i8 as u8;
-        }
-    }
+    let mut scales = vec![0.0f32; blocks];
+    quantize_q8_0_into(input, n, &mut q8, &mut scales);
     (q8, scales)
 }
 
@@ -1723,6 +1711,35 @@ mod neon_tests {
         unsafe { quantize_q8_0_into_neon_range(&input, &mut neon_q, &mut neon_s, 0, 2) };
         assert_eq!(neon_q, scalar_q);
         assert_eq!(neon_s, scalar_s);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_q8_quantization_uses_ties_to_even() {
+        let mut input = [0.0f32; 32];
+        input[0] = 127.0;
+        input[1] = 34.5;
+        let mut q8 = [0u8; 32];
+        let mut scales = [0.0f32; 1];
+
+        unsafe { quantize_q8_0_into_neon_range(&input, &mut q8, &mut scales, 0, 1) };
+
+        assert_eq!(q8[1] as i8, 34);
+    }
+
+    #[test]
+    fn q8_quantization_stores_f16_scale_without_requantizing_values() {
+        let mut input = [0.0f32; 32];
+        input[0] = 1.0;
+        input[1] = f32::from_bits(0x3d11_213e);
+        let mut q8 = [0u8; 32];
+        let mut scales = [0.0f32; 1];
+
+        quantize_q8_0_into(&input, input.len(), &mut q8, &mut scales);
+
+        assert_eq!(q8[0] as i8, 127);
+        assert_eq!(q8[1] as i8, 4);
+        assert_eq!(scales[0].to_bits(), 0x3c01_0000);
     }
 
     #[cfg(target_arch = "aarch64")]
