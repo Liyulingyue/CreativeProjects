@@ -154,6 +154,46 @@ pub struct Qwen35Config {
     pub value_length: usize,
 }
 
+fn recurrent_layer_mask(
+    n_layer: usize,
+    recurrent_layers: Option<&MetaValue>,
+    full_attention_interval: Option<u64>,
+) -> Result<Vec<bool>, String> {
+    if let Some(value) = recurrent_layers {
+        let MetaValue::Array(_, values) = value else {
+            return Err("Invalid qwen35.attention.recurrent_layers: expected array".into());
+        };
+        if values.len() != n_layer {
+            return Err(format!(
+                "Invalid qwen35.attention.recurrent_layers length: expected {n_layer}, got {}",
+                values.len()
+            ));
+        }
+        return values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| match value {
+                MetaValue::Bool(value) => Ok(*value),
+                value => match value.to_u64() {
+                    Some(0) => Ok(false),
+                    Some(1) => Ok(true),
+                    _ => Err(format!(
+                        "Invalid recurrent selector at layer {index}; expected 0, 1, or bool"
+                    )),
+                },
+            })
+            .collect();
+    }
+
+    let interval = full_attention_interval.unwrap_or(4);
+    if interval == 0 {
+        return Err("qwen35.full_attention_interval must be greater than zero".into());
+    }
+    Ok((0..n_layer)
+        .map(|layer| ((layer as u64 + 1) % interval) != 0)
+        .collect())
+}
+
 impl Qwen35Config {
     pub fn from_gguf(loader: &GGUFLoader) -> Result<Self, String> {
         let get_u32 = |key: &str| -> Result<u32, String> {
@@ -215,13 +255,21 @@ impl Qwen35Config {
         let ssm_n_group = get_u32("qwen35.ssm.group_count")? as usize;
         let ssm_dt_rank = get_u32("qwen35.ssm.time_step_rank")? as usize;
         let ssm_d_inner = get_u32("qwen35.ssm.inner_size")? as usize;
-        let full_attention_interval = loader.metadata("qwen35.full_attention_interval")
-            .and_then(|v| v.to_u64())
-            .unwrap_or(4) as usize;
-
-        let is_recurrent: Vec<bool> = (0..n_layer)
-            .map(|i| (i + 1) % full_attention_interval != 0)
-            .collect();
+        let full_attention_interval_raw = match loader.metadata("qwen35.full_attention_interval") {
+            None => None,
+            Some(value) => Some(
+                value
+                    .to_u64()
+                    .ok_or("Invalid qwen35.full_attention_interval: expected unsigned integer")?,
+            ),
+        };
+        let is_recurrent = recurrent_layer_mask(
+            n_layer,
+            loader.metadata("qwen35.attention.recurrent_layers"),
+            full_attention_interval_raw,
+        )?;
+        let full_attention_interval = usize::try_from(full_attention_interval_raw.unwrap_or(4))
+            .map_err(|_| "qwen35.full_attention_interval does not fit usize")?;
 
         Ok(Self {
             n_embd,
@@ -269,5 +317,74 @@ impl Qwen35Config {
 
     pub fn head_v_dim(&self) -> usize {
         self.ssm_d_inner / self.ssm_dt_rank
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::MetaValueType;
+
+    #[test]
+    fn qwen35_recurrent_layers_metadata_is_authoritative() {
+        let values = MetaValue::Array(
+            MetaValueType::Uint32,
+            [1, 0, 1, 0]
+                .into_iter()
+                .map(MetaValue::Uint32)
+                .collect(),
+        );
+        assert_eq!(
+            recurrent_layer_mask(4, Some(&values), Some(3)).unwrap(),
+            vec![true, false, true, false],
+        );
+    }
+
+    #[test]
+    fn qwen35_recurrent_layers_reject_malformed_arrays() {
+        let wrong_length = MetaValue::Array(
+            MetaValueType::Uint32,
+            vec![MetaValue::Uint32(1)],
+        );
+        assert!(recurrent_layer_mask(2, Some(&wrong_length), Some(4)).is_err());
+
+        let invalid_selector = MetaValue::Array(
+            MetaValueType::Uint32,
+            vec![MetaValue::Uint32(1), MetaValue::Uint32(2)],
+        );
+        assert!(recurrent_layer_mask(2, Some(&invalid_selector), Some(4)).is_err());
+    }
+
+    #[test]
+    fn qwen35_zero_interval_is_an_error_not_a_panic() {
+        assert!(recurrent_layer_mask(4, None, Some(0)).is_err());
+    }
+
+    #[test]
+    fn qwen35_interval_fallback_matches_llama() {
+        assert_eq!(
+            recurrent_layer_mask(8, None, Some(4)).unwrap(),
+            vec![true, true, true, false, true, true, true, false],
+        );
+    }
+
+    #[test]
+    #[ignore = "requires RMI_QWEN35_MODEL"]
+    fn qwen35_config_uses_the_real_authoritative_layer_array() {
+        let path = std::env::var("RMI_QWEN35_MODEL").unwrap();
+        let loader = crate::model::GGUFLoader::from_file(&path).unwrap();
+        let raw = loader
+            .metadata("qwen35.attention.recurrent_layers")
+            .expect("target Qwen3.5 model must declare recurrent_layers");
+        let config = Qwen35Config::from_gguf(&loader).unwrap();
+        let expected = recurrent_layer_mask(
+            config.n_layer,
+            Some(raw),
+            loader
+                .metadata("qwen35.full_attention_interval")
+                .and_then(MetaValue::to_u64),
+        )
+        .unwrap();
+        assert_eq!(config.is_recurrent, expected);
     }
 }
