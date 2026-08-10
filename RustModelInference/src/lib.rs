@@ -1,25 +1,28 @@
-pub mod thread_pool;
-pub mod traits;
+pub mod clip_config;
 pub mod memory;
-pub mod quant;
 pub mod model;
 pub mod ops;
-pub mod tokenizer;
-pub mod scratchpad;
-pub mod clip_config;
-pub mod vision;
+pub mod prompt;
+pub mod quant;
 pub mod qwen35;
+pub mod scratchpad;
+pub mod thread_pool;
+pub mod tokenizer;
+pub mod traits;
+pub mod vision;
 
-pub use traits::{Layer, ExecContext, ModelConfig};
-pub use memory::{PagedKVBlock, BlockAllocator, MemoryArena, KVCacheView};
-pub use quant::dequant_weight_q4k;
+pub use clip_config::{ClipVisionConfig, Qwen35Config};
+pub use memory::{BlockAllocator, KVCacheView, MemoryArena, PagedKVBlock};
 pub use model::{
-    GGUFLoader, QuantizedLinear, ModelGraph,
-    GGMLType, MetaValue, MetaValueType, TensorInfo,
+    GGMLType, GGUFLoader, MetaValue, MetaValueType, ModelGraph, QuantizedLinear, TensorInfo,
 };
 pub use ops::*;
-pub use tokenizer::BPETokenizer;
-pub use scratchpad::{ExecutionScratchpad, KvCache, KvCacheF16, KvCacheF32};
-pub use clip_config::{ClipVisionConfig, Qwen35Config};
-pub use vision::{VisionEncoder, VisionScratchpad};
+pub use prompt::{
+    append_qwen_assistant_prefix, append_qwen_message_tokens, build_qwen_chat_prompt, QwenMessage,
+};
+pub use quant::dequant_weight_q4k;
 pub use qwen35::Qwen35Model;
+pub use scratchpad::{ExecutionScratchpad, KvCache, KvCacheF16, KvCacheF32};
+pub use tokenizer::{BPETokenizer, EncodeOptions, StreamingDecoder};
+pub use traits::{ExecContext, Layer, ModelConfig};
+pub use vision::{VisionEncoder, VisionScratchpad};
