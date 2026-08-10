@@ -1932,7 +1932,7 @@ fn run_self_test() {
 fn inject_vision_embeddings(
     llm: &Qwen35Model,
     tokens: &[i32],
-    image_token_id: i32,
+    image_token_id: Option<i32>,
     vis_embd: &[f32],
     n_vis_tokens: usize,
     proj_dim: usize,
@@ -1944,7 +1944,7 @@ fn inject_vision_embeddings(
     let mut vis_idx = 0;
 
     for t in 0..n_tokens {
-        if tokens[t] == image_token_id && vis_idx < n_vis_tokens {
+        if image_token_id == Some(tokens[t]) && vis_idx < n_vis_tokens {
             let embd_off = t * n_embd;
             let vis_off = vis_idx * proj_dim;
             if proj_dim == n_embd {
@@ -2002,34 +2002,44 @@ fn sample_token(logits: &[f32], temperature: f32) -> i32 {
     (logits.len() - 1) as i32
 }
 
-fn load_image_f32(
-    path: &str,
+fn decode_image(path: &str) -> Result<image::DynamicImage, String> {
+    let bytes = std::fs::read(path)
+        .map_err(|error| format!("Failed to read image {path}: {error}"))?;
+    image::load_from_memory(&bytes)
+        .map_err(|error| format!("Failed to decode image {path}: {error}"))
+}
+
+fn normalize_resized_image(
+    image: &image::DynamicImage,
     target_w: usize,
     target_h: usize,
     mean: &[f32; 3],
     std: &[f32; 3],
 ) -> Result<Vec<f32>, String> {
-    let img_bytes =
-        std::fs::read(path).map_err(|error| format!("Failed to read image {path}: {error}"))?;
-    let img = image::load_from_memory(&img_bytes)
-        .map_err(|error| format!("Failed to decode image {path}: {error}"))?;
-    let img = img.resize_exact(
-        target_w as u32,
-        target_h as u32,
-        image::imageops::FilterType::Lanczos3,
-    );
-    let rgb = img.to_rgb8();
-    let mut out = vec![0.0f32; target_w * target_h * 3];
+    if std.iter().any(|value| *value == 0.0) {
+        return Err("Vision normalization std must be nonzero".into());
+    }
+    let width = u32::try_from(target_w).map_err(|_| "Vision width exceeds u32")?;
+    let height = u32::try_from(target_h).map_err(|_| "Vision height exceeds u32")?;
+    let resized = image
+        .resize_exact(width, height, image::imageops::FilterType::Lanczos3)
+        .to_rgb8();
+    let output_len = target_w
+        .checked_mul(target_h)
+        .and_then(|pixels| pixels.checked_mul(3))
+        .ok_or("Normalized image length overflow")?;
+    let mut output = vec![0.0f32; output_len];
     for y in 0..target_h {
         for x in 0..target_w {
-            let px = rgb.get_pixel(x as u32, y as u32);
-            let idx = (y * target_w + x) * 3;
-            out[idx + 0] = (px[0] as f32 / 255.0 - mean[0]) / std[0];
-            out[idx + 1] = (px[1] as f32 / 255.0 - mean[1]) / std[1];
-            out[idx + 2] = (px[2] as f32 / 255.0 - mean[2]) / std[2];
+            let pixel = resized.get_pixel(x as u32, y as u32);
+            let offset = (y * target_w + x) * 3;
+            for channel in 0..3 {
+                output[offset + channel] =
+                    (f32::from(pixel[channel]) / 255.0 - mean[channel]) / std[channel];
+            }
         }
     }
-    Ok(out)
+    Ok(output)
 }
 
 fn run_multimodal(
@@ -2043,6 +2053,9 @@ fn run_multimodal(
 ) -> Result<(), String> {
     let has_image = !image_path.is_empty();
     let has_mmproj = !mmproj_path.is_empty();
+    if has_image != has_mmproj {
+        return Err("Multimodal inference requires both --image and --mmproj".into());
+    }
 
     println!("Loading model {} ...", model_path);
     let llm_loader = GGUFLoader::from_file(model_path)
@@ -2059,43 +2072,70 @@ fn run_multimodal(
         ));
     }
 
-    let (n_vis_tokens, vis_embeddings_vec) = if has_image && has_mmproj {
+    let (image_grid, vis_embeddings_vec) = if has_image {
         println!("Loading mmproj {} ...", mmproj_path);
         let mmproj_loader = GGUFLoader::from_file(mmproj_path)
             .map_err(|error| format!("Failed to load mmproj {mmproj_path}: {error}"))?;
-        let mut vision_encoder = VisionEncoder::from_gguf(&mmproj_loader)
+        let mut encoder = VisionEncoder::from_gguf(&mmproj_loader)
             .map_err(|error| format!("Failed to parse vision encoder: {error}"))?;
-        vision_encoder.precompute();
+        encoder.precompute();
         println!(
             "Vision encoder loaded: {} layers, n_embd={}, image_size={}, patch_size={}, merge={}",
-            vision_encoder.config.n_layer,
-            vision_encoder.config.n_embd,
-            vision_encoder.config.image_size,
-            vision_encoder.config.patch_size,
-            vision_encoder.config.spatial_merge_size
+            encoder.config.n_layer,
+            encoder.config.n_embd,
+            encoder.config.image_size,
+            encoder.config.patch_size,
+            encoder.config.spatial_merge_size
         );
-
-        let cfg = &vision_encoder.config;
-        let align = cfg.patch_size * cfg.spatial_merge_size;
-        let img_w = (256 / align) * align;
-        let img_h = (256 / align) * align;
-        let pixels = load_image_f32(image_path, img_w, img_h, &cfg.image_mean, &cfg.image_std)?;
+        let image = decode_image(image_path)?;
+        let original_w = usize::try_from(image.width())
+            .map_err(|_| "Original image width does not fit usize")?;
+        let original_h = usize::try_from(image.height())
+            .map_err(|_| "Original image height does not fit usize")?;
+        let grid = qwen_smart_resize(original_w, original_h, &encoder.config)?;
+        let pixels = normalize_resized_image(
+            &image,
+            grid.image_width(),
+            grid.image_height(),
+            &encoder.config.image_mean,
+            &encoder.config.image_std,
+        )?;
         println!(
-            "Image resized to {}x{} ({} patches, aligned to patch_size*merge={})",
-            img_w,
-            img_h,
-            (img_w / cfg.patch_size) * (img_h / cfg.patch_size),
-            align
+            "Image resized to {}x{} ({} vision tokens)",
+            grid.image_width(),
+            grid.image_height(),
+            grid.token_count()
         );
-
-        let mut vis_scratch = VisionScratchpad::new(cfg);
+        let projection_dim = encoder.config.projection_dim;
+        let mut scratch = VisionScratchpad::new(&encoder.config);
         println!("Encoding image...");
-        let n = vision_encoder.encode_image(&pixels, img_w, img_h, &mut vis_scratch);
-        println!("Vision tokens: {} (dim={})", n, cfg.projection_dim);
-        (n, vis_scratch.projected[..n * cfg.projection_dim].to_vec())
+        let encoded_grid = encoder.encode_image(
+            &pixels,
+            grid.image_width(),
+            grid.image_height(),
+            &mut scratch,
+        )?;
+        if encoded_grid != grid {
+            return Err(format!(
+                "Vision grid mismatch: preprocess={grid:?}, encoder={encoded_grid:?}"
+            ));
+        }
+        let projected_len = grid
+            .token_count()
+            .checked_mul(projection_dim)
+            .ok_or("Projected vision length overflow")?;
+        if scratch.projected.len() != projected_len {
+            return Err(format!(
+                "Projected vision length mismatch: expected {projected_len}, got {}",
+                scratch.projected.len()
+            ));
+        }
+        println!("Vision tokens: {} (dim={})", grid.token_count(), projection_dim);
+        (Some(grid), scratch.projected[..projected_len].to_vec())
     } else {
-        (0usize, Vec::new())
+        (None, Vec::new())
     };
+    let n_vis_tokens = image_grid.map(VisionGrid::token_count).unwrap_or(0);
     let vis_embeddings = &vis_embeddings_vec[..];
     if has_image {
         println!(
@@ -2111,12 +2151,18 @@ fn run_multimodal(
 
     let tokenizer = BPETokenizer::from_gguf_metadata(|k| llm_loader.metadata(k).cloned())
         .map_err(|error| format!("Failed to initialize tokenizer: {error}"))?;
-    let image_token_id = tokenizer
-        .special_token_id("image_pad")
-        .ok_or("Required token missing: <|image_pad|>")?;
+    let image_token_id = if image_grid.is_some() {
+        Some(
+            tokenizer
+                .special_token_id("image_pad")
+                .ok_or("Required token missing: <|image_pad|>")?,
+        )
+    } else {
+        None
+    };
 
     let mut content_tokens = Vec::new();
-    if n_vis_tokens > 0 {
+    if let Some(image_token_id) = image_token_id {
         content_tokens.push(
             tokenizer
                 .special_token_id("vision_start")
@@ -2137,15 +2183,37 @@ fn run_multimodal(
         },
     ));
 
-    let mut prompt_tokens = Vec::new();
-    append_qwen_message_tokens(&mut prompt_tokens, &tokenizer, "user", &content_tokens)?;
-    append_qwen_assistant_prefix(&mut prompt_tokens, &tokenizer)?;
-    let prompt_tokens: Vec<i32> = prompt_tokens
-        .into_iter()
+    let mut prompt_ids = Vec::new();
+    append_qwen_message_tokens(&mut prompt_ids, &tokenizer, "user", &content_tokens)?;
+    append_qwen_assistant_prefix(&mut prompt_ids, &tokenizer)?;
+    let image_grids: Vec<VisionGrid> = image_grid.iter().copied().collect();
+    let (prompt_positions, mut next_text_position) =
+        build_qwen35_positions(&prompt_ids, image_token_id, &image_grids)?;
+    let prompt_tokens: Vec<i32> = prompt_ids
+        .iter()
+        .copied()
         .map(|id| i32::try_from(id).map_err(|_| format!("Token ID {id} exceeds i32")))
         .collect::<Result<_, _>>()?;
-    let image_token_id = i32::try_from(image_token_id)
-        .map_err(|_| "Required token missing: <|image_pad|>".to_string())?;
+
+    let projected_count = if vis_embeddings.is_empty() {
+        0
+    } else {
+        let projection_dim = llm.config.n_embd;
+        if vis_embeddings.len() % projection_dim != 0 {
+            return Err("Projected vision embeddings are not row aligned".into());
+        }
+        vis_embeddings.len() / projection_dim
+    };
+    if projected_count != n_vis_tokens || prompt_positions.len() != prompt_tokens.len() {
+        return Err(format!(
+            "Vision/position count mismatch: placeholders={n_vis_tokens}, projected={projected_count}, positions={}, tokens={}",
+            prompt_positions.len(),
+            prompt_tokens.len()
+        ));
+    }
+    let image_token_id = image_token_id
+        .map(|id| i32::try_from(id).map_err(|_| format!("Token ID {id} exceeds i32")))
+        .transpose()?;
 
     println!(
         "Prompt tokens: {} (including {} vision placeholders)",
@@ -2173,49 +2241,6 @@ fn run_multimodal(
 
     let n_prompt = prompt_tokens.len();
     let mut all_tokens = prompt_tokens.clone();
-
-    let spatial_merge = 2usize;
-    let patch_size = 16usize;
-    let vis_nx = if n_vis_tokens > 0 {
-        (256 / patch_size) / spatial_merge
-    } else {
-        0
-    };
-    let vis_ny = if n_vis_tokens > 0 {
-        (256 / patch_size) / spatial_merge
-    } else {
-        0
-    };
-    let vis_n_pos = if n_vis_tokens > 0 {
-        vis_nx.max(vis_ny)
-    } else {
-        0
-    };
-
-    let mut mrope_positions_prompt: Vec<[usize; 4]> = Vec::with_capacity(n_prompt);
-    {
-        let mut seq_pos = 0usize;
-        let mut vis_start_pos: Option<usize> = None;
-        let mut vis_idx = 0usize;
-        for t in 0..n_prompt {
-            if prompt_tokens[t] == image_token_id && vis_idx < n_vis_tokens {
-                if vis_start_pos.is_none() {
-                    vis_start_pos = Some(seq_pos);
-                }
-                let sp = vis_start_pos.unwrap();
-                let row = vis_idx / vis_nx;
-                let col = vis_idx % vis_nx;
-                mrope_positions_prompt.push([sp, sp + col, sp + row, 0]);
-                vis_idx += 1;
-            } else {
-                mrope_positions_prompt.push([seq_pos, seq_pos, seq_pos, 0]);
-                seq_pos += 1;
-            }
-        }
-        if vis_idx > 0 {
-            seq_pos += vis_n_pos;
-        }
-    }
 
     let n_threads = if n_threads_arg > 0 { n_threads_arg } else { 8 };
     let pool = std::sync::Arc::new(crate::thread_pool::ComputePool::new(n_threads));
@@ -2250,12 +2275,23 @@ fn run_multimodal(
             }
         }
 
-        let mrope_ref = if step == 0 {
-            Some(&mrope_positions_prompt[..])
+        let decode_position = [[
+            next_text_position,
+            next_text_position,
+            next_text_position,
+            0,
+        ]];
+        let positions = if step == 0 {
+            &prompt_positions[..]
         } else {
-            None
+            &decode_position[..]
         };
-        let logits = llm.forward(n_tok, &mut kv_cache, &mut llm_scratch, &pool, mrope_ref);
+        let logits = llm.forward(n_tok, &mut kv_cache, &mut llm_scratch, &pool, positions)?;
+        if step > 0 {
+            next_text_position = next_text_position
+                .checked_add(1)
+                .ok_or("Qwen3.5 decode position overflow")?;
+        }
 
         let next_token = if temperature <= 0.0 {
             logits

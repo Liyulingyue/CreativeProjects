@@ -5,6 +5,64 @@ use crate::model::{GGUFLoader, GGMLType};
 use crate::ops::{dot_f32, softmax, rope_neox, rope_mrope};
 use crate::quant::{self, BlockQ8K, QK_K};
 use crate::thread_pool::ComputePool;
+use crate::vision::VisionGrid;
+
+pub fn build_qwen35_positions(
+    token_ids: &[u32],
+    image_token_id: Option<u32>,
+    image_grids: &[VisionGrid],
+) -> Result<(Vec<[usize; 4]>, usize), String> {
+    let mut positions = Vec::with_capacity(token_ids.len());
+    let mut next = 0usize;
+    let mut token = 0usize;
+    let mut grid_index = 0usize;
+
+    while token < token_ids.len() {
+        if image_token_id == Some(token_ids[token]) {
+            let grid = *image_grids
+                .get(grid_index)
+                .ok_or("Image placeholder has no matching vision grid")?;
+            let count = grid.token_count();
+            let end = token
+                .checked_add(count)
+                .ok_or("Image placeholder range overflow")?;
+            if end > token_ids.len()
+                || token_ids[token..end]
+                    .iter()
+                    .any(|id| Some(*id) != image_token_id)
+            {
+                return Err(format!(
+                    "Image grid {grid_index} requires {count} contiguous placeholders"
+                ));
+            }
+            let base = next;
+            for image_index in 0..count {
+                let row = image_index / grid.grid_w;
+                let column = image_index % grid.grid_w;
+                positions.push([base, base + row, base + column, 0]);
+            }
+            next = next
+                .checked_add(grid.position_span())
+                .ok_or("Qwen3.5 logical position overflow")?;
+            token = end;
+            grid_index += 1;
+        } else {
+            positions.push([next, next, next, 0]);
+            next = next
+                .checked_add(1)
+                .ok_or("Qwen3.5 logical position overflow")?;
+            token += 1;
+        }
+    }
+
+    if grid_index != image_grids.len() {
+        return Err(format!(
+            "Unused vision grids: consumed {grid_index}, provided {}",
+            image_grids.len()
+        ));
+    }
+    Ok((positions, next))
+}
 
 pub struct Qwen35Model {
     pub config: Qwen35Config,
@@ -661,8 +719,14 @@ impl Qwen35Model {
         kv_cache: &mut crate::scratchpad::KvCache,
         scratch: &mut Qwen35Scratchpad,
         pool: &ComputePool,
-        mrope_positions: Option<&[[usize; 4]]>,
-    ) -> Vec<f32> {
+        mrope_positions: &[[usize; 4]],
+    ) -> Result<Vec<f32>, String> {
+        if mrope_positions.len() != n_tokens {
+            return Err(format!(
+                "Qwen3.5 position count mismatch: tokens={n_tokens}, positions={}",
+                mrope_positions.len()
+            ));
+        }
         let cfg = &self.config;
         let n_embd = cfg.n_embd;
         let n_layer = cfg.n_layer;
@@ -736,13 +800,13 @@ impl Qwen35Model {
         let mut result = vec![0.0f32; cfg.vocab_size];
         let n = scratch.matmul_out.len().min(cfg.vocab_size);
         result[..n].copy_from_slice(&scratch.matmul_out[..n]);
-        result
+        Ok(result)
     }
 
     fn forward_dense_attn_layer(
         &self, il: usize, input: &[f32], n_tokens: usize,
         kv_cache: &mut crate::scratchpad::KvCache, scratch: &mut Qwen35Scratchpad,
-        pool: &ComputePool, mrope_positions: Option<&[[usize; 4]]>,
+        pool: &ComputePool, mrope_positions: &[[usize; 4]],
     ) -> Vec<f32> {
         let profile = std::env::var("PROFILE_QWEN35").is_ok();
         let cfg = &self.config;
@@ -795,12 +859,7 @@ impl Qwen35Model {
         let sections = cfg.rope_dimension_sections;
         let use_mrope = sections[0] > 0 && sections[1] > 0;
         for t in 0..n_tokens {
-            let pos = kv_pos + t;
-            let positions: [usize; 4] = if let Some(mrope) = mrope_positions {
-                mrope[t]
-            } else {
-                [pos, pos, pos, 0]
-            };
+            let positions = mrope_positions[t];
             for h in 0..n_head {
                 let q_off = t * q_dim + h * n_embd_head * 2;
                 if use_mrope {
@@ -1229,4 +1288,38 @@ fn vec_dot_q6k_q8k_fast(q6k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
         return unsafe { quant::vec_dot_q6k_q8k_avx2_direct(q6k_data, q8k) };
     }
     quant::vec_dot_q6k_q8k_scalar(q6k_data, q8k)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qwen35_positions_use_time_row_column_order() {
+        let grid = VisionGrid {
+            grid_t: 1,
+            grid_h: 2,
+            grid_w: 3,
+            patch_size: 16,
+            merge_size: 2,
+        };
+        let tokens = [10, 99, 99, 99, 99, 99, 99, 11];
+        let (positions, next) = build_qwen35_positions(&tokens, Some(99), &[grid]).unwrap();
+        assert_eq!(positions[1], [1, 1, 1, 0]);
+        assert_eq!(positions[6], [1, 2, 3, 0]);
+        assert_eq!(positions[7], [4, 4, 4, 0]);
+        assert_eq!(next, 5);
+    }
+
+    #[test]
+    fn qwen35_placeholder_count_must_equal_grid_tokens() {
+        let grid = VisionGrid {
+            grid_t: 1,
+            grid_h: 2,
+            grid_w: 3,
+            patch_size: 16,
+            merge_size: 2,
+        };
+        assert!(build_qwen35_positions(&[10, 99, 99, 11], Some(99), &[grid]).is_err());
+    }
 }

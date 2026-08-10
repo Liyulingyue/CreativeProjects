@@ -10,6 +10,8 @@ pub struct ClipVisionConfig {
     pub n_layer: usize,
     pub n_head: usize,
     pub spatial_merge_size: usize,
+    pub image_min_pixels: usize,
+    pub image_max_pixels: usize,
     pub eps: f32,
     pub use_gelu: bool,
     pub image_mean: [f32; 3],
@@ -48,7 +50,39 @@ impl ClipVisionConfig {
         let n_head = get_u32("clip.vision.attention.head_count")? as usize;
         let spatial_merge_size = loader.metadata("clip.vision.spatial_merge_size")
             .and_then(|v| v.to_u64())
-            .unwrap_or(2) as usize;
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| "clip.vision.spatial_merge_size does not fit usize")?
+            .unwrap_or(2);
+        let factor = patch_size
+            .checked_mul(spatial_merge_size)
+            .ok_or("clip patch/merge factor overflow")?;
+        let factor_pixels = factor
+            .checked_mul(factor)
+            .ok_or("clip patch/merge pixel factor overflow")?;
+        let default_min = factor_pixels
+            .checked_mul(8)
+            .ok_or("clip minimum pixel count overflow")?;
+        let default_max = factor_pixels
+            .checked_mul(4096)
+            .ok_or("clip maximum pixel count overflow")?;
+        let image_min_pixels = loader
+            .metadata("clip.vision.image_min_pixels")
+            .and_then(MetaValue::to_u64)
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| "clip.vision.image_min_pixels does not fit usize")?
+            .unwrap_or(default_min);
+        let image_max_pixels = loader
+            .metadata("clip.vision.image_max_pixels")
+            .and_then(MetaValue::to_u64)
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| "clip.vision.image_max_pixels does not fit usize")?
+            .unwrap_or(default_max);
+        if image_min_pixels == 0 || image_min_pixels > image_max_pixels {
+            return Err("Invalid clip vision pixel limits".into());
+        }
         let eps = get_f32("clip.vision.attention.layer_norm_epsilon")?;
         let use_gelu = get_bool("clip.use_gelu");
 
@@ -102,6 +136,8 @@ impl ClipVisionConfig {
             n_layer,
             n_head,
             spatial_merge_size,
+            image_min_pixels,
+            image_max_pixels,
             eps,
             use_gelu,
             image_mean,

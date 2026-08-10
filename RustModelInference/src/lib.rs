@@ -21,8 +21,8 @@ pub use prompt::{
     append_qwen_assistant_prefix, append_qwen_message_tokens, build_qwen_chat_prompt, QwenMessage,
 };
 pub use quant::dequant_weight_q4k;
-pub use qwen35::Qwen35Model;
+pub use qwen35::{build_qwen35_positions, Qwen35Model};
 pub use scratchpad::{ExecutionScratchpad, KvCache, KvCacheF16, KvCacheF32};
 pub use tokenizer::{BPETokenizer, EncodeOptions, StreamingDecoder};
 pub use traits::{ExecContext, Layer, ModelConfig};
-pub use vision::{VisionEncoder, VisionScratchpad};
+pub use vision::{qwen_smart_resize, VisionEncoder, VisionGrid, VisionScratchpad};

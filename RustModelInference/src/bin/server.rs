@@ -792,117 +792,112 @@ fn generate_qwen3(
 }
 
 fn generate_qwen35(
-    s: &Qwen35State,
+    state: &Qwen35State,
     messages: &[ChatMessage],
     max_tokens: usize,
     temperature: f32,
 ) -> Result<GenerateResult, String> {
-    let prompt_tokens: Vec<i32> = server_prompt_tokens(&s.tokenizer, messages)?
-        .into_iter()
+    let prompt_ids = server_prompt_tokens(&state.tokenizer, messages)?;
+    let (prompt_positions, mut next_text_position) =
+        build_qwen35_positions(&prompt_ids, None, &[])?;
+    let prompt_tokens: Vec<i32> = prompt_ids
+        .iter()
+        .copied()
         .map(|id| i32::try_from(id).map_err(|_| format!("Token ID {id} exceeds i32")))
         .collect::<Result<_, _>>()?;
 
     let n_prompt = prompt_tokens.len();
-    let max_seq = s.model.config.n_ctx;
+    let max_seq = state.model.config.n_ctx;
     let mut kv_cache = KvCache::new_f32(
-        s.model.config.n_layer,
+        state.model.config.n_layer,
         max_seq,
-        s.model.config.n_embd_head() * s.model.config.n_head_kv,
+        state.model.config.n_embd_head() * state.model.config.n_head_kv,
     );
-    let mut llm_scratch = qwen35::Qwen35Scratchpad::new(&s.model.config, n_prompt.max(max_tokens));
+    let mut llm_scratch =
+        qwen35::Qwen35Scratchpad::new(&state.model.config, n_prompt.max(max_tokens));
 
     let mut all_tokens = prompt_tokens.clone();
-
-    let mut mrope_positions_prompt: Vec<[usize; 4]> = Vec::with_capacity(n_prompt);
-    {
-        let mut seq_pos = 0usize;
-        for _ in 0..n_prompt {
-            mrope_positions_prompt.push([seq_pos, seq_pos, seq_pos, 0]);
-            seq_pos += 1;
-        }
-    }
-
-    let mut token_strings: Vec<String> = Vec::new();
-    let mut generated_tokens: Vec<i32> = Vec::new();
-    let mut decoder = s.tokenizer.streaming_decoder(false);
+    let mut decoder = state.tokenizer.streaming_decoder(false);
+    let mut generated_ids = Vec::<u32>::new();
+    let mut rendered_chunks = Vec::<String>::new();
 
     for step in 0..max_tokens {
         let tokens = if step == 0 {
-            &prompt_tokens
+            &prompt_tokens[..]
         } else {
-            &all_tokens[all_tokens.len() - 1..all_tokens.len() - 1 + 1]
+            &all_tokens[all_tokens.len() - 1..]
         };
-        let n_tok = tokens.len();
 
         if step == 0 {
             for t in 0..n_prompt {
-                let embd_off = t * s.model.config.n_embd;
+                let embd_off = t * state.model.config.n_embd;
                 let tok = prompt_tokens[t] as usize;
-                let tok_off = tok * s.model.config.n_embd;
-                for e in 0..s.model.config.n_embd {
-                    if tok_off + e < s.model.tok_embd.len() {
-                        llm_scratch.x[embd_off + e] = s.model.tok_embd[tok_off + e];
+                let tok_off = tok * state.model.config.n_embd;
+                for e in 0..state.model.config.n_embd {
+                    if tok_off + e < state.model.tok_embd.len() {
+                        llm_scratch.x[embd_off + e] = state.model.tok_embd[tok_off + e];
                     }
                 }
             }
         } else {
             let tok = tokens[0] as usize;
-            let tok_off = tok * s.model.config.n_embd;
-            for e in 0..s.model.config.n_embd {
-                if tok_off + e < s.model.tok_embd.len() {
-                    llm_scratch.x[e] = s.model.tok_embd[tok_off + e];
+            let tok_off = tok * state.model.config.n_embd;
+            for e in 0..state.model.config.n_embd {
+                if tok_off + e < state.model.tok_embd.len() {
+                    llm_scratch.x[e] = state.model.tok_embd[tok_off + e];
                 }
             }
         }
 
-        let mrope_ref = if step == 0 {
-            Some(&mrope_positions_prompt[..])
+        let decode_position = [[
+            next_text_position,
+            next_text_position,
+            next_text_position,
+            0,
+        ]];
+        let positions = if step == 0 {
+            &prompt_positions[..]
         } else {
-            None
+            &decode_position[..]
         };
-        let logits = s
-            .model
-            .forward(n_tok, &mut kv_cache, &mut llm_scratch, &s.pool, mrope_ref);
-
-        let next_token = if temperature <= 0.0 {
-            logits
-                .iter()
-                .enumerate()
-                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-                .map(|(i, _)| i as i32)
-                .unwrap_or(0)
-        } else {
-            sample_token_from_logits(&logits, temperature)
-        };
-
-        if next_token >= 0
-            && (s.tokenizer.eos_id() == Some(next_token as u32)
-                || s.tokenizer.special_token_id("im_end") == Some(next_token as u32))
+        let logits = state.model.forward(
+            tokens.len(),
+            &mut kv_cache,
+            &mut llm_scratch,
+            &state.pool,
+            positions,
+        )?;
+        if step > 0 {
+            next_text_position = next_text_position
+                .checked_add(1)
+                .ok_or("Qwen3.5 server decode position overflow")?;
+        }
+        let next_token = sample_token_from_logits(&logits, temperature);
+        let next_id = u32::try_from(next_token)
+            .map_err(|_| format!("Model produced negative token ID {next_token}"))?;
+        if state.tokenizer.eos_id() == Some(next_id)
+            || state.tokenizer.special_token_id("im_end") == Some(next_id)
         {
             break;
         }
-        if generated_tokens.len() >= max_tokens {
-            break;
+        let rendered = decoder.push(next_id);
+        if !rendered.is_empty() {
+            rendered_chunks.push(rendered);
         }
-
-        let text = decoder.push(next_token as u32);
-        if !text.is_empty() {
-            token_strings.push(text);
-        }
-        generated_tokens.push(next_token);
+        generated_ids.push(next_id);
         all_tokens.push(next_token);
     }
 
     let tail = decoder.finish();
     if !tail.is_empty() {
-        token_strings.push(tail);
+        rendered_chunks.push(tail);
     }
-
+    let text = rendered_chunks.concat();
     Ok(GenerateResult {
-        text: token_strings.join(""),
-        tokens: token_strings,
+        text,
+        tokens: rendered_chunks,
         prompt_tokens: n_prompt,
-        completion_tokens: generated_tokens.len(),
+        completion_tokens: generated_ids.len(),
     })
 }
 
