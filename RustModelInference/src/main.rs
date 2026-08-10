@@ -1402,6 +1402,16 @@ fn run_inference(
             }],
         )?
     };
+    #[cfg(feature = "parity-trace")]
+    parity_trace::report(parity_trace::token_ids("prompt_ids", &input_tokens));
+    #[cfg(feature = "parity-trace")]
+    let qwen3_positions: Vec<usize> = (0..input_tokens.len()).collect();
+    #[cfg(feature = "parity-trace")]
+    parity_trace::report(parity_trace::usize_values(
+        "qwen3.positions",
+        &[qwen3_positions.len()],
+        &qwen3_positions,
+    ));
     let available_threads = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
@@ -1453,6 +1463,13 @@ fn run_inference(
         let pos = step;
 
         embedding_lookup_q8_0(embd_weight, token_id, n_embd, &mut scratch.x);
+        #[cfg(feature = "parity-trace")]
+        parity_trace::report(parity_trace::checkpoint(
+            "model.input_embed",
+            None,
+            &[1, n_embd],
+            &scratch.x[..n_embd],
+        ));
 
         for layer in 0..n_layer {
             let lw = &layers[layer];
@@ -1487,6 +1504,15 @@ fn run_inference(
 
             let t0 = Instant::now();
             rms_norm(x, &lw.attn_norm, normed, eps);
+            #[cfg(feature = "parity-trace")]
+            if layer == 0 {
+                parity_trace::report(parity_trace::checkpoint(
+                    "attn_norm-0",
+                    Some(0),
+                    &[1, n_embd],
+                    normed,
+                ));
+            }
             quantize_q8_0_into(
                 normed,
                 n_embd,
@@ -1536,6 +1562,22 @@ fn run_inference(
                     }
                 }
 
+                #[cfg(feature = "parity-trace")]
+                if layer == 0 {
+                    parity_trace::report(parity_trace::checkpoint(
+                        "Qcur_normed-0",
+                        Some(0),
+                        &[n_head, n_embd_head_k],
+                        q,
+                    ));
+                    parity_trace::report(parity_trace::checkpoint(
+                        "Kcur_normed-0",
+                        Some(0),
+                        &[n_head_kv, n_embd_head_k],
+                        k_new,
+                    ));
+                }
+
                 for h in 0..n_head {
                     rope_neox(
                         &mut q[h * n_embd_head_k..(h + 1) * n_embd_head_k],
@@ -1551,6 +1593,21 @@ fn run_inference(
                         n_embd_head_v,
                         freq_base,
                     );
+                }
+                #[cfg(feature = "parity-trace")]
+                if layer == 0 {
+                    parity_trace::report(parity_trace::checkpoint(
+                        "Qcur-0",
+                        Some(0),
+                        &[n_head, n_embd_head_k],
+                        q,
+                    ));
+                    parity_trace::report(parity_trace::checkpoint(
+                        "Kcur-0",
+                        Some(0),
+                        &[n_head_kv, n_embd_head_k],
+                        k_new,
+                    ));
                 }
 
                 let kb = layer * max_ctx * n_embd_gqa;
@@ -1681,6 +1738,15 @@ fn run_inference(
             t_qkv += t0.elapsed().as_secs_f64();
 
             let attn_out = slice_from_mut!(attn_out_ptr, n_embd_q);
+            #[cfg(feature = "parity-trace")]
+            if layer == 0 {
+                parity_trace::report(parity_trace::checkpoint(
+                    "kqv_out-0",
+                    Some(0),
+                    &[n_head, n_embd_head_v],
+                    attn_out,
+                ));
+            }
             let q8_buf = slice_from_mut!(q8_buf_ptr, max_n_in);
             let scale_buf = slice_from_mut!(scale_buf_ptr, max_n_in / 32);
             let t0 = Instant::now();
@@ -1770,6 +1836,15 @@ fn run_inference(
 
             let down_buf = slice_from_mut!(down_buf_ptr, n_embd);
             let x = slice_from_mut!(x_ptr, n_embd);
+            #[cfg(feature = "parity-trace")]
+            if layer == 0 {
+                parity_trace::report(parity_trace::checkpoint(
+                    "ffn_out-0",
+                    Some(0),
+                    &[1, n_embd],
+                    down_buf,
+                ));
+            }
             for i in 0..n_embd {
                 x[i] += down_buf[i];
             }
@@ -1785,6 +1860,13 @@ fn run_inference(
             let t0 = Instant::now();
             rms_norm(x, &output_norm, normed, eps);
             t_norm += t0.elapsed().as_secs_f64();
+            #[cfg(feature = "parity-trace")]
+            parity_trace::report(parity_trace::checkpoint(
+                "result_norm",
+                None,
+                &[1, n_embd],
+                normed,
+            ));
 
             let t0 = Instant::now();
             quantize_q8_0_into(
@@ -1811,6 +1893,13 @@ fn run_inference(
                 );
             });
             t_logits += t0.elapsed().as_secs_f64();
+            #[cfg(feature = "parity-trace")]
+            parity_trace::report(parity_trace::checkpoint(
+                "result_output",
+                None,
+                &[vocab],
+                &scratch.logits[..vocab],
+            ));
         }
 
         let eval_elapsed = eval_started.elapsed();
@@ -1875,6 +1964,11 @@ fn run_inference(
             eprintln!();
         }
     }
+    #[cfg(feature = "parity-trace")]
+    parity_trace::report(parity_trace::token_ids(
+        "generated_ids",
+        &generated_tokens,
+    ));
 
     let tail = decoder.finish();
     if !tail.is_empty() {
