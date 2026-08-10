@@ -1,8 +1,8 @@
-use mixpipe::{Pipeline, Keypoint as MixpipeKeypoint};
+use mixpipe::{MoveNet, MoveNetVariant, PretrainedModel, download_model_blocking, Keypoint as MixpipeKeypoint};
 use once_cell::sync::OnceCell;
 use std::sync::Mutex;
 
-static PIPELINE: OnceCell<Mutex<Pipeline>> = OnceCell::new();
+static DETECTOR: OnceCell<Mutex<MoveNet>> = OnceCell::new();
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Keypoint {
@@ -31,8 +31,8 @@ pub struct PoseDetector;
 
 impl PoseDetector {
     pub fn init() -> Result<(), String> {
-        if PIPELINE.get().is_some() {
-            println!("[Detector] Pipeline already initialized");
+        if DETECTOR.get().is_some() {
+            println!("[Detector] MoveNet already initialized");
             return Ok(());
         }
 
@@ -41,36 +41,37 @@ impl PoseDetector {
             .join("mixpipe")
             .join("models");
 
-        let det_path = model_dir.join("rtmdet-tiny-mmdeploy.onnx");
-        let pose_path = model_dir.join("rtmpose-tiny-mmdeploy.onnx");
+        std::fs::create_dir_all(&model_dir)
+            .map_err(|e| format!("failed to create model dir: {}", e))?;
 
-        if !det_path.exists() || !pose_path.exists() {
-            std::fs::create_dir_all(&model_dir)
-                .map_err(|e| format!("failed to create model dir: {}", e))?;
+        let model_path = model_dir.join("movenet_singlepose_lightning.onnx");
 
-            println!("[Detector] Downloading models...");
-            download_file("https://www.modelscope.cn/models/Liyulingyue/mixpipe-rs-model-hub/resolve/master/rtmdet-tiny-mmdeploy.onnx", &det_path)?;
-            download_file("https://www.modelscope.cn/models/Liyulingyue/mixpipe-rs-model-hub/resolve/master/rtmpose-tiny-mmdeploy.onnx", &pose_path)?;
-            println!("[Detector] Models downloaded!");
+        if !model_path.exists() {
+            println!("[Detector] Downloading MoveNet SinglePose Lightning model...");
+            let downloaded = download_model_blocking(PretrainedModel::MoveNetSinglePoseLightning)
+                .map_err(|e| format!("download failed: {}", e))?;
+            std::fs::copy(&downloaded, &model_path)
+                .map_err(|e| format!("failed to copy model: {}", e))?;
+            println!("[Detector] Model downloaded!");
         }
 
-        println!("[Detector] Loading pipeline from files...");
-        let pipeline = Pipeline::from_files(&det_path, &pose_path)
-            .map_err(|e| format!("pipeline build failed: {}", e))?;
+        println!("[Detector] Loading MoveNet model...");
+        let model = MoveNet::from_file(&model_path, MoveNetVariant::SinglePoseLightning)
+            .map_err(|e| format!("MoveNet init failed: {}", e))?;
 
-        let _ = PIPELINE.set(Mutex::new(pipeline))
-            .map_err(|_| "pipeline already initialized")?;
+        let _ = DETECTOR.set(Mutex::new(model))
+            .map_err(|_| "MoveNet already initialized")?;
 
-        println!("[Detector] Pipeline initialized successfully");
+        println!("[Detector] MoveNet initialized successfully");
         Ok(())
     }
 
     pub fn detect(image_bytes: &[u8]) -> Result<PoseOutput, String> {
-        let pipeline = PIPELINE.get().ok_or_else(|| "pipeline not initialized".to_string())?;
-        let pipeline = match pipeline.lock() {
+        let detector = DETECTOR.get().ok_or_else(|| "detector not initialized".to_string())?;
+        let detector = match detector.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
-                eprintln!("[Detector] Pipeline mutex poisoned, recovering");
+                eprintln!("[Detector] Mutex poisoned, recovering");
                 poisoned.into_inner()
             }
         };
@@ -81,10 +82,10 @@ impl PoseDetector {
 
         let width = rgb.width();
         let height = rgb.height();
-        let pixels = rgb.as_raw().clone();
+        let pixels = rgb.as_raw();
 
-        let persons = pipeline.run(&pixels, width, height)
-            .map_err(|e| format!("pipeline run failed: {}", e))?;
+        let persons = detector.infer(pixels, width, height)
+            .map_err(|e| format!("detection failed: {}", e))?;
 
         if persons.is_empty() {
             return Ok(PoseOutput {
@@ -93,37 +94,13 @@ impl PoseDetector {
             });
         }
 
-        let person = &persons[0];
-        let keypoints: Vec<Keypoint> = person.keypoints.iter()
+        let kps: Vec<Keypoint> = persons[0].iter()
             .map(Keypoint::from)
             .collect();
 
         Ok(PoseOutput {
-            keypoints,
+            keypoints: kps,
             person_detected: true,
         })
     }
-}
-
-fn download_file(url: &str, path: &std::path::Path) -> Result<(), String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
-        .user_agent("Mozilla/5.0")
-        .build()
-        .map_err(|e| format!("failed to build client: {}", e))?;
-
-    let mut response = client.get(url)
-        .send()
-        .map_err(|e| format!("download failed: {}", e))?;
-
-    if !response.status().is_success() {
-        return Err(format!("download failed: {}", response.status()));
-    }
-
-    let mut file = std::fs::File::create(path)
-        .map_err(|e| format!("file create error: {}", e))?;
-    std::io::copy(&mut response, &mut file)
-        .map_err(|e| format!("file write error: {}", e))?;
-
-    Ok(())
 }
