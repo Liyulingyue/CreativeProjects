@@ -682,9 +682,9 @@ fn generate_qwen3(
                 let gate_buf = unsafe { std::slice::from_raw_parts_mut(gate_buf_ptr, n_ff) };
                 let up_buf = unsafe { std::slice::from_raw_parts_mut(up_buf_ptr, n_ff) };
                 matmul_q8_0_quantized_parallel_rows(
-                    w_gate, q8, sc, gate_buf, n_embd, n_ff, ith, nth,
+                    w_gate, q8, sc, up_buf, n_embd, n_ff, ith, nth,
                 );
-                matmul_q8_0_quantized_parallel_rows(w_up, q8, sc, up_buf, n_embd, n_ff, ith, nth);
+                matmul_q8_0_quantized_parallel_rows(w_up, q8, sc, gate_buf, n_embd, n_ff, ith, nth);
                 let rows_per = n_ff / nth;
                 let r_start = ith * rows_per;
                 let r_end = if ith == nth - 1 {
@@ -692,9 +692,7 @@ fn generate_qwen3(
                 } else {
                     r_start + rows_per
                 };
-                for i in r_start..r_end {
-                    gate_buf[i] = silu(gate_buf[i]) * up_buf[i];
-                }
+                silu_mul_inplace(&up_buf[r_start..r_end], &mut gate_buf[r_start..r_end]);
             });
 
             {

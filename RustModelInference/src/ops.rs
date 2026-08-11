@@ -1618,10 +1618,40 @@ unsafe fn ssm_outer_product_update_avx2(state: &mut [f32], k: &[f32], d_vec: &[f
 #[inline(always)]
 pub fn silu_mul_inplace(gate: &[f32], up: &mut [f32]) {
     debug_assert_eq!(gate.len(), up.len());
+    #[cfg(target_arch = "aarch64")]
+    if has_neon() {
+        unsafe { silu_mul_inplace_neon(gate, up); }
+        return;
+    }
     let n = gate.len();
     for i in 0..n {
         let g = gate[i];
         up[i] *= g / (1.0 + (-g).exp());
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn silu_mul_inplace_neon(gate: &[f32], up: &mut [f32]) {
+    use std::arch::aarch64::*;
+
+    let mut i = 0;
+    while i + 4 <= gate.len() {
+        let x = vld1q_f32(gate.as_ptr().add(i));
+        let multiplier = vld1q_f32(up.as_ptr().add(i));
+        let one = vdupq_n_f32(1.0);
+        let zero = vdupq_n_f32(0.0);
+        let neg_x = vsubq_f32(zero, x);
+        let exp_neg_x = ggml_expf_neon(neg_x);
+        let one_plus_exp_neg_x = vaddq_f32(one, exp_neg_x);
+        let silu = vdivq_f32(x, one_plus_exp_neg_x);
+        vst1q_f32(up.as_mut_ptr().add(i), vmulq_f32(silu, multiplier));
+        i += 4;
+    }
+    while i < gate.len() {
+        let g = gate[i];
+        up[i] *= g / (1.0 + (-g).exp());
+        i += 1;
     }
 }
 
@@ -1848,6 +1878,20 @@ mod neon_tests {
         softmax(&mut values);
 
         assert_eq!(values.map(f32::to_bits), [0x3db8_61f1, 0x3e7a_9a1a, 0x3f2a_4d3b, 0]);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_silu_mul_matches_pinned_ggml_four_lane_fixture() {
+        let gate = [0xbf46_e0d2, 0xbf47_ebea, 0xbeee_8b6b, 0xbe1b_692b].map(f32::from_bits);
+        let mut up = [0xbdbd_ab3d, 0xbdf0_16eb, 0x3e08_064c, 0xbf87_c095].map(f32::from_bits);
+
+        silu_mul_inplace(&gate, &mut up);
+
+        assert_eq!(
+            up.map(f32::to_bits),
+            [0x3cb9_a7c4, 0x3ceb_9536, 0xbcc3_7dcb, 0x3d98_56f8],
+        );
     }
 
     #[cfg(target_arch = "aarch64")]

@@ -571,13 +571,11 @@ fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_forma
             let mut local_sc = vec![0.0f32; n_embd / 32];
             quantize_q8_0_into(x, n_embd, &mut local_q8, &mut local_sc);
 
-            matmul_q8_0_quantized(lw.w_gate, &local_q8, &local_sc, &mut gate_buf, n_embd, n_ff);
-            matmul_q8_0_quantized(lw.w_up, &local_q8, &local_sc, &mut up_buf, n_embd, n_ff);
+            matmul_q8_0_quantized(lw.w_gate, &local_q8, &local_sc, &mut up_buf, n_embd, n_ff);
+            matmul_q8_0_quantized(lw.w_up, &local_q8, &local_sc, &mut gate_buf, n_embd, n_ff);
         }
 
-        for i in 0..n_ff {
-            gate_buf[i] = silu(gate_buf[i]) * up_buf[i];
-        }
+        silu_mul_inplace(&up_buf, &mut gate_buf);
 
         for t in 0..n_tokens {
             let down = &mut down_buf[t * n_embd..(t + 1) * n_embd];
@@ -1111,10 +1109,10 @@ fn run_dump_logits(
                 let gate_buf = slice_from_mut!(gate_buf_ptr, n_ff);
                 let up_buf = slice_from_mut!(up_buf_ptr, n_ff);
                 matmul_q8_0_quantized_parallel_rows(
-                    lw.w_gate, q8, sc, gate_buf, n_embd, n_ff, ith, nth,
+                    lw.w_gate, q8, sc, up_buf, n_embd, n_ff, ith, nth,
                 );
                 matmul_q8_0_quantized_parallel_rows(
-                    lw.w_up, q8, sc, up_buf, n_embd, n_ff, ith, nth,
+                    lw.w_up, q8, sc, gate_buf, n_embd, n_ff, ith, nth,
                 );
 
                 let rows_per = n_ff / nth;
@@ -1124,9 +1122,7 @@ fn run_dump_logits(
                 } else {
                     r_start + rows_per
                 };
-                for i in r_start..r_end {
-                    gate_buf[i] = silu(gate_buf[i]) * up_buf[i];
-                }
+                silu_mul_inplace(&up_buf[r_start..r_end], &mut gate_buf[r_start..r_end]);
             });
 
             let gate_buf = slice_from_mut!(gate_buf_ptr, n_ff);
@@ -1788,10 +1784,10 @@ fn run_inference(
                 let gate_buf = slice_from_mut!(gate_buf_ptr, n_ff);
                 let up_buf = slice_from_mut!(up_buf_ptr, n_ff);
                 matmul_q8_0_quantized_parallel_rows(
-                    lw.w_gate, q8, sc, gate_buf, n_embd, n_ff, ith, nth,
+                    lw.w_gate, q8, sc, up_buf, n_embd, n_ff, ith, nth,
                 );
                 matmul_q8_0_quantized_parallel_rows(
-                    lw.w_up, q8, sc, up_buf, n_embd, n_ff, ith, nth,
+                    lw.w_up, q8, sc, gate_buf, n_embd, n_ff, ith, nth,
                 );
 
                 let rows_per = n_ff / nth;
@@ -1801,9 +1797,7 @@ fn run_inference(
                 } else {
                     r_start + rows_per
                 };
-                for i in r_start..r_end {
-                    gate_buf[i] = silu(gate_buf[i]) * up_buf[i];
-                }
+                silu_mul_inplace(&up_buf[r_start..r_end], &mut gate_buf[r_start..r_end]);
             });
 
             {
