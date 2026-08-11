@@ -2,7 +2,7 @@ use rayon::prelude::*;
 
 use crate::clip_config::Qwen35Config;
 use crate::model::{GGUFLoader, GGMLType};
-use crate::ops::{dot_f32, softmax, rope_neox, rope_mrope};
+use crate::ops::{attention_value_f32, dot_f32, softmax, rope_neox, rope_mrope};
 #[cfg(feature = "parity-trace")]
 use crate::parity_trace;
 use crate::quant::{self, BlockQ8K, QK_K};
@@ -1049,16 +1049,28 @@ impl Qwen35Model {
                 let q_off = t * q_dim + h * n_embd_head * 2;
                 let kv_h = h / (n_head / n_head_kv);
                 let n_attend = kv_pos + t + 1;
+                let n_padded = n_attend.div_ceil(256) * 256;
                 for s in 0..n_attend {
                     let k_off = il * k_len + s * k_dim + kv_h * n_embd_head;
                     let dot = dot_f32(&scratch.q_buf[q_off..q_off + n_embd_head], &k_cache[k_off..k_off + n_embd_head], n_embd_head);
                     scratch.score_buf[s] = dot * scale;
                 }
-                softmax(&mut scratch.score_buf[..n_attend]);
+                scratch.score_buf[n_attend..n_padded].fill(f32::NEG_INFINITY);
+                softmax(&mut scratch.score_buf[..n_padded]);
+                scratch.attention_value_buf[n_attend..n_padded].fill(0.0);
                 for d in 0..n_embd_head {
-                    let mut val = 0.0f32;
-                    for s in 0..n_attend { val += scratch.score_buf[s] * v_cache[il * v_len + s * v_dim + kv_h * n_embd_head + d]; }
-                    scratch.attn_out_buf[t * n_embd_heads_total + h * n_embd_head + d] = val;
+                    for s in 0..n_attend {
+                        scratch.attention_value_buf[s] = v_cache[
+                            il * v_len + s * v_dim + kv_h * n_embd_head + d
+                        ];
+                    }
+                    scratch.attn_out_buf[t * n_embd_heads_total + h * n_embd_head + d] =
+                        attention_value_f32(
+                            &scratch.attention_value_buf[..n_padded],
+                            &scratch.score_buf[..n_padded],
+                            n_attend,
+                            n_padded,
+                        );
                 }
             }
         }
@@ -1399,6 +1411,7 @@ pub struct Qwen35Scratchpad {
     pub beta_buf: Vec<f32>,
     pub alpha_buf: Vec<f32>,
     pub score_buf: Vec<f32>,
+    pub attention_value_buf: Vec<f32>,
     pub attn_out_buf: Vec<f32>,
     pub ffn_up_buf: Vec<f32>,
     pub ffn_gate_buf: Vec<f32>,
@@ -1441,7 +1454,8 @@ impl Qwen35Scratchpad {
             z_buf: vec![0.0; max_tokens * value_dim],
             beta_buf: vec![0.0; max_tokens * num_v_heads],
             alpha_buf: vec![0.0; max_tokens * num_v_heads],
-            score_buf: vec![0.0; config.n_ctx],
+            score_buf: vec![0.0; config.n_ctx.div_ceil(256) * 256],
+            attention_value_buf: vec![0.0; config.n_ctx.div_ceil(256) * 256],
             attn_out_buf: vec![0.0; max_tokens * dense_attn_out_dim.max(value_dim)],
             ffn_up_buf: vec![0.0; max_tokens * n_ff],
             ffn_gate_buf: vec![0.0; max_tokens * n_ff],
@@ -1514,6 +1528,88 @@ fn vec_dot_q6k_q8k_fast(q6k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dense_test_config(n_ctx: usize) -> Qwen35Config {
+        Qwen35Config {
+            n_embd: 32,
+            n_layer: 1,
+            n_head: 4,
+            n_head_kv: 1,
+            n_ff: 64,
+            n_ctx,
+            vocab_size: 32,
+            rope_freq_base: 1_000_000.0,
+            norm_eps: 1e-6,
+            rope_dimension_count: 8,
+            rope_dimension_sections: [2; 4],
+            ssm_d_conv: 2,
+            ssm_d_state: 8,
+            ssm_n_group: 1,
+            ssm_dt_rank: 1,
+            ssm_d_inner: 8,
+            full_attention_interval: 1,
+            is_recurrent: vec![false],
+            key_length: 32,
+            value_length: 8,
+        }
+    }
+
+    fn tiny_dense_model(k_weight: [f32; 4], v_weight: [f32; 4]) -> Qwen35Model {
+        let config = Qwen35Config {
+            n_embd: 2,
+            n_layer: 1,
+            n_head: 1,
+            n_head_kv: 1,
+            n_ff: 2,
+            n_ctx: 256,
+            vocab_size: 2,
+            rope_freq_base: 1_000_000.0,
+            norm_eps: 0.0,
+            rope_dimension_count: 2,
+            rope_dimension_sections: [0; 4],
+            ssm_d_conv: 1,
+            ssm_d_state: 2,
+            ssm_n_group: 1,
+            ssm_dt_rank: 1,
+            ssm_d_inner: 2,
+            full_attention_interval: 1,
+            is_recurrent: vec![false],
+            key_length: 2,
+            value_length: 2,
+        };
+        let weight = |data: Vec<f32>, n_rows| QWeight::F32 { data, n_cols: 2, n_rows };
+        let identity = || weight(vec![1.0, 0.0, 0.0, 1.0], 2);
+        let layer = Qwen35LayerWeights {
+            attn_norm: vec![1.0; 2],
+            attn_post_norm: vec![1.0; 2],
+            wq: Some(weight(vec![1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 4)),
+            wk: Some(weight(k_weight.to_vec(), 2)),
+            wv: Some(weight(v_weight.to_vec(), 2)),
+            wo: Some(identity()),
+            attn_q_norm: Some(vec![1.0; 2]),
+            attn_k_norm: Some(vec![4.0, 1.0]),
+            wqkv: None,
+            wqkv_gate: None,
+            ssm_conv1d: None,
+            ssm_dt: None,
+            ssm_a: None,
+            ssm_beta: None,
+            ssm_alpha: None,
+            ssm_norm: None,
+            ssm_out: None,
+            ffn_gate: identity(),
+            ffn_up: identity(),
+            ffn_down: identity(),
+            ffn_gate_up: None,
+        };
+        Qwen35Model {
+            config,
+            tok_embd: Vec::new(),
+            output_norm: vec![1.0; 2],
+            output_weight: identity(),
+            layers: vec![layer],
+        }
+    }
 
     #[test]
     fn qwen35_l2_norm_matches_pinned_llama_cpp_bits() {
@@ -1596,28 +1692,7 @@ mod tests {
 
     #[test]
     fn qwen35_scratch_covers_dense_attention_output_projection() {
-        let config = Qwen35Config {
-            n_embd: 32,
-            n_layer: 1,
-            n_head: 4,
-            n_head_kv: 1,
-            n_ff: 64,
-            n_ctx: 8,
-            vocab_size: 32,
-            rope_freq_base: 1_000_000.0,
-            norm_eps: 1e-6,
-            rope_dimension_count: 8,
-            rope_dimension_sections: [2; 4],
-            ssm_d_conv: 2,
-            ssm_d_state: 8,
-            ssm_n_group: 1,
-            ssm_dt_rank: 1,
-            ssm_d_inner: 8,
-            full_attention_interval: 1,
-            is_recurrent: vec![false],
-            key_length: 32,
-            value_length: 8,
-        };
+        let config = dense_test_config(8);
         let dense_attn_out_dim = config.n_embd_head() * config.n_head;
         assert!(dense_attn_out_dim > config.n_embd.max(config.n_ff).max(config.value_dim()));
 
@@ -1630,6 +1705,65 @@ mod tests {
             scratch.q8_buf.len(),
             scratch.scale_buf.len(),
         );
+    }
+
+    #[test]
+    fn qwen35_scratch_pads_attention_buffers_to_ggml_row_size() {
+        let scratch = Qwen35Scratchpad::new(&dense_test_config(257), 1);
+
+        assert_eq!(scratch.score_buf.len(), 512);
+        assert_eq!(scratch.attention_value_buf.len(), 512);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn qwen35_dense_attention_softmax_uses_ggml_padded_row() {
+        let model = tiny_dense_model([1.0, 1.0, 0.0, 0.5], [1.0, 0.0, 0.0, 1.0]);
+        let mut scratch = Qwen35Scratchpad::new(&model.config, 2);
+        let mut kv_cache = crate::scratchpad::KvCache::new_f32(1, model.config.n_ctx, 2);
+        let pool = ComputePool::new(1);
+
+        model.forward_dense_attn_layer(
+            0,
+            &[1.0, 0.0, 0.0, 1.0],
+            2,
+            &mut kv_cache,
+            &mut scratch,
+            &pool,
+            &[[0; 4]; 2],
+            #[cfg(feature = "parity-trace")]
+            false,
+        );
+
+        assert_eq!(
+            [scratch.score_buf[0].to_bits(), scratch.score_buf[1].to_bits()],
+            [0x3f25_1fe0, 0x3eb5_c03f],
+        );
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn qwen35_dense_attention_value_uses_ggml_padded_reduction() {
+        let model = tiny_dense_model([1.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]);
+        let n_tokens = 18;
+        let mut scratch = Qwen35Scratchpad::new(&model.config, n_tokens);
+        let mut kv_cache = crate::scratchpad::KvCache::new_f32(1, model.config.n_ctx, 2);
+        let pool = ComputePool::new(1);
+        let input: Vec<f32> = std::iter::repeat_n([1.0, 0.0], n_tokens).flatten().collect();
+
+        let output = model.forward_dense_attn_layer(
+            0,
+            &input,
+            n_tokens,
+            &mut kv_cache,
+            &mut scratch,
+            &pool,
+            &vec![[0; 4]; n_tokens],
+            #[cfg(feature = "parity-trace")]
+            false,
+        );
+
+        assert_eq!(output[(n_tokens - 1) * 2].to_bits(), 0x3f00_0000);
     }
 
     #[test]
