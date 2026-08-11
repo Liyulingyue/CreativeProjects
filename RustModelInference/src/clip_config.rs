@@ -10,6 +10,8 @@ pub struct ClipVisionConfig {
     pub n_layer: usize,
     pub n_head: usize,
     pub spatial_merge_size: usize,
+    pub image_min_pixels: usize,
+    pub image_max_pixels: usize,
     pub eps: f32,
     pub use_gelu: bool,
     pub image_mean: [f32; 3],
@@ -48,7 +50,39 @@ impl ClipVisionConfig {
         let n_head = get_u32("clip.vision.attention.head_count")? as usize;
         let spatial_merge_size = loader.metadata("clip.vision.spatial_merge_size")
             .and_then(|v| v.to_u64())
-            .unwrap_or(2) as usize;
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| "clip.vision.spatial_merge_size does not fit usize")?
+            .unwrap_or(2);
+        let factor = patch_size
+            .checked_mul(spatial_merge_size)
+            .ok_or("clip patch/merge factor overflow")?;
+        let factor_pixels = factor
+            .checked_mul(factor)
+            .ok_or("clip patch/merge pixel factor overflow")?;
+        let default_min = factor_pixels
+            .checked_mul(8)
+            .ok_or("clip minimum pixel count overflow")?;
+        let default_max = factor_pixels
+            .checked_mul(4096)
+            .ok_or("clip maximum pixel count overflow")?;
+        let image_min_pixels = loader
+            .metadata("clip.vision.image_min_pixels")
+            .and_then(MetaValue::to_u64)
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| "clip.vision.image_min_pixels does not fit usize")?
+            .unwrap_or(default_min);
+        let image_max_pixels = loader
+            .metadata("clip.vision.image_max_pixels")
+            .and_then(MetaValue::to_u64)
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| "clip.vision.image_max_pixels does not fit usize")?
+            .unwrap_or(default_max);
+        if image_min_pixels == 0 || image_min_pixels > image_max_pixels {
+            return Err("Invalid clip vision pixel limits".into());
+        }
         let eps = get_f32("clip.vision.attention.layer_norm_epsilon")?;
         let use_gelu = get_bool("clip.use_gelu");
 
@@ -102,6 +136,8 @@ impl ClipVisionConfig {
             n_layer,
             n_head,
             spatial_merge_size,
+            image_min_pixels,
+            image_max_pixels,
             eps,
             use_gelu,
             image_mean,
@@ -152,6 +188,67 @@ pub struct Qwen35Config {
     pub is_recurrent: Vec<bool>,
     pub key_length: usize,
     pub value_length: usize,
+}
+
+fn unsigned_u64(value: &MetaValue) -> Option<u64> {
+    match value {
+        MetaValue::Uint8(value) => Some(*value as u64),
+        MetaValue::Uint16(value) => Some(*value as u64),
+        MetaValue::Uint32(value) => Some(*value as u64),
+        MetaValue::Uint64(value) => Some(*value),
+        _ => None,
+    }
+}
+
+fn full_attention_interval(value: Option<&MetaValue>) -> Result<Option<u64>, String> {
+    value
+        .map(|value| {
+            unsigned_u64(value)
+                .ok_or_else(|| {
+                    "Invalid qwen35.full_attention_interval: expected unsigned integer".into()
+                })
+        })
+        .transpose()
+}
+
+fn recurrent_layer_mask(
+    n_layer: usize,
+    recurrent_layers: Option<&MetaValue>,
+    full_attention_interval: Option<u64>,
+) -> Result<Vec<bool>, String> {
+    if let Some(value) = recurrent_layers {
+        let MetaValue::Array(_, values) = value else {
+            return Err("Invalid qwen35.attention.recurrent_layers: expected array".into());
+        };
+        if values.len() != n_layer {
+            return Err(format!(
+                "Invalid qwen35.attention.recurrent_layers length: expected {n_layer}, got {}",
+                values.len()
+            ));
+        }
+        return values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| match value {
+                MetaValue::Bool(value) => Ok(*value),
+                value => match unsigned_u64(value) {
+                    Some(0) => Ok(false),
+                    Some(1) => Ok(true),
+                    _ => Err(format!(
+                        "Invalid recurrent selector at layer {index}; expected 0, 1, or bool"
+                    )),
+                },
+            })
+            .collect();
+    }
+
+    let interval = full_attention_interval.unwrap_or(4);
+    if interval == 0 {
+        return Err("qwen35.full_attention_interval must be greater than zero".into());
+    }
+    Ok((0..n_layer)
+        .map(|layer| ((layer as u64 + 1) % interval) != 0)
+        .collect())
 }
 
 impl Qwen35Config {
@@ -215,13 +312,15 @@ impl Qwen35Config {
         let ssm_n_group = get_u32("qwen35.ssm.group_count")? as usize;
         let ssm_dt_rank = get_u32("qwen35.ssm.time_step_rank")? as usize;
         let ssm_d_inner = get_u32("qwen35.ssm.inner_size")? as usize;
-        let full_attention_interval = loader.metadata("qwen35.full_attention_interval")
-            .and_then(|v| v.to_u64())
-            .unwrap_or(4) as usize;
-
-        let is_recurrent: Vec<bool> = (0..n_layer)
-            .map(|i| (i + 1) % full_attention_interval != 0)
-            .collect();
+        let full_attention_interval_raw =
+            full_attention_interval(loader.metadata("qwen35.full_attention_interval"))?;
+        let is_recurrent = recurrent_layer_mask(
+            n_layer,
+            loader.metadata("qwen35.attention.recurrent_layers"),
+            full_attention_interval_raw,
+        )?;
+        let full_attention_interval = usize::try_from(full_attention_interval_raw.unwrap_or(4))
+            .map_err(|_| "qwen35.full_attention_interval does not fit usize")?;
 
         Ok(Self {
             n_embd,
@@ -269,5 +368,90 @@ impl Qwen35Config {
 
     pub fn head_v_dim(&self) -> usize {
         self.ssm_d_inner / self.ssm_dt_rank
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::MetaValueType;
+
+    #[test]
+    fn qwen35_recurrent_layers_metadata_is_authoritative() {
+        let values = MetaValue::Array(
+            MetaValueType::Uint32,
+            [1, 0, 1, 0]
+                .into_iter()
+                .map(MetaValue::Uint32)
+                .collect(),
+        );
+        assert_eq!(
+            recurrent_layer_mask(4, Some(&values), Some(3)).unwrap(),
+            vec![true, false, true, false],
+        );
+    }
+
+    #[test]
+    fn qwen35_recurrent_layers_reject_malformed_arrays() {
+        let wrong_length = MetaValue::Array(
+            MetaValueType::Uint32,
+            vec![MetaValue::Uint32(1)],
+        );
+        assert!(recurrent_layer_mask(2, Some(&wrong_length), Some(4)).is_err());
+
+        let invalid_selector = MetaValue::Array(
+            MetaValueType::Uint32,
+            vec![MetaValue::Uint32(1), MetaValue::Uint32(2)],
+        );
+        assert!(recurrent_layer_mask(2, Some(&invalid_selector), Some(4)).is_err());
+    }
+
+    #[test]
+    fn qwen35_recurrent_layers_reject_float_selectors() {
+        let float_selector = MetaValue::Array(
+            MetaValueType::Float32,
+            vec![MetaValue::Float32(0.5), MetaValue::Uint32(1)],
+        );
+        assert!(recurrent_layer_mask(2, Some(&float_selector), Some(4)).is_err());
+    }
+
+    #[test]
+    fn qwen35_rejects_float_interval_with_recurrent_layers() {
+        let recurrent_layers = MetaValue::Array(
+            MetaValueType::Uint32,
+            vec![MetaValue::Uint32(1), MetaValue::Uint32(0)],
+        );
+        let float_interval = MetaValue::Float32(4.0);
+        assert!(full_attention_interval(Some(&float_interval))
+            .and_then(|interval| recurrent_layer_mask(2, Some(&recurrent_layers), interval))
+            .is_err());
+    }
+
+    #[test]
+    fn qwen35_zero_interval_is_an_error_not_a_panic() {
+        assert!(recurrent_layer_mask(4, None, Some(0)).is_err());
+    }
+
+    #[test]
+    fn qwen35_interval_fallback_matches_llama() {
+        assert_eq!(
+            recurrent_layer_mask(8, None, Some(4)).unwrap(),
+            vec![true, true, true, false, true, true, true, false],
+        );
+    }
+
+    #[test]
+    #[ignore = "requires RMI_QWEN35_MODEL"]
+    fn qwen35_config_uses_real_layer_selection_metadata() {
+        let path = std::env::var("RMI_QWEN35_MODEL").unwrap();
+        let loader = crate::model::GGUFLoader::from_file(&path).unwrap();
+        let config = Qwen35Config::from_gguf(&loader).unwrap();
+        let expected = recurrent_layer_mask(
+            config.n_layer,
+            loader.metadata("qwen35.attention.recurrent_layers"),
+            full_attention_interval(loader.metadata("qwen35.full_attention_interval")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(config.is_recurrent, expected);
     }
 }

@@ -1,6 +1,6 @@
 # Rust LLM Inference Engine — 优化记录
 
-## 当前性能基线（2025-07-31 更新，llama-bench 校正）
+## 历史性能基线（2025-07-31，llama-bench 校正）
 
 | 模型 | 线程 | Rust | llama.cpp | 差距 |
 |------|------|------|-----------|------|
@@ -149,3 +149,141 @@ MiniCPM5 在 chat 模式下输出乱码（`--bench` 正常），chat template �
 - `references/ggml/src/ggml-cpu/ggml-cpu.c` — 调度器
 - `references/ggml/src/ggml-cpu/arch/x86/quants.c` — Q8_0 AVX2 内核
 - `references/llama.cpp/src/llama-context.cpp` — llama 上下文和线程管理
+
+## Apple Silicon NEON（2026-08-09）
+
+测试环境：
+
+```text
+$ uname -m
+arm64
+
+$ sysctl -n machdep.cpu.brand_string
+Apple M3 Max
+
+$ sw_vers
+ProductName:		macOS
+ProductVersion:		26.6.1
+BuildVersion:		25G76
+
+$ rustc -vV
+rustc 1.97.0 (2d8144b78 2026-07-07)
+binary: rustc
+commit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3
+commit-date: 2026-07-07
+host: aarch64-apple-darwin
+release: 1.97.0
+LLVM version: 22.1.6
+```
+
+Q8_0 NEON 固定机器门禁（`1024 x 3072`，15 个样本取中位数，每个样本 20 次迭代）：
+
+```text
+architecture=aarch64 backend=NEON
+gate=1024x3072 scalar_median=0.867ms auto_median=0.109ms speedup=7.980x auto=57.91GFLOPS/30.81GB/s threshold=1.10x
+```
+
+Qwen3-0.6B Q8_0，4 线程，32-token 确定性推理：
+
+```text
+Model: qwen3 | n_embd=1024 n_layer=28 n_head=16 n_head_kv=8 n_ff=3072 | loaded in 71ms
+Prompt: 2 + 3 = (5 tokens)
+Output:
+ 5, 5 + 4 = 9, 9 + 5 = 14, 14 + 6 = 20
+PROFILE: norm=0.0% quant=0.0% qkv+attn=26.2% wo=9.5% ffn=41.6% logits=22.6%
+PROFILE: norm=0.000s quant=0.000s qkv+attn=0.069s wo=0.025s ffn=0.110s logits=0.060s
+[32 tokens in 268ms | 119.4 tok/s]
+```
+
+该模型在 `--max-tokens 1` 时首个解码 token 是换行；生成 4 个 token 时输出包含确定性的 `5`，因此不将首 token 误记为 ` 5`。
+
+数值正确性由 NEON/标量单元测试和 Qwen3-0.6B Q8_0 确定性推理冒烟验证。
+x86_64 本次仅完成交叉编译与 AVX2/FMA/F16C 路径静态核对，未执行 x86 硬件性能测试。
+
+## Rust 与 llama.cpp 固定机器对比（2026-08-10）
+
+测试环境：macOS 26.6.1（Build 25G76），Apple M3 Max（12P+4E，16 核），Rust 1.97.0（`2d8144b78 2026-07-07`）。Rust CLI 的 KV cache 默认为 F16，固定对比仍显式传入 `--kv-cache f16`；llama.cpp 固定在 `7ba604f1cb61cd14898138e9abc0b4ff2601f180`，并显式使用 `-ctk f16 -ctv f16`。CMake 配置确认 ARM `dotprod` 和 `i8mm` 均可用。
+
+Rust CPU T8 命令（五次独立进程，比较项仅取 `BENCH: tg`）：
+
+```bash
+for run in 1 2 3 4 5; do
+  ./target/release/rust-model-inference \
+    --model models/Qwen3-0.6B-Q8_0.gguf \
+    --prompt "2 + 3 =" \
+    --max-tokens 32 \
+    --temp 0 \
+    --threads 8 \
+    --kv-cache f16 \
+    --bench \
+    --profile 2>&1 | rg 'BENCH: tg|PROFILE:'
+done
+```
+
+显式 F16 KV 的主验收批次中，五次 `BENCH: tg 32 evals` 原始值为 `157.6, 157.0, 158.5, 158.2, 148.7 eval/s`，中位数为 `157.6 eval/s`。
+
+同一机器上的批次间波动较大，不能把任一单批差距当作稳定复现值：
+
+| Rust T8 批次 | KV 证据 | 五次原始值（eval/s） | 中位数 | 对 llama.cpp CPU 145.199 的差距 |
+|---------------|---------|----------------------|--------|---------------------------------|
+| 主验收批次 | 显式 `--kv-cache f16` | 157.6, 157.0, 158.5, 158.2, 148.7 | 157.6 | -8.54%（Rust 单批更快） |
+| 初始批次 | CLI 默认 F16 | 113.2, 102.8, 112.4, 106.1, 72.8 | 106.1 | 26.93% |
+| controller 复跑 | CLI 默认 F16 | 124.6, 119.4, 125.2, 131.0, 136.6 | 125.2 | 13.77% |
+
+llama.cpp 复现准备（从 RustModelInference 仓库根目录运行；该块定义后续命令使用的 `$benchmark_checkout`）：
+
+```bash
+benchmark_checkout=$(mktemp -d /tmp/rmi-llama-bench.XXXXXX)
+git clone https://github.com/ggml-org/llama.cpp.git "$benchmark_checkout"
+git -C "$benchmark_checkout" checkout 7ba604f1cb61cd14898138e9abc0b4ff2601f180
+cmake -S "$benchmark_checkout" -B "$benchmark_checkout/build" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DLLAMA_BUILD_TESTS=OFF \
+  -DLLAMA_BUILD_TOOLS=ON \
+  -DLLAMA_BUILD_EXAMPLES=OFF \
+  -DLLAMA_BUILD_SERVER=OFF \
+  -DGGML_METAL=ON
+cmake --build "$benchmark_checkout/build" --target llama-bench -j 16
+```
+
+llama.cpp CPU-only 命令：
+
+```bash
+"$benchmark_checkout/build/bin/llama-bench" \
+  -m "$PWD/models/Qwen3-0.6B-Q8_0.gguf" \
+  -p 0 \
+  -n 32 \
+  -t 8 \
+  -r 5 \
+  -ngl 0 \
+  -ctk f16 \
+  -ctv f16 \
+  -o json
+```
+
+CPU JSON 记录 `n_gpu_layers: 0`，`samples_ts` 为 `[126.287, 124.324, 145.199, 146.637, 148.763]`，中位数为 `145.199 eval/s`。
+
+llama.cpp Metal 命令：
+
+```bash
+"$benchmark_checkout/build/bin/llama-bench" \
+  -m "$PWD/models/Qwen3-0.6B-Q8_0.gguf" \
+  -p 0 \
+  -n 32 \
+  -t 8 \
+  -r 5 \
+  -ngl 99 \
+  -ctk f16 \
+  -ctv f16 \
+  -o json
+```
+
+Metal JSON 记录 `n_gpu_layers: 99`，`samples_ts` 为 `[274.077, 273.657, 273.575, 273.576, 270.904]`，中位数为 `273.576 eval/s`。Metal 是不同后端，仅作信息记录，不参与 CPU 门禁。
+
+| 后端 | 线程 | decode 中位数 | CPU 差距 |
+|------|------|---------------|----------|
+| Rust CPU（显式 F16 KV 主批次） | T8 | 157.6 eval/s | -8.54%（单批） |
+| llama.cpp CPU（`-ngl 0`，F16 KV） | T8 | 145.199 eval/s | 基准 |
+| llama.cpp Metal（`-ngl 99`，F16 KV） | T8 | 273.576 eval/s | 不参与 |
+
+主批次的算术差距为 `(145.199 - 157.6) / 145.199 = -8.54%`，但三个 Rust 批次的中位数从 `106.1` 到 `157.6 eval/s`，结论互相冲突，因此**尚未证明稳定满足 10% CPU 门禁**。必须先进行测量环境与调度器 profiling，再考虑内核工作。本计划没有实现 DotProd/I8MM、权重重排或线程池重写。

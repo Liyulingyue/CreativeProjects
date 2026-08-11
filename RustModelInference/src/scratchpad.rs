@@ -12,6 +12,7 @@ pub struct ExecutionScratchpad {
     pub logits: Vec<f32>,
     pub q8_buf: Vec<u8>,
     pub scale_buf: Vec<f32>,
+    pub score_stride: usize,
     pub scores: Vec<f32>,
 }
 
@@ -41,6 +42,7 @@ impl ExecutionScratchpad {
         max_ctx: usize,
     ) -> Self {
         let max_n_in = n_embd_q.max(n_ff);
+        let score_stride = max_ctx.div_ceil(256) * 256;
         Self {
             x: vec![0.0f32; n_embd],
             normed: vec![0.0f32; n_embd],
@@ -55,7 +57,8 @@ impl ExecutionScratchpad {
             logits: vec![0.0f32; vocab],
             q8_buf: vec![0u8; max_n_in],
             scale_buf: vec![0.0f32; max_n_in / 32],
-            scores: vec![0.0f32; n_threads * max_ctx],
+            score_stride,
+            scores: vec![0.0f32; n_threads * score_stride],
         }
     }
 }
@@ -75,5 +78,20 @@ impl KvCache {
             k: vec![0.0f32; size],
             v: vec![0.0f32; size],
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ExecutionScratchpad;
+
+    #[test]
+    fn scores_allocate_padded_non_overlapping_segments_per_thread() {
+        let scratch = ExecutionScratchpad::new(1, 1, 1, 1, 1, 2, 257);
+
+        assert_eq!(scratch.scores.len(), 1024);
+        let (first_thread, second_thread) = scratch.scores.split_at(512);
+        assert_eq!(first_thread.len(), 512);
+        assert_eq!(second_thread.len(), 512);
     }
 }
