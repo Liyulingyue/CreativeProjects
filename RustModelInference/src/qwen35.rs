@@ -1188,8 +1188,8 @@ impl Qwen35Model {
                 for d in 0..head_v_dim { scratch.v_buf2[t * value_dim + h * head_v_dim + d] = scratch.qkv_buf[qkv_off + 2 * key_dim + h * head_v_dim + d]; }
             }
             for h in 0..num_k_heads {
-                l2_norm(&mut scratch.q_buf[t * key_dim + h * head_k_dim..][..head_k_dim]);
-                l2_norm(&mut scratch.k_buf2[t * key_dim + h * head_k_dim..][..head_k_dim]);
+                l2_norm(&mut scratch.q_buf[t * key_dim + h * head_k_dim..][..head_k_dim], eps);
+                l2_norm(&mut scratch.k_buf2[t * key_dim + h * head_k_dim..][..head_k_dim], eps);
             }
         }
         #[cfg(feature = "parity-trace")]
@@ -1475,10 +1475,13 @@ pub fn f16_bits_to_f32(bits: u16) -> f32 {
     else { sign * (1.0 + frac) * 2.0f32.powi(exp - 15) }
 }
 
-fn l2_norm(x: &mut [f32]) {
-    let ss: f32 = x.iter().map(|v| v * v).sum();
-    let inv = 1.0 / (ss + 1e-8).sqrt();
-    for v in x.iter_mut() { *v *= inv; }
+fn l2_norm(x: &mut [f32], eps: f32) {
+    let mut sum = 0.0f64;
+    for &v in x.iter() {
+        sum += f64::from(v * v);
+    }
+    let scale = 1.0f32 / (sum as f32).sqrt().max(eps);
+    for v in x.iter_mut() { *v *= scale; }
 }
 
 fn sigmoid_f32(x: f32) -> f32 { 1.0 / (1.0 + (-x).exp()) }
@@ -1515,6 +1518,51 @@ fn vec_dot_q6k_q8k_fast(q6k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qwen35_l2_norm_matches_pinned_llama_cpp_bits() {
+        const INPUT_BITS: [u32; 128] = [
+            0x3b11b23c, 0x3abb616e, 0x3a74a52a, 0xbe36d3f9, 0x3c5be35f, 0xbb7eed3d, 0x3cf3b675, 0x3c352a95,
+            0xbd12fa43, 0x3d0ed381, 0xbd019bdf, 0xbaa1fbf3, 0xbb00502c, 0x3b97baf3, 0x3c0a9eb1, 0x3b2a60d7,
+            0x3c867f8c, 0x39269d95, 0xbc86036e, 0x3c9ca5fe, 0xbd2beb72, 0xba3c9646, 0x3c19ee2b, 0x3c6bebc5,
+            0xba1078eb, 0x3cddb829, 0xb9cb7b05, 0x3c10df58, 0x38ad8928, 0x3a1bb101, 0xbc9dea12, 0xb830b929,
+            0xbce68c07, 0x3c77b70a, 0x3a9a5020, 0x3aa1e526, 0xbc830d2f, 0xbccdf802, 0xbae28161, 0x3c13147a,
+            0xbab844a1, 0xbd6a98ad, 0xb92c2313, 0x3b279123, 0x3cda6539, 0x398fc008, 0xb9883eab, 0x3c7a1914,
+            0x3a9fd962, 0x3c024411, 0x3cfce9fa, 0x39fe7429, 0x39a78347, 0xbcd4f897, 0xb972edb6, 0x3cd07782,
+            0xba48c562, 0x3d226f5a, 0x3a002199, 0x38995247, 0x3d24b1fe, 0x3c95409c, 0xb8b86102, 0xb9c4d2a9,
+            0x3d1a4c1e, 0xb9679706, 0xbc94ecb1, 0xbb87b477, 0xbc306760, 0x3ad1617d, 0x3c85d8db, 0xb886458a,
+            0x3baf244f, 0xbd5d49dc, 0xbb8260a4, 0xbc4a82db, 0x3aa20bbd, 0x3d2b8415, 0xba532f00, 0x39b7c6d9,
+            0xbad2ca65, 0xbd023279, 0xbc77cee6, 0x393b6a88, 0x3c95ab9c, 0xba920ce0, 0xbb9881f0, 0xbaafd1fc,
+            0x3b8edc22, 0x390e7b29, 0x3bbe234b, 0xbb803967, 0xb926490d, 0xbcf4b75a, 0x3c56bbe5, 0x3b016c3f,
+            0xbc6cef21, 0x3b30b9c6, 0xb9ef1f3c, 0xb8aecebe, 0xba7b7fec, 0xb929766d, 0x3c9b5ced, 0xbc8ca6a4,
+            0xbcd36384, 0x3d2261e8, 0x3ccda1b0, 0xbd298883, 0x3d40c6d6, 0x3969c035, 0x3c9c3466, 0xb991a558,
+            0xb976ce00, 0xb9b01921, 0x398eef4c, 0xb5e9fa58, 0xbd416b03, 0x3be68c77, 0x39f3d603, 0x3d0243cb,
+            0x3b3fc530, 0xbc016f46, 0x3bb1d80e, 0xba45c19f, 0xba89fe14, 0x3b26ebc8, 0xb9d28f76, 0xbbec5142,
+        ];
+        const EXPECTED_BITS: [u32; 128] = [
+            0x3c05bcb8, 0x3bac0000, 0x3b60906f, 0xbf27d235, 0x3d49d6dc, 0xbc6a0077, 0x3ddfb552, 0x3d264bbc,
+            0xbe06e9d2, 0x3e031a4c, 0xbdedf0cd, 0xbb94b02d, 0xbbeb8fdb, 0x3c8b46a4, 0x3cfe7bbe, 0x3c1c64ae,
+            0x3d76eaac, 0x3a18f07d, 0xbd7606d0, 0x3d8fca57, 0xbe1dcee5, 0xbb2d1b7f, 0x3d0d4ba1, 0x3d588e5d,
+            0xbb049d1f, 0x3dcb852c, 0xbabac748, 0x3d04fb24, 0x399f4aa6, 0x3b0ee976, 0xbd90f3d1, 0xb92237ac,
+            0xbdd39f8b, 0x3d6361ce, 0x3b8da58c, 0x3b949b3f, 0xbd7096cc, 0xbdbd0ffc, 0xbbcfe9d2, 0x3d0701e2,
+            0xbba9249b, 0xbe57571a, 0xba1e01f6, 0x3c19d00d, 0x3dc87814, 0x3a83f369, 0xba7a1f83, 0x3d6591c5,
+            0x3b92ba79, 0x3cef2594, 0x3de8277f, 0x3ae99153, 0x3a99c355, 0xbdc37d6e, 0xba5efd0e, 0x3dbf5aff,
+            0xbb384a95, 0x3e151a1b, 0x3aeb3a5a, 0x398cbc89, 0x3e172d40, 0x3d89005e, 0xb9a93ea7, 0xbab4aad2,
+            0x3e0da1de, 0xba5494a0, 0xbd88b357, 0xbc7921cb, 0xbd21ec9a, 0x3bc031c5, 0x3d75b8a7, 0xb976802e,
+            0x3ca0c40e, 0xbe4b1fec, 0xbc6f5a09, 0xbd39e37d, 0x3b94beab, 0x3e1d7004, 0xbb41d966, 0x3aa8b126,
+            0xbbc17d0d, 0xbdef0548, 0xbd6377b4, 0x3a2c085b, 0x3d896296, 0xbb860fec, 0xbc8bfd4c, 0xbba16379,
+            0x3c832238, 0x3a02c934, 0x3cae87ed, 0xbc6b660e, 0xba18a2e6, 0xbde0a121, 0x3d451bb1, 0x3bed995e,
+            0xbd597c6f, 0x3c22383d, 0xbadb7e90, 0xb9a07583, 0xbb66db29, 0xba1b8d82, 0x3d8e9c48, 0xbd811b24,
+            0xbdc2099b, 0x3e150dc4, 0x3dbcc0c0, 0xbe1b9e1c, 0x3e30f405, 0x3a569067, 0x3d8f6212, 0xba85b0e3,
+            0xba628be5, 0xbaa1a4c7, 0x3a8333cf, 0xb6d6c5c4, 0xbe318ab8, 0x3cd39ff2, 0x3adfd249, 0x3def2514,
+            0x3c300785, 0xbced9eed, 0x3ca33f05, 0xbb35862b, 0xbb7d54e2, 0x3c193845, 0xbac146f5, 0xbcd8eb85,
+        ];
+
+        let mut actual = INPUT_BITS.map(f32::from_bits);
+        l2_norm(&mut actual, 1e-6);
+
+        assert_eq!(actual.map(f32::to_bits), EXPECTED_BITS);
+    }
 
     #[test]
     #[ignore = "requires RMI_QWEN35_MODEL"]
