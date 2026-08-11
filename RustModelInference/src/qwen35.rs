@@ -1429,7 +1429,7 @@ impl Qwen35Scratchpad {
         let head_v_dim = d_inner / num_v_heads;
         let q_dim = n_embd_head * n_head * 2;
         let dense_attn_out_dim = n_embd_head * n_head;
-        let max_matmul_input = n_embd.max(n_ff).max(value_dim);
+        let max_matmul_input = n_embd.max(n_ff).max(value_dim).max(dense_attn_out_dim);
 
         Self {
             x: vec![0.0; max_tokens * n_embd],
@@ -1548,6 +1548,44 @@ mod tests {
         for (actual, expected) in output.into_iter().zip([256.0f32, -512.0]) {
             assert!((actual - expected).abs() < 0.05, "actual={actual}, expected={expected}");
         }
+    }
+
+    #[test]
+    fn qwen35_scratch_covers_dense_attention_output_projection() {
+        let config = Qwen35Config {
+            n_embd: 32,
+            n_layer: 1,
+            n_head: 4,
+            n_head_kv: 1,
+            n_ff: 64,
+            n_ctx: 8,
+            vocab_size: 32,
+            rope_freq_base: 1_000_000.0,
+            norm_eps: 1e-6,
+            rope_dimension_count: 8,
+            rope_dimension_sections: [2; 4],
+            ssm_d_conv: 2,
+            ssm_d_state: 8,
+            ssm_n_group: 1,
+            ssm_dt_rank: 1,
+            ssm_d_inner: 8,
+            full_attention_interval: 1,
+            is_recurrent: vec![false],
+            key_length: 32,
+            value_length: 8,
+        };
+        let dense_attn_out_dim = config.n_embd_head() * config.n_head;
+        assert!(dense_attn_out_dim > config.n_embd.max(config.n_ff).max(config.value_dim()));
+
+        let scratch = Qwen35Scratchpad::new(&config, 1);
+
+        assert!(
+            scratch.q8_buf.len() >= dense_attn_out_dim
+                && scratch.scale_buf.len() >= (dense_attn_out_dim + 31) / 32,
+            "dense_attn_out_dim={dense_attn_out_dim}, q8={}, scales={}",
+            scratch.q8_buf.len(),
+            scratch.scale_buf.len(),
+        );
     }
 
     #[test]
