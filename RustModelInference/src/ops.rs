@@ -232,28 +232,36 @@ pub fn rope_mrope(x: &mut [f32], positions: [usize; 4], sections: [i32; 4], head
         rope_neox(x, positions[0], head_dim, freq_base);
         return;
     }
+    let total_sections = total_sections as usize;
+    let theta_scale = freq_base.powf(-2.0f32 / head_dim as f32);
+    let section_h = sections[0] as usize;
+    let section_w = section_h + sections[1] as usize;
+    let section_e = section_w + sections[2] as usize;
     for h in 0..n_heads {
         let base = h * head_dim;
-        let mut dim_offset = 0usize;
-        for s in 0..4 {
-            let sec_len = sections[s] as usize;
-            if sec_len == 0 { continue; }
-            let pos = positions[s];
-            for i in 0..sec_len {
-                let freq = 1.0f32 / freq_base.powf(2.0 * (dim_offset + i) as f32 / total_sections as f32);
-                let angle = pos as f32 * freq;
-                let cos_a = angle.cos();
-                let sin_a = angle.sin();
-                let idx0 = base + dim_offset + i;
-                let idx1 = base + dim_offset + i + half;
-                if idx1 < x.len() {
-                    let x0 = x[idx0];
-                    let x1 = x[idx1];
-                    x[idx0] = x0 * cos_a - x1 * sin_a;
-                    x[idx1] = x0 * sin_a + x1 * cos_a;
-                }
+        let mut theta = positions.map(|position| position as f32);
+        for i in 0..half {
+            let sector = i % total_sections;
+            let axis = if sector < section_h {
+                0
+            } else if sector < section_w {
+                1
+            } else if sector < section_e {
+                2
+            } else {
+                3
+            };
+            let cos_a = theta[axis].cos();
+            let sin_a = theta[axis].sin();
+            let idx0 = base + i;
+            let idx1 = idx0 + half;
+            let x0 = x[idx0];
+            let x1 = x[idx1];
+            x[idx0] = x0.mul_add(cos_a, -(x1 * sin_a));
+            x[idx1] = x0.mul_add(sin_a, x1 * cos_a);
+            for value in &mut theta {
+                *value *= theta_scale;
             }
-            dim_offset += sec_len;
         }
     }
 }
@@ -1911,6 +1919,43 @@ mod neon_tests {
         assert_eq!(
             [values[0], values[1], values[64], values[65]].map(f32::to_bits),
             [0x3fc7_0519, 0x3f17_f682, 0x400a_7ff8, 0x3fa7_dc8a],
+        );
+    }
+
+    #[test]
+    fn rope_mrope_matches_pinned_ggml_frequency_and_fused_rotation() {
+        let mut values = [0.0f32; 64];
+        values[0] = f32::from_bits(0x3eae_1c0f);
+        values[1] = f32::from_bits(0x3e8d_d676);
+        values[5] = f32::from_bits(0xbff5_1f9f);
+        values[11] = f32::from_bits(0x3e8d_d676);
+        values[22] = f32::from_bits(0xbff5_1f9f);
+        values[32] = f32::from_bits(0xbfb7_1543);
+        values[33] = f32::from_bits(0xc016_5e3a);
+        values[37] = f32::from_bits(0x3f02_9876);
+        values[43] = f32::from_bits(0xc016_5e3a);
+        values[54] = f32::from_bits(0x3f02_9876);
+
+        rope_mrope(&mut values, [1, 2, 3, 0], [11, 11, 10, 0], 64, 10_000_000.0);
+
+        assert_eq!(
+            [
+                values[0], values[1], values[5], values[11], values[22], values[32],
+                values[33], values[37], values[43], values[54],
+            ]
+            .map(f32::to_bits),
+            [
+                0x3fb1_93b8,
+                0x3fc8_0d88,
+                0xbff9_9597,
+                0x3e97_4641,
+                0xbff5_2065,
+                0xbef9_2c2e,
+                0xbfe3_5435,
+                0x3eb5_6aa7,
+                0xc016_396b,
+                0x3f02_92aa,
+            ],
         );
     }
 
