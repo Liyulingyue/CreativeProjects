@@ -112,6 +112,53 @@ mod cli_tests {
         BPETokenizer::from_gguf_metadata(|key| metadata.get(key).cloned()).unwrap()
     }
 
+    fn q8_identity(size: usize) -> Vec<u8> {
+        assert_eq!(size % 32, 0);
+        let blocks_per_row = size / 32;
+        let row_stride = blocks_per_row * 34;
+        let mut weight = vec![0u8; size * row_stride];
+
+        for row in 0..size {
+            let block = row / 32;
+            let lane = row % 32;
+            let offset = row * row_stride + block * 34;
+            weight[offset..offset + 2]
+                .copy_from_slice(&half::f16::from_f32(1.0).to_bits().to_le_bytes());
+            weight[offset + 2 + lane] = 1;
+        }
+        weight
+    }
+
+    #[test]
+    fn embedding_ffn_keeps_each_tokens_projection_independent() {
+        let identity = q8_identity(32);
+        let mut normed = vec![0.0f32; 64];
+        normed[0] = 1.0;
+        normed[33] = 2.0;
+
+        let mut hidden = vec![0.0f32; 64];
+        hidden[0] = 10.0;
+        hidden[33] = 20.0;
+
+        apply_embedding_ffn_q8_0(
+            &mut hidden,
+            &normed,
+            32,
+            32,
+            &identity,
+            &identity,
+            &identity,
+            &mut [0.0; 32],
+            &mut [0.0; 32],
+            &mut [0.0; 32],
+        );
+
+        assert!((hidden[0] - 10.731059).abs() < 1e-4, "{}", hidden[0]);
+        assert!((hidden[33] - 23.523041).abs() < 1e-4, "{}", hidden[33]);
+        assert_eq!(hidden[1], 0.0);
+        assert_eq!(hidden[32], 0.0);
+    }
+
     const EMBEDDING_TOKEN_CASES: &[(&str, &[u32])] = &[
         ("hello", &[14990, 151643]),
         (
@@ -507,6 +554,74 @@ fn attention_key_end(query: usize, n_tokens: usize, causal: bool) -> usize {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn apply_embedding_ffn_q8_0(
+    hidden: &mut [f32],
+    normed: &[f32],
+    n_embd: usize,
+    n_ff: usize,
+    w_gate: &[u8],
+    w_up: &[u8],
+    w_down: &[u8],
+    gate_buf: &mut [f32],
+    up_buf: &mut [f32],
+    down_buf: &mut [f32],
+) {
+    assert_eq!(hidden.len(), normed.len());
+    assert!(n_embd > 0 && n_ff > 0);
+    assert_eq!(n_embd % 32, 0);
+    assert_eq!(n_ff % 32, 0);
+    assert_eq!(hidden.len() % n_embd, 0);
+    assert_eq!(gate_buf.len(), n_ff);
+    assert_eq!(up_buf.len(), n_ff);
+    assert_eq!(down_buf.len(), n_embd);
+
+    let max_input = n_embd.max(n_ff);
+    let mut q8 = vec![0u8; max_input];
+    let mut scales = vec![0.0f32; max_input / 32];
+
+    for (input, residual) in normed
+        .chunks_exact(n_embd)
+        .zip(hidden.chunks_exact_mut(n_embd))
+    {
+        quantize_q8_0_into(input, n_embd, &mut q8[..n_embd], &mut scales[..n_embd / 32]);
+        matmul_q8_0_quantized(
+            w_gate,
+            &q8[..n_embd],
+            &scales[..n_embd / 32],
+            gate_buf,
+            n_embd,
+            n_ff,
+        );
+        matmul_q8_0_quantized(
+            w_up,
+            &q8[..n_embd],
+            &scales[..n_embd / 32],
+            up_buf,
+            n_embd,
+            n_ff,
+        );
+
+        for index in 0..n_ff {
+            gate_buf[index] = silu(gate_buf[index]) * up_buf[index];
+        }
+
+        quantize_q8_0_into(gate_buf, n_ff, &mut q8[..n_ff], &mut scales[..n_ff / 32]);
+        matmul_q8_0_quantized(
+            w_down,
+            &q8[..n_ff],
+            &scales[..n_ff / 32],
+            down_buf,
+            n_ff,
+            n_embd,
+        );
+
+        for index in 0..n_embd {
+            residual[index] += down_buf[index];
+        }
+    }
+}
+
 fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_format: KvFormat) {
     let t0 = Instant::now();
     println!("Loading {} ...", model_path);
@@ -637,7 +752,7 @@ fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_forma
     let mut scale_buf = vec![0.0f32; max_n_in / 32];
     let mut gate_buf = vec![0.0f32; n_ff];
     let mut up_buf = vec![0.0f32; n_ff];
-    let mut down_buf = vec![0.0f32; n_ff];
+    let mut down_buf = vec![0.0f32; n_embd];
 
     for t in 0..n_tokens {
         let token_id = prompt_tokens[t];
@@ -816,34 +931,18 @@ fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_forma
             );
         }
 
-        for t in 0..n_tokens {
-            let x = &normed[t * n_embd..(t + 1) * n_embd];
-
-            let mut local_q8 = vec![0u8; n_embd];
-            let mut local_sc = vec![0.0f32; n_embd / 32];
-            quantize_q8_0_into(x, n_embd, &mut local_q8, &mut local_sc);
-
-            matmul_q8_0_quantized(lw.w_gate, &local_q8, &local_sc, &mut up_buf, n_embd, n_ff);
-            matmul_q8_0_quantized(lw.w_up, &local_q8, &local_sc, &mut gate_buf, n_embd, n_ff);
-        }
-
-        silu_mul_inplace(&up_buf, &mut gate_buf);
-
-        for t in 0..n_tokens {
-            let down = &mut down_buf[t * n_embd..(t + 1) * n_embd];
-            let mut local_q8 = vec![0u8; n_ff];
-            let mut local_sc = vec![0.0f32; n_ff / 32];
-            quantize_q8_0_into(&gate_buf, n_ff, &mut local_q8, &mut local_sc);
-            matmul_q8_0_quantized(lw.w_down, &local_q8, &local_sc, down, n_ff, n_embd);
-        }
-
-        for t in 0..n_tokens {
-            let x = &mut hidden[t * n_embd..(t + 1) * n_embd];
-            let down = &down_buf[t * n_embd..(t + 1) * n_embd];
-            for i in 0..n_embd {
-                x[i] += down[i];
-            }
-        }
+        apply_embedding_ffn_q8_0(
+            &mut hidden,
+            &normed,
+            n_embd,
+            n_ff,
+            lw.w_gate,
+            lw.w_up,
+            lw.w_down,
+            &mut gate_buf,
+            &mut up_buf,
+            &mut down_buf,
+        );
     }
 
     for t in 0..n_tokens {
