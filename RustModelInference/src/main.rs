@@ -1482,6 +1482,7 @@ fn run_inference(
             let attn_out_ptr = scratch.attn_out.as_mut_ptr();
             let attn_proj_ptr = scratch.attn_proj.as_mut_ptr();
             let down_buf_ptr = scratch.down_buf.as_mut_ptr();
+            let scores_ptr = scratch.scores.as_mut_ptr();
             let gate_buf_ptr = scratch.gate_buf.as_mut_ptr();
             let up_buf_ptr = scratch.up_buf.as_mut_ptr();
             let q8_buf_ptr = scratch.q8_buf.as_mut_ptr();
@@ -1695,43 +1696,33 @@ fn run_inference(
                 } else {
                     let k_cache = slice_from_ref!(k_cache_f32_ptr, kv_cache_size);
                     let v_cache = slice_from_ref!(v_cache_f32_ptr, kv_cache_size);
+                    let scores = slice_from_mut!(scores_ptr, n_threads * max_ctx);
                     for h in h_start..h_end {
                         let kv_h = h / group_size;
                         let q_off = h * n_embd_head_k;
                         let n_cached = pos + 1;
+                        let n_padded = (n_cached + 255) / 256 * 256;
                         let out_base = h * n_embd_head_v;
-                        let mut ms = 0.0f32;
-                        let mut s_sum = 0.0f32;
-                        for d in 0..n_embd_head_v {
-                            attn_out[out_base + d] = 0.0;
-                        }
+                        let s_off = ith * max_ctx;
                         for t in 0..n_cached {
-                            let score = dot_f32(
+                            scores[s_off + t] = dot_f32(
                                 &q[q_off..q_off + n_embd_head_k],
                                 &k_cache[kb + t * n_embd_gqa + kv_h * n_embd_head_v
                                     ..kb + t * n_embd_gqa + kv_h * n_embd_head_v + n_embd_head_k],
                                 n_embd_head_k,
                             ) * kq_scale;
-                            if score > ms {
-                                let rescale = (ms - score).exp();
-                                vec_scale_f32(
-                                    &mut attn_out[out_base..out_base + n_embd_head_v],
-                                    rescale,
-                                );
-                                s_sum *= rescale;
-                                ms = score;
-                            }
-                            let vs = (score - ms).exp();
+                        }
+                        scores[s_off + n_cached..s_off + n_padded].fill(f32::NEG_INFINITY);
+                        softmax(&mut scores[s_off..s_off + n_padded]);
+                        attn_out[out_base..out_base + n_embd_head_v].fill(0.0);
+                        for t in 0..n_cached {
                             let v_base = kb + t * n_embd_gqa + kv_h * n_embd_head_v;
                             vec_mad_f32(
                                 &mut attn_out[out_base..out_base + n_embd_head_v],
                                 &v_cache[v_base..v_base + n_embd_head_v],
-                                vs,
+                                scores[s_off + t],
                             );
-                            s_sum += vs;
                         }
-                        let inv_sum = 1.0 / s_sum;
-                        vec_scale_f32(&mut attn_out[out_base..out_base + n_embd_head_v], inv_sum);
                     }
                 }
             });
