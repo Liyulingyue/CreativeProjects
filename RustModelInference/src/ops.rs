@@ -392,13 +392,21 @@ fn dot_f32_scalar(a: &[f32], b: &[f32], n: usize) -> f32 {
 #[target_feature(enable = "neon")]
 unsafe fn dot_f32_neon(a: &[f32], b: &[f32], n: usize) -> f32 {
     use std::arch::aarch64::*;
-    let mut acc = vdupq_n_f32(0.0);
+    let mut acc0 = vdupq_n_f32(0.0);
+    let mut acc1 = vdupq_n_f32(0.0);
+    let mut acc2 = vdupq_n_f32(0.0);
+    let mut acc3 = vdupq_n_f32(0.0);
     let mut i = 0;
-    while i + 4 <= n {
-        acc = vfmaq_f32(acc, vld1q_f32(a.as_ptr().add(i)), vld1q_f32(b.as_ptr().add(i)));
-        i += 4;
+    while i + 16 <= n {
+        acc0 = vfmaq_f32(acc0, vld1q_f32(a.as_ptr().add(i)), vld1q_f32(b.as_ptr().add(i)));
+        acc1 = vfmaq_f32(acc1, vld1q_f32(a.as_ptr().add(i + 4)), vld1q_f32(b.as_ptr().add(i + 4)));
+        acc2 = vfmaq_f32(acc2, vld1q_f32(a.as_ptr().add(i + 8)), vld1q_f32(b.as_ptr().add(i + 8)));
+        acc3 = vfmaq_f32(acc3, vld1q_f32(a.as_ptr().add(i + 12)), vld1q_f32(b.as_ptr().add(i + 12)));
+        i += 16;
     }
-    let mut sum = vaddvq_f32(acc);
+    acc0 = vaddq_f32(acc0, acc2);
+    acc1 = vaddq_f32(acc1, acc3);
+    let mut sum = vaddvq_f32(vaddq_f32(acc0, acc1));
     while i < n {
         sum += a[i] * b[i];
         i += 1;
@@ -1667,6 +1675,25 @@ mod neon_tests {
             output.map(f32::to_bits),
             [0x3fdd_b3d6, 0x39dd_b3d6, 0x39dd_b3d6],
         );
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_dot_f32_matches_ggml_four_accumulator_reduction() {
+        let a = [
+            1035226804, 3189287613, 3181886457, 3193572547, 1042787479, 3172027867,
+            1034549374, 3188264325, 1056115932, 3201905443, 3188891406, 1051732974,
+            1049988604, 3191259790, 3197162127, 1039754039,
+        ]
+        .map(f32::from_bits);
+        let b = [
+            1075433967, 1074732927, 1057635659, 3215511252, 3198768119, 1079784837,
+            1023408184, 3203974092, 3215464821, 3191576483, 1049344900, 1021989171,
+            3207345090, 3229966761, 3189361871, 1036416888,
+        ]
+        .map(f32::from_bits);
+
+        assert_eq!(unsafe { dot_f32_neon(&a, &b, a.len()) }.to_bits(), 0x3d07_1678);
     }
 
     #[cfg(target_arch = "aarch64")]
