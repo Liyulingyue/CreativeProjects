@@ -222,8 +222,51 @@ impl QWeight {
     }
 
     pub fn quantize_and_matmul(&self, input: &[f32], q8k_buf: &mut [quant::BlockQ8K], buf: &mut [f32]) {
-        quant::quantize_row_q8_k_into(input, q8k_buf);
-        self.matmul_with_q8k_into_buf_rayon(q8k_buf, buf);
+        let mut q8_buf = vec![0u8; input.len()];
+        let mut scale_buf = vec![0.0f32; (input.len() + 31) / 32];
+        let pool = ComputePool::new(1);
+        self.quantize_and_matmul_with_scratch(input, q8k_buf, &mut q8_buf, &mut scale_buf, buf, &pool);
+    }
+
+    fn quantize_and_matmul_with_scratch(
+        &self,
+        input: &[f32],
+        q8k_buf: &mut [quant::BlockQ8K],
+        q8_buf: &mut [u8],
+        scale_buf: &mut [f32],
+        buf: &mut [f32],
+        pool: &ComputePool,
+    ) {
+        debug_assert_eq!(input.len(), self.n_cols());
+        // ponytail: shared activations are re-quantized per projection; cache only if profiling justifies the extra state.
+        match self {
+            QWeight::Q4K { n_cols, .. }
+            | QWeight::Q5K { n_cols, .. }
+            | QWeight::Q6K { n_cols, .. } => {
+                let blocks = *n_cols / QK_K;
+                quant::quantize_row_q8_k_into(input, &mut q8k_buf[..blocks]);
+                self.matmul_with_q8k_into_buf_rayon(&q8k_buf[..blocks], buf);
+            }
+            QWeight::Q8_0 { data, n_cols, n_rows } => {
+                let blocks = *n_cols / 32;
+                crate::ops::quantize_q8_0_into(
+                    input,
+                    *n_cols,
+                    &mut q8_buf[..*n_cols],
+                    &mut scale_buf[..blocks],
+                );
+                crate::ops::matmul_q8_0_quantized_dynamic(
+                    data,
+                    &q8_buf[..*n_cols],
+                    &scale_buf[..blocks],
+                    &mut buf[..*n_rows],
+                    *n_cols,
+                    *n_rows,
+                    pool,
+                );
+            }
+            QWeight::F32 { .. } | QWeight::F16 { .. } => self.matmul_into_buf_rayon(input, buf),
+        }
     }
 
     pub fn matmul_with_q8k_into_buf_pooled(&self, q8k: &[quant::BlockQ8K], buf: &mut [f32], pool: &ComputePool) {
@@ -848,9 +891,14 @@ impl Qwen35Model {
         }
 
         let last_normed = &normed[(n_tokens - 1) * n_embd..n_tokens * n_embd];
-        let nb_embd = (n_embd + 255) / 256;
-        quant::quantize_row_q8_k_into(last_normed, &mut scratch.q8k_buf[..nb_embd]);
-        self.output_weight.matmul_with_q8k_into_buf_rayon(&scratch.q8k_buf[..nb_embd], &mut scratch.matmul_out);
+        self.output_weight.quantize_and_matmul_with_scratch(
+            last_normed,
+            &mut scratch.q8k_buf,
+            &mut scratch.q8_buf,
+            &mut scratch.scale_buf,
+            &mut scratch.matmul_out,
+            pool,
+        );
         let mut result = vec![0.0f32; cfg.vocab_size];
         let n = scratch.matmul_out.len().min(cfg.vocab_size);
         result[..n].copy_from_slice(&scratch.matmul_out[..n]);
@@ -894,17 +942,15 @@ impl Qwen35Model {
         let mut t_score: f64 = 0.0;
         let mut t_wo: f64 = 0.0;
 
-        let nb_embd = (n_embd + 255) / 256;
         for t in 0..n_tokens {
             let inp_off = t * n_embd;
             let t0 = std::time::Instant::now();
             let inp_slice = &input[inp_off..inp_off + n_embd];
-            quant::quantize_row_q8_k_into(inp_slice, &mut scratch.q8k_buf[..nb_embd]);
-            wq.matmul_with_q8k_into_buf_rayon(&scratch.q8k_buf[..nb_embd], &mut scratch.matmul_out);
+            wq.quantize_and_matmul_with_scratch(inp_slice, &mut scratch.q8k_buf, &mut scratch.q8_buf, &mut scratch.scale_buf, &mut scratch.matmul_out, pool);
             scratch.q_buf[t * q_dim..t * q_dim + q_dim].copy_from_slice(&scratch.matmul_out[..q_dim]);
-            wk.matmul_with_q8k_into_buf_rayon(&scratch.q8k_buf[..nb_embd], &mut scratch.matmul_out);
+            wk.quantize_and_matmul_with_scratch(inp_slice, &mut scratch.q8k_buf, &mut scratch.q8_buf, &mut scratch.scale_buf, &mut scratch.matmul_out, pool);
             scratch.k_buf[t * k_dim..t * k_dim + k_dim].copy_from_slice(&scratch.matmul_out[..k_dim]);
-            wv.matmul_with_q8k_into_buf_rayon(&scratch.q8k_buf[..nb_embd], &mut scratch.matmul_out);
+            wv.quantize_and_matmul_with_scratch(inp_slice, &mut scratch.q8k_buf, &mut scratch.q8_buf, &mut scratch.scale_buf, &mut scratch.matmul_out, pool);
             scratch.v_buf[t * v_dim..t * v_dim + v_dim].copy_from_slice(&scratch.matmul_out[..v_dim]);
             t_qkv += t0.elapsed().as_secs_f64();
         }
@@ -1030,11 +1076,9 @@ impl Qwen35Model {
 
         let mut result = vec![0.0f32; n_tokens * n_embd];
         let t0 = std::time::Instant::now();
-        let nb_attn = (n_embd_heads_total + 255) / 256;
         for t in 0..n_tokens {
             let wo_input = &scratch.attn_out_buf[t * n_embd_heads_total..t * n_embd_heads_total + n_embd_heads_total];
-            quant::quantize_row_q8_k_into(wo_input, &mut scratch.q8k_buf[..nb_attn]);
-            wo.matmul_with_q8k_into_buf_rayon(&scratch.q8k_buf[..nb_attn], &mut scratch.matmul_out);
+            wo.quantize_and_matmul_with_scratch(wo_input, &mut scratch.q8k_buf, &mut scratch.q8_buf, &mut scratch.scale_buf, &mut scratch.matmul_out, pool);
             result[t * n_embd..t * n_embd + n_embd].copy_from_slice(&scratch.matmul_out[..n_embd]);
         }        t_wo += t0.elapsed().as_secs_f64();
         if profile {
@@ -1081,18 +1125,15 @@ impl Qwen35Model {
         for t in 0..n_tokens {
             let inp_off = t * n_embd;
             let inp_slice = &input[inp_off..inp_off + n_embd];
-            let nb = (n_embd + 255) / 256;
-            quant::quantize_row_q8_k_into(inp_slice, &mut scratch.q8k_buf[..nb]);
-            let q8k_ref = &scratch.q8k_buf[..nb];
-            wqkv.matmul_with_q8k_into_buf_rayon(q8k_ref, &mut scratch.matmul_out);
+            wqkv.quantize_and_matmul_with_scratch(inp_slice, &mut scratch.q8k_buf, &mut scratch.q8_buf, &mut scratch.scale_buf, &mut scratch.matmul_out, pool);
             scratch.qkv_buf[t * conv_dim..t * conv_dim + conv_dim].copy_from_slice(&scratch.matmul_out[..conv_dim]);
-            wqkv_gate.matmul_with_q8k_into_buf_rayon(q8k_ref, &mut scratch.matmul_out);
+            wqkv_gate.quantize_and_matmul_with_scratch(inp_slice, &mut scratch.q8k_buf, &mut scratch.q8_buf, &mut scratch.scale_buf, &mut scratch.matmul_out, pool);
             scratch.z_buf[t * value_dim..t * value_dim + value_dim].copy_from_slice(&scratch.matmul_out[..value_dim]);
-            ssm_beta.matmul_into(inp_slice, &mut scratch.matmul_out, 0, ssm_beta.n_rows());
+            ssm_beta.quantize_and_matmul_with_scratch(inp_slice, &mut scratch.q8k_buf, &mut scratch.q8_buf, &mut scratch.scale_buf, &mut scratch.matmul_out, pool);
             let n_beta = ssm_beta.n_rows().min(num_v_heads);
             scratch.beta_buf[t * num_v_heads..t * num_v_heads + n_beta].copy_from_slice(&scratch.matmul_out[..n_beta]);
             for v in 0..num_v_heads { scratch.beta_buf[t * num_v_heads + v] = sigmoid_f32(scratch.beta_buf[t * num_v_heads + v]); }
-            ssm_alpha.matmul_into(inp_slice, &mut scratch.matmul_out, 0, ssm_alpha.n_rows());
+            ssm_alpha.quantize_and_matmul_with_scratch(inp_slice, &mut scratch.q8k_buf, &mut scratch.q8_buf, &mut scratch.scale_buf, &mut scratch.matmul_out, pool);
             let n_alpha = ssm_alpha.n_rows().min(num_v_heads);
             scratch.alpha_buf[t * num_v_heads..t * num_v_heads + n_alpha].copy_from_slice(&scratch.matmul_out[..n_alpha]);
             for v in 0..num_v_heads {
@@ -1244,11 +1285,9 @@ impl Qwen35Model {
         let tnorm = tn0.elapsed().as_secs_f64();
         let mut result = vec![0.0f32; n_tokens * n_embd];
         let t0 = std::time::Instant::now();
-        let nb_out = (value_dim + 255) / 256;
         for t in 0..n_tokens {
             let inp = &scratch.attn_out_buf[t * value_dim..][..value_dim];
-            quant::quantize_row_q8_k_into(inp, &mut scratch.q8k_buf[..nb_out]);
-            ssm_out.matmul_with_q8k_into_buf_rayon(&scratch.q8k_buf[..nb_out], &mut scratch.matmul_out);
+            ssm_out.quantize_and_matmul_with_scratch(inp, &mut scratch.q8k_buf, &mut scratch.q8_buf, &mut scratch.scale_buf, &mut scratch.matmul_out, pool);
             result[t * n_embd..t * n_embd + n_embd].copy_from_slice(&scratch.matmul_out[..n_embd]);
         }
         let t_out_matmul = t0.elapsed().as_secs_f64();
@@ -1258,18 +1297,15 @@ impl Qwen35Model {
         result
     }
 
-    fn forward_ffn_parallel(&self, layer: &Qwen35LayerWeights, hidden: &[f32], n_tokens: usize, scratch: &mut Qwen35Scratchpad, _pool: &ComputePool) {
+    fn forward_ffn_parallel(&self, layer: &Qwen35LayerWeights, hidden: &[f32], n_tokens: usize, scratch: &mut Qwen35Scratchpad, pool: &ComputePool) {
         let n_embd = self.config.n_embd;
         let n_ff = self.config.n_ff;
-        let nb_embd = (n_embd + 255) / 256;
-        let nb_ff = (n_ff + 255) / 256;
 
         if let Some(ref gate_up) = layer.ffn_gate_up {
             for t in 0..n_tokens {
                 let off = t * n_embd;
                 let inp = &hidden[off..off + n_embd];
-                quant::quantize_row_q8_k_into(inp, &mut scratch.q8k_buf[..nb_embd]);
-                gate_up.matmul_with_q8k_into_buf_rayon(&scratch.q8k_buf[..nb_embd], &mut scratch.matmul_out);
+                gate_up.quantize_and_matmul_with_scratch(inp, &mut scratch.q8k_buf, &mut scratch.q8_buf, &mut scratch.scale_buf, &mut scratch.matmul_out, pool);
                 scratch.ffn_gate_buf[t * n_ff..t * n_ff + n_ff].copy_from_slice(&scratch.matmul_out[..n_ff]);
                 scratch.ffn_up_buf[t * n_ff..t * n_ff + n_ff].copy_from_slice(&scratch.matmul_out[n_ff..2 * n_ff]);
             }
@@ -1277,10 +1313,9 @@ impl Qwen35Model {
             for t in 0..n_tokens {
                 let off = t * n_embd;
                 let inp = &hidden[off..off + n_embd];
-                quant::quantize_row_q8_k_into(inp, &mut scratch.q8k_buf[..nb_embd]);
-                layer.ffn_gate.matmul_with_q8k_into_buf_rayon(&scratch.q8k_buf[..nb_embd], &mut scratch.matmul_out);
+                layer.ffn_gate.quantize_and_matmul_with_scratch(inp, &mut scratch.q8k_buf, &mut scratch.q8_buf, &mut scratch.scale_buf, &mut scratch.matmul_out, pool);
                 scratch.ffn_gate_buf[t * n_ff..t * n_ff + n_ff].copy_from_slice(&scratch.matmul_out[..n_ff]);
-                layer.ffn_up.matmul_with_q8k_into_buf_rayon(&scratch.q8k_buf[..nb_embd], &mut scratch.matmul_out);
+                layer.ffn_up.quantize_and_matmul_with_scratch(inp, &mut scratch.q8k_buf, &mut scratch.q8_buf, &mut scratch.scale_buf, &mut scratch.matmul_out, pool);
                 scratch.ffn_up_buf[t * n_ff..t * n_ff + n_ff].copy_from_slice(&scratch.matmul_out[..n_ff]);
             }
         }
@@ -1289,8 +1324,7 @@ impl Qwen35Model {
 
         for t in 0..n_tokens {
             let down_inp = &scratch.ffn_up_buf[t * n_ff..][..n_ff];
-            quant::quantize_row_q8_k_into(down_inp, &mut scratch.q8k_buf[..nb_ff]);
-            layer.ffn_down.matmul_with_q8k_into_buf_rayon(&scratch.q8k_buf[..nb_ff], &mut scratch.matmul_out);
+            layer.ffn_down.quantize_and_matmul_with_scratch(down_inp, &mut scratch.q8k_buf, &mut scratch.q8_buf, &mut scratch.scale_buf, &mut scratch.matmul_out, pool);
             scratch.buf[t * n_embd..t * n_embd + n_embd].copy_from_slice(&scratch.matmul_out[..n_embd]);
         }
     }
@@ -1374,6 +1408,8 @@ pub struct Qwen35Scratchpad {
     pub matmul_out: Vec<f32>,
     pub q_scaled_buf: Vec<f32>,
     pub q8k_buf: Vec<quant::BlockQ8K>,
+    pub q8_buf: Vec<u8>,
+    pub scale_buf: Vec<f32>,
 }
 
 impl Qwen35Scratchpad {
@@ -1393,6 +1429,7 @@ impl Qwen35Scratchpad {
         let head_v_dim = d_inner / num_v_heads;
         let q_dim = n_embd_head * n_head * 2;
         let dense_attn_out_dim = n_embd_head * n_head;
+        let max_matmul_input = n_embd.max(n_ff).max(value_dim);
 
         Self {
             x: vec![0.0; max_tokens * n_embd],
@@ -1415,7 +1452,9 @@ impl Qwen35Scratchpad {
             matmul_out: vec![0.0; (2 * n_ff).max(conv_dim).max(n_embd).max(config.vocab_size)],
             normed_buf: vec![0.0; max_tokens * n_embd],
             q_scaled_buf: vec![0.0; head_v_dim],
-            q8k_buf: vec![quant::BlockQ8K { d: 0.0, qs: [0i8; 256], bsums: [0i16; 16] }; (n_embd.max(n_ff) + 255) / 256],
+            q8k_buf: vec![quant::BlockQ8K { d: 0.0, qs: [0i8; 256], bsums: [0i16; 16] }; (max_matmul_input + 255) / 256],
+            q8_buf: vec![0u8; max_matmul_input],
+            scale_buf: vec![0.0; (max_matmul_input + 31) / 32],
         }
     }
 }
@@ -1488,6 +1527,27 @@ mod tests {
             GGMLType::Q8_0,
         );
         Qwen35Model::from_gguf(&loader).unwrap();
+    }
+
+    #[test]
+    fn qwen35_q8_0_quantize_and_matmul_dispatches() {
+        let mut data = Vec::with_capacity(2 * 8 * quant::BLOCK_Q80_SIZE);
+        for quantized_value in [1u8, (-2i8) as u8] {
+            for _ in 0..8 {
+                data.extend_from_slice(&[0x00, 0x3c]);
+                data.extend(std::iter::repeat_n(quantized_value, 32));
+            }
+        }
+        let weight = QWeight::Q8_0 { data, n_cols: 256, n_rows: 2 };
+        let input = [1.0f32; 256];
+        let mut q8k_buf = vec![BlockQ8K { d: 0.0, qs: [0; 256], bsums: [0; 16] }; 1];
+        let mut output = [0.0f32; 2];
+
+        weight.quantize_and_matmul(&input, &mut q8k_buf, &mut output);
+
+        for (actual, expected) in output.into_iter().zip([256.0f32, -512.0]) {
+            assert!((actual - expected).abs() < 0.05, "actual={actual}, expected={expected}");
+        }
     }
 
     #[test]
