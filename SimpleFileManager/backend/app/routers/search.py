@@ -2,9 +2,11 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from fastapi import HTTPException
+from fastapi import APIRouter, HTTPException
 from ..deps import state
 from ..models import FileNode, SearchResult
+
+search = APIRouter()
 
 
 def _get_mime_type(path: Path) -> str:
