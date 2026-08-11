@@ -893,7 +893,7 @@ unsafe fn matmul_q8_0_vs_q8_0_neon(
                 weight.as_ptr().add(off + 2),
                 input_q8.as_ptr().add(block * 32),
             );
-            sum += wd * input_scales[block] * dot as f32;
+            sum = (dot as f32).mul_add(wd * input_scales[block], sum);
         }
         output[out_idx] = sum;
     }
@@ -1667,6 +1667,36 @@ mod neon_tests {
             output.map(f32::to_bits),
             [0x3fdd_b3d6, 0x39dd_b3d6, 0x39dd_b3d6],
         );
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_q8_matmul_matches_repacked_fused_block_accumulation() {
+        let mut weights = Vec::with_capacity(68);
+        for _ in 0..2 {
+            weights.extend_from_slice(&0x1800u16.to_le_bytes());
+            weights.push(127u8);
+            weights.extend_from_slice(&[0; 31]);
+        }
+        let mut input_q8 = vec![0u8; 64];
+        input_q8[0] = -127i8 as u8;
+        input_q8[32] = 127;
+        let input_scales = [f16_to_f32(0x1800), f16_to_f32(0x1a7d)];
+        let mut output = [0.0f32];
+
+        unsafe {
+            matmul_q8_0_vs_q8_0_neon(
+                &weights,
+                &input_q8,
+                &input_scales,
+                &mut output,
+                64,
+                0,
+                1,
+            );
+        }
+
+        assert_eq!(output[0].to_bits(), 0x3d1c_c57d);
     }
 
     #[cfg(target_arch = "aarch64")]
