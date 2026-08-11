@@ -147,62 +147,10 @@ pub fn rms_norm(input: &[f32], weight: &[f32], output: &mut [f32], eps: f32) {
 
 pub fn rms_norm_inplace(x: &mut [f32], weight: &[f32], eps: f32) {
     let n = x.len().min(weight.len());
-    let sum_sq = sum_sq_f32(&x[..n]);
-    let scale = 1.0f32 / (sum_sq / n as f32 + eps).sqrt();
+    let sum_sq: f64 = x[..n].iter().map(|&value| f64::from(value * value)).sum();
+    let mean_sq = (sum_sq / n as f64) as f32;
+    let scale = 1.0f32 / (mean_sq + eps).sqrt();
     scale_mul_inplace(scale, &weight[..n], &mut x[..n]);
-}
-
-fn sum_sq_f32(x: &[f32]) -> f32 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        if has_avx2_fma() {
-            return unsafe { sum_sq_f32_avx2(x) };
-        }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        if has_neon() {
-            return unsafe { sum_sq_f32_neon(x) };
-        }
-    }
-    x.iter().map(|&v| v * v).sum()
-}
-
-#[cfg(target_arch = "aarch64")]
-#[target_feature(enable = "neon")]
-unsafe fn sum_sq_f32_neon(x: &[f32]) -> f32 {
-    use std::arch::aarch64::*;
-    let mut acc = vdupq_n_f32(0.0);
-    let mut i = 0;
-    while i + 4 <= x.len() {
-        let value = vld1q_f32(x.as_ptr().add(i));
-        acc = vfmaq_f32(acc, value, value);
-        i += 4;
-    }
-    let mut sum = vaddvq_f32(acc);
-    while i < x.len() {
-        sum += x[i] * x[i];
-        i += 1;
-    }
-    sum
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2", enable = "fma")]
-unsafe fn sum_sq_f32_avx2(x: &[f32]) -> f32 {
-    use std::arch::x86_64::*;
-    let n = x.len();
-    let n8 = n / 8 * 8;
-    let mut acc = _mm256_setzero_ps();
-    let mut i = 0;
-    while i < n8 {
-        let v = _mm256_loadu_ps(x.as_ptr().add(i));
-        acc = _mm256_fmadd_ps(v, v, acc);
-        i += 8;
-    }
-    let mut sum = hsum_ps(acc);
-    while i < n { sum += x[i] * x[i]; i += 1; }
-    sum
 }
 
 fn scale_mul_inplace(scale: f32, weight: &[f32], x: &mut [f32]) {
@@ -1793,6 +1741,46 @@ mod neon_tests {
         assert_eq!(
             output.map(f32::to_bits),
             [0x3fdd_b3d6, 0x39dd_b3d6, 0x39dd_b3d6],
+        );
+    }
+
+    #[test]
+    fn rms_norm_inplace_matches_ggml_sequential_f64_accumulation() {
+        let mut values = [
+            f32::from_bits(0x3e57_d77b),
+            f32::from_bits(0xbd82_8687),
+            f32::from_bits(0xbe10_2e16),
+            f32::from_bits(0x3d2f_9fea),
+            f32::from_bits(0x3df4_8d0b),
+            f32::from_bits(0x3ded_164c),
+            f32::from_bits(0x3bcc_65ad),
+            f32::from_bits(0xbe18_b60f),
+        ];
+        let weight = [
+            f32::from_bits(0x4091_0000),
+            f32::from_bits(0x3f9f_0000),
+            f32::from_bits(0xbf3c_0000),
+            f32::from_bits(0x3fda_0000),
+            f32::from_bits(0x4026_0000),
+            f32::from_bits(0x3fc7_0000),
+            f32::from_bits(0x3f8c_0000),
+            f32::from_bits(0x3fbb_0000),
+        ];
+
+        rms_norm_inplace(&mut values, &weight, f32::from_bits(0x3586_37bd));
+
+        assert_eq!(
+            values.map(f32::to_bits),
+            [
+                0x40f9_71a9,
+                0xbf25_68fe,
+                0x3f58_0a09,
+                0x3f18_930b,
+                0x4021_c6f1,
+                0x3fbc_04bd,
+                0x3d64_1282,
+                0xbfe3_9aea,
+            ],
         );
     }
 
