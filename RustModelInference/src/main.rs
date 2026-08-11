@@ -11,6 +11,24 @@ enum KvFormat {
     F32,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum EmbeddingOutput {
+    #[default]
+    Summary,
+    Raw,
+}
+
+fn parse_embedding_output(value: Option<&str>) -> Result<EmbeddingOutput, String> {
+    match value {
+        Some("summary") => Ok(EmbeddingOutput::Summary),
+        Some("raw") => Ok(EmbeddingOutput::Raw),
+        Some(value) => Err(format!(
+            "Invalid --embedding-output {value:?}; expected summary or raw"
+        )),
+        None => Err("Missing value for --embedding-output".into()),
+    }
+}
+
 const DEFAULT_THREAD_CAP: usize = 8;
 
 fn resolve_thread_count(requested: usize, available: usize) -> usize {
@@ -43,7 +61,22 @@ fn per_second(count: usize, elapsed: Duration) -> f64 {
 #[cfg(test)]
 mod cli_tests {
     use super::*;
+    use std::collections::HashMap;
     use std::time::Duration;
+
+    #[test]
+    fn embedding_output_accepts_only_summary_or_raw() {
+        assert_eq!(
+            parse_embedding_output(Some("summary")).unwrap(),
+            EmbeddingOutput::Summary,
+        );
+        assert_eq!(
+            parse_embedding_output(Some("raw")).unwrap(),
+            EmbeddingOutput::Raw,
+        );
+        assert!(parse_embedding_output(Some("json")).is_err());
+        assert!(parse_embedding_output(None).is_err());
+    }
 
     #[test]
     fn default_threads_are_capped_but_explicit_value_wins() {
@@ -64,6 +97,274 @@ mod cli_tests {
         assert_eq!(inference_step_budget(5, 32, true), 37);
         assert_eq!(per_second(32, Duration::from_millis(250)), 128.0);
     }
+
+    fn tiny_embedding_tokenizer() -> BPETokenizer {
+        let metadata: HashMap<String, MetaValue> = HashMap::from([
+            (
+                "tokenizer.ggml.model".into(),
+                MetaValue::String("gpt2".into()),
+            ),
+            (
+                "tokenizer.ggml.pre".into(),
+                MetaValue::String("qwen2".into()),
+            ),
+            (
+                "tokenizer.ggml.tokens".into(),
+                MetaValue::Array(
+                    MetaValueType::String,
+                    ["h", "e", "l", "o", "<|endoftext|>"]
+                        .into_iter()
+                        .map(|value| MetaValue::String(value.into()))
+                        .collect(),
+                ),
+            ),
+            (
+                "tokenizer.ggml.token_type".into(),
+                MetaValue::Array(
+                    MetaValueType::Uint32,
+                    [1, 1, 1, 1, 3].into_iter().map(MetaValue::Uint32).collect(),
+                ),
+            ),
+            (
+                "tokenizer.ggml.merges".into(),
+                MetaValue::Array(MetaValueType::String, vec![]),
+            ),
+            ("tokenizer.ggml.bos_token_id".into(), MetaValue::Uint32(0)),
+            ("tokenizer.ggml.eos_token_id".into(), MetaValue::Uint32(4)),
+            (
+                "tokenizer.ggml.add_bos_token".into(),
+                MetaValue::Bool(false),
+            ),
+            ("tokenizer.ggml.add_eos_token".into(), MetaValue::Bool(true)),
+        ]);
+
+        BPETokenizer::from_gguf_metadata(|key| metadata.get(key).cloned()).unwrap()
+    }
+
+    fn q8_identity(size: usize) -> Vec<u8> {
+        assert_eq!(size % 32, 0);
+        let blocks_per_row = size / 32;
+        let row_stride = blocks_per_row * 34;
+        let mut weight = vec![0u8; size * row_stride];
+
+        for row in 0..size {
+            let block = row / 32;
+            let lane = row % 32;
+            let offset = row * row_stride + block * 34;
+            weight[offset..offset + 2]
+                .copy_from_slice(&half::f16::from_f32(1.0).to_bits().to_le_bytes());
+            weight[offset + 2 + lane] = 1;
+        }
+        weight
+    }
+
+    #[test]
+    fn embedding_ffn_keeps_each_tokens_projection_independent() {
+        let identity = q8_identity(32);
+        let mut normed = vec![0.0f32; 64];
+        normed[0] = 1.0;
+        normed[33] = 2.0;
+
+        let mut hidden = vec![0.0f32; 64];
+        hidden[0] = 10.0;
+        hidden[33] = 20.0;
+
+        apply_embedding_ffn_q8_0(
+            &mut hidden,
+            &normed,
+            32,
+            32,
+            &identity,
+            &identity,
+            &identity,
+            &mut [0.0; 32],
+            &mut [0.0; 32],
+            &mut [0.0; 32],
+        );
+
+        assert!((hidden[0] - 10.731059).abs() < 1e-4, "{}", hidden[0]);
+        assert!((hidden[33] - 23.523041).abs() < 1e-4, "{}", hidden[33]);
+        assert_eq!(hidden[1], 0.0);
+        assert_eq!(hidden[32], 0.0);
+    }
+
+    const EMBEDDING_TOKEN_CASES: &[(&str, &[u32])] = &[
+        ("hello", &[14990, 151643]),
+        (
+            "Hello, 世界! 123",
+            &[9707, 11, 220, 99489, 0, 220, 16, 17, 18, 151643],
+        ),
+        (
+            "What is the capital of China?",
+            &[3838, 374, 279, 6722, 315, 5616, 30, 151643],
+        ),
+        (
+            "The capital of China is Beijing.",
+            &[785, 6722, 315, 5616, 374, 26549, 13, 151643],
+        ),
+        (
+            "Photosynthesis converts light into chemical energy.",
+            &[31772, 73667, 32722, 3100, 1119, 11483, 4802, 13, 151643],
+        ),
+        (
+            "中国的首都是北京。",
+            &[105538, 59975, 100132, 68990, 1773, 151643],
+        ),
+    ];
+
+    #[test]
+    fn embedding_input_honors_tokenizer_eos_metadata() {
+        assert_eq!(
+            encode_embedding_input(&tiny_embedding_tokenizer(), "hello"),
+            vec![0, 1, 2, 2, 3, 4],
+        );
+    }
+
+    #[test]
+    fn embedding_config_defaults_to_causal_and_reads_last_pooling() {
+        let metadata = HashMap::from([("qwen3.pooling_type".to_string(), MetaValue::Uint32(3))]);
+
+        assert_eq!(
+            embedding_config("qwen3", |key| metadata.get(key).cloned()).unwrap(),
+            EmbeddingConfig {
+                causal_attn: true,
+                pooling: EmbeddingPooling::Last,
+            },
+        );
+    }
+
+    #[test]
+    fn embedding_config_reads_mean_and_non_causal_metadata() {
+        let metadata = HashMap::from([
+            ("qwen3.pooling_type".to_string(), MetaValue::Uint32(1)),
+            ("qwen3.attention.causal".to_string(), MetaValue::Bool(false)),
+        ]);
+
+        assert_eq!(
+            embedding_config("qwen3", |key| metadata.get(key).cloned()).unwrap(),
+            EmbeddingConfig {
+                causal_attn: false,
+                pooling: EmbeddingPooling::Mean,
+            },
+        );
+    }
+
+    #[test]
+    fn causal_embedding_attention_never_reads_future_keys() {
+        assert_eq!(
+            (0..3)
+                .map(|query| attention_key_end(query, 3, true))
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3],
+        );
+        assert_eq!(attention_key_end(0, 3, false), 3);
+    }
+
+    #[test]
+    fn embedding_positions_are_contiguous_from_zero() {
+        assert_eq!(embedding_positions(4).collect::<Vec<_>>(), vec![0, 1, 2, 3],);
+    }
+
+    #[test]
+    fn embedding_config_rejects_missing_malformed_or_unsupported_pooling() {
+        assert!(embedding_config("qwen3", |_| None)
+            .unwrap_err()
+            .contains("qwen3.pooling_type"));
+
+        let error = embedding_config("qwen3", |key| match key {
+            "qwen3.pooling_type" => Some(MetaValue::Bool(true)),
+            _ => None,
+        })
+        .unwrap_err();
+        assert!(error.contains("qwen3.pooling_type"), "{error}");
+
+        let error = embedding_config("qwen3", |key| match key {
+            "qwen3.pooling_type" => Some(MetaValue::Uint32(2)),
+            _ => None,
+        })
+        .unwrap_err();
+        assert!(error.contains("expected 1=MEAN or 3=LAST"), "{error}");
+    }
+
+    #[test]
+    fn embedding_config_rejects_non_boolean_causal_metadata() {
+        let metadata = HashMap::from([
+            ("qwen3.pooling_type".to_string(), MetaValue::Uint32(3)),
+            ("qwen3.attention.causal".to_string(), MetaValue::Uint32(1)),
+        ]);
+
+        let error = embedding_config("qwen3", |key| metadata.get(key).cloned()).unwrap_err();
+        assert!(error.contains("expected bool"), "{error}");
+    }
+
+    #[test]
+    fn embedding_pooling_supports_mean_and_last() {
+        let hidden = [1.0, 2.0, 5.0, 6.0];
+        assert_eq!(
+            pool_embedding_rows(&hidden, 2, 2, EmbeddingPooling::Mean).unwrap(),
+            vec![3.0, 4.0],
+        );
+        assert_eq!(
+            pool_embedding_rows(&hidden, 2, 2, EmbeddingPooling::Last).unwrap(),
+            vec![5.0, 6.0],
+        );
+    }
+
+    #[test]
+    fn embedding_pooling_rejects_invalid_shapes() {
+        assert!(pool_embedding_rows(&[], 0, 2, EmbeddingPooling::Last).is_err());
+        assert!(pool_embedding_rows(&[1.0], 1, 2, EmbeddingPooling::Last).is_err());
+    }
+
+    #[test]
+    fn embedding_l2_uses_f64_accumulation_and_preserves_zero() {
+        let mut values = vec![1.0f32];
+        values.extend(std::iter::repeat(1e-4f32).take(4096));
+        l2_normalize_embedding(&mut values).unwrap();
+        assert!((values[0] - 0.9999795).abs() < 1e-6, "{}", values[0]);
+
+        let mut zero = [0.0f32, 0.0];
+        l2_normalize_embedding(&mut zero).unwrap();
+        assert_eq!(zero, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn embedding_l2_normalizes_subnormal_vector() {
+        let mut values = [f32::from_bits(1)];
+        l2_normalize_embedding(&mut values).unwrap();
+        assert_eq!(values, [1.0]);
+    }
+
+    #[test]
+    fn embedding_l2_rejects_non_finite_values() {
+        for value in [f32::INFINITY, f32::NAN] {
+            let mut values = [value];
+            assert!(l2_normalize_embedding(&mut values).is_err());
+        }
+    }
+
+    #[test]
+    #[ignore = "requires QWEN3_EMBEDDING_MODEL"]
+    fn qwen3_embedding_tokens_match_pinned_llama_cpp() {
+        let model = std::env::var("QWEN3_EMBEDDING_MODEL").unwrap();
+        let loader = GGUFLoader::from_file(&model).unwrap();
+        let tokenizer =
+            BPETokenizer::from_gguf_metadata(|key| loader.metadata(key).cloned()).unwrap();
+
+        for &(text, expected) in EMBEDDING_TOKEN_CASES {
+            assert_eq!(
+                tokenizer.encode(
+                    text,
+                    EncodeOptions {
+                        add_special: true,
+                        parse_special: true,
+                    },
+                ),
+                expected,
+                "{text:?}",
+            );
+        }
+    }
 }
 
 fn main() {
@@ -79,6 +380,7 @@ fn main() {
     let mut bench = false;
     let mut profile = false;
     let mut embedding_mode = false;
+    let mut embedding_output = EmbeddingOutput::Summary;
     let mut kv_format = KvFormat::F16;
     let mut mmproj_path = String::new();
     let mut image_path = String::new();
@@ -126,6 +428,14 @@ fn main() {
             }
             "--embedding" => {
                 embedding_mode = true;
+            }
+            "--embedding-output" => {
+                embedding_output = parse_embedding_output(args.get(i + 1).map(String::as_str))
+                    .unwrap_or_else(|error| {
+                        eprintln!("{error}");
+                        std::process::exit(2);
+                    });
+                i += 1;
             }
             "--bench" => {
                 bench = true;
@@ -191,7 +501,7 @@ fn main() {
                 );
             }
             if embedding_mode {
-                run_embedding(&model_path, &prompt, n_threads, kv_format);
+                run_embedding(&model_path, &prompt, n_threads, kv_format, embedding_output);
                 return Ok(());
             }
             if dump_logits {
@@ -258,9 +568,212 @@ macro_rules! raw_parts {
     };
 }
 
-fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_format: KvFormat) {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EmbeddingPooling {
+    Mean,
+    Last,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EmbeddingConfig {
+    causal_attn: bool,
+    pooling: EmbeddingPooling,
+}
+
+fn embedding_config(
+    arch: &str,
+    get_meta: impl Fn(&str) -> Option<MetaValue>,
+) -> Result<EmbeddingConfig, String> {
+    let pooling_key = format!("{arch}.pooling_type");
+    let pooling = match get_meta(&pooling_key).and_then(|value| value.to_u64()) {
+        Some(1) => EmbeddingPooling::Mean,
+        Some(3) => EmbeddingPooling::Last,
+        Some(value) => {
+            return Err(format!(
+                "Unsupported {pooling_key}: {value}; expected 1=MEAN or 3=LAST"
+            ));
+        }
+        None => return Err(format!("Missing or invalid metadata: {pooling_key}")),
+    };
+
+    let causal_key = format!("{arch}.attention.causal");
+    let causal_attn = match get_meta(&causal_key) {
+        None => true,
+        Some(MetaValue::Bool(value)) => value,
+        Some(value) => {
+            return Err(format!(
+                "Invalid metadata {causal_key}: expected bool, got {value:?}"
+            ));
+        }
+    };
+
+    Ok(EmbeddingConfig {
+        causal_attn,
+        pooling,
+    })
+}
+
+fn encode_embedding_input(tokenizer: &BPETokenizer, prompt: &str) -> Vec<u32> {
+    tokenizer.encode(
+        prompt,
+        EncodeOptions {
+            add_special: true,
+            parse_special: true,
+        },
+    )
+}
+
+fn embedding_positions(n_tokens: usize) -> std::ops::Range<usize> {
+    0..n_tokens
+}
+
+fn attention_key_end(query: usize, n_tokens: usize, causal: bool) -> usize {
+    if causal {
+        (query + 1).min(n_tokens)
+    } else {
+        n_tokens
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_embedding_ffn_q8_0(
+    hidden: &mut [f32],
+    normed: &[f32],
+    n_embd: usize,
+    n_ff: usize,
+    w_gate: &[u8],
+    w_up: &[u8],
+    w_down: &[u8],
+    gate_buf: &mut [f32],
+    up_buf: &mut [f32],
+    down_buf: &mut [f32],
+) {
+    assert_eq!(hidden.len(), normed.len());
+    assert!(n_embd > 0 && n_ff > 0);
+    assert_eq!(n_embd % 32, 0);
+    assert_eq!(n_ff % 32, 0);
+    assert_eq!(hidden.len() % n_embd, 0);
+    assert_eq!(gate_buf.len(), n_ff);
+    assert_eq!(up_buf.len(), n_ff);
+    assert_eq!(down_buf.len(), n_embd);
+
+    let max_input = n_embd.max(n_ff);
+    let mut q8 = vec![0u8; max_input];
+    let mut scales = vec![0.0f32; max_input / 32];
+
+    for (input, residual) in normed
+        .chunks_exact(n_embd)
+        .zip(hidden.chunks_exact_mut(n_embd))
+    {
+        quantize_q8_0_into(input, n_embd, &mut q8[..n_embd], &mut scales[..n_embd / 32]);
+        matmul_q8_0_quantized(
+            w_gate,
+            &q8[..n_embd],
+            &scales[..n_embd / 32],
+            gate_buf,
+            n_embd,
+            n_ff,
+        );
+        matmul_q8_0_quantized(
+            w_up,
+            &q8[..n_embd],
+            &scales[..n_embd / 32],
+            up_buf,
+            n_embd,
+            n_ff,
+        );
+
+        silu_mul_inplace(gate_buf, up_buf);
+
+        quantize_q8_0_into(up_buf, n_ff, &mut q8[..n_ff], &mut scales[..n_ff / 32]);
+        matmul_q8_0_quantized(
+            w_down,
+            &q8[..n_ff],
+            &scales[..n_ff / 32],
+            down_buf,
+            n_ff,
+            n_embd,
+        );
+
+        for index in 0..n_embd {
+            residual[index] += down_buf[index];
+        }
+    }
+}
+
+fn pool_embedding_rows(
+    hidden: &[f32],
+    n_tokens: usize,
+    n_embd: usize,
+    pooling: EmbeddingPooling,
+) -> Result<Vec<f32>, String> {
+    let expected = n_tokens
+        .checked_mul(n_embd)
+        .ok_or_else(|| "Embedding shape overflow".to_string())?;
+    if n_tokens == 0 || n_embd == 0 || hidden.len() != expected {
+        return Err(format!(
+            "Invalid embedding shape: rows={n_tokens}, cols={n_embd}, values={}",
+            hidden.len()
+        ));
+    }
+
+    match pooling {
+        EmbeddingPooling::Last => Ok(hidden[(n_tokens - 1) * n_embd..n_tokens * n_embd].to_vec()),
+        EmbeddingPooling::Mean => {
+            let mut pooled = vec![0.0f32; n_embd];
+            for row in hidden.chunks_exact(n_embd) {
+                for (output, value) in pooled.iter_mut().zip(row) {
+                    *output += *value;
+                }
+            }
+            let scale = 1.0 / n_tokens as f32;
+            for value in &mut pooled {
+                *value *= scale;
+            }
+            Ok(pooled)
+        }
+    }
+}
+
+fn l2_normalize_embedding(values: &mut [f32]) -> Result<(), String> {
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err("Embedding contains a non-finite value".into());
+    }
+
+    let norm = values
+        .iter()
+        .map(|&value| {
+            let value = f64::from(value);
+            value * value
+        })
+        .sum::<f64>()
+        .sqrt();
+
+    if norm == 0.0 {
+        return Ok(());
+    }
+
+    for value in values.iter_mut() {
+        *value = (f64::from(*value) / norm) as f32;
+    }
+
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err("Normalized embedding contains a non-finite value".into());
+    }
+    Ok(())
+}
+
+fn run_embedding(
+    model_path: &str,
+    prompt: &str,
+    n_threads_arg: usize,
+    _kv_format: KvFormat,
+    output: EmbeddingOutput,
+) {
     let t0 = Instant::now();
-    println!("Loading {} ...", model_path);
+    if output == EmbeddingOutput::Summary {
+        println!("Loading {} ...", model_path);
+    }
     let loader = GGUFLoader::from_file(model_path).expect("Failed to load GGUF");
     let config = loader.model_config().expect("Failed to parse model config");
 
@@ -272,6 +785,11 @@ fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_forma
 
     let tokenizer = BPETokenizer::from_gguf_metadata(|k| loader.metadata(k).cloned())
         .expect("Failed to init tokenizer");
+    let embedding_cfg = embedding_config(&arch, |key| loader.metadata(key).cloned())
+        .unwrap_or_else(|error| {
+            eprintln!("Embedding metadata error: {error}");
+            std::process::exit(1);
+        });
 
     let n_embd = config.n_embd;
     let n_layer = config.n_layer;
@@ -347,19 +865,19 @@ fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_forma
         .collect();
 
     let load_ms = t0.elapsed().as_millis();
-    println!(
-        "Model: {} | n_embd={} n_layer={} n_head={} n_head_kv={} n_ff={} | loaded in {}ms",
-        arch, n_embd, n_layer, n_head, n_head_kv, n_ff, load_ms
-    );
+    if output == EmbeddingOutput::Summary {
+        println!(
+            "Model: {} | n_embd={} n_layer={} n_head={} n_head_kv={} n_ff={} | loaded in {}ms",
+            arch, n_embd, n_layer, n_head, n_head_kv, n_ff, load_ms
+        );
+    }
 
     let vocab = tokenizer.vocab_size();
-    let prompt_tokens = tokenizer.encode(
-        prompt,
-        EncodeOptions {
-            add_special: true,
-            parse_special: true,
-        },
-    );
+    let prompt_tokens = encode_embedding_input(&tokenizer, prompt);
+    if prompt_tokens.is_empty() {
+        eprintln!("Embedding input produced no tokens");
+        std::process::exit(1);
+    }
     let n_tokens = prompt_tokens.len();
     let available_threads = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -369,7 +887,9 @@ fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_forma
     let max_n_in = n_embd_q.max(n_ff);
     let pool = std::sync::Arc::new(thread_pool::ComputePool::new(n_threads));
     eprintln!("compute pool: {} threads", pool.n_threads());
-    println!("Prompt: {} ({} tokens)", prompt, n_tokens);
+    if output == EmbeddingOutput::Summary {
+        println!("Prompt: {} ({} tokens)", prompt, n_tokens);
+    }
 
     let kq_scale = 1.0f32 / (n_embd_head_k as f32).sqrt();
     let group_size = n_head / n_head_kv;
@@ -385,7 +905,10 @@ fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_forma
     let mut scale_buf = vec![0.0f32; max_n_in / 32];
     let mut gate_buf = vec![0.0f32; n_ff];
     let mut up_buf = vec![0.0f32; n_ff];
-    let mut down_buf = vec![0.0f32; n_ff];
+    let mut down_buf = vec![0.0f32; n_embd];
+    let max_n_padded = (n_tokens + 255) / 256 * 256;
+    let mut scores = vec![0.0f32; max_n_padded];
+    let mut values = vec![0.0f32; max_n_padded];
 
     for t in 0..n_tokens {
         let token_id = prompt_tokens[t];
@@ -468,7 +991,7 @@ fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_forma
             }
         }
 
-        for t in 0..n_tokens {
+        for t in embedding_positions(n_tokens) {
             let q = &mut q_buf[t * n_embd_q..(t + 1) * n_embd_q];
             for h in 0..n_head {
                 rope_neox(
@@ -479,13 +1002,13 @@ fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_forma
                 );
             }
         }
-        for t in 0..n_tokens {
+        for t in embedding_positions(n_tokens) {
             let k = &mut k_buf[t * n_embd_gqa..(t + 1) * n_embd_gqa];
             for h in 0..n_head_kv {
                 rope_neox(
                     &mut k[h * n_embd_head_k..(h + 1) * n_embd_head_k],
                     t,
-                    n_embd_head_v,
+                    n_embd_head_k,
                     freq_base,
                 );
             }
@@ -499,40 +1022,30 @@ fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_forma
                 let kv_h = h / group_size;
                 let q_off = h * n_embd_head_k;
                 let out_base = h * n_embd_head_v;
-
-                let mut ms = f32::NEG_INFINITY;
-                let mut s_sum = 0.0f32;
-                for d in 0..n_embd_head_v {
-                    attn_row[out_base + d] = 0.0;
-                }
-
-                for s in 0..n_tokens {
+                let n_cached = attention_key_end(t, n_tokens, embedding_cfg.causal_attn);
+                let n_padded = (n_cached + 255) / 256 * 256;
+                for s in 0..n_cached {
                     let k_row = &k_buf[s * n_embd_gqa..(s + 1) * n_embd_gqa];
-                    let v_row = &v_buf[s * n_embd_gqa..(s + 1) * n_embd_gqa];
-
-                    let score = dot_f32(
+                    scores[s] = dot_f32(
                         &q_row[q_off..q_off + n_embd_head_k],
                         &k_row[kv_h * n_embd_head_v..kv_h * n_embd_head_v + n_embd_head_k],
                         n_embd_head_k,
                     ) * kq_scale;
-
-                    if score > ms {
-                        let rescale = (ms - score).exp();
-                        vec_scale_f32(&mut attn_row[out_base..out_base + n_embd_head_v], rescale);
-                        s_sum *= rescale;
-                        ms = score;
-                    }
-                    let vs = (score - ms).exp();
-                    vec_mad_f32(
-                        &mut attn_row[out_base..out_base + n_embd_head_v],
-                        &v_row[kv_h * n_embd_head_v..kv_h * n_embd_head_v + n_embd_head_v],
-                        vs,
-                    );
-                    s_sum += vs;
                 }
-
-                let inv_sum = 1.0 / s_sum;
-                vec_scale_f32(&mut attn_row[out_base..out_base + n_embd_head_v], inv_sum);
+                scores[n_cached..n_padded].fill(f32::NEG_INFINITY);
+                softmax(&mut scores[..n_padded]);
+                for d in 0..n_embd_head_v {
+                    for s in 0..n_cached {
+                        values[s] = v_buf[s * n_embd_gqa + kv_h * n_embd_head_v + d];
+                    }
+                    values[n_cached..n_padded].fill(0.0);
+                    attn_row[out_base + d] = attention_value_f32(
+                        &values[..n_padded],
+                        &scores[..n_padded],
+                        n_cached,
+                        n_padded,
+                    );
+                }
             }
         }
 
@@ -564,34 +1077,18 @@ fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_forma
             );
         }
 
-        for t in 0..n_tokens {
-            let x = &normed[t * n_embd..(t + 1) * n_embd];
-
-            let mut local_q8 = vec![0u8; n_embd];
-            let mut local_sc = vec![0.0f32; n_embd / 32];
-            quantize_q8_0_into(x, n_embd, &mut local_q8, &mut local_sc);
-
-            matmul_q8_0_quantized(lw.w_gate, &local_q8, &local_sc, &mut up_buf, n_embd, n_ff);
-            matmul_q8_0_quantized(lw.w_up, &local_q8, &local_sc, &mut gate_buf, n_embd, n_ff);
-        }
-
-        silu_mul_inplace(&up_buf, &mut gate_buf);
-
-        for t in 0..n_tokens {
-            let down = &mut down_buf[t * n_embd..(t + 1) * n_embd];
-            let mut local_q8 = vec![0u8; n_ff];
-            let mut local_sc = vec![0.0f32; n_ff / 32];
-            quantize_q8_0_into(&gate_buf, n_ff, &mut local_q8, &mut local_sc);
-            matmul_q8_0_quantized(lw.w_down, &local_q8, &local_sc, down, n_ff, n_embd);
-        }
-
-        for t in 0..n_tokens {
-            let x = &mut hidden[t * n_embd..(t + 1) * n_embd];
-            let down = &down_buf[t * n_embd..(t + 1) * n_embd];
-            for i in 0..n_embd {
-                x[i] += down[i];
-            }
-        }
+        apply_embedding_ffn_q8_0(
+            &mut hidden,
+            &normed,
+            n_embd,
+            n_ff,
+            lw.w_gate,
+            lw.w_up,
+            lw.w_down,
+            &mut gate_buf,
+            &mut up_buf,
+            &mut down_buf,
+        );
     }
 
     for t in 0..n_tokens {
@@ -605,38 +1102,42 @@ fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_forma
         x.copy_from_slice(&normed[t * n_embd..(t + 1) * n_embd]);
     }
 
-    let mut pooled = vec![0.0f32; n_embd];
-    let inv_n = 1.0 / n_tokens as f32;
-    for i in 0..n_embd {
-        let mut sum = 0.0f32;
-        for t in 0..n_tokens {
-            sum += hidden[t * n_embd + i];
-        }
-        pooled[i] = sum * inv_n;
-    }
-
-    let norm: f32 = pooled.iter().map(|&x| x * x).sum::<f32>().sqrt();
-    for v in pooled.iter_mut() {
-        *v /= norm;
-    }
+    let mut pooled = pool_embedding_rows(&hidden, n_tokens, n_embd, embedding_cfg.pooling)
+        .unwrap_or_else(|error| {
+            eprintln!("Embedding pooling error: {error}");
+            std::process::exit(1);
+        });
+    l2_normalize_embedding(&mut pooled).unwrap_or_else(|error| {
+        eprintln!("Embedding normalization error: {error}");
+        std::process::exit(1);
+    });
 
     let embed_ms = t_embed.elapsed().as_millis();
-    println!(
-        "Embedding ({} dims, {} layers, {}ms):",
-        n_embd, n_layer, embed_ms
-    );
-    for (i, &v) in pooled.iter().enumerate() {
-        if i < 8 {
-            print!("{:+.6} ", v);
+    match output {
+        EmbeddingOutput::Summary => {
+            println!(
+                "Embedding ({} dims, {} layers, {}ms):",
+                n_embd, n_layer, embed_ms
+            );
+            for value in pooled.iter().take(8) {
+                print!("{value:+.6} ");
+            }
+            if n_embd > 8 {
+                print!("... ");
+                for value in &pooled[n_embd - 4..] {
+                    print!("{value:+.6} ");
+                }
+            }
+            println!();
+        }
+        EmbeddingOutput::Raw => {
+            print!("embedding_raw:");
+            for value in &pooled {
+                print!(" {value:.9}");
+            }
+            println!();
         }
     }
-    if n_embd > 8 {
-        print!("... ");
-        for i in (n_embd - 4)..n_embd {
-            print!("{:+.6} ", pooled[i]);
-        }
-    }
-    println!();
 }
 
 fn run_dump_logits(

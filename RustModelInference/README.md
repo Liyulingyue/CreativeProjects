@@ -27,6 +27,12 @@ cargo run --release --bin rust-model-inference -- --model models/Qwen3-0.6B-Q8_0
 cargo run --release --bin rust-model-inference -- --model models/Qwen3-0.6B-Q8_0.gguf
 ```
 
+```bash
+cargo run --release --bin rust-model-inference -- \
+  --model Qwen3-Embedding-0.6B-Q8_0.gguf \
+  --prompt "Hello, 世界! 123" --embedding --embedding-output raw --threads 1
+```
+
 ### Apple Silicon (ARM64)
 
 Apple Silicon builds natively and selects stable Rust NEON kernels automatically; Rosetta and external C/C++ libraries are not required. Scalar fallbacks remain available for operators without an ARM SIMD path.
@@ -58,6 +64,7 @@ cargo run --release --bin micro-bench -- --check
 | `--threads` | text/embedding: `min(available_parallelism, 8)`; dump-logits: 1; multimodal: 8 | Compute threads; explicitly configurable |
 | `--kv-cache` | `f16` | KV cache type: `f16` or `f32` |
 | `--bench` | off | Print separate `BENCH: pp` and `BENCH: tg` eval rates |
+| `--embedding-output` | `summary` | Embedding display: `summary` or machine-readable `raw` |
 
 ### Debug Flags (env vars)
 
