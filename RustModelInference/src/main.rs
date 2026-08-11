@@ -174,6 +174,25 @@ mod cli_tests {
     }
 
     #[test]
+    fn causal_embedding_attention_never_reads_future_keys() {
+        assert_eq!(
+            (0..3)
+                .map(|query| attention_key_end(query, 3, true))
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3],
+        );
+        assert_eq!(attention_key_end(0, 3, false), 3);
+    }
+
+    #[test]
+    fn embedding_positions_are_contiguous_from_zero() {
+        assert_eq!(
+            embedding_positions(4).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3],
+        );
+    }
+
+    #[test]
     fn embedding_config_rejects_missing_malformed_or_unsupported_pooling() {
         assert!(embedding_config("qwen3", |_| None)
             .unwrap_err()
@@ -476,6 +495,18 @@ fn encode_embedding_input(tokenizer: &BPETokenizer, prompt: &str) -> Vec<u32> {
     )
 }
 
+fn embedding_positions(n_tokens: usize) -> std::ops::Range<usize> {
+    0..n_tokens
+}
+
+fn attention_key_end(query: usize, n_tokens: usize, causal: bool) -> usize {
+    if causal {
+        (query + 1).min(n_tokens)
+    } else {
+        n_tokens
+    }
+}
+
 fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_format: KvFormat) {
     let t0 = Instant::now();
     println!("Loading {} ...", model_path);
@@ -689,7 +720,7 @@ fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_forma
             }
         }
 
-        for t in 0..n_tokens {
+        for t in embedding_positions(n_tokens) {
             let q = &mut q_buf[t * n_embd_q..(t + 1) * n_embd_q];
             for h in 0..n_head {
                 rope_neox(
@@ -700,13 +731,13 @@ fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_forma
                 );
             }
         }
-        for t in 0..n_tokens {
+        for t in embedding_positions(n_tokens) {
             let k = &mut k_buf[t * n_embd_gqa..(t + 1) * n_embd_gqa];
             for h in 0..n_head_kv {
                 rope_neox(
                     &mut k[h * n_embd_head_k..(h + 1) * n_embd_head_k],
                     t,
-                    n_embd_head_v,
+                    n_embd_head_k,
                     freq_base,
                 );
             }
@@ -727,7 +758,7 @@ fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_forma
                     attn_row[out_base + d] = 0.0;
                 }
 
-                for s in 0..n_tokens {
+                for s in 0..attention_key_end(t, n_tokens, embedding_cfg.causal_attn) {
                     let k_row = &k_buf[s * n_embd_gqa..(s + 1) * n_embd_gqa];
                     let v_row = &v_buf[s * n_embd_gqa..(s + 1) * n_embd_gqa];
 
