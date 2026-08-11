@@ -208,17 +208,18 @@ unsafe fn scale_mul_avx2(scale: f32, weight: &[f32], x: &mut [f32]) {
 pub fn rope_neox(x: &mut [f32], pos: usize, head_dim: usize, freq_base: f32) {
     let half = head_dim / 2;
     let n_heads = x.len() / head_dim;
+    let theta_scale = freq_base.powf(-2.0f32 / head_dim as f32);
     for h in 0..n_heads {
         let base = h * head_dim;
+        let mut theta = pos as f32;
         for i in 0..half {
-            let freq = 1.0f32 / freq_base.powf(2.0 * i as f32 / head_dim as f32);
-            let angle = pos as f32 * freq;
-            let cos_a = angle.cos();
-            let sin_a = angle.sin();
+            let cos_a = theta.cos();
+            let sin_a = theta.sin();
             let x0 = x[base + i];
             let x1 = x[base + i + half];
-            x[base + i] = x0 * cos_a - x1 * sin_a;
-            x[base + i + half] = x0 * sin_a + x1 * cos_a;
+            x[base + i] = x0.mul_add(cos_a, x1 * -sin_a);
+            x[base + i + half] = x0.mul_add(sin_a, x1 * cos_a);
+            theta *= theta_scale;
         }
     }
 }
@@ -1781,6 +1782,22 @@ mod neon_tests {
                 0x3d64_1282,
                 0xbfe3_9aea,
             ],
+        );
+    }
+
+    #[test]
+    fn rope_neox_matches_pinned_ggml_recurrence_and_fused_rotation() {
+        let mut values = [0.0f32; 128];
+        values[0] = f32::from_bits(0x402a_4f21);
+        values[1] = f32::from_bits(0x3fad_b711);
+        values[64] = f32::from_bits(0xbe0e_7273);
+        values[65] = f32::from_bits(0x3ef5_b8f9);
+
+        rope_neox(&mut values, 1, 128, 1_000_000.0);
+
+        assert_eq!(
+            [values[0], values[1], values[64], values[65]].map(f32::to_bits),
+            [0x3fc7_0519, 0x3f17_f682, 0x400a_7ff8, 0x3fa7_dc8a],
         );
     }
 
