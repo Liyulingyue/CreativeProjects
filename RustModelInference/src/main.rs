@@ -43,6 +43,7 @@ fn per_second(count: usize, elapsed: Duration) -> f64 {
 #[cfg(test)]
 mod cli_tests {
     use super::*;
+    use std::collections::HashMap;
     use std::time::Duration;
 
     #[test]
@@ -63,6 +64,168 @@ mod cli_tests {
     fn bench_budget_has_exact_decode_eval_count() {
         assert_eq!(inference_step_budget(5, 32, true), 37);
         assert_eq!(per_second(32, Duration::from_millis(250)), 128.0);
+    }
+
+    fn tiny_embedding_tokenizer() -> BPETokenizer {
+        let metadata: HashMap<String, MetaValue> = HashMap::from([
+            (
+                "tokenizer.ggml.model".into(),
+                MetaValue::String("gpt2".into()),
+            ),
+            (
+                "tokenizer.ggml.pre".into(),
+                MetaValue::String("qwen2".into()),
+            ),
+            (
+                "tokenizer.ggml.tokens".into(),
+                MetaValue::Array(
+                    MetaValueType::String,
+                    ["h", "e", "l", "o", "<|endoftext|>"]
+                        .into_iter()
+                        .map(|value| MetaValue::String(value.into()))
+                        .collect(),
+                ),
+            ),
+            (
+                "tokenizer.ggml.token_type".into(),
+                MetaValue::Array(
+                    MetaValueType::Uint32,
+                    [1, 1, 1, 1, 3]
+                        .into_iter()
+                        .map(MetaValue::Uint32)
+                        .collect(),
+                ),
+            ),
+            (
+                "tokenizer.ggml.merges".into(),
+                MetaValue::Array(MetaValueType::String, vec![]),
+            ),
+            ("tokenizer.ggml.bos_token_id".into(), MetaValue::Uint32(0)),
+            ("tokenizer.ggml.eos_token_id".into(), MetaValue::Uint32(4)),
+            (
+                "tokenizer.ggml.add_bos_token".into(),
+                MetaValue::Bool(false),
+            ),
+            ("tokenizer.ggml.add_eos_token".into(), MetaValue::Bool(true)),
+        ]);
+
+        BPETokenizer::from_gguf_metadata(|key| metadata.get(key).cloned()).unwrap()
+    }
+
+    const EMBEDDING_TOKEN_CASES: &[(&str, &[u32])] = &[
+        ("hello", &[14990, 151643]),
+        (
+            "Hello, 世界! 123",
+            &[9707, 11, 220, 99489, 0, 220, 16, 17, 18, 151643],
+        ),
+        (
+            "What is the capital of China?",
+            &[3838, 374, 279, 6722, 315, 5616, 30, 151643],
+        ),
+        (
+            "The capital of China is Beijing.",
+            &[785, 6722, 315, 5616, 374, 26549, 13, 151643],
+        ),
+        (
+            "Photosynthesis converts light into chemical energy.",
+            &[31772, 73667, 32722, 3100, 1119, 11483, 4802, 13, 151643],
+        ),
+        (
+            "中国的首都是北京。",
+            &[105538, 59975, 100132, 68990, 1773, 151643],
+        ),
+    ];
+
+    #[test]
+    fn embedding_input_honors_tokenizer_eos_metadata() {
+        assert_eq!(
+            encode_embedding_input(&tiny_embedding_tokenizer(), "hello"),
+            vec![0, 1, 2, 2, 3, 4],
+        );
+    }
+
+    #[test]
+    fn embedding_config_defaults_to_causal_and_reads_last_pooling() {
+        let metadata = HashMap::from([("qwen3.pooling_type".to_string(), MetaValue::Uint32(3))]);
+
+        assert_eq!(
+            embedding_config("qwen3", |key| metadata.get(key).cloned()).unwrap(),
+            EmbeddingConfig {
+                causal_attn: true,
+                pooling: EmbeddingPooling::Last,
+            },
+        );
+    }
+
+    #[test]
+    fn embedding_config_reads_mean_and_non_causal_metadata() {
+        let metadata = HashMap::from([
+            ("qwen3.pooling_type".to_string(), MetaValue::Uint32(1)),
+            ("qwen3.attention.causal".to_string(), MetaValue::Bool(false)),
+        ]);
+
+        assert_eq!(
+            embedding_config("qwen3", |key| metadata.get(key).cloned()).unwrap(),
+            EmbeddingConfig {
+                causal_attn: false,
+                pooling: EmbeddingPooling::Mean,
+            },
+        );
+    }
+
+    #[test]
+    fn embedding_config_rejects_missing_malformed_or_unsupported_pooling() {
+        assert!(embedding_config("qwen3", |_| None)
+            .unwrap_err()
+            .contains("qwen3.pooling_type"));
+
+        let error = embedding_config("qwen3", |key| match key {
+            "qwen3.pooling_type" => Some(MetaValue::Bool(true)),
+            _ => None,
+        })
+        .unwrap_err();
+        assert!(error.contains("qwen3.pooling_type"), "{error}");
+
+        let error = embedding_config("qwen3", |key| match key {
+            "qwen3.pooling_type" => Some(MetaValue::Uint32(2)),
+            _ => None,
+        })
+        .unwrap_err();
+        assert!(error.contains("expected 1=MEAN or 3=LAST"), "{error}");
+    }
+
+    #[test]
+    fn embedding_config_rejects_non_boolean_causal_metadata() {
+        let metadata = HashMap::from([
+            ("qwen3.pooling_type".to_string(), MetaValue::Uint32(3)),
+            ("qwen3.attention.causal".to_string(), MetaValue::Uint32(1)),
+        ]);
+
+        let error = embedding_config("qwen3", |key| metadata.get(key).cloned()).unwrap_err();
+        assert!(error.contains("expected bool"), "{error}");
+    }
+
+    #[test]
+    #[ignore = "requires QWEN3_EMBEDDING_MODEL"]
+    fn qwen3_embedding_tokens_match_pinned_llama_cpp() {
+        let model = std::env::var("QWEN3_EMBEDDING_MODEL").unwrap();
+        let loader = GGUFLoader::from_file(&model).unwrap();
+        let tokenizer =
+            BPETokenizer::from_gguf_metadata(|key| loader.metadata(key).cloned()).unwrap();
+
+        for &(text, expected) in EMBEDDING_TOKEN_CASES {
+            assert_eq!(
+                tokenizer.encode(
+                    text,
+                    EncodeOptions {
+                        add_special: true,
+                        parse_special: true,
+                    },
+                ),
+                expected,
+                "{text:?}",
+            );
+        }
     }
 }
 
@@ -258,6 +421,61 @@ macro_rules! raw_parts {
     };
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EmbeddingPooling {
+    Mean,
+    Last,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EmbeddingConfig {
+    causal_attn: bool,
+    pooling: EmbeddingPooling,
+}
+
+fn embedding_config(
+    arch: &str,
+    get_meta: impl Fn(&str) -> Option<MetaValue>,
+) -> Result<EmbeddingConfig, String> {
+    let pooling_key = format!("{arch}.pooling_type");
+    let pooling = match get_meta(&pooling_key).and_then(|value| value.to_u64()) {
+        Some(1) => EmbeddingPooling::Mean,
+        Some(3) => EmbeddingPooling::Last,
+        Some(value) => {
+            return Err(format!(
+                "Unsupported {pooling_key}: {value}; expected 1=MEAN or 3=LAST"
+            ));
+        }
+        None => return Err(format!("Missing or invalid metadata: {pooling_key}")),
+    };
+
+    let causal_key = format!("{arch}.attention.causal");
+    let causal_attn = match get_meta(&causal_key) {
+        None => true,
+        Some(MetaValue::Bool(value)) => value,
+        Some(value) => {
+            return Err(format!(
+                "Invalid metadata {causal_key}: expected bool, got {value:?}"
+            ));
+        }
+    };
+
+    Ok(EmbeddingConfig {
+        causal_attn,
+        pooling,
+    })
+}
+
+fn encode_embedding_input(tokenizer: &BPETokenizer, prompt: &str) -> Vec<u32> {
+    tokenizer.encode(
+        prompt,
+        EncodeOptions {
+            add_special: true,
+            parse_special: true,
+        },
+    )
+}
+
 fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_format: KvFormat) {
     let t0 = Instant::now();
     println!("Loading {} ...", model_path);
@@ -272,6 +490,11 @@ fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_forma
 
     let tokenizer = BPETokenizer::from_gguf_metadata(|k| loader.metadata(k).cloned())
         .expect("Failed to init tokenizer");
+    let embedding_cfg = embedding_config(&arch, |key| loader.metadata(key).cloned())
+        .unwrap_or_else(|error| {
+            eprintln!("Embedding metadata error: {error}");
+            std::process::exit(1);
+        });
 
     let n_embd = config.n_embd;
     let n_layer = config.n_layer;
@@ -353,13 +576,11 @@ fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_forma
     );
 
     let vocab = tokenizer.vocab_size();
-    let prompt_tokens = tokenizer.encode(
-        prompt,
-        EncodeOptions {
-            add_special: true,
-            parse_special: true,
-        },
-    );
+    let prompt_tokens = encode_embedding_input(&tokenizer, prompt);
+    if prompt_tokens.is_empty() {
+        eprintln!("Embedding input produced no tokens");
+        std::process::exit(1);
+    }
     let n_tokens = prompt_tokens.len();
     let available_threads = std::thread::available_parallelism()
         .map(|n| n.get())
