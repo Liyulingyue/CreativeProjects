@@ -303,6 +303,13 @@ mod cli_tests {
     }
 
     #[test]
+    fn embedding_l2_normalizes_subnormal_vector() {
+        let mut values = [f32::from_bits(1)];
+        l2_normalize_embedding(&mut values).unwrap();
+        assert_eq!(values, [1.0]);
+    }
+
+    #[test]
     fn embedding_l2_rejects_non_finite_values() {
         for value in [f32::INFINITY, f32::NAN] {
             let mut values = [value];
@@ -715,9 +722,8 @@ fn l2_normalize_embedding(values: &mut [f32]) -> Result<(), String> {
         return Ok(());
     }
 
-    let inverse = (1.0 / norm) as f32;
     for value in values.iter_mut() {
-        *value *= inverse;
+        *value = (f64::from(*value) / norm) as f32;
     }
 
     if values.iter().any(|value| !value.is_finite()) {
