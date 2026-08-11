@@ -1164,8 +1164,9 @@ impl Qwen35Model {
                 if trace_layer {
                     conv_raw[t * conv_dim + c] = conv_val;
                 }
-                scratch.qkv_buf[qkv_off + c] = silu_f32(conv_val);
+                scratch.qkv_buf[qkv_off + c] = conv_val;
             }
+            crate::ops::silu_inplace(&mut scratch.qkv_buf[qkv_off..qkv_off + conv_dim]);
         }
         #[cfg(feature = "parity-trace")]
         if trace_layer {
@@ -1480,7 +1481,6 @@ fn l2_norm(x: &mut [f32]) {
     for v in x.iter_mut() { *v *= inv; }
 }
 
-fn silu_f32(x: f32) -> f32 { x / (1.0 + (-x).exp()) }
 fn sigmoid_f32(x: f32) -> f32 { 1.0 / (1.0 + (-x).exp()) }
 fn softplus_f32(x: f32) -> f32 { if x > 20.0 { x } else { (1.0 + x.exp()).ln() } }
 
