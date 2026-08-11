@@ -616,6 +616,7 @@ impl Qwen35Model {
             let n_cols = ti.dims[0] as usize;
             let n_rows = ti.dims[1] as usize;
             match ti.ggml_type {
+                GGMLType::Q8_0 => quant::dequant_q80_weight(data, n_cols, n_rows),
                 GGMLType::Q6K => quant::dequant_q6k_weight(data, n_cols, n_rows),
                 _ => return Err("Unsupported token_embd type".into()),
             }
@@ -1475,6 +1476,19 @@ fn vec_dot_q6k_q8k_fast(q6k_data: &[u8], q8k: &[BlockQ8K]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires RMI_QWEN35_MODEL"]
+    fn qwen35_q8_0_model_loads() {
+        let path = std::env::var("RMI_QWEN35_MODEL").expect("RMI_QWEN35_MODEL must be set");
+        let loader = GGUFLoader::from_file(&path).unwrap();
+
+        assert_eq!(
+            loader.tensor_info("token_embd.weight").unwrap().ggml_type,
+            GGMLType::Q8_0,
+        );
+        Qwen35Model::from_gguf(&loader).unwrap();
+    }
 
     #[test]
     fn qwen35_positions_use_time_row_column_order() {
