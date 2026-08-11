@@ -787,7 +787,9 @@ fn run_embedding(
     output: EmbeddingOutput,
 ) {
     let t0 = Instant::now();
-    println!("Loading {} ...", model_path);
+    if output == EmbeddingOutput::Summary {
+        println!("Loading {} ...", model_path);
+    }
     let loader = GGUFLoader::from_file(model_path).expect("Failed to load GGUF");
     let config = loader.model_config().expect("Failed to parse model config");
 
@@ -879,10 +881,12 @@ fn run_embedding(
         .collect();
 
     let load_ms = t0.elapsed().as_millis();
-    println!(
-        "Model: {} | n_embd={} n_layer={} n_head={} n_head_kv={} n_ff={} | loaded in {}ms",
-        arch, n_embd, n_layer, n_head, n_head_kv, n_ff, load_ms
-    );
+    if output == EmbeddingOutput::Summary {
+        println!(
+            "Model: {} | n_embd={} n_layer={} n_head={} n_head_kv={} n_ff={} | loaded in {}ms",
+            arch, n_embd, n_layer, n_head, n_head_kv, n_ff, load_ms
+        );
+    }
 
     let vocab = tokenizer.vocab_size();
     let prompt_tokens = encode_embedding_input(&tokenizer, prompt);
@@ -899,7 +903,9 @@ fn run_embedding(
     let max_n_in = n_embd_q.max(n_ff);
     let pool = std::sync::Arc::new(thread_pool::ComputePool::new(n_threads));
     eprintln!("compute pool: {} threads", pool.n_threads());
-    println!("Prompt: {} ({} tokens)", prompt, n_tokens);
+    if output == EmbeddingOutput::Summary {
+        println!("Prompt: {} ({} tokens)", prompt, n_tokens);
+    }
 
     let kq_scale = 1.0f32 / (n_embd_head_k as f32).sqrt();
     let group_size = n_head / n_head_kv;

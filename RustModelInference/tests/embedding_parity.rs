@@ -55,11 +55,15 @@ fn qwen3_embedding_vectors_match_pinned_llama_cpp() {
             "--embedding-output",
             "raw",
         ]));
-        let rust_line = rust_stdout
-            .lines()
-            .find_map(|line| line.strip_prefix("embedding_raw: "))
-            .expect("missing embedding_raw line");
-        let actual = parse_numbers(rust_line);
+        let rust_line = rust_stdout.strip_suffix('\n').unwrap_or(&rust_stdout);
+        assert!(
+            !rust_line.contains('\n'),
+            "raw stdout must contain exactly one line: {rust_stdout:?}"
+        );
+        let rust_values = rust_line
+            .strip_prefix("embedding_raw: ")
+            .expect("missing embedding_raw prefix");
+        let actual = parse_numbers(rust_values);
 
         let reference_stdout = run(Command::new(&llama).args([
             "-m",
