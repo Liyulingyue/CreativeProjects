@@ -11,6 +11,24 @@ enum KvFormat {
     F32,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum EmbeddingOutput {
+    #[default]
+    Summary,
+    Raw,
+}
+
+fn parse_embedding_output(value: Option<&str>) -> Result<EmbeddingOutput, String> {
+    match value {
+        Some("summary") => Ok(EmbeddingOutput::Summary),
+        Some("raw") => Ok(EmbeddingOutput::Raw),
+        Some(value) => Err(format!(
+            "Invalid --embedding-output {value:?}; expected summary or raw"
+        )),
+        None => Err("Missing value for --embedding-output".into()),
+    }
+}
+
 const DEFAULT_THREAD_CAP: usize = 8;
 
 fn resolve_thread_count(requested: usize, available: usize) -> usize {
@@ -45,6 +63,20 @@ mod cli_tests {
     use super::*;
     use std::collections::HashMap;
     use std::time::Duration;
+
+    #[test]
+    fn embedding_output_accepts_only_summary_or_raw() {
+        assert_eq!(
+            parse_embedding_output(Some("summary")).unwrap(),
+            EmbeddingOutput::Summary,
+        );
+        assert_eq!(
+            parse_embedding_output(Some("raw")).unwrap(),
+            EmbeddingOutput::Raw,
+        );
+        assert!(parse_embedding_output(Some("json")).is_err());
+        assert!(parse_embedding_output(None).is_err());
+    }
 
     #[test]
     fn default_threads_are_capped_but_explicit_value_wins() {
@@ -354,6 +386,7 @@ fn main() {
     let mut bench = false;
     let mut profile = false;
     let mut embedding_mode = false;
+    let mut embedding_output = EmbeddingOutput::Summary;
     let mut kv_format = KvFormat::F16;
     let mut mmproj_path = String::new();
     let mut image_path = String::new();
@@ -401,6 +434,16 @@ fn main() {
             }
             "--embedding" => {
                 embedding_mode = true;
+            }
+            "--embedding-output" => {
+                embedding_output = parse_embedding_output(
+                    args.get(i + 1).map(String::as_str),
+                )
+                .unwrap_or_else(|error| {
+                    eprintln!("{error}");
+                    std::process::exit(2);
+                });
+                i += 1;
             }
             "--bench" => {
                 bench = true;
@@ -466,7 +509,13 @@ fn main() {
                 );
             }
             if embedding_mode {
-                run_embedding(&model_path, &prompt, n_threads, kv_format);
+                run_embedding(
+                    &model_path,
+                    &prompt,
+                    n_threads,
+                    kv_format,
+                    embedding_output,
+                );
                 return Ok(());
             }
             if dump_logits {
@@ -648,11 +697,9 @@ fn apply_embedding_ffn_q8_0(
             n_ff,
         );
 
-        for index in 0..n_ff {
-            gate_buf[index] = silu(gate_buf[index]) * up_buf[index];
-        }
+        silu_mul_inplace(gate_buf, up_buf);
 
-        quantize_q8_0_into(gate_buf, n_ff, &mut q8[..n_ff], &mut scales[..n_ff / 32]);
+        quantize_q8_0_into(up_buf, n_ff, &mut q8[..n_ff], &mut scales[..n_ff / 32]);
         matmul_q8_0_quantized(
             w_down,
             &q8[..n_ff],
@@ -732,7 +779,13 @@ fn l2_normalize_embedding(values: &mut [f32]) -> Result<(), String> {
     Ok(())
 }
 
-fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_format: KvFormat) {
+fn run_embedding(
+    model_path: &str,
+    prompt: &str,
+    n_threads_arg: usize,
+    _kv_format: KvFormat,
+    output: EmbeddingOutput,
+) {
     let t0 = Instant::now();
     println!("Loading {} ...", model_path);
     let loader = GGUFLoader::from_file(model_path).expect("Failed to load GGUF");
@@ -863,6 +916,9 @@ fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_forma
     let mut gate_buf = vec![0.0f32; n_ff];
     let mut up_buf = vec![0.0f32; n_ff];
     let mut down_buf = vec![0.0f32; n_embd];
+    let max_n_padded = (n_tokens + 255) / 256 * 256;
+    let mut scores = vec![0.0f32; max_n_padded];
+    let mut values = vec![0.0f32; max_n_padded];
 
     for t in 0..n_tokens {
         let token_id = prompt_tokens[t];
@@ -976,40 +1032,30 @@ fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_forma
                 let kv_h = h / group_size;
                 let q_off = h * n_embd_head_k;
                 let out_base = h * n_embd_head_v;
-
-                let mut ms = f32::NEG_INFINITY;
-                let mut s_sum = 0.0f32;
-                for d in 0..n_embd_head_v {
-                    attn_row[out_base + d] = 0.0;
-                }
-
-                for s in 0..attention_key_end(t, n_tokens, embedding_cfg.causal_attn) {
+                let n_cached = attention_key_end(t, n_tokens, embedding_cfg.causal_attn);
+                let n_padded = (n_cached + 255) / 256 * 256;
+                for s in 0..n_cached {
                     let k_row = &k_buf[s * n_embd_gqa..(s + 1) * n_embd_gqa];
-                    let v_row = &v_buf[s * n_embd_gqa..(s + 1) * n_embd_gqa];
-
-                    let score = dot_f32(
+                    scores[s] = dot_f32(
                         &q_row[q_off..q_off + n_embd_head_k],
                         &k_row[kv_h * n_embd_head_v..kv_h * n_embd_head_v + n_embd_head_k],
                         n_embd_head_k,
                     ) * kq_scale;
-
-                    if score > ms {
-                        let rescale = (ms - score).exp();
-                        vec_scale_f32(&mut attn_row[out_base..out_base + n_embd_head_v], rescale);
-                        s_sum *= rescale;
-                        ms = score;
-                    }
-                    let vs = (score - ms).exp();
-                    vec_mad_f32(
-                        &mut attn_row[out_base..out_base + n_embd_head_v],
-                        &v_row[kv_h * n_embd_head_v..kv_h * n_embd_head_v + n_embd_head_v],
-                        vs,
-                    );
-                    s_sum += vs;
                 }
-
-                let inv_sum = 1.0 / s_sum;
-                vec_scale_f32(&mut attn_row[out_base..out_base + n_embd_head_v], inv_sum);
+                scores[n_cached..n_padded].fill(f32::NEG_INFINITY);
+                softmax(&mut scores[..n_padded]);
+                for d in 0..n_embd_head_v {
+                    for s in 0..n_cached {
+                        values[s] = v_buf[s * n_embd_gqa + kv_h * n_embd_head_v + d];
+                    }
+                    values[n_cached..n_padded].fill(0.0);
+                    attn_row[out_base + d] = attention_value_f32(
+                        &values[..n_padded],
+                        &scores[..n_padded],
+                        n_cached,
+                        n_padded,
+                    );
+                }
             }
         }
 
@@ -1077,22 +1123,31 @@ fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_forma
     });
 
     let embed_ms = t_embed.elapsed().as_millis();
-    println!(
-        "Embedding ({} dims, {} layers, {}ms):",
-        n_embd, n_layer, embed_ms
-    );
-    for (i, &v) in pooled.iter().enumerate() {
-        if i < 8 {
-            print!("{:+.6} ", v);
+    match output {
+        EmbeddingOutput::Summary => {
+            println!(
+                "Embedding ({} dims, {} layers, {}ms):",
+                n_embd, n_layer, embed_ms
+            );
+            for value in pooled.iter().take(8) {
+                print!("{value:+.6} ");
+            }
+            if n_embd > 8 {
+                print!("... ");
+                for value in &pooled[n_embd - 4..] {
+                    print!("{value:+.6} ");
+                }
+            }
+            println!();
+        }
+        EmbeddingOutput::Raw => {
+            print!("embedding_raw:");
+            for value in &pooled {
+                print!(" {value:.9}");
+            }
+            println!();
         }
     }
-    if n_embd > 8 {
-        print!("... ");
-        for i in (n_embd - 4)..n_embd {
-            print!("{:+.6} ", pooled[i]);
-        }
-    }
-    println!();
 }
 
 fn run_dump_logits(
