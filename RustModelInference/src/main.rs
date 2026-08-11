@@ -832,6 +832,7 @@ fn run_dump_logits(
             let attn_proj_ptr = scratch.attn_proj.as_mut_ptr();
             let down_buf_ptr = scratch.down_buf.as_mut_ptr();
             let scores_ptr = scratch.scores.as_mut_ptr();
+            let score_stride = scratch.score_stride;
             let gate_buf_ptr = scratch.gate_buf.as_mut_ptr();
             let up_buf_ptr = scratch.up_buf.as_mut_ptr();
             let q8_buf_ptr = scratch.q8_buf.as_mut_ptr();
@@ -995,7 +996,7 @@ fn run_dump_logits(
             pool.compute(move |ith: usize, nth: usize| {
                 let q = slice_from_ref!(q_ptr, n_embd_q);
                 let attn_out = slice_from_mut!(attn_out_ptr, n_embd_q);
-                let scores = slice_from_mut!(scores_ptr, n_threads * max_ctx);
+                let scores = slice_from_mut!(scores_ptr, n_threads * score_stride);
                 let h_start = ith * n_head / nth;
                 let h_end = (ith + 1) * n_head / nth;
 
@@ -1008,7 +1009,7 @@ fn run_dump_logits(
                         let kv_h = h / group_size;
                         let q_off = h * n_embd_head_k;
                         let n_cached = pos + 1;
-                        let s_off = ith * max_ctx;
+                        let s_off = ith * score_stride;
                         for t in 0..n_cached {
                             scores[s_off + t] = dot_f16_f32(
                                 &q[q_off..q_off + n_embd_head_k],
@@ -1036,7 +1037,7 @@ fn run_dump_logits(
                         let kv_h = h / group_size;
                         let q_off = h * n_embd_head_k;
                         let n_cached = pos + 1;
-                        let s_off = ith * max_ctx;
+                        let s_off = ith * score_stride;
                         for t in 0..n_cached {
                             scores[s_off + t] = dot_f32(
                                 &q[q_off..q_off + n_embd_head_k],
@@ -1479,6 +1480,7 @@ fn run_inference(
             let attn_proj_ptr = scratch.attn_proj.as_mut_ptr();
             let down_buf_ptr = scratch.down_buf.as_mut_ptr();
             let scores_ptr = scratch.scores.as_mut_ptr();
+            let score_stride = scratch.score_stride;
             let gate_buf_ptr = scratch.gate_buf.as_mut_ptr();
             let up_buf_ptr = scratch.up_buf.as_mut_ptr();
             let q8_buf_ptr = scratch.q8_buf.as_mut_ptr();
@@ -1692,14 +1694,14 @@ fn run_inference(
                 } else {
                     let k_cache = slice_from_ref!(k_cache_f32_ptr, kv_cache_size);
                     let v_cache = slice_from_ref!(v_cache_f32_ptr, kv_cache_size);
-                    let scores = slice_from_mut!(scores_ptr, n_threads * max_ctx);
+                    let scores = slice_from_mut!(scores_ptr, n_threads * score_stride);
                     for h in h_start..h_end {
                         let kv_h = h / group_size;
                         let q_off = h * n_embd_head_k;
                         let n_cached = pos + 1;
                         let n_padded = (n_cached + 255) / 256 * 256;
                         let out_base = h * n_embd_head_v;
-                        let s_off = ith * max_ctx;
+                        let s_off = ith * score_stride;
                         for t in 0..n_cached {
                             scores[s_off + t] = dot_f32(
                                 &q[q_off..q_off + n_embd_head_k],
