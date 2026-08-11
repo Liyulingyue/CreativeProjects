@@ -1714,13 +1714,18 @@ fn run_inference(
                         }
                         scores[s_off + n_cached..s_off + n_padded].fill(f32::NEG_INFINITY);
                         softmax(&mut scores[s_off..s_off + n_padded]);
-                        attn_out[out_base..out_base + n_embd_head_v].fill(0.0);
-                        for t in 0..n_cached {
-                            let v_base = kb + t * n_embd_gqa + kv_h * n_embd_head_v;
-                            vec_mad_f32(
-                                &mut attn_out[out_base..out_base + n_embd_head_v],
-                                &v_cache[v_base..v_base + n_embd_head_v],
-                                scores[s_off + t],
+                        let mut values = [0.0f32; 512];
+                        for d in 0..n_embd_head_v {
+                            for t in 0..n_cached {
+                                values[t] = v_cache[
+                                    kb + t * n_embd_gqa + kv_h * n_embd_head_v + d
+                                ];
+                            }
+                            attn_out[out_base + d] = attention_value_f32(
+                                &values[..n_padded],
+                                &scores[s_off..s_off + n_padded],
+                                n_cached,
+                                n_padded,
                             );
                         }
                     }

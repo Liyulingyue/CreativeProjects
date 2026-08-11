@@ -693,6 +693,11 @@ pub fn softmax(x: &mut [f32]) {
     }
 }
 
+pub fn attention_value_f32(values: &[f32], weights: &[f32], n_cached: usize, n_padded: usize) -> f32 {
+    debug_assert!(n_cached <= n_padded);
+    dot_f32(values, weights, n_padded)
+}
+
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 unsafe fn softmax_neon_ggml(x: &mut [f32]) {
@@ -1808,6 +1813,31 @@ mod neon_tests {
         }
 
         assert_eq!(output[0].to_bits(), 0x3d1c_c57d);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_attention_value_matches_ggml_256_padded_reduction() {
+        let values = [
+            3206143318, 1061541424, 1061305652, 3210998438, 3195547419, 3163016063,
+            3212048900, 3189385624, 1062212878, 3209077215, 1044797186, 3208768978,
+            1042361759, 1061840183, 3206023529, 3212559954, 3210034948,
+        ]
+        .map(f32::from_bits);
+        let weights = [
+            1034085704, 3212250841, 3209990221, 3151333903, 1062699944, 3190005432,
+            3192954545, 1049496568, 3209702283, 1042509379, 3207046873, 1046413531,
+            1063954866, 3211019113, 1038190425, 1046076976, 3207827037,
+        ]
+        .map(f32::from_bits);
+        let mut padded_values = [0.0f32; 256];
+        let mut padded_weights = [0.0f32; 256];
+        padded_values[..values.len()].copy_from_slice(&values);
+        padded_weights[..weights.len()].copy_from_slice(&weights);
+
+        let actual = attention_value_f32(&padded_values, &padded_weights, values.len(), 256);
+
+        assert_eq!(actual.to_bits(), 0xc032_d8db);
     }
 
     #[cfg(target_arch = "aarch64")]
