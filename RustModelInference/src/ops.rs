@@ -1526,41 +1526,8 @@ pub fn ssm_outer_product_update(state: &mut [f32], k: &[f32], d_vec: &[f32], dim
     debug_assert_eq!(state.len(), dim * dim);
     debug_assert_eq!(k.len(), dim);
     debug_assert_eq!(d_vec.len(), dim);
-    #[cfg(target_arch = "x86_64")]
-    {
-        if has_avx2_fma() {
-            unsafe { ssm_outer_product_update_avx2(state, k, d_vec, dim) };
-            return;
-        }
-    }
     for d in 0..dim {
-        let dv = d_vec[d];
-        for s in 0..dim {
-            state[d * dim + s] += k[s] * dv;
-        }
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2", enable = "fma")]
-unsafe fn ssm_outer_product_update_avx2(state: &mut [f32], k: &[f32], d_vec: &[f32], dim: usize) {
-    use std::arch::x86_64::*;
-    let n8 = dim / 8 * 8;
-    for d in 0..dim {
-        let dv = _mm256_set1_ps(d_vec[d]);
-        let row = state.as_mut_ptr().add(d * dim);
-        let mut s = 0;
-        while s < n8 {
-            let vk = _mm256_loadu_ps(k.as_ptr().add(s));
-            let vs = _mm256_loadu_ps(row.add(s));
-            let updated = _mm256_fmadd_ps(vk, dv, vs);
-            _mm256_storeu_ps(row.add(s), updated);
-            s += 8;
-        }
-        while s < dim {
-            *row.add(s) += k[s] * d_vec[d];
-            s += 1;
-        }
+        vec_mad_f32(&mut state[d * dim..(d + 1) * dim], k, d_vec[d]);
     }
 }
 
@@ -1993,6 +1960,33 @@ mod neon_tests {
         assert_eq!(
             up.map(f32::to_bits),
             [0x3cb9_a7c4, 0x3ceb_9536, 0xbcc3_7dcb, 0x3d98_56f8],
+        );
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn ssm_outer_product_update_qwen35_matches_llama_bits() {
+        const DIM: usize = 8;
+        let mut state = [0.0f32; DIM * DIM];
+        state[..DIM].copy_from_slice(&[
+            0x3494_80df, 0x3580_a966, 0x35ad_9089, 0x34c4_e183,
+            0xb38a_f91b, 0x35a3_f18c, 0xb348_55d4, 0xb31d_6bba,
+        ].map(f32::from_bits));
+        let k = [
+            0xbe5b_c7ee, 0xbc72_693b, 0x3cb6_4e01, 0x3c8a_3926,
+            0x3dbc_f543, 0xbd13_07f9, 0x3e10_5106, 0x3d00_dda0,
+        ].map(f32::from_bits);
+        let mut d_vec = [0.0f32; DIM];
+        d_vec[0] = f32::from_bits(0xbc50_0f83);
+
+        ssm_outer_product_update(&mut state, &k, &d_vec, DIM);
+
+        assert_eq!(
+            state[..DIM].iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+            [
+                0x3b32_a467, 0x3946_0583, 0xb993_7cdc, 0xb960_4b2d,
+                0xba99_94e5, 0x39ef_a2b8, 0xbaea_96b8, 0xb9d1_7cad,
+            ],
         );
     }
 
