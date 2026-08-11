@@ -122,10 +122,7 @@ mod cli_tests {
                 "tokenizer.ggml.token_type".into(),
                 MetaValue::Array(
                     MetaValueType::Uint32,
-                    [1, 1, 1, 1, 3]
-                        .into_iter()
-                        .map(MetaValue::Uint32)
-                        .collect(),
+                    [1, 1, 1, 1, 3].into_iter().map(MetaValue::Uint32).collect(),
                 ),
             ),
             (
@@ -265,10 +262,7 @@ mod cli_tests {
 
     #[test]
     fn embedding_positions_are_contiguous_from_zero() {
-        assert_eq!(
-            embedding_positions(4).collect::<Vec<_>>(),
-            vec![0, 1, 2, 3],
-        );
+        assert_eq!(embedding_positions(4).collect::<Vec<_>>(), vec![0, 1, 2, 3],);
     }
 
     #[test]
@@ -436,13 +430,11 @@ fn main() {
                 embedding_mode = true;
             }
             "--embedding-output" => {
-                embedding_output = parse_embedding_output(
-                    args.get(i + 1).map(String::as_str),
-                )
-                .unwrap_or_else(|error| {
-                    eprintln!("{error}");
-                    std::process::exit(2);
-                });
+                embedding_output = parse_embedding_output(args.get(i + 1).map(String::as_str))
+                    .unwrap_or_else(|error| {
+                        eprintln!("{error}");
+                        std::process::exit(2);
+                    });
                 i += 1;
             }
             "--bench" => {
@@ -509,13 +501,7 @@ fn main() {
                 );
             }
             if embedding_mode {
-                run_embedding(
-                    &model_path,
-                    &prompt,
-                    n_threads,
-                    kv_format,
-                    embedding_output,
-                );
+                run_embedding(&model_path, &prompt, n_threads, kv_format, embedding_output);
                 return Ok(());
             }
             if dump_logits {
@@ -732,9 +718,7 @@ fn pool_embedding_rows(
     }
 
     match pooling {
-        EmbeddingPooling::Last => {
-            Ok(hidden[(n_tokens - 1) * n_embd..n_tokens * n_embd].to_vec())
-        }
+        EmbeddingPooling::Last => Ok(hidden[(n_tokens - 1) * n_embd..n_tokens * n_embd].to_vec()),
         EmbeddingPooling::Mean => {
             let mut pooled = vec![0.0f32; n_embd];
             for row in hidden.chunks_exact(n_embd) {

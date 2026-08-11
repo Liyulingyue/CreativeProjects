@@ -14,8 +14,7 @@ fn norm(values: &[f64]) -> f64 {
 }
 
 fn cosine(left: &[f64], right: &[f64]) -> f64 {
-    left.iter().zip(right).map(|(a, b)| a * b).sum::<f64>()
-        / (norm(left) * norm(right))
+    left.iter().zip(right).map(|(a, b)| a * b).sum::<f64>() / (norm(left) * norm(right))
 }
 
 fn parse_numbers(text: &str) -> Vec<f64> {
