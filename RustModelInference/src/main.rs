@@ -272,6 +272,45 @@ mod cli_tests {
     }
 
     #[test]
+    fn embedding_pooling_supports_mean_and_last() {
+        let hidden = [1.0, 2.0, 5.0, 6.0];
+        assert_eq!(
+            pool_embedding_rows(&hidden, 2, 2, EmbeddingPooling::Mean).unwrap(),
+            vec![3.0, 4.0],
+        );
+        assert_eq!(
+            pool_embedding_rows(&hidden, 2, 2, EmbeddingPooling::Last).unwrap(),
+            vec![5.0, 6.0],
+        );
+    }
+
+    #[test]
+    fn embedding_pooling_rejects_invalid_shapes() {
+        assert!(pool_embedding_rows(&[], 0, 2, EmbeddingPooling::Last).is_err());
+        assert!(pool_embedding_rows(&[1.0], 1, 2, EmbeddingPooling::Last).is_err());
+    }
+
+    #[test]
+    fn embedding_l2_uses_f64_accumulation_and_preserves_zero() {
+        let mut values = vec![1.0f32];
+        values.extend(std::iter::repeat(1e-4f32).take(4096));
+        l2_normalize_embedding(&mut values).unwrap();
+        assert!((values[0] - 0.9999795).abs() < 1e-6, "{}", values[0]);
+
+        let mut zero = [0.0f32, 0.0];
+        l2_normalize_embedding(&mut zero).unwrap();
+        assert_eq!(zero, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn embedding_l2_rejects_non_finite_values() {
+        for value in [f32::INFINITY, f32::NAN] {
+            let mut values = [value];
+            assert!(l2_normalize_embedding(&mut values).is_err());
+        }
+    }
+
+    #[test]
     #[ignore = "requires QWEN3_EMBEDDING_MODEL"]
     fn qwen3_embedding_tokens_match_pinned_llama_cpp() {
         let model = std::env::var("QWEN3_EMBEDDING_MODEL").unwrap();
@@ -622,6 +661,71 @@ fn apply_embedding_ffn_q8_0(
     }
 }
 
+fn pool_embedding_rows(
+    hidden: &[f32],
+    n_tokens: usize,
+    n_embd: usize,
+    pooling: EmbeddingPooling,
+) -> Result<Vec<f32>, String> {
+    let expected = n_tokens
+        .checked_mul(n_embd)
+        .ok_or_else(|| "Embedding shape overflow".to_string())?;
+    if n_tokens == 0 || n_embd == 0 || hidden.len() != expected {
+        return Err(format!(
+            "Invalid embedding shape: rows={n_tokens}, cols={n_embd}, values={}",
+            hidden.len()
+        ));
+    }
+
+    match pooling {
+        EmbeddingPooling::Last => {
+            Ok(hidden[(n_tokens - 1) * n_embd..n_tokens * n_embd].to_vec())
+        }
+        EmbeddingPooling::Mean => {
+            let mut pooled = vec![0.0f32; n_embd];
+            for row in hidden.chunks_exact(n_embd) {
+                for (output, value) in pooled.iter_mut().zip(row) {
+                    *output += *value;
+                }
+            }
+            let scale = 1.0 / n_tokens as f32;
+            for value in &mut pooled {
+                *value *= scale;
+            }
+            Ok(pooled)
+        }
+    }
+}
+
+fn l2_normalize_embedding(values: &mut [f32]) -> Result<(), String> {
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err("Embedding contains a non-finite value".into());
+    }
+
+    let norm = values
+        .iter()
+        .map(|&value| {
+            let value = f64::from(value);
+            value * value
+        })
+        .sum::<f64>()
+        .sqrt();
+
+    if norm == 0.0 {
+        return Ok(());
+    }
+
+    let inverse = (1.0 / norm) as f32;
+    for value in values.iter_mut() {
+        *value *= inverse;
+    }
+
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err("Normalized embedding contains a non-finite value".into());
+    }
+    Ok(())
+}
+
 fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_format: KvFormat) {
     let t0 = Instant::now();
     println!("Loading {} ...", model_path);
@@ -956,20 +1060,15 @@ fn run_embedding(model_path: &str, prompt: &str, n_threads_arg: usize, _kv_forma
         x.copy_from_slice(&normed[t * n_embd..(t + 1) * n_embd]);
     }
 
-    let mut pooled = vec![0.0f32; n_embd];
-    let inv_n = 1.0 / n_tokens as f32;
-    for i in 0..n_embd {
-        let mut sum = 0.0f32;
-        for t in 0..n_tokens {
-            sum += hidden[t * n_embd + i];
-        }
-        pooled[i] = sum * inv_n;
-    }
-
-    let norm: f32 = pooled.iter().map(|&x| x * x).sum::<f32>().sqrt();
-    for v in pooled.iter_mut() {
-        *v /= norm;
-    }
+    let mut pooled = pool_embedding_rows(&hidden, n_tokens, n_embd, embedding_cfg.pooling)
+        .unwrap_or_else(|error| {
+            eprintln!("Embedding pooling error: {error}");
+            std::process::exit(1);
+        });
+    l2_normalize_embedding(&mut pooled).unwrap_or_else(|error| {
+        eprintln!("Embedding normalization error: {error}");
+        std::process::exit(1);
+    });
 
     let embed_ms = t_embed.elapsed().as_millis();
     println!(
