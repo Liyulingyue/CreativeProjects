@@ -1248,9 +1248,7 @@ impl Qwen35Model {
                 crate::ops::ssm_outer_product_update(&mut ssm_state[state_off..][..head_v_dim * head_v_dim], k_slice, &d_vec[..head_v_dim], head_v_dim);
                 let q_slice = &scratch.q_buf[q_off + k_h * head_k_dim..][..head_v_dim];
                 let out_off = t * value_dim + v_h * head_v_dim;
-                let q_scaled = &mut scratch.q_scaled_buf[..head_v_dim];
-                for i in 0..head_v_dim { q_scaled[i] = q_slice[i] * q_scale; }
-                crate::ops::ssm_matvec(&ssm_state[state_off..][..head_v_dim * head_v_dim], q_scaled, head_v_dim, head_v_dim, &mut scratch.attn_out_buf[out_off..out_off + head_v_dim]);
+                crate::ops::ssm_matvec_scaled(&ssm_state[state_off..][..head_v_dim * head_v_dim], q_slice, head_v_dim, head_v_dim, &mut scratch.attn_out_buf[out_off..out_off + head_v_dim], q_scale);
             }
         }
         #[cfg(feature = "parity-trace")]
@@ -1407,7 +1405,6 @@ pub struct Qwen35Scratchpad {
     pub conv_states: Vec<Vec<f32>>,
     pub ssm_states: Vec<Vec<f32>>,
     pub matmul_out: Vec<f32>,
-    pub q_scaled_buf: Vec<f32>,
     pub q8k_buf: Vec<quant::BlockQ8K>,
     pub q8_buf: Vec<u8>,
     pub scale_buf: Vec<f32>,
@@ -1452,7 +1449,6 @@ impl Qwen35Scratchpad {
             ssm_states: (0..n_layer).map(|_| vec![0.0; num_v_heads * head_v_dim * head_v_dim]).collect(),
             matmul_out: vec![0.0; (2 * n_ff).max(conv_dim).max(n_embd).max(config.vocab_size)],
             normed_buf: vec![0.0; max_tokens * n_embd],
-            q_scaled_buf: vec![0.0; head_v_dim],
             q8k_buf: vec![quant::BlockQ8K { d: 0.0, qs: [0i8; 256], bsums: [0i16; 16] }; (max_matmul_input + 255) / 256],
             q8_buf: vec![0u8; max_matmul_input],
             scale_buf: vec![0.0; (max_matmul_input + 31) / 32],
