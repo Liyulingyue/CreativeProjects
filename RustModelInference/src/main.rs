@@ -516,10 +516,20 @@ mod cli_tests {
     }
 
     #[test]
-    fn embedding_l2_normalizes_subnormal_vector() {
+    fn embedding_l2_matches_llama_f32_product_and_scale_bits() {
+        let mut values = [1.0f32, 3.0];
+        l2_normalize_embedding(&mut values).unwrap();
+        assert_eq!(
+            values.map(f32::to_bits),
+            [0x3ea1e89b, 0x3f72dce8],
+        );
+    }
+
+    #[test]
+    fn embedding_l2_matches_llama_subnormal_underflow_to_zero() {
         let mut values = [f32::from_bits(1)];
         l2_normalize_embedding(&mut values).unwrap();
-        assert_eq!(values, [1.0]);
+        assert_eq!(values, [0.0]);
     }
 
     #[test]
@@ -1157,21 +1167,19 @@ fn l2_normalize_embedding(values: &mut [f32]) -> Result<(), String> {
         return Err("Embedding contains a non-finite value".into());
     }
 
-    let norm = values
+    let sum = values
         .iter()
-        .map(|&value| {
-            let value = f64::from(value);
-            value * value
-        })
-        .sum::<f64>()
-        .sqrt();
+        .map(|&value| f64::from(value * value))
+        .sum::<f64>();
 
-    if norm == 0.0 {
-        return Ok(());
-    }
+    let scale = if sum > 0.0 {
+        (1.0 / sum.sqrt()) as f32
+    } else {
+        0.0
+    };
 
     for value in values.iter_mut() {
-        *value = (f64::from(*value) / norm) as f32;
+        *value *= scale;
     }
 
     if values.iter().any(|value| !value.is_finite()) {
