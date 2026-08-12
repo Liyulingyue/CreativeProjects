@@ -35,7 +35,13 @@ fn wav_u32(bytes: &[u8], offset: usize) -> Result<u32, AsrAudioError> {
 }
 
 pub fn decode_pcm16_wav(bytes: &[u8]) -> Result<Vec<f32>, AsrAudioError> {
-    if bytes.get(0..4) != Some(b"RIFF") || bytes.get(8..12) != Some(b"WAVE") {
+    if bytes.get(0..4) != Some(b"RIFF") {
+        return Err(AsrAudioError::Unsupported("expected RIFF/WAVE".into()));
+    }
+    let wave = bytes
+        .get(8..12)
+        .ok_or_else(|| AsrAudioError::Invalid("truncated RIFF/WAVE header".into()))?;
+    if wave != b"WAVE" {
         return Err(AsrAudioError::Unsupported("expected RIFF/WAVE".into()));
     }
     let riff_end = 8usize
@@ -273,7 +279,20 @@ fn compute_log_mel(samples: &[f32]) -> Result<LogMel, AsrAudioError> {
         for mel in 0..MEL_BINS {
             let mut power_sum = 0.0;
             for bin in 0..fft_bins {
-                power_sum += frame[bin].norm_sqr() * filters[mel * fft_bins + bin];
+                let power = frame[bin].norm_sqr();
+                if !power.is_finite() {
+                    return Err(AsrAudioError::Invalid("non-finite FFT power".into()));
+                }
+                let weighted_power = power * filters[mel * fft_bins + bin];
+                if !weighted_power.is_finite() {
+                    return Err(AsrAudioError::Invalid(
+                        "non-finite weighted Mel power".into(),
+                    ));
+                }
+                power_sum += weighted_power;
+                if !power_sum.is_finite() {
+                    return Err(AsrAudioError::Invalid("non-finite Mel power sum".into()));
+                }
             }
             let value = power_sum.max(5.960464477539063e-8).log10();
             if !value.is_finite() {
@@ -719,6 +738,24 @@ mod tests {
     }
 
     #[test]
+    fn wav_recognizable_truncated_riff_header_is_invalid() {
+        for bytes in [
+            b"RIFF".as_slice(),
+            b"RIFF\0\0\0\0".as_slice(),
+            b"RIFF\0\0\0\0WAV".as_slice(),
+        ] {
+            assert!(matches!(
+                decode_pcm16_wav(bytes),
+                Err(AsrAudioError::Invalid(_))
+            ));
+        }
+        assert!(matches!(
+            decode_pcm16_wav(b"NOPE\0\0\0\0WAVE"),
+            Err(AsrAudioError::Unsupported(_))
+        ));
+    }
+
+    #[test]
     fn wav_duplicate_required_chunks_are_invalid() {
         let format = vec![1, 0, 1, 0, 0x80, 0x3e, 0, 0, 0, 0x7d, 0, 0, 2, 0, 16, 0];
         assert!(matches!(
@@ -879,6 +916,14 @@ mod tests {
         ));
         assert!(matches!(
             log_mel_windows(&[f32::NAN]),
+            Err(AsrAudioError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn finite_audio_power_overflow_is_invalid() {
+        assert!(matches!(
+            compute_log_mel(&[1.0e20]),
             Err(AsrAudioError::Invalid(_))
         ));
     }
