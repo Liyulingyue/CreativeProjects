@@ -30,6 +30,38 @@ fn parse_embedding_output(value: Option<&str>) -> Result<EmbeddingOutput, String
     }
 }
 
+fn validate_qwen3vl_decoder_mode(
+    arch: &str,
+    dump_logits: bool,
+    bench: bool,
+    profile: bool,
+    kv_format: KvFormat,
+    interactive: bool,
+) -> Result<(), String> {
+    if arch != "qwen3vl" {
+        return Ok(());
+    }
+    let unsupported = if dump_logits {
+        Some("--dump-logits")
+    } else if bench {
+        Some("--bench")
+    } else if profile {
+        Some("--profile")
+    } else if kv_format == KvFormat::F32 {
+        Some("--kv-cache f32")
+    } else if interactive {
+        Some("interactive mode")
+    } else {
+        None
+    };
+    match unsupported {
+        Some(option) => Err(format!(
+            "{option} is not supported for qwen3vl; use default F16 generation"
+        )),
+        None => Ok(()),
+    }
+}
+
 const DEFAULT_THREAD_CAP: usize = 8;
 
 fn resolve_thread_count(requested: usize, available: usize) -> usize {
@@ -453,6 +485,47 @@ mod cli_tests {
     }
 
     #[test]
+    fn qwen3vl_rejects_legacy_decoder_modes() {
+        for (result, expected_mode) in [
+            (
+                validate_qwen3vl_decoder_mode("qwen3vl", true, false, false, KvFormat::F16, false),
+                "--dump-logits",
+            ),
+            (
+                validate_qwen3vl_decoder_mode("qwen3vl", false, true, false, KvFormat::F16, false),
+                "--bench",
+            ),
+            (
+                validate_qwen3vl_decoder_mode("qwen3vl", false, false, true, KvFormat::F16, false),
+                "--profile",
+            ),
+            (
+                validate_qwen3vl_decoder_mode("qwen3vl", false, false, false, KvFormat::F32, false),
+                "--kv-cache f32",
+            ),
+            (
+                validate_qwen3vl_decoder_mode("qwen3vl", false, false, false, KvFormat::F16, true),
+                "interactive mode",
+            ),
+        ] {
+            assert!(result.unwrap_err().contains(expected_mode));
+        }
+
+        assert!(validate_qwen3vl_decoder_mode(
+            "qwen3vl",
+            false,
+            false,
+            false,
+            KvFormat::F16,
+            false
+        )
+        .is_ok());
+        assert!(
+            validate_qwen3vl_decoder_mode("qwen3", true, true, true, KvFormat::F32, true).is_ok()
+        );
+    }
+
+    #[test]
     fn embedding_config_rejects_missing_malformed_or_unsupported_pooling() {
         assert!(embedding_config("qwen3", |_| None)
             .unwrap_err()
@@ -712,6 +785,22 @@ fn main() {
                 kv_format,
                 embedding_output,
             );
+        } else if arch == "qwen3vl" {
+            run_or_exit(validate_qwen3vl_decoder_mode(
+                &arch,
+                dump_logits,
+                bench,
+                profile,
+                kv_format,
+                false,
+            ));
+            run_or_exit(run_shared_inference(
+                std::sync::Arc::clone(&source),
+                &prompt,
+                max_tokens,
+                temperature,
+                n_threads,
+            ));
         } else if dump_logits {
             run_or_exit(run_dump_logits(
                 source.as_ref(),
@@ -741,6 +830,14 @@ fn main() {
             ));
         }
     } else {
+        run_or_exit(validate_qwen3vl_decoder_mode(
+            &arch,
+            dump_logits,
+            bench,
+            profile,
+            kv_format,
+            true,
+        ));
         run_or_exit(run_interactive(
             source.as_ref(),
             max_tokens,

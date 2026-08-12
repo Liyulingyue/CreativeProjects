@@ -192,6 +192,20 @@ fn checked_decoder_steps(
         .ok_or_else(|| "Decoder step count underflow".to_string())
 }
 
+fn checked_generated_position(
+    prompt_positions: &[[usize; 4]],
+    generated_index: usize,
+) -> Result<[usize; 4], String> {
+    let last_prompt_position = prompt_positions
+        .last()
+        .ok_or_else(|| "Cannot generate a position without prompt positions".to_string())?[0];
+    let position = last_prompt_position
+        .checked_add(1)
+        .and_then(|position| position.checked_add(generated_index))
+        .ok_or_else(|| "Generated position overflow".to_string())?;
+    Ok([position; 4])
+}
+
 fn validate_input_shapes(
     token_count: usize,
     embedding_dim: usize,
@@ -609,7 +623,7 @@ impl<'model> Qwen3Session<'model> {
             let position = if step < n_prompt {
                 input.positions[step]
             } else {
-                [step; 4]
+                checked_generated_position(input.positions, step - n_prompt)?
             };
             if step < n_prompt {
                 if let Some(embeddings) = input.embeddings {
@@ -1345,6 +1359,14 @@ mod tests {
     #[test]
     fn decoder_does_not_evaluate_the_last_generated_token() {
         assert_eq!(checked_decoder_steps(23, 17, 65_536).unwrap(), 39);
+    }
+
+    #[test]
+    fn generated_positions_continue_from_prompt_text_positions() {
+        let prompt = [[7, 8, 9, 10], [42, 100, 200, 300]];
+        assert_eq!(checked_generated_position(&prompt, 0).unwrap(), [43; 4]);
+        assert_eq!(checked_generated_position(&prompt, 1).unwrap(), [44; 4]);
+        assert!(checked_generated_position(&[[usize::MAX; 4]], 0).is_err());
     }
 
     #[test]
