@@ -1934,8 +1934,28 @@ impl GgufrsFile {
             .filter(|segment| segment.id == id)
     }
 
+    pub(crate) fn segments_for_component(
+        &self,
+        component_id: u32,
+    ) -> impl Iterator<Item = &SegmentInfo> {
+        self.index
+            .segments
+            .iter()
+            .filter(move |segment| segment.component_id == component_id)
+    }
+
     pub(crate) fn tensors(&self) -> &[TensorRecord] {
         &self.index.tensors
+    }
+
+    pub(crate) fn tensors_for_segment(
+        &self,
+        segment_id: u32,
+    ) -> impl Iterator<Item = &TensorRecord> {
+        self.index
+            .tensors
+            .iter()
+            .filter(move |tensor| tensor.segment_id == segment_id)
     }
 
     #[allow(dead_code)]
@@ -3013,6 +3033,13 @@ pub(crate) mod test_support {
         pub(crate) mmproj_weight: Vec<u8>,
     }
 
+    pub(crate) struct LoadFixture {
+        pub(crate) package: GgufrsFile,
+        pub(crate) llm_component: u32,
+        #[allow(dead_code)]
+        pub(crate) inputs: TestInputs,
+    }
+
     impl Drop for TestInputs {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.dir);
@@ -3120,6 +3147,45 @@ pub(crate) mod test_support {
             llm_blk0,
             llm_blk1,
             mmproj_weight,
+        }
+    }
+
+    pub(crate) fn test_q8_row_package(rows: u64, row_elements: u64) -> LoadFixture {
+        let inputs = test_gguf_pair();
+        let row_bytes = (row_elements / 32) * 34;
+        write_test_gguf(
+            &inputs.llm,
+            &[
+                ("general.alignment".into(), MetaValue::Uint32(32)),
+                (
+                    "general.architecture".into(),
+                    MetaValue::String("qwen3".into()),
+                ),
+                ("qwen3.block_count".into(), MetaValue::Uint32(1)),
+            ],
+            &[
+                SourceTensor {
+                    name: "token_embd.weight",
+                    ggml_type: GGMLType::F32,
+                    dims: vec![32],
+                    bytes: vec![0x11; 128],
+                },
+                SourceTensor {
+                    name: "blk.0.weight",
+                    ggml_type: GGMLType::Q8_0,
+                    dims: vec![row_elements, rows],
+                    bytes: vec![0x22; (row_bytes * rows) as usize],
+                },
+            ],
+        );
+        let output = inputs.dir.join("q8-rows.ggufrs");
+        export_ggufrs(&output, &inputs.llm, None, ExportOptions::default()).unwrap();
+        let package = GgufrsFile::open(output).unwrap();
+        let llm_component = package.component_id(ComponentRole::Llm).unwrap();
+        LoadFixture {
+            package,
+            llm_component,
+            inputs,
         }
     }
 }

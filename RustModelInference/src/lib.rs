@@ -1,5 +1,6 @@
 pub mod clip_config;
 pub mod ggufrs;
+pub mod load_plan;
 pub mod memory;
 pub mod model;
 pub mod ops;
@@ -19,6 +20,10 @@ pub use clip_config::{ClipVisionConfig, Qwen35Config};
 pub use ggufrs::{
     export_ggufrs, open_model_source, ComponentInfo, ComponentRole, ExportOptions, GgufrsError,
     GgufrsFile, LoadedComponent, SegmentKind, GGUFRS_SEGMENT_ALIGNMENT, GGUFRS_VERSION,
+};
+pub use load_plan::{
+    build_load_plan, load_logical_cpu, LoadPlan, LogicalCpuDeviceLoad, LogicalCpuLoad,
+    LogicalCpuPlacement, LogicalDevice, Placement, PlacementPolicy, PlacementSlice,
 };
 pub use memory::{BlockAllocator, KVCacheView, MemoryArena, PagedKVBlock};
 pub use model::{
