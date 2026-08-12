@@ -1,4 +1,5 @@
 pub mod clip_config;
+pub mod compute;
 pub mod ggufrs;
 pub mod load_plan;
 pub mod memory;
