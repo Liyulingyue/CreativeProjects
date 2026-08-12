@@ -631,6 +631,7 @@ impl AudioLinear {
         }
         let output_len = checked_product("audio projection output", rows, self.output)?;
         resize_f32(result, "audio projection output", output_len)?;
+        result.fill(0.0);
         if input.iter().all(|value| *value == 0.0) {
             return Ok(());
         }
@@ -1711,6 +1712,25 @@ mod tests {
 
     fn filled_f32(elements: usize, value: f32) -> Vec<u8> {
         (0..elements).flat_map(|_| value.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn zero_projection_clears_reused_result_buffer() {
+        let weight: &'static [u8] = Box::leak(filled_f16(1, 2.0).into_boxed_slice());
+        let linear = AudioLinear {
+            weight,
+            kind: GGMLType::F16,
+            input: 1,
+            output: 1,
+            bias: Vec::new(),
+        };
+        let mut result = Vec::new();
+
+        linear.project_f16(&[3.0], 1, &mut result).unwrap();
+        assert_eq!(result, [6.0]);
+        linear.project_f16(&[0.0], 1, &mut result).unwrap();
+
+        assert_eq!(result, [0.0]);
     }
 
     #[test]
