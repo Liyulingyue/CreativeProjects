@@ -72,40 +72,60 @@ struct ValidatedTranscription {
 }
 
 impl TranscriptionFields {
-    fn add_file(&mut self, file: Vec<u8>) -> Result<(), TranscriptionHttpError> {
-        if self.file.replace(file).is_some() {
-            return Err(TranscriptionHttpError::bad_request("duplicate file field"));
+    fn preflight(&self, name: &str) -> Result<(), TranscriptionHttpError> {
+        let vacant = match name {
+            "file" => self.file.is_none(),
+            "model" => self.model.is_none(),
+            "language" => self.language.is_none(),
+            "prompt" => self.prompt.is_none(),
+            "max_tokens" => self.max_tokens.is_none(),
+            "response_format" => self.response_format.is_none(),
+            "stream" => self.stream.is_none(),
+            _ => {
+                return Err(TranscriptionHttpError::bad_request(format!(
+                    "unknown multipart field: {name}"
+                )))
+            }
+        };
+        if !vacant {
+            return Err(TranscriptionHttpError::bad_request(format!(
+                "duplicate {name} field"
+            )));
         }
         Ok(())
     }
 
-    fn add_text(
-        &mut self,
-        name: &str,
-        text: Result<String, String>,
-    ) -> Result<(), TranscriptionHttpError> {
-        let text = text.map_err(TranscriptionHttpError::bad_request)?;
+    fn add_file(&mut self, file: Vec<u8>) -> Result<(), TranscriptionHttpError> {
+        self.preflight("file")?;
+        self.file = Some(file);
+        Ok(())
+    }
+
+    fn add_text(&mut self, name: &str, bytes: Vec<u8>) -> Result<(), TranscriptionHttpError> {
+        self.preflight(name)?;
+        let text = String::from_utf8(bytes).map_err(|_| {
+            TranscriptionHttpError::bad_request(format!("invalid UTF-8 in {name} field"))
+        })?;
         match name {
-            "model" => set_once(&mut self.model, text, name),
-            "language" => set_once(&mut self.language, text, name),
-            "prompt" => set_once(&mut self.prompt, text, name),
+            "model" => self.model = Some(text),
+            "language" => self.language = Some(text),
+            "prompt" => self.prompt = Some(text),
             "max_tokens" => {
                 let value = text
                     .parse()
                     .map_err(|_| TranscriptionHttpError::bad_request("invalid max_tokens field"))?;
-                set_once(&mut self.max_tokens, value, name)
+                self.max_tokens = Some(value);
             }
-            "response_format" => set_once(&mut self.response_format, text, name),
+            "response_format" => self.response_format = Some(text),
             "stream" => {
                 let value = text
                     .parse()
                     .map_err(|_| TranscriptionHttpError::bad_request("invalid stream field"))?;
-                set_once(&mut self.stream, value, name)
+                self.stream = Some(value);
             }
-            _ => Err(TranscriptionHttpError::bad_request(format!(
-                "unknown multipart field: {name}"
-            ))),
+            _ => unreachable!("preflight accepted unknown field"),
         }
+        Ok(())
     }
 
     fn validate(self, model_name: &str) -> Result<ValidatedTranscription, TranscriptionHttpError> {
@@ -151,15 +171,6 @@ impl TranscriptionFields {
             },
         })
     }
-}
-
-fn set_once<T>(slot: &mut Option<T>, value: T, name: &str) -> Result<(), TranscriptionHttpError> {
-    if slot.replace(value).is_some() {
-        return Err(TranscriptionHttpError::bad_request(format!(
-            "duplicate {name} field"
-        )));
-    }
-    Ok(())
 }
 
 #[derive(Serialize)]
@@ -383,18 +394,15 @@ async fn audio_transcriptions(
             .map_err(TranscriptionHttpError::from_multipart)?
         {
             let name = field.name().unwrap_or_default().to_string();
+            fields.preflight(&name)?;
+            let bytes = field
+                .bytes()
+                .await
+                .map_err(TranscriptionHttpError::from_multipart)?;
             if name == "file" {
-                let bytes = field
-                    .bytes()
-                    .await
-                    .map_err(TranscriptionHttpError::from_multipart)?;
                 fields.add_file(bytes.to_vec())?;
             } else {
-                let text = field
-                    .text()
-                    .await
-                    .map_err(TranscriptionHttpError::from_multipart)?;
-                fields.add_text(&name, Ok(text))?;
+                fields.add_text(&name, bytes.to_vec())?;
             }
         }
         let request = fields.validate(&state.model_name)?;
@@ -741,6 +749,13 @@ fn generate_qwen_35(
     })
 }
 
+fn validate_explicit_mmproj_arch(arch: &str, explicit: bool) -> Result<(), String> {
+    if explicit && arch != "qwen3vl" {
+        return Err("--mmproj requires a qwen3vl decoder".into());
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -806,6 +821,10 @@ async fn main() {
         .metadata("general.architecture")
         .and_then(|v| v.to_string_val())
         .unwrap_or_default();
+    validate_explicit_mmproj_arch(&arch, mmproj_path.is_some()).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(1);
+    });
     let pool = Arc::new(thread_pool::ComputePool::new(n_threads));
     let explicit_audio_source: Option<Arc<dyn TensorSource>> = mmproj_path.as_deref().map(|path| {
         Arc::from(
@@ -921,51 +940,82 @@ mod tests {
             fields.add_file(vec![4]).unwrap_err().status(),
             StatusCode::BAD_REQUEST
         );
+        assert_eq!(fields.file.as_deref(), Some(&[1, 2, 3][..]));
     }
 
     #[test]
-    fn transcription_rejects_duplicate_unknown_and_invalid_utf8_fields() {
+    fn transcription_preflights_duplicate_unknown_and_strict_utf8_fields() {
         let mut fields = TranscriptionFields::default();
-        fields.add_text("model", Ok("model".into())).unwrap();
+        fields.add_text("model", b"model".to_vec()).unwrap();
         assert_eq!(
-            fields
-                .add_text("model", Ok("model".into()))
-                .unwrap_err()
-                .status(),
+            fields.preflight("model").unwrap_err().status(),
             StatusCode::BAD_REQUEST
         );
         assert_eq!(
             fields
-                .add_text("unknown", Ok("value".into()))
+                .add_text("model", b"other".to_vec())
                 .unwrap_err()
                 .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(fields.model.as_deref(), Some("model"));
+        assert_eq!(
+            fields.preflight("unknown").unwrap_err().status(),
             StatusCode::BAD_REQUEST
         );
         assert_eq!(
             fields
-                .add_text("language", Err("invalid utf-8".into()))
+                .add_text("language", vec![0xff])
                 .unwrap_err()
                 .status(),
             StatusCode::BAD_REQUEST
         );
+        assert_eq!(fields.language, None);
     }
 
     #[test]
-    fn transcription_rejects_invalid_options() {
-        for (name, value) in [
-            ("max_tokens", "0"),
-            ("model", "other"),
-            ("response_format", "text"),
-            ("stream", "true"),
+    fn transcription_validates_option_syntax_and_values() {
+        for (name, value, expected) in [
+            ("max_tokens", "invalid", StatusCode::BAD_REQUEST),
+            ("stream", "invalid", StatusCode::BAD_REQUEST),
+            ("max_tokens", "0", StatusCode::UNPROCESSABLE_ENTITY),
+            ("model", "other", StatusCode::UNPROCESSABLE_ENTITY),
+            ("response_format", "text", StatusCode::UNPROCESSABLE_ENTITY),
+            ("stream", "true", StatusCode::UNPROCESSABLE_ENTITY),
+            ("language", "Klingon", StatusCode::UNPROCESSABLE_ENTITY),
         ] {
             let mut fields = fields_with_file();
-            fields.add_text(name, Ok(value.into())).unwrap();
-            assert_eq!(
-                fields.validate("model").unwrap_err().status(),
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "field {name}"
-            );
+            match fields.add_text(name, value.as_bytes().to_vec()) {
+                Err(error) => {
+                    assert_eq!(error.status(), expected, "field {name}");
+                    assert!(match name {
+                        "max_tokens" => fields.max_tokens.is_none(),
+                        "stream" => fields.stream.is_none(),
+                        _ => true,
+                    });
+                }
+                Ok(()) => assert_eq!(
+                    fields.validate("model").unwrap_err().status(),
+                    expected,
+                    "field {name}"
+                ),
+            }
         }
+
+        let mut fields = fields_with_file();
+        fields.add_text("stream", b"false".to_vec()).unwrap();
+        let request = fields.validate("model").unwrap();
+        assert_eq!(request.options.max_new_tokens, 256);
+        assert_eq!(request.options.language, None);
+        assert_eq!(request.options.prompt, None);
+    }
+
+    #[test]
+    fn explicit_mmproj_requires_qwen3vl_decoder() {
+        assert!(validate_explicit_mmproj_arch("qwen3vl", true).is_ok());
+        assert!(validate_explicit_mmproj_arch("qwen35", false).is_ok());
+        assert!(validate_explicit_mmproj_arch("qwen35", true).is_err());
+        assert!(validate_explicit_mmproj_arch("qwen3", true).is_err());
     }
 
     #[test]
@@ -1010,8 +1060,9 @@ mod tests {
 fn chat_and_asr_share_one_inference_lock() {
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
-        Barrier,
+        mpsc,
     };
+    use std::time::Duration;
 
     let state = Arc::new(AppState {
         model: Arc::new(ModelBackend::Test),
@@ -1019,34 +1070,43 @@ fn chat_and_asr_share_one_inference_lock() {
         model_name: "test".into(),
         inference_lock: Arc::new(std::sync::Mutex::new(())),
     });
-    let barrier = Arc::new(Barrier::new(3));
-    let active = Arc::new(AtomicUsize::new(0));
-    let peak = Arc::new(AtomicUsize::new(0));
     let setup = Arc::new(AtomicUsize::new(0));
-    let mut threads = Vec::new();
+    let (first_entered_tx, first_entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let first_state = Arc::clone(&state);
+    let first_setup = Arc::clone(&setup);
+    let first = std::thread::spawn(move || {
+        first_setup.fetch_add(1, Ordering::SeqCst);
+        first_state.run_inference(|| {
+            first_entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+    });
+    first_entered_rx
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap();
 
-    for _ in 0..2 {
-        let state = Arc::clone(&state);
-        let barrier = Arc::clone(&barrier);
-        let active = Arc::clone(&active);
-        let peak = Arc::clone(&peak);
-        let setup = Arc::clone(&setup);
-        threads.push(std::thread::spawn(move || {
-            setup.fetch_add(1, Ordering::SeqCst);
-            barrier.wait();
-            state.run_inference(|| {
-                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
-                peak.fetch_max(now, Ordering::SeqCst);
-                std::thread::yield_now();
-                active.fetch_sub(1, Ordering::SeqCst);
-            });
-        }));
-    }
-
-    barrier.wait();
-    for thread in threads {
-        thread.join().unwrap();
-    }
+    let (second_setup_tx, second_setup_rx) = mpsc::channel();
+    let (second_entered_tx, second_entered_rx) = mpsc::channel();
+    let second_state = Arc::clone(&state);
+    let second_setup = Arc::clone(&setup);
+    let second = std::thread::spawn(move || {
+        second_setup.fetch_add(1, Ordering::SeqCst);
+        second_setup_tx.send(()).unwrap();
+        second_state.run_inference(|| second_entered_tx.send(()).unwrap());
+    });
+    second_setup_rx
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap();
+    assert!(matches!(
+        second_entered_rx.recv_timeout(Duration::from_millis(100)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    release_tx.send(()).unwrap();
+    second_entered_rx
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap();
+    first.join().unwrap();
+    second.join().unwrap();
     assert_eq!(setup.load(Ordering::SeqCst), 2);
-    assert_eq!(peak.load(Ordering::SeqCst), 1);
 }
