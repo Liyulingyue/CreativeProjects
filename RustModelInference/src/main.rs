@@ -711,6 +711,38 @@ mod cli_tests {
     }
 
     #[test]
+    fn asr_cli_rejects_empty_and_flag_shaped_values() {
+        for args in [
+            vec!["rmi", "--audio", ""],
+            vec!["rmi", "--audio", "--image", "missing.png"],
+            vec!["rmi", "--audio", "--language", "English"],
+        ] {
+            let args: Vec<String> = args.into_iter().map(str::to_string).collect();
+            assert!(parse_cli_options(&args).unwrap_err().contains("--audio"));
+        }
+
+        let args: Vec<String> = ["rmi", "--audio", "missing.wav", "--language", "--prompt"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert!(parse_cli_options(&args)
+            .unwrap_err()
+            .contains("--language"));
+
+        let args: Vec<String> = ["rmi", "--audio", "missing.wav", "--language", ""]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let options = parse_cli_options(&args).unwrap();
+        assert!(validate_cli_options(&options).is_ok());
+        assert!(normalize_language(
+            transcription_options(&options).language.as_deref()
+        )
+        .unwrap()
+        .is_none());
+    }
+
+    #[test]
     fn asr_cli_defaults_are_greedy_and_256_tokens() {
         let mut options = asr_cli_options();
         options.language = Some("auto".into());
@@ -743,6 +775,66 @@ mod cli_tests {
         let text = parse_cli_options(&args).unwrap();
         assert_eq!(text.prompt.as_deref(), Some("hello"));
         assert_eq!(resolve_cli_generation_options(&text), (128, 0.6));
+    }
+
+    #[test]
+    fn legacy_cli_parser_and_dispatch_semantics_are_preserved() {
+        type Check = fn(&CliOptions) -> bool;
+        let parse = |args: &[&str]| {
+            let args: Vec<String> = args.iter().map(ToString::to_string).collect();
+            parse_cli_options(&args).unwrap()
+        };
+        let cases: &[(&[&str], &str, Check)] = &[
+            (&["rmi", "--embedding", "--prompt", "x"], "embedding", |o| o.embedding && o.prompt.as_deref() == Some("x")),
+            (&["rmi", "--image", "image.png"], "image", |o| o.image.as_deref() == Some(Path::new("image.png"))),
+            (&["rmi", "--mmproj", "projector.gguf"], "mmproj", |o| o.mmproj.as_deref() == Some(Path::new("projector.gguf"))),
+            (&["rmi", "--model", "model.gguf"], "interactive", |o| o.prompt.is_none() && o.image.is_none() && o.mmproj.is_none()),
+            (&["rmi", "positional", "--prompt", "x"], "unknown/positional", |o| o.prompt.as_deref() == Some("x")),
+            (&["rmi"], "text defaults", |o| resolve_cli_generation_options(o) == (128, 0.6)),
+            (&["rmi", "--max-tokens", "bad"], "malformed max", |o| o.max_tokens == Some(128)),
+            (&["rmi", "--n-gen", "bad"], "malformed n-gen", |o| o.max_tokens == Some(128)),
+            (&["rmi", "--temp", "bad"], "malformed temp", |o| o.temperature == Some(0.6)),
+            (&["rmi", "--threads", "bad"], "malformed threads", |o| o.threads == 0),
+            (&["rmi", "--kv-cache", "f32"], "F32 KV", |o| o.kv_format == KvFormat::F32),
+            (&["rmi", "--kv-cache", "bad"], "fallback F16 KV", |o| o.kv_format == KvFormat::F16),
+            (&["rmi", "--model", "", "--prompt", "", "--max-tokens", "", "--temp", "", "--threads", "", "--kv-cache", "", "--mmproj", "", "--image", ""], "empty legacy values", |o| o.model.as_os_str().is_empty() && o.prompt.as_deref() == Some("") && o.max_tokens == Some(128) && o.temperature == Some(0.6) && o.threads == 0 && o.kv_format == KvFormat::F16 && o.mmproj.as_deref() == Some(Path::new("")) && o.image.as_deref() == Some(Path::new(""))),
+        ];
+        for (args, name, check) in cases {
+            assert!(check(&parse(args)), "{name}");
+        }
+
+        let absent: &[(&str, Check)] = &[
+            ("--model", |o| o.model.as_os_str().is_empty()),
+            ("--prompt", |o| o.prompt.is_none()),
+            ("--max-tokens", |o| o.max_tokens.is_none()),
+            ("--n-gen", |o| o.max_tokens.is_none()),
+            ("--temp", |o| o.temperature.is_none()),
+            ("--threads", |o| o.threads == 0),
+            ("--kv-cache", |o| o.kv_format == KvFormat::F16),
+            ("--mmproj", |o| o.mmproj.is_none()),
+            ("--image", |o| o.image.is_none()),
+        ];
+        for (flag, check) in absent {
+            assert!(check(&parse(&["rmi", flag])), "absent {flag}");
+        }
+        assert!(parse_cli_options(&["rmi".into(), "--embedding-output".into()]).is_err());
+
+        for (value, expected) in [
+            ("0", 0.0),
+            ("-1", -1.0),
+            ("NaN", f32::NAN),
+            ("inf", f32::INFINITY),
+            ("-inf", f32::NEG_INFINITY),
+        ] {
+            let options = parse(&["rmi", "--temp", value]);
+            let actual = options.temperature.unwrap();
+            if expected.is_nan() {
+                assert!(actual.is_nan());
+            } else {
+                assert_eq!(actual, expected);
+            }
+            assert!(validate_cli_options(&options).is_ok());
+        }
     }
 }
 
@@ -814,6 +906,7 @@ fn parse_cli_options(args: &[String]) -> Result<CliOptions, String> {
             "--audio" => {
                 let value = args
                     .get(i + 1)
+                    .filter(|value| !value.is_empty() && !value.starts_with('-'))
                     .ok_or("Missing value for --audio")?;
                 options.audio = Some(value.as_str().into());
                 i += 1;
@@ -821,6 +914,7 @@ fn parse_cli_options(args: &[String]) -> Result<CliOptions, String> {
             "--language" => {
                 let value = args
                     .get(i + 1)
+                    .filter(|value| !value.starts_with('-'))
                     .ok_or("Missing value for --language")?;
                 options.language = Some(value.clone());
                 i += 1;
