@@ -5,10 +5,11 @@ use memmap2::{Mmap, MmapOptions};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 pub const GGUFRS_VERSION: u32 = 1;
@@ -227,6 +228,29 @@ struct PackageIndex {
     tensor_lookup: BTreeMap<(u32, String), usize>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExportOptions {
+    pub overwrite: bool,
+}
+
+struct ExportSource {
+    role: ComponentRole,
+    path: PathBuf,
+    name: &'static str,
+    loader: GGUFLoader,
+    tensor_alignment: u64,
+}
+
+struct PlannedExport {
+    index: PackageIndex,
+    component_table: TableRange,
+    metadata_table: TableRange,
+    segment_table: TableRange,
+    tensor_table: TableRange,
+    tensor_data_offset: u64,
+    declared_file_size: u64,
+}
+
 #[derive(Clone)]
 pub struct GgufrsFile {
     file: Arc<File>,
@@ -252,6 +276,616 @@ fn invalid(context: impl Into<String>) -> GgufrsError {
     GgufrsError::InvalidFormat {
         context: context.into(),
     }
+}
+
+fn align_up(value: u64, alignment: u64) -> Option<u64> {
+    if alignment == 0 {
+        return None;
+    }
+    value
+        .checked_add(alignment.checked_sub(1)?)
+        .map(|value| value / alignment * alignment)
+}
+
+fn put_u32(out: &mut Vec<u8>, value: u32) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn put_i32(out: &mut Vec<u8>, value: i32) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn put_u64(out: &mut Vec<u8>, value: u64) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn put_string(out: &mut Vec<u8>, value: &str) -> Result<(), GgufrsError> {
+    put_u64(
+        out,
+        u64::try_from(value.len()).map_err(|_| invalid("string length does not fit u64"))?,
+    );
+    out.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+fn meta_value_type(value: &MetaValue) -> MetaValueType {
+    match value {
+        MetaValue::Uint8(_) => MetaValueType::Uint8,
+        MetaValue::Int8(_) => MetaValueType::Int8,
+        MetaValue::Uint16(_) => MetaValueType::Uint16,
+        MetaValue::Int16(_) => MetaValueType::Int16,
+        MetaValue::Uint32(_) => MetaValueType::Uint32,
+        MetaValue::Int32(_) => MetaValueType::Int32,
+        MetaValue::Float32(_) => MetaValueType::Float32,
+        MetaValue::Bool(_) => MetaValueType::Bool,
+        MetaValue::String(_) => MetaValueType::String,
+        MetaValue::Uint64(_) => MetaValueType::Uint64,
+        MetaValue::Int64(_) => MetaValueType::Int64,
+        MetaValue::Float64(_) => MetaValueType::Float64,
+        MetaValue::Array(_, _) => MetaValueType::Array,
+    }
+}
+
+fn put_meta_value(out: &mut Vec<u8>, value: &MetaValue) -> Result<(), GgufrsError> {
+    match value {
+        MetaValue::Uint8(value) => out.push(*value),
+        MetaValue::Int8(value) => out.push(*value as u8),
+        MetaValue::Uint16(value) => out.extend_from_slice(&value.to_le_bytes()),
+        MetaValue::Int16(value) => out.extend_from_slice(&value.to_le_bytes()),
+        MetaValue::Uint32(value) => put_u32(out, *value),
+        MetaValue::Int32(value) => put_i32(out, *value),
+        MetaValue::Float32(value) => out.extend_from_slice(&value.to_le_bytes()),
+        MetaValue::Bool(value) => out.push(u8::from(*value)),
+        MetaValue::String(value) => put_string(out, value)?,
+        MetaValue::Uint64(value) => put_u64(out, *value),
+        MetaValue::Int64(value) => out.extend_from_slice(&value.to_le_bytes()),
+        MetaValue::Float64(value) => out.extend_from_slice(&value.to_le_bytes()),
+        MetaValue::Array(element_type, values) => {
+            if *element_type == MetaValueType::Array {
+                return Err(invalid("metadata arrays cannot contain arrays"));
+            }
+            for child in values {
+                if matches!(child, MetaValue::Array(_, _))
+                    || meta_value_type(child) != *element_type
+                {
+                    return Err(invalid(format!(
+                        "metadata array declares {element_type:?} but contains {:?}",
+                        meta_value_type(child)
+                    )));
+                }
+            }
+            put_i32(out, *element_type as i32);
+            put_u64(
+                out,
+                u64::try_from(values.len())
+                    .map_err(|_| invalid("metadata array length does not fit u64"))?,
+            );
+            for value in values {
+                put_meta_value(out, value)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn source_error(source: &ExportSource, message: impl Into<String>) -> GgufrsError {
+    GgufrsError::SourceGguf {
+        role: source.role,
+        path: source.path.clone(),
+        message: message.into(),
+    }
+}
+
+fn layer_index(name: &str) -> Option<u32> {
+    let rest = name.strip_prefix("blk.")?;
+    let (index, suffix) = rest.split_once('.')?;
+    if suffix.is_empty() {
+        return None;
+    }
+    index.parse().ok()
+}
+
+fn load_export_source(role: ComponentRole, path: &Path) -> Result<ExportSource, GgufrsError> {
+    let loader = GGUFLoader::from_file(path).map_err(|message| GgufrsError::SourceGguf {
+        role,
+        path: path.to_path_buf(),
+        message,
+    })?;
+    let source = ExportSource {
+        role,
+        path: path.to_path_buf(),
+        name: match role {
+            ComponentRole::Llm => "llm",
+            ComponentRole::Mmproj => "mmproj",
+        },
+        tensor_alignment: 32,
+        loader,
+    };
+    let alignment = source
+        .loader
+        .metadata("general.alignment")
+        .map(|value| {
+            value
+                .to_u64()
+                .ok_or_else(|| source_error(&source, "general.alignment is not an integer"))
+        })
+        .transpose()?
+        .unwrap_or(32);
+    if alignment == 0 || !alignment.is_power_of_two() {
+        return Err(source_error(
+            &source,
+            format!("general.alignment {alignment} is not a nonzero power of two"),
+        ));
+    }
+
+    match role {
+        ComponentRole::Llm => {
+            let architecture = source
+                .loader
+                .metadata("general.architecture")
+                .and_then(MetaValue::to_string_val)
+                .ok_or_else(|| source_error(&source, "missing or invalid general.architecture"))?;
+            if !matches!(architecture, "qwen2" | "qwen3" | "qwen35" | "llama") {
+                return Err(source_error(
+                    &source,
+                    format!("unsupported general.architecture {architecture}"),
+                ));
+            }
+            let block_key = format!("{architecture}.block_count");
+            let block_count = source
+                .loader
+                .metadata(&block_key)
+                .and_then(MetaValue::to_u64)
+                .and_then(|value| u32::try_from(value).ok())
+                .filter(|value| *value != 0 && *value <= i32::MAX as u32)
+                .ok_or_else(|| source_error(&source, format!("missing or invalid {block_key}")))?;
+            let required_tensors = u64::from(block_count).checked_add(1).ok_or_else(|| {
+                source_error(&source, format!("{block_key} tensor count overflow"))
+            })?;
+            let source_tensors = u64::try_from(source.loader.n_tensors())
+                .map_err(|_| source_error(&source, "source tensor count does not fit u64"))?;
+            if required_tensors > source_tensors {
+                return Err(source_error(
+                    &source,
+                    format!(
+                        "{block_key}={block_count} requires at least {required_tensors} tensors, source has {source_tensors}"
+                    ),
+                ));
+            }
+        }
+        ComponentRole::Mmproj => {
+            for key in [
+                "clip.vision.projection_dim",
+                "clip.vision.image_size",
+                "clip.vision.patch_size",
+                "clip.vision.embedding_length",
+                "clip.vision.feed_forward_length",
+                "clip.vision.block_count",
+                "clip.vision.attention.head_count",
+            ] {
+                if source
+                    .loader
+                    .metadata(key)
+                    .and_then(MetaValue::to_u64)
+                    .is_none()
+                {
+                    return Err(source_error(&source, format!("missing or invalid {key}")));
+                }
+            }
+            let epsilon = "clip.vision.attention.layer_norm_epsilon";
+            if source
+                .loader
+                .metadata(epsilon)
+                .and_then(MetaValue::to_f64)
+                .is_none()
+            {
+                return Err(source_error(
+                    &source,
+                    format!("missing or invalid {epsilon}"),
+                ));
+            }
+            for tensor in ["v.patch_embd.weight", "mm.0.weight", "mm.2.weight"] {
+                if source.loader.tensor_info(tensor).is_none() {
+                    return Err(source_error(
+                        &source,
+                        format!("missing required tensor {tensor}"),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(ExportSource {
+        tensor_alignment: alignment.max(32),
+        ..source
+    })
+}
+
+fn vec_len_u32<T>(values: &[T], context: &str) -> Result<u32, GgufrsError> {
+    u32::try_from(values.len()).map_err(|_| invalid(format!("{context} count does not fit u32")))
+}
+
+fn plan_export(sources: &[ExportSource]) -> Result<PlannedExport, GgufrsError> {
+    if !matches!(
+        sources
+            .iter()
+            .map(|source| source.role)
+            .collect::<Vec<_>>()
+            .as_slice(),
+        [ComponentRole::Llm] | [ComponentRole::Llm, ComponentRole::Mmproj]
+    ) {
+        return Err(invalid("export sources must be [LLM] or [LLM, MMPROJ]"));
+    }
+
+    let mut index = PackageIndex {
+        components: Vec::new(),
+        metadata: Vec::new(),
+        segments: Vec::new(),
+        tensors: Vec::new(),
+        component_by_role: BTreeMap::new(),
+        metadata_lookup: BTreeMap::new(),
+        tensor_lookup: BTreeMap::new(),
+    };
+
+    for source in sources {
+        let component_id = vec_len_u32(&index.components, "component")?;
+        let metadata_start = vec_len_u32(&index.metadata, "metadata")?;
+        let mut metadata = source.loader.metadata_entries().to_vec();
+        metadata.sort_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
+        for pair in metadata.windows(2) {
+            if pair[0].0 == pair[1].0 {
+                return Err(invalid(format!(
+                    "component {} has duplicate metadata key {}",
+                    source.name, pair[0].0
+                )));
+            }
+        }
+        index
+            .metadata
+            .extend(metadata.into_iter().map(|(key, value)| ScopedMetadata {
+                component_id,
+                key,
+                value,
+            }));
+        let metadata_end = vec_len_u32(&index.metadata, "metadata")?;
+
+        let segment_start = vec_len_u32(&index.segments, "segment")?;
+        let tensor_start = vec_len_u32(&index.tensors, "tensor")?;
+        let groups = match source.role {
+            ComponentRole::Llm => {
+                let architecture = source
+                    .loader
+                    .metadata("general.architecture")
+                    .and_then(MetaValue::to_string_val)
+                    .expect("validated LLM architecture");
+                let block_key = format!("{architecture}.block_count");
+                let block_count = source
+                    .loader
+                    .metadata(&block_key)
+                    .and_then(MetaValue::to_u64)
+                    .and_then(|value| u32::try_from(value).ok())
+                    .expect("validated LLM block count");
+                let group_count = usize::try_from(block_count)
+                    .map_err(|_| {
+                        invalid(format!(
+                            "component {} block count does not fit usize",
+                            source.name
+                        ))
+                    })?
+                    .checked_add(1)
+                    .ok_or_else(|| {
+                        invalid(format!("component {} segment count overflow", source.name))
+                    })?;
+                let mut groups: Vec<(SegmentKind, Option<u32>, Vec<TensorInfo>)> = Vec::new();
+                groups.try_reserve_exact(group_count).map_err(|_| {
+                    invalid(format!(
+                        "component {} failed to allocate {group_count} segment groups",
+                        source.name
+                    ))
+                })?;
+                groups.push((SegmentKind::Shared, None, Vec::new()));
+                groups.extend(
+                    (0..block_count).map(|layer| (SegmentKind::Layer, Some(layer), Vec::new())),
+                );
+                for tensor in source.loader.tensors() {
+                    let group = if let Some(layer) = layer_index(&tensor.name) {
+                        if layer >= block_count {
+                            return Err(invalid(format!(
+                                "component {} tensor {} layer {layer} is outside block count {block_count}",
+                                source.name, tensor.name
+                            )));
+                        }
+                        usize::try_from(layer)
+                            .ok()
+                            .and_then(|layer| layer.checked_add(1))
+                            .ok_or_else(|| {
+                                invalid(format!(
+                                    "component {} tensor {} layer index overflow",
+                                    source.name, tensor.name
+                                ))
+                            })?
+                    } else {
+                        0
+                    };
+                    groups[group].2.push(tensor.clone());
+                }
+                groups
+            }
+            ComponentRole::Mmproj => vec![(
+                SegmentKind::Component,
+                None,
+                source.loader.tensors().to_vec(),
+            )],
+        };
+
+        let mut component_tensor_names = BTreeSet::new();
+        for (kind, layer, mut tensors) in groups {
+            if tensors.is_empty() {
+                let label = match layer {
+                    Some(layer) => format!("layer {layer}"),
+                    None => format!("{kind:?}"),
+                };
+                return Err(invalid(format!(
+                    "component {} {label} segment has no tensors",
+                    source.name
+                )));
+            }
+            tensors.sort_by(|left, right| left.name.as_bytes().cmp(right.name.as_bytes()));
+            let segment_id = vec_len_u32(&index.segments, "segment")?;
+            let segment_tensor_start = vec_len_u32(&index.tensors, "tensor")?;
+            let mut cursor = 0u64;
+            for tensor in tensors {
+                if !component_tensor_names.insert(tensor.name.clone()) {
+                    return Err(invalid(format!(
+                        "component {} has duplicate tensor name {}",
+                        source.name, tensor.name
+                    )));
+                }
+                let segment_offset =
+                    align_up(cursor, source.tensor_alignment).ok_or_else(|| {
+                        invalid(format!(
+                            "component {} tensor {} aligned offset overflow",
+                            source.name, tensor.name
+                        ))
+                    })?;
+                let byte_len = tensor.checked_nbytes().ok_or_else(|| {
+                    invalid(format!(
+                        "component {} tensor {} dimensions/type do not form complete GGML blocks",
+                        source.name, tensor.name
+                    ))
+                })?;
+                let actual_len = source
+                    .loader
+                    .tensor_slice(&tensor.name)
+                    .and_then(|bytes| u64::try_from(bytes.len()).ok())
+                    .ok_or_else(|| {
+                        invalid(format!(
+                            "component {} tensor {} source bytes are unavailable",
+                            source.name, tensor.name
+                        ))
+                    })?;
+                if actual_len != byte_len {
+                    return Err(invalid(format!(
+                        "component {} tensor {} source length {actual_len} differs from checked size {byte_len}",
+                        source.name, tensor.name
+                    )));
+                }
+                cursor = segment_offset.checked_add(byte_len).ok_or_else(|| {
+                    invalid(format!(
+                        "component {} tensor {} end overflow",
+                        source.name, tensor.name
+                    ))
+                })?;
+                index.tensors.push(TensorRecord {
+                    component_id,
+                    segment_id,
+                    info: TensorInfo {
+                        name: tensor.name,
+                        dims: tensor.dims,
+                        ggml_type: tensor.ggml_type,
+                        offset: segment_offset,
+                    },
+                    segment_offset,
+                    byte_len,
+                });
+            }
+            let stored_len = align_up(cursor, GGUFRS_SEGMENT_ALIGNMENT).ok_or_else(|| {
+                invalid(format!(
+                    "component {} segment {segment_id} stored length overflow",
+                    source.name
+                ))
+            })?;
+            let segment_tensor_end = vec_len_u32(&index.tensors, "tensor")?;
+            index.segments.push(SegmentInfo {
+                id: segment_id,
+                component_id,
+                kind,
+                layer,
+                absolute_offset: 0,
+                stored_len,
+                tensor_range: segment_tensor_start..segment_tensor_end,
+                sha256: [0; 32],
+            });
+        }
+
+        let tensor_end = vec_len_u32(&index.tensors, "tensor")?;
+        let segment_end = vec_len_u32(&index.segments, "segment")?;
+        index.components.push(ComponentInfo {
+            id: component_id,
+            role: source.role,
+            name: source.name.into(),
+            metadata_range: metadata_start..metadata_end,
+            tensor_range: tensor_start..tensor_end,
+            segment_range: segment_start..segment_end,
+        });
+    }
+
+    let component_bytes = serialize_component_table(&index)?;
+    let metadata_bytes = serialize_metadata_table(&index)?;
+    let segment_bytes = serialize_segment_table(&index)?;
+    let tensor_bytes = serialize_tensor_table(&index)?;
+    let table_range = |offset: u64, bytes: &[u8], name: &str| -> Result<TableRange, GgufrsError> {
+        let length = u64::try_from(bytes.len())
+            .map_err(|_| invalid(format!("{name} length does not fit u64")))?;
+        offset
+            .checked_add(length)
+            .ok_or_else(|| invalid(format!("{name} range overflow")))?;
+        Ok(TableRange { offset, length })
+    };
+    let component_table = table_range(SUPERBLOCK_LEN as u64, &component_bytes, "component table")?;
+    let metadata_table = table_range(
+        component_table
+            .offset
+            .checked_add(component_table.length)
+            .ok_or_else(|| invalid("component table range overflow"))?,
+        &metadata_bytes,
+        "metadata table",
+    )?;
+    let segment_table = table_range(
+        metadata_table
+            .offset
+            .checked_add(metadata_table.length)
+            .ok_or_else(|| invalid("metadata table range overflow"))?,
+        &segment_bytes,
+        "segment table",
+    )?;
+    let tensor_table = table_range(
+        segment_table
+            .offset
+            .checked_add(segment_table.length)
+            .ok_or_else(|| invalid("segment table range overflow"))?,
+        &tensor_bytes,
+        "tensor table",
+    )?;
+    let table_end = tensor_table
+        .offset
+        .checked_add(tensor_table.length)
+        .ok_or_else(|| invalid("tensor table range overflow"))?;
+    let tensor_data_offset = align_up(table_end, GGUFRS_SEGMENT_ALIGNMENT)
+        .ok_or_else(|| invalid("tensor data offset overflow"))?;
+    let mut declared_file_size = tensor_data_offset;
+    for segment in &mut index.segments {
+        segment.absolute_offset = declared_file_size;
+        declared_file_size = declared_file_size
+            .checked_add(segment.stored_len)
+            .ok_or_else(|| invalid(format!("segment {} file range overflow", segment.id)))?;
+    }
+
+    Ok(PlannedExport {
+        index,
+        component_table,
+        metadata_table,
+        segment_table,
+        tensor_table,
+        tensor_data_offset,
+        declared_file_size,
+    })
+}
+
+fn serialize_component_table(index: &PackageIndex) -> Result<Vec<u8>, GgufrsError> {
+    let mut out = Vec::new();
+    for component in &index.components {
+        put_u32(&mut out, component.id);
+        put_u32(&mut out, component.role as u32);
+        put_string(&mut out, &component.name)?;
+        for range in [
+            &component.metadata_range,
+            &component.tensor_range,
+            &component.segment_range,
+        ] {
+            put_u32(&mut out, range.start);
+            put_u32(&mut out, range.end - range.start);
+        }
+    }
+    Ok(out)
+}
+
+fn serialize_metadata_table(index: &PackageIndex) -> Result<Vec<u8>, GgufrsError> {
+    let mut out = Vec::new();
+    for entry in &index.metadata {
+        put_u32(&mut out, entry.component_id);
+        put_string(&mut out, &entry.key)?;
+        put_i32(&mut out, meta_value_type(&entry.value) as i32);
+        put_meta_value(&mut out, &entry.value)?;
+    }
+    Ok(out)
+}
+
+fn serialize_segment_table(index: &PackageIndex) -> Result<Vec<u8>, GgufrsError> {
+    let mut out = Vec::new();
+    for segment in &index.segments {
+        put_u32(&mut out, segment.id);
+        put_u32(&mut out, segment.component_id);
+        put_u32(&mut out, segment.kind as u32);
+        let layer = segment
+            .layer
+            .map(|value| {
+                i32::try_from(value)
+                    .map_err(|_| invalid(format!("segment {} layer does not fit i32", segment.id)))
+            })
+            .transpose()?
+            .unwrap_or(-1);
+        put_i32(&mut out, layer);
+        put_u64(&mut out, segment.absolute_offset);
+        put_u64(&mut out, segment.stored_len);
+        put_u32(&mut out, segment.tensor_range.start);
+        put_u32(
+            &mut out,
+            segment.tensor_range.end - segment.tensor_range.start,
+        );
+        out.extend_from_slice(&segment.sha256);
+    }
+    Ok(out)
+}
+
+fn serialize_tensor_table(index: &PackageIndex) -> Result<Vec<u8>, GgufrsError> {
+    let mut out = Vec::new();
+    for tensor in &index.tensors {
+        put_u32(&mut out, tensor.component_id);
+        put_u32(&mut out, tensor.segment_id);
+        put_string(&mut out, &tensor.info.name)?;
+        put_i32(&mut out, tensor.info.ggml_type as i32);
+        put_u32(
+            &mut out,
+            u32::try_from(tensor.info.dims.len()).map_err(|_| {
+                invalid(format!("tensor {} rank does not fit u32", tensor.info.name))
+            })?,
+        );
+        for dimension in &tensor.info.dims {
+            put_u64(&mut out, *dimension);
+        }
+        put_u64(&mut out, tensor.segment_offset);
+        put_u64(&mut out, tensor.byte_len);
+    }
+    Ok(out)
+}
+
+fn serialize_superblock(plan: &PlannedExport) -> Result<[u8; 128], GgufrsError> {
+    let mut out = Vec::with_capacity(SUPERBLOCK_LEN);
+    out.extend_from_slice(GGUFRS_MAGIC);
+    put_u32(&mut out, GGUFRS_VERSION);
+    put_u32(&mut out, 0);
+    put_u64(&mut out, plan.declared_file_size);
+    for count in [
+        vec_len_u32(&plan.index.components, "component")?,
+        vec_len_u32(&plan.index.metadata, "metadata")?,
+        vec_len_u32(&plan.index.segments, "segment")?,
+        vec_len_u32(&plan.index.tensors, "tensor")?,
+    ] {
+        put_u32(&mut out, count);
+    }
+    for table in [
+        plan.component_table,
+        plan.metadata_table,
+        plan.segment_table,
+        plan.tensor_table,
+    ] {
+        put_u64(&mut out, table.offset);
+        put_u64(&mut out, table.length);
+    }
+    put_u64(&mut out, plan.tensor_data_offset);
+    out.extend_from_slice(&[0; 16]);
+    out.try_into()
+        .map_err(|_| invalid("superblock is not exactly 128 bytes"))
 }
 
 fn checked_range(
@@ -1473,6 +2107,383 @@ impl TensorSource for LoadedComponent {
     }
 }
 
+fn io_error(operation: &'static str, path: &Path, source: io::Error) -> GgufrsError {
+    GgufrsError::Io {
+        operation,
+        path: path.to_path_buf(),
+        source,
+    }
+}
+
+fn write_zeros(
+    file: &mut File,
+    path: &Path,
+    mut hasher: Option<&mut Sha256>,
+    mut len: u64,
+) -> Result<(), GgufrsError> {
+    const ZEROES: [u8; 8192] = [0; 8192];
+    while len != 0 {
+        let count_u64 = len.min(8192);
+        let count = usize::try_from(count_u64).map_err(|_| {
+            invalid(format!(
+                "padding chunk length {count_u64} does not fit usize"
+            ))
+        })?;
+        file.write_all(&ZEROES[..count])
+            .map_err(|source| GgufrsError::Io {
+                operation: "write package padding",
+                path: path.to_path_buf(),
+                source,
+            })?;
+        if let Some(hasher) = hasher.as_deref_mut() {
+            hasher.update(&ZEROES[..count]);
+        }
+        len = len
+            .checked_sub(count_u64)
+            .ok_or_else(|| invalid("package padding length underflow"))?;
+    }
+    Ok(())
+}
+
+fn write_planned_package(
+    file: &mut File,
+    path: &Path,
+    sources: &[ExportSource],
+    plan: &mut PlannedExport,
+) -> Result<(), GgufrsError> {
+    let superblock = serialize_superblock(plan)?;
+    let component_table = serialize_component_table(&plan.index)?;
+    let metadata_table = serialize_metadata_table(&plan.index)?;
+    let segment_table = serialize_segment_table(&plan.index)?;
+    let tensor_table = serialize_tensor_table(&plan.index)?;
+    for (name, bytes, range) in [
+        (
+            "component",
+            component_table.as_slice(),
+            plan.component_table,
+        ),
+        ("metadata", metadata_table.as_slice(), plan.metadata_table),
+        ("segment", segment_table.as_slice(), plan.segment_table),
+        ("tensor", tensor_table.as_slice(), plan.tensor_table),
+    ] {
+        let actual = u64::try_from(bytes.len())
+            .map_err(|_| invalid(format!("{name} table length does not fit u64")))?;
+        if actual != range.length {
+            return Err(invalid(format!(
+                "{name} table length {actual} differs from planned {}",
+                range.length
+            )));
+        }
+    }
+
+    file.seek(SeekFrom::Start(0))
+        .map_err(|source| io_error("seek to package start", path, source))?;
+    file.write_all(&superblock)
+        .map_err(|source| io_error("write package superblock", path, source))?;
+    for bytes in [
+        component_table.as_slice(),
+        metadata_table.as_slice(),
+        segment_table.as_slice(),
+        tensor_table.as_slice(),
+    ] {
+        file.write_all(bytes)
+            .map_err(|source| io_error("write package index table", path, source))?;
+    }
+    let table_end = file
+        .stream_position()
+        .map_err(|source| io_error("read package table end position", path, source))?;
+    let padding = plan
+        .tensor_data_offset
+        .checked_sub(table_end)
+        .ok_or_else(|| invalid("index tables extend past tensor data offset"))?;
+    write_zeros(file, path, None, padding)?;
+
+    for segment_index in 0..plan.index.segments.len() {
+        let (segment_id, component_id, stored_len, tensor_range) = {
+            let segment = &plan.index.segments[segment_index];
+            (
+                segment.id,
+                segment.component_id,
+                segment.stored_len,
+                segment.tensor_range.clone(),
+            )
+        };
+        let tensor_start = usize::try_from(tensor_range.start).map_err(|_| {
+            invalid(format!(
+                "segment {segment_id} tensor start does not fit usize"
+            ))
+        })?;
+        let tensor_end = usize::try_from(tensor_range.end).map_err(|_| {
+            invalid(format!(
+                "segment {segment_id} tensor end does not fit usize"
+            ))
+        })?;
+        let records = plan
+            .index
+            .tensors
+            .get(tensor_start..tensor_end)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "segment {segment_id} tensor range {:?} is outside the tensor table",
+                    tensor_range
+                ))
+            })?;
+        let mut hasher = Sha256::new();
+        let mut cursor = 0u64;
+        for record in records {
+            if record.component_id != component_id {
+                return Err(invalid(format!(
+                    "segment {segment_id} contains tensor {} from component {}",
+                    record.info.name, record.component_id
+                )));
+            }
+            let gap = record.segment_offset.checked_sub(cursor).ok_or_else(|| {
+                invalid(format!(
+                    "component {component_id} segment {segment_id} tensor {} starts before cursor {cursor}",
+                    record.info.name
+                ))
+            })?;
+            write_zeros(file, path, Some(&mut hasher), gap)?;
+            let source_index = usize::try_from(record.component_id).map_err(|_| {
+                invalid(format!(
+                    "component {} does not fit the source index type",
+                    record.component_id
+                ))
+            })?;
+            let source = sources.get(source_index).ok_or_else(|| {
+                invalid(format!(
+                    "missing export source for component {}",
+                    record.component_id
+                ))
+            })?;
+            let bytes = source
+                .loader
+                .tensor_slice(&record.info.name)
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "source tensor disappeared: component {} tensor {}",
+                        record.component_id, record.info.name
+                    ))
+                })?;
+            let actual_len = u64::try_from(bytes.len()).map_err(|_| {
+                invalid(format!(
+                    "source tensor length does not fit u64: {}",
+                    record.info.name
+                ))
+            })?;
+            if actual_len != record.byte_len {
+                return Err(invalid(format!(
+                    "source tensor length changed: component {} tensor {} expected {}, got {actual_len}",
+                    record.component_id, record.info.name, record.byte_len
+                )));
+            }
+            file.write_all(bytes)
+                .map_err(|source| io_error("write source tensor", path, source))?;
+            hasher.update(bytes);
+            cursor = record
+                .segment_offset
+                .checked_add(record.byte_len)
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "component {} segment {segment_id} tensor {} end overflow",
+                        record.component_id, record.info.name
+                    ))
+                })?;
+        }
+        let trailing = stored_len.checked_sub(cursor).ok_or_else(|| {
+            invalid(format!(
+                "component {component_id} segment {segment_id} payload {cursor} exceeds stored length {stored_len}"
+            ))
+        })?;
+        write_zeros(file, path, Some(&mut hasher), trailing)?;
+        plan.index.segments[segment_index].sha256 = hasher.finalize().into();
+    }
+
+    let tensor_data_end = file
+        .stream_position()
+        .map_err(|source| io_error("read tensor-data end position", path, source))?;
+    if tensor_data_end != plan.declared_file_size {
+        return Err(invalid(format!(
+            "tensor data ended at {tensor_data_end}, expected {}",
+            plan.declared_file_size
+        )));
+    }
+
+    let segment_table = serialize_segment_table(&plan.index)?;
+    let segment_table_len = u64::try_from(segment_table.len())
+        .map_err(|_| invalid("segment table length does not fit u64"))?;
+    if segment_table_len != plan.segment_table.length {
+        return Err(invalid(format!(
+            "final segment table length {segment_table_len} differs from planned {}",
+            plan.segment_table.length
+        )));
+    }
+    file.seek(SeekFrom::Start(plan.segment_table.offset))
+        .map_err(|source| io_error("seek to segment table", path, source))?;
+    file.write_all(&segment_table)
+        .map_err(|source| io_error("rewrite segment table", path, source))?;
+    let superblock = serialize_superblock(plan)?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|source| io_error("seek to superblock", path, source))?;
+    file.write_all(&superblock)
+        .map_err(|source| io_error("rewrite superblock", path, source))?;
+    file.flush()
+        .map_err(|source| io_error("flush temporary package", path, source))?;
+    file.sync_all()
+        .map_err(|source| io_error("sync temporary package", path, source))?;
+    let actual_file_size = file
+        .seek(SeekFrom::End(0))
+        .map_err(|source| io_error("read final package size", path, source))?;
+    if actual_file_size != plan.declared_file_size {
+        return Err(invalid(format!(
+            "final package size {actual_file_size} differs from declared {}",
+            plan.declared_file_size
+        )));
+    }
+    Ok(())
+}
+
+static PENDING_OUTPUT_ID: AtomicU64 = AtomicU64::new(0);
+
+struct PendingOutput {
+    path: PathBuf,
+    output: PathBuf,
+    overwrite: bool,
+    published: bool,
+}
+
+impl PendingOutput {
+    fn create(output: &Path, overwrite: bool) -> Result<Self, GgufrsError> {
+        if output.file_name().filter(|name| !name.is_empty()).is_none() {
+            return Err(invalid(format!(
+                "output path has no file name: {}",
+                output.display()
+            )));
+        }
+        if !overwrite && output.exists() {
+            return Err(GgufrsError::OutputExists {
+                path: output.to_path_buf(),
+            });
+        }
+        let parent = output
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        loop {
+            let id = PENDING_OUTPUT_ID.fetch_add(1, Ordering::Relaxed);
+            let path = parent.join(format!(".ggufrs-{}-{id}.tmp", std::process::id()));
+            match OpenOptions::new().create_new(true).write(true).open(&path) {
+                Ok(file) => {
+                    drop(file);
+                    return Ok(Self {
+                        path,
+                        output: output.to_path_buf(),
+                        overwrite,
+                        published: false,
+                    });
+                }
+                Err(source) if source.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(source) => {
+                    return Err(GgufrsError::Io {
+                        operation: "create temporary package",
+                        path,
+                        source,
+                    });
+                }
+            }
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn publish(mut self) -> Result<(), GgufrsError> {
+        GgufrsFile::open(&self.path)?.verify_all()?;
+        if self.overwrite {
+            std::fs::rename(&self.path, &self.output).map_err(|source| {
+                GgufrsError::UnsupportedPublish {
+                    path: self.output.clone(),
+                    operation: "atomic replacement rename",
+                    source,
+                }
+            })?;
+        } else {
+            match std::fs::hard_link(&self.path, &self.output) {
+                Ok(()) => std::fs::remove_file(&self.path).map_err(|source| GgufrsError::Io {
+                    operation: "remove published temporary link",
+                    path: self.path.clone(),
+                    source,
+                })?,
+                Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
+                    return Err(GgufrsError::OutputExists {
+                        path: self.output.clone(),
+                    });
+                }
+                Err(source) => {
+                    return Err(GgufrsError::UnsupportedPublish {
+                        path: self.output.clone(),
+                        operation: "no-replace hard link",
+                        source,
+                    });
+                }
+            }
+        }
+        self.published = true;
+        let parent = self
+            .output
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|source| GgufrsError::Io {
+                operation: "sync output directory",
+                path: parent.to_path_buf(),
+                source,
+            })
+    }
+}
+
+impl Drop for PendingOutput {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+pub fn export_ggufrs(
+    output: &Path,
+    llm: &Path,
+    mmproj: Option<&Path>,
+    options: ExportOptions,
+) -> Result<(), GgufrsError> {
+    if !options.overwrite && output.exists() {
+        return Err(GgufrsError::OutputExists {
+            path: output.to_path_buf(),
+        });
+    }
+    let mut sources = vec![load_export_source(ComponentRole::Llm, llm)?];
+    if let Some(path) = mmproj {
+        sources.push(load_export_source(ComponentRole::Mmproj, path)?);
+    }
+    let mut plan = plan_export(&sources)?;
+    let pending = PendingOutput::create(output, options.overwrite)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(pending.path())
+        .map_err(|source| GgufrsError::Io {
+            operation: "open temporary package",
+            path: pending.path().to_path_buf(),
+            source,
+        })?;
+    write_planned_package(&mut file, pending.path(), &sources, &mut plan)?;
+    drop(file);
+    pending.publish()
+}
+
 pub fn open_model_source(
     path: &Path,
     role: ComponentRole,
@@ -1829,11 +2840,549 @@ pub(crate) mod test_support {
         let package = GgufrsFile::open(&path).unwrap();
         (path, package)
     }
+
+    #[derive(Clone)]
+    pub(crate) struct SourceTensor {
+        pub(crate) name: &'static str,
+        pub(crate) ggml_type: GGMLType,
+        pub(crate) dims: Vec<u64>,
+        pub(crate) bytes: Vec<u8>,
+    }
+
+    fn test_meta_type(value: &MetaValue) -> MetaValueType {
+        match value {
+            MetaValue::Uint8(_) => MetaValueType::Uint8,
+            MetaValue::Int8(_) => MetaValueType::Int8,
+            MetaValue::Uint16(_) => MetaValueType::Uint16,
+            MetaValue::Int16(_) => MetaValueType::Int16,
+            MetaValue::Uint32(_) => MetaValueType::Uint32,
+            MetaValue::Int32(_) => MetaValueType::Int32,
+            MetaValue::Float32(_) => MetaValueType::Float32,
+            MetaValue::Bool(_) => MetaValueType::Bool,
+            MetaValue::String(_) => MetaValueType::String,
+            MetaValue::Uint64(_) => MetaValueType::Uint64,
+            MetaValue::Int64(_) => MetaValueType::Int64,
+            MetaValue::Float64(_) => MetaValueType::Float64,
+            MetaValue::Array(_, _) => MetaValueType::Array,
+        }
+    }
+
+    fn test_put_meta_value(out: &mut Vec<u8>, value: &MetaValue) {
+        match value {
+            MetaValue::Uint8(value) => out.push(*value),
+            MetaValue::Int8(value) => out.push(*value as u8),
+            MetaValue::Uint16(value) => out.extend_from_slice(&value.to_le_bytes()),
+            MetaValue::Int16(value) => out.extend_from_slice(&value.to_le_bytes()),
+            MetaValue::Uint32(value) => test_put_u32(out, *value),
+            MetaValue::Int32(value) => test_put_i32(out, *value),
+            MetaValue::Float32(value) => out.extend_from_slice(&value.to_le_bytes()),
+            MetaValue::Bool(value) => out.push(u8::from(*value)),
+            MetaValue::String(value) => test_put_string(out, value),
+            MetaValue::Uint64(value) => test_put_u64(out, *value),
+            MetaValue::Int64(value) => out.extend_from_slice(&value.to_le_bytes()),
+            MetaValue::Float64(value) => out.extend_from_slice(&value.to_le_bytes()),
+            MetaValue::Array(element_type, values) => {
+                test_put_i32(out, *element_type as i32);
+                test_put_u64(out, values.len() as u64);
+                for value in values {
+                    test_put_meta_value(out, value);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn write_test_gguf(
+        path: &Path,
+        metadata: &[(String, MetaValue)],
+        tensors: &[SourceTensor],
+    ) {
+        let mut output = Vec::new();
+        output.extend_from_slice(b"GGUF");
+        test_put_u32(&mut output, 3);
+        test_put_u64(&mut output, tensors.len() as u64);
+        test_put_u64(&mut output, metadata.len() as u64);
+        for (key, value) in metadata {
+            test_put_string(&mut output, key);
+            test_put_i32(&mut output, test_meta_type(value) as i32);
+            test_put_meta_value(&mut output, value);
+        }
+
+        let mut relative_offset = 0u64;
+        for tensor in tensors {
+            assert_eq!(
+                tensor.bytes.len() as u64,
+                TensorInfo {
+                    name: tensor.name.into(),
+                    dims: tensor.dims.clone(),
+                    ggml_type: tensor.ggml_type,
+                    offset: relative_offset,
+                }
+                .checked_nbytes()
+                .unwrap()
+            );
+            test_put_string(&mut output, tensor.name);
+            test_put_u32(&mut output, tensor.dims.len() as u32);
+            for dimension in &tensor.dims {
+                test_put_u64(&mut output, *dimension);
+            }
+            test_put_i32(&mut output, tensor.ggml_type as i32);
+            test_put_u64(&mut output, relative_offset);
+            relative_offset = align_up(relative_offset + tensor.bytes.len() as u64, 32).unwrap();
+        }
+
+        output.resize(align_up(output.len() as u64, 32).unwrap() as usize, 0);
+        for tensor in tensors {
+            output.extend_from_slice(&tensor.bytes);
+            output.resize(align_up(output.len() as u64, 32).unwrap() as usize, 0);
+        }
+        std::fs::write(path, output).unwrap();
+    }
+
+    pub(crate) struct TestInputs {
+        pub(crate) dir: PathBuf,
+        pub(crate) llm: PathBuf,
+        pub(crate) mmproj: PathBuf,
+        pub(crate) llm_shared: Vec<u8>,
+        pub(crate) llm_blk0: Vec<u8>,
+        pub(crate) llm_blk1: Vec<u8>,
+        pub(crate) mmproj_weight: Vec<u8>,
+    }
+
+    impl Drop for TestInputs {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    pub(crate) fn test_gguf_pair() -> TestInputs {
+        let id = TEST_FILE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("rmi-ggufrs-export-{}-{id}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let llm = dir.join("llm.gguf");
+        let mmproj = dir.join("mmproj.gguf");
+        let llm_shared = vec![0x11; 128];
+        let mut llm_blk0 = vec![0x22; 34];
+        llm_blk0[..2].copy_from_slice(&half::f16::from_f32(1.0).to_bits().to_le_bytes());
+        let mut llm_blk1 = vec![0x33; 34];
+        llm_blk1[..2].copy_from_slice(&half::f16::from_f32(0.5).to_bits().to_le_bytes());
+        let mmproj_weight = vec![0x44; 64];
+
+        write_test_gguf(
+            &llm,
+            &[
+                ("general.alignment".into(), MetaValue::Uint32(32)),
+                (
+                    "general.architecture".into(),
+                    MetaValue::String("qwen3".into()),
+                ),
+                ("general.name".into(), MetaValue::String("test-llm".into())),
+                ("qwen3.block_count".into(), MetaValue::Uint32(2)),
+            ],
+            &[
+                SourceTensor {
+                    name: "token_embd.weight",
+                    ggml_type: GGMLType::F32,
+                    dims: vec![32],
+                    bytes: llm_shared.clone(),
+                },
+                SourceTensor {
+                    name: "blk.0.weight",
+                    ggml_type: GGMLType::Q8_0,
+                    dims: vec![32],
+                    bytes: llm_blk0.clone(),
+                },
+                SourceTensor {
+                    name: "blk.1.weight",
+                    ggml_type: GGMLType::Q8_0,
+                    dims: vec![32],
+                    bytes: llm_blk1.clone(),
+                },
+            ],
+        );
+        write_test_gguf(
+            &mmproj,
+            &[
+                (
+                    "clip.vision.attention.head_count".into(),
+                    MetaValue::Uint32(1),
+                ),
+                (
+                    "clip.vision.attention.layer_norm_epsilon".into(),
+                    MetaValue::Float32(1e-6),
+                ),
+                ("clip.vision.block_count".into(), MetaValue::Uint32(1)),
+                ("clip.vision.embedding_length".into(), MetaValue::Uint32(32)),
+                (
+                    "clip.vision.feed_forward_length".into(),
+                    MetaValue::Uint32(32),
+                ),
+                ("clip.vision.image_size".into(), MetaValue::Uint32(32)),
+                ("clip.vision.patch_size".into(), MetaValue::Uint32(16)),
+                ("clip.vision.projection_dim".into(), MetaValue::Uint32(32)),
+                ("general.alignment".into(), MetaValue::Uint32(32)),
+                (
+                    "general.name".into(),
+                    MetaValue::String("test-mmproj".into()),
+                ),
+            ],
+            &[
+                SourceTensor {
+                    name: "v.patch_embd.weight",
+                    ggml_type: GGMLType::F16,
+                    dims: vec![32],
+                    bytes: vec![0x55; 64],
+                },
+                SourceTensor {
+                    name: "mm.0.weight",
+                    ggml_type: GGMLType::F16,
+                    dims: vec![32],
+                    bytes: mmproj_weight.clone(),
+                },
+                SourceTensor {
+                    name: "mm.2.weight",
+                    ggml_type: GGMLType::F16,
+                    dims: vec![32],
+                    bytes: vec![0x66; 64],
+                },
+            ],
+        );
+        TestInputs {
+            dir,
+            llm,
+            mmproj,
+            llm_shared,
+            llm_blk0,
+            llm_blk1,
+            mmproj_weight,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_is_deterministic_scoped_and_byte_exact() {
+        use super::test_support::*;
+
+        let inputs = test_gguf_pair();
+        let a = inputs.dir.join("a.ggufrs");
+        let b = inputs.dir.join("b.ggufrs");
+        export_ggufrs(
+            &a,
+            &inputs.llm,
+            Some(&inputs.mmproj),
+            ExportOptions::default(),
+        )
+        .unwrap();
+        export_ggufrs(
+            &b,
+            &inputs.llm,
+            Some(&inputs.mmproj),
+            ExportOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap());
+
+        let package = GgufrsFile::open(&a).unwrap();
+        package.verify_all().unwrap();
+        let llm = package.load_component(ComponentRole::Llm).unwrap();
+        let mmproj = package.load_component(ComponentRole::Mmproj).unwrap();
+        assert_eq!(
+            llm.tensor_slice("token_embd.weight").unwrap(),
+            inputs.llm_shared
+        );
+        assert_eq!(llm.tensor_slice("blk.0.weight").unwrap(), inputs.llm_blk0);
+        assert_eq!(llm.tensor_slice("blk.1.weight").unwrap(), inputs.llm_blk1);
+        assert_eq!(
+            mmproj.tensor_slice("mm.0.weight").unwrap(),
+            inputs.mmproj_weight
+        );
+        assert_eq!(
+            llm.metadata("general.name")
+                .and_then(MetaValue::to_string_val),
+            Some("test-llm")
+        );
+        assert_eq!(
+            mmproj
+                .metadata("general.name")
+                .and_then(MetaValue::to_string_val),
+            Some("test-mmproj")
+        );
+    }
+
+    #[test]
+    fn export_supports_llm_without_mmproj() {
+        let inputs = test_support::test_gguf_pair();
+        let output = inputs.dir.join("llm-only.ggufrs");
+
+        export_ggufrs(&output, &inputs.llm, None, ExportOptions::default()).unwrap();
+
+        let package = GgufrsFile::open(output).unwrap();
+        package.verify_all().unwrap();
+        assert_eq!(package.components().len(), 1);
+        assert!(package.component_id(ComponentRole::Llm).is_some());
+        assert!(package.component_id(ComponentRole::Mmproj).is_none());
+    }
+
+    #[test]
+    fn export_never_clobbers_without_explicit_overwrite() {
+        use super::test_support::*;
+
+        let inputs = test_gguf_pair();
+        let output = inputs.dir.join("model.ggufrs");
+        std::fs::write(&output, b"keep-me").unwrap();
+        let error = export_ggufrs(
+            &output,
+            &inputs.llm,
+            Some(&inputs.mmproj),
+            ExportOptions::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, GgufrsError::OutputExists { .. }));
+        assert_eq!(std::fs::read(&output).unwrap(), b"keep-me");
+
+        export_ggufrs(
+            &output,
+            &inputs.llm,
+            Some(&inputs.mmproj),
+            ExportOptions { overwrite: true },
+        )
+        .unwrap();
+        GgufrsFile::open(output).unwrap().verify_all().unwrap();
+    }
+
+    #[test]
+    fn failed_validation_removes_only_the_new_temp_file() {
+        use super::test_support::*;
+
+        let inputs = test_gguf_pair();
+        let output = inputs.dir.join("model.ggufrs");
+        let temp = PendingOutput::create(&output, false).unwrap();
+        std::fs::write(temp.path(), b"not-a-package").unwrap();
+        let path = temp.path().to_path_buf();
+        assert!(temp.publish().is_err());
+        assert!(!path.exists());
+        assert!(!output.exists());
+        assert!(inputs.llm.exists());
+        assert!(inputs.mmproj.exists());
+    }
+
+    #[test]
+    fn no_clobber_publish_loses_race_without_replacing_winner() {
+        let inputs = test_support::test_gguf_pair();
+        let output = inputs.dir.join("model.ggufrs");
+        let temp = PendingOutput::create(&output, false).unwrap();
+        std::fs::write(temp.path(), test_support::package_fixture_bytes()).unwrap();
+        let temp_path = temp.path().to_path_buf();
+        std::fs::write(&output, b"race-winner").unwrap();
+
+        let error = temp.publish().unwrap_err();
+
+        assert!(matches!(error, GgufrsError::OutputExists { .. }));
+        assert_eq!(std::fs::read(&output).unwrap(), b"race-winner");
+        assert!(!temp_path.exists());
+    }
+
+    fn rewrite_test_llm(inputs: &test_support::TestInputs, metadata: &[(String, MetaValue)]) {
+        use super::test_support::{write_test_gguf, SourceTensor};
+
+        write_test_gguf(
+            &inputs.llm,
+            metadata,
+            &[
+                SourceTensor {
+                    name: "token_embd.weight",
+                    ggml_type: GGMLType::F32,
+                    dims: vec![32],
+                    bytes: inputs.llm_shared.clone(),
+                },
+                SourceTensor {
+                    name: "blk.0.weight",
+                    ggml_type: GGMLType::Q8_0,
+                    dims: vec![32],
+                    bytes: inputs.llm_blk0.clone(),
+                },
+                SourceTensor {
+                    name: "blk.1.weight",
+                    ggml_type: GGMLType::Q8_0,
+                    dims: vec![32],
+                    bytes: inputs.llm_blk1.clone(),
+                },
+            ],
+        );
+    }
+
+    #[test]
+    fn export_rejects_invalid_source_alignment() {
+        let inputs = test_support::test_gguf_pair();
+        rewrite_test_llm(
+            &inputs,
+            &[
+                ("general.alignment".into(), MetaValue::Uint32(3)),
+                (
+                    "general.architecture".into(),
+                    MetaValue::String("qwen3".into()),
+                ),
+                ("qwen3.block_count".into(), MetaValue::Uint32(2)),
+            ],
+        );
+
+        let error = export_ggufrs(
+            &inputs.dir.join("model.ggufrs"),
+            &inputs.llm,
+            None,
+            ExportOptions::default(),
+        )
+        .unwrap_err();
+
+        match error {
+            GgufrsError::SourceGguf { message, .. } => {
+                assert!(message.contains("nonzero power of two"), "{message}")
+            }
+            other => panic!("expected SourceGguf, got {other}"),
+        }
+    }
+
+    #[test]
+    fn export_rejects_block_count_larger_than_source_tensor_budget() {
+        let inputs = test_support::test_gguf_pair();
+        rewrite_test_llm(
+            &inputs,
+            &[
+                (
+                    "general.architecture".into(),
+                    MetaValue::String("qwen3".into()),
+                ),
+                ("qwen3.block_count".into(), MetaValue::Uint32(10)),
+            ],
+        );
+
+        let error = export_ggufrs(
+            &inputs.dir.join("model.ggufrs"),
+            &inputs.llm,
+            None,
+            ExportOptions::default(),
+        )
+        .unwrap_err();
+
+        match error {
+            GgufrsError::SourceGguf { message, .. } => {
+                assert!(
+                    message.contains("requires at least 11 tensors"),
+                    "{message}"
+                )
+            }
+            other => panic!("expected SourceGguf, got {other}"),
+        }
+    }
+
+    #[test]
+    fn export_rejects_nested_metadata_arrays() {
+        let inputs = test_support::test_gguf_pair();
+        rewrite_test_llm(
+            &inputs,
+            &[
+                (
+                    "general.architecture".into(),
+                    MetaValue::String("qwen3".into()),
+                ),
+                ("qwen3.block_count".into(), MetaValue::Uint32(2)),
+                (
+                    "test.nested".into(),
+                    MetaValue::Array(
+                        MetaValueType::Array,
+                        vec![MetaValue::Array(
+                            MetaValueType::Uint32,
+                            vec![MetaValue::Uint32(1)],
+                        )],
+                    ),
+                ),
+            ],
+        );
+
+        let error = export_ggufrs(
+            &inputs.dir.join("model.ggufrs"),
+            &inputs.llm,
+            None,
+            ExportOptions::default(),
+        )
+        .unwrap_err();
+
+        match error {
+            GgufrsError::InvalidFormat { context } => {
+                assert!(context.contains("metadata array"), "{context}")
+            }
+            other => panic!("expected InvalidFormat, got {other}"),
+        }
+    }
+
+    #[test]
+    fn metadata_writer_rejects_empty_nested_array_before_writing() {
+        let mut out = vec![0xaa];
+
+        let error = put_meta_value(
+            &mut out,
+            &MetaValue::Array(MetaValueType::Array, Vec::new()),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, GgufrsError::InvalidFormat { .. }));
+        assert_eq!(out, [0xaa]);
+    }
+
+    #[test]
+    fn export_rejects_out_of_range_llm_layer() {
+        let inputs = test_support::test_gguf_pair();
+        use super::test_support::{write_test_gguf, SourceTensor};
+        write_test_gguf(
+            &inputs.llm,
+            &[
+                (
+                    "general.architecture".into(),
+                    MetaValue::String("qwen3".into()),
+                ),
+                ("qwen3.block_count".into(), MetaValue::Uint32(2)),
+            ],
+            &[
+                SourceTensor {
+                    name: "token_embd.weight",
+                    ggml_type: GGMLType::F32,
+                    dims: vec![32],
+                    bytes: inputs.llm_shared.clone(),
+                },
+                SourceTensor {
+                    name: "blk.0.weight",
+                    ggml_type: GGMLType::Q8_0,
+                    dims: vec![32],
+                    bytes: inputs.llm_blk0.clone(),
+                },
+                SourceTensor {
+                    name: "blk.2.weight",
+                    ggml_type: GGMLType::Q8_0,
+                    dims: vec![32],
+                    bytes: inputs.llm_blk1.clone(),
+                },
+            ],
+        );
+
+        let error = export_ggufrs(
+            &inputs.dir.join("model.ggufrs"),
+            &inputs.llm,
+            None,
+            ExportOptions::default(),
+        )
+        .unwrap_err();
+
+        match error {
+            GgufrsError::InvalidFormat { context } => {
+                assert!(context.contains("outside block count 2"), "{context}")
+            }
+            other => panic!("expected InvalidFormat, got {other}"),
+        }
+    }
 
     fn read_u64_at(bytes: &[u8], offset: usize) -> u64 {
         u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())

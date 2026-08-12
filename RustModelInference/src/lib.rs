@@ -17,8 +17,8 @@ pub mod vision;
 
 pub use clip_config::{ClipVisionConfig, Qwen35Config};
 pub use ggufrs::{
-    open_model_source, ComponentInfo, ComponentRole, GgufrsError, GgufrsFile, LoadedComponent,
-    SegmentKind, GGUFRS_SEGMENT_ALIGNMENT, GGUFRS_VERSION,
+    export_ggufrs, open_model_source, ComponentInfo, ComponentRole, ExportOptions, GgufrsError,
+    GgufrsFile, LoadedComponent, SegmentKind, GGUFRS_SEGMENT_ALIGNMENT, GGUFRS_VERSION,
 };
 pub use memory::{BlockAllocator, KVCacheView, MemoryArena, PagedKVBlock};
 pub use model::{
