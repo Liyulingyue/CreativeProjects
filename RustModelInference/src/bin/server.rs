@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
 use rust_model_inference::*;
+use rust_model_inference::compute::{self, DeviceKind, DeviceConfig};
 
 struct Qwen3State {
     source: Arc<dyn TensorSource>,
@@ -936,6 +937,7 @@ async fn main() {
     let mut host = "0.0.0.0".to_string();
     let mut port = 8080u16;
     let mut n_threads = 0usize;
+    let mut gpu_ratio = 0u8;
 
     let mut i = 1;
     while i < args.len() {
@@ -964,14 +966,25 @@ async fn main() {
                     i += 1;
                 }
             }
+            "--gpu-ratio" => {
+                if i + 1 < args.len() {
+                    gpu_ratio = args[i + 1].parse().unwrap_or(0);
+                    i += 1;
+                }
+            }
             _ => {}
         }
         i += 1;
     }
 
     if model_path.is_empty() {
-        eprintln!("Usage: rust-model-server --model <path.gguf-or-ggufrs> [--host 0.0.0.0] [--port 8080] [--threads 4]");
+        eprintln!("Usage: rust-model-server --model <path.gguf-or-ggufrs> [--host 0.0.0.0] [--port 8080] [--threads 4] [--gpu-ratio 0-100]");
         std::process::exit(1);
+    }
+
+    if gpu_ratio > 0 {
+        eprintln!("Enabling GPU with ratio: {}%", gpu_ratio);
+        compute::set_device_ratio(DeviceKind::Gpu(0), gpu_ratio);
     }
 
     let n_threads = if n_threads > 0 { n_threads } else { 4 };

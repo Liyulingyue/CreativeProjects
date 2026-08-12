@@ -1,4 +1,4 @@
-use super::device::{ComputeDevice, DeviceType, OpType, Result, WorkSpec};
+use super::device::{ComputeDevice, DeviceKind, OpType, Result, WorkSpec};
 
 pub struct CpuDevice {
     name: String,
@@ -22,8 +22,8 @@ impl CpuDevice {
 }
 
 impl ComputeDevice for CpuDevice {
-    fn device_type(&self) -> DeviceType {
-        DeviceType::Cpu
+    fn kind(&self) -> DeviceKind {
+        DeviceKind::Cpu(0)
     }
 
     fn name(&self) -> &str {

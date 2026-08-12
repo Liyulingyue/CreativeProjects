@@ -1,4 +1,5 @@
-use super::device::{ComputeDevice, ComputeError, DeviceType, OpType, Result, WorkSpec};
+use super::device::{ComputeDevice, ComputeError, DeviceKind, OpType, Result, WorkSpec};
+use std::ffi::CStr;
 
 #[cfg(feature = "gpu")]
 use ash::vk;
@@ -316,8 +317,8 @@ impl GpuDevice {
 }
 
 impl ComputeDevice for GpuDevice {
-    fn device_type(&self) -> DeviceType {
-        DeviceType::Gpu
+    fn kind(&self) -> DeviceKind {
+        DeviceKind::Gpu(0)
     }
 
     fn name(&self) -> &str {
@@ -550,7 +551,7 @@ impl ComputeDevice for GpuDevice {
     fn sync(&self) {
         #[cfg(feature = "gpu")]
         if let Some(ref device) = self.device {
-            let _ = device.device_wait_idle();
+            unsafe { let _ = device.device_wait_idle(); }
         }
     }
 }
@@ -573,7 +574,7 @@ impl GpuDevice {
         };
 
         let mem_reqs = unsafe { device.get_buffer_memory_requirements(buffer) };
-        let instance = self.entry.as_ref().unwrap();
+        let instance = self.instance.as_ref().unwrap();
         let pd = self.physical_device.unwrap();
         let mem_props = unsafe { instance.get_physical_device_memory_properties(pd) };
 

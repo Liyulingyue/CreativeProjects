@@ -6,23 +6,35 @@ pub enum ComputeError {
     #[error("Device {0} does not support this operation")]
     UnsupportedOp(String),
 
-    #[error("Device not available: {0}")]
+    #[error("Device {0} not available")]
     DeviceNotAvailable(String),
 
     #[error("Memory error: {0}")]
     MemoryError(String),
 
-    #[error("Hybrid execution failed: {0}")]
-    HybridError(String),
+    #[error("Execution failed: {0}")]
+    ExecutionError(String),
 }
 
 pub type Result<T> = std::result::Result<T, ComputeError>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeviceType {
-    Cpu,
-    Gpu,
-    Npu,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DeviceKind {
+    Cpu(u8),   // Cpu(0) = 第一个CPU, Cpu(1) = 第二个CPU (NUMA节点等)
+    Gpu(u8),   // Gpu(0) = 第一个GPU, Gpu(1) = 第二个GPU
+    Npu(u8),   // Npu(0) = 第一个NPU, Npu(1) = 第二个NPU
+}
+
+impl DeviceKind {
+    pub fn is_accelerator(&self) -> bool {
+        !matches!(self, DeviceKind::Cpu(_))
+    }
+
+    pub fn id(&self) -> u8 {
+        match self {
+            DeviceKind::Cpu(id) | DeviceKind::Gpu(id) | DeviceKind::Npu(id) => *id,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +62,6 @@ pub struct WorkSpec {
     pub weight: Arc<Vec<u8>>,
     pub input: Arc<Vec<u8>>,
     pub scales: Arc<Vec<f32>>,
-    pub output: Arc<Vec<f32>>,
     pub n_in: usize,
     pub n_out: usize,
 }
@@ -60,7 +71,6 @@ impl WorkSpec {
         weight: Vec<u8>,
         input: Vec<u8>,
         scales: Vec<f32>,
-        output: Vec<f32>,
         n_in: usize,
         n_out: usize,
     ) -> Self {
@@ -69,7 +79,6 @@ impl WorkSpec {
             weight: Arc::new(weight),
             input: Arc::new(input),
             scales: Arc::new(scales),
-            output: Arc::new(output),
             n_in,
             n_out,
         }
@@ -79,46 +88,68 @@ impl WorkSpec {
         let row_bytes = self.n_in * 16 / 8;
         let blocks_per_row = (self.n_in + 31) / 32;
 
-        let cpu_input = self.input[..split_idx * row_bytes].to_vec();
-        let cpu_scales = self.scales[..blocks_per_row * split_idx].to_vec();
-
-        let gpu_input = self.input[split_idx * row_bytes..].to_vec();
-        let gpu_scales = self.scales[blocks_per_row * split_idx..].to_vec();
-
-        let gpu_n_out = self.n_out - split_idx;
+        let (cpu_input, gpu_input) = self.input.split_at(split_idx * row_bytes);
+        let (cpu_scales, gpu_scales) = self.scales.split_at(blocks_per_row * split_idx);
 
         (
             WorkSpec {
                 op: self.op,
                 weight: Arc::clone(&self.weight),
-                input: Arc::new(cpu_input),
-                scales: Arc::new(cpu_scales),
-                output: Arc::new(vec![0.0; split_idx]),
+                input: Arc::new(cpu_input.to_vec()),
+                scales: Arc::new(cpu_scales.to_vec()),
                 n_in: self.n_in,
                 n_out: split_idx,
             },
             WorkSpec {
                 op: self.op,
                 weight: Arc::clone(&self.weight),
-                input: Arc::new(gpu_input),
-                scales: Arc::new(gpu_scales),
-                output: Arc::new(vec![0.0; gpu_n_out]),
+                input: Arc::new(gpu_input.to_vec()),
+                scales: Arc::new(gpu_scales.to_vec()),
                 n_in: self.n_in,
-                n_out: gpu_n_out,
+                n_out: self.n_out - split_idx,
             },
         )
     }
 
-    pub fn merge_results(&mut self, cpu_result: Vec<f32>, gpu_result: Vec<f32>) {
-        let mut combined = Vec::with_capacity(self.n_out);
-        combined.extend(cpu_result);
-        combined.extend(gpu_result);
-        self.output = Arc::new(combined);
+    pub fn split_for(&self, parts: usize) -> Vec<WorkSpec> {
+        if parts <= 1 {
+            return vec![self.clone()];
+        }
+
+        let chunk_size = (self.n_out + parts - 1) / parts;
+        let mut specs = Vec::with_capacity(parts);
+
+        for i in 0..parts {
+            let start = i * chunk_size;
+            let end = (start + chunk_size).min(self.n_out);
+            if start >= self.n_out {
+                break;
+            }
+
+            let row_bytes = self.n_in * 16 / 8;
+            let blocks_per_row = (self.n_in + 31) / 32;
+
+            let input_start = start * row_bytes;
+            let input_end = end * row_bytes;
+            let scales_start = blocks_per_row * start;
+            let scales_end = blocks_per_row * end;
+
+            specs.push(WorkSpec {
+                op: self.op,
+                weight: Arc::clone(&self.weight),
+                input: Arc::new(self.input[input_start..input_end].to_vec()),
+                scales: Arc::new(self.scales[scales_start..scales_end].to_vec()),
+                n_in: self.n_in,
+                n_out: end - start,
+            });
+        }
+
+        specs
     }
 }
 
 pub trait ComputeDevice: Send + Sync {
-    fn device_type(&self) -> DeviceType;
+    fn kind(&self) -> DeviceKind;
     fn name(&self) -> &str;
     fn is_available(&self) -> bool;
     fn supports(&self, op: OpType) -> bool;
@@ -128,141 +159,182 @@ pub trait ComputeDevice: Send + Sync {
 }
 
 #[derive(Clone, Copy)]
-pub struct GpuRatio(u8);
+pub struct DeviceRatio(u8);
 
-impl GpuRatio {
+impl DeviceRatio {
     pub fn new(ratio: u8) -> Self {
-        Self(if ratio > 100 { 100 } else { ratio })
+        Self(ratio.min(100))
     }
 
-    pub fn cpu(&self) -> u8 {
-        100 - self.0
-    }
-
-    pub fn gpu(&self) -> u8 {
+    pub fn ratio(&self) -> u8 {
         self.0
     }
 
     pub fn is_zero(&self) -> bool {
         self.0 == 0
     }
-
-    pub fn is_full(&self) -> bool {
-        self.0 == 100
-    }
 }
 
-impl Default for GpuRatio {
+impl Default for DeviceRatio {
     fn default() -> Self {
         Self(0)
     }
 }
 
-impl From<u8> for GpuRatio {
+impl From<u8> for DeviceRatio {
     fn from(v: u8) -> Self {
         Self::new(v)
     }
 }
 
-pub struct HybridExecutor {
-    cpu: Arc<dyn ComputeDevice>,
-    gpu: Option<Arc<dyn ComputeDevice>>,
-    gpu_ratio: GpuRatio,
+#[derive(Clone)]
+pub struct DeviceConfig {
+    pub kind: DeviceKind,
+    pub ratio: DeviceRatio,
 }
 
-impl HybridExecutor {
-    pub fn new() -> Self {
-        let cpu = CpuDevice::new();
-
-        #[cfg(feature = "gpu")]
-        let gpu = GpuDevice::new().ok().map(Arc::new);
-        #[cfg(not(feature = "gpu"))]
-        let gpu = None;
-
+impl DeviceConfig {
+    pub fn new(kind: DeviceKind, ratio: u8) -> Self {
         Self {
-            cpu: Arc::new(cpu),
-            gpu,
-            gpu_ratio: GpuRatio::default(),
+            kind,
+            ratio: DeviceRatio::new(ratio),
         }
     }
 
-    pub fn with_gpu_ratio(mut self, ratio: u8) -> Self {
-        self.gpu_ratio = GpuRatio::new(ratio);
+    pub fn cpu(id: u8, ratio: u8) -> Self {
+        Self::new(DeviceKind::Cpu(id), ratio)
+    }
+
+    pub fn gpu(id: u8, ratio: u8) -> Self {
+        Self::new(DeviceKind::Gpu(id), ratio)
+    }
+
+    pub fn npu(id: u8, ratio: u8) -> Self {
+        Self::new(DeviceKind::Npu(id), ratio)
+    }
+}
+
+pub struct Scheduler {
+    devices: Vec<Arc<dyn ComputeDevice>>,
+    config: Vec<DeviceConfig>,
+}
+
+impl Scheduler {
+    pub fn new() -> Self {
+        Self {
+            devices: Vec::new(),
+            config: Vec::new(),
+        }
+    }
+
+    pub fn add_device<D: ComputeDevice + 'static>(&mut self, device: D) -> &mut Self {
+        self.devices.push(Arc::new(device));
         self
     }
 
-    pub fn set_gpu_ratio(&mut self, ratio: u8) {
-        self.gpu_ratio = GpuRatio::new(ratio);
+    pub fn with_device<D: ComputeDevice + 'static>(mut self, device: D) -> Self {
+        self.add_device(device);
+        self
     }
 
-    pub fn gpu_ratio(&self) -> u8 {
-        self.gpu_ratio.gpu()
+    pub fn set_config(&mut self, config: Vec<DeviceConfig>) -> &mut Self {
+        self.config = config;
+        self
     }
 
-    pub fn is_gpu_available(&self) -> bool {
-        self.gpu.as_ref().map(|g| g.is_available()).unwrap_or(false)
+    pub fn with_config(mut self, config: Vec<DeviceConfig>) -> Self {
+        self.set_config(config);
+        self
     }
 
     pub fn execute(&self, spec: WorkSpec) -> Result<Vec<f32>> {
-        if spec.op.is_heavy() && self.gpu_ratio.gpu() > 0 && self.is_gpu_available() {
-            let split_idx = (spec.n_out * self.gpu_ratio.gpu() as usize) / 100;
-            if split_idx > 0 && split_idx < spec.n_out {
-                let (cpu_spec, gpu_spec) = spec.split_at(split_idx);
-
-                let cpu_result = self.cpu.execute_matmul_q8(&cpu_spec)?;
-                let gpu_result = self.gpu.as_ref().unwrap().execute_matmul_q8(&gpu_spec)?;
-
-                let mut combined = Vec::with_capacity(spec.n_out);
-                combined.extend(cpu_result);
-                combined.extend(gpu_result);
-                return Ok(combined);
-            }
+        let active_devices = self.active_devices();
+        if active_devices.is_empty() {
+            return Err(ComputeError::DeviceNotAvailable("No devices available".to_string()));
         }
 
-        self.cpu.execute_matmul_q8(&spec)
+        if active_devices.len() == 1 {
+            return active_devices[0].execute_matmul_q8(&spec);
+        }
+
+        let parts = active_devices.len();
+        let chunks = spec.split_for(parts);
+
+        let mut results = Vec::with_capacity(parts);
+        for (device, chunk) in active_devices.iter().zip(chunks.iter()) {
+            results.push(device.execute_matmul_q8(chunk)?);
+        }
+
+        let mut combined = Vec::with_capacity(spec.n_out);
+        for r in results {
+            combined.extend(r);
+        }
+        Ok(combined)
     }
 
     pub fn execute_parallel(&self, spec: WorkSpec) -> Result<Vec<f32>> {
-        if spec.op.is_heavy() && self.gpu_ratio.gpu() > 0 && self.is_gpu_available() {
-            let split_idx = (spec.n_out * self.gpu_ratio.gpu() as usize) / 100;
-            if split_idx > 0 && split_idx < spec.n_out {
-                let (cpu_spec, gpu_spec) = spec.split_at(split_idx);
-
-                let cpu_handle = {
-                    let cpu = Arc::clone(&self.cpu);
-                    let cpu_spec = cpu_spec.clone();
-                    std::thread::spawn(move || cpu.execute_matmul_q8(&cpu_spec))
-                };
-
-                let gpu_result = self.gpu.as_ref().unwrap().execute_matmul_q8(&gpu_spec)?;
-                let cpu_result = cpu_handle.join()
-                    .map_err(|_| ComputeError::HybridError("CPU thread panicked".to_string()))??;
-
-                let mut combined = Vec::with_capacity(spec.n_out);
-                combined.extend(cpu_result);
-                combined.extend(gpu_result);
-                return Ok(combined);
-            }
+        let active_devices = self.active_devices();
+        if active_devices.is_empty() {
+            return Err(ComputeError::DeviceNotAvailable("No devices available".to_string()));
         }
 
-        self.cpu.execute_matmul_q8(&spec)
-    }
-
-    pub fn execute_cpu_only(&self, spec: WorkSpec) -> Result<Vec<f32>> {
-        self.cpu.execute_matmul_q8(&spec)
-    }
-
-    pub fn execute_gpu_only(&self, spec: WorkSpec) -> Result<Vec<f32>> {
-        if let Some(ref gpu) = self.gpu {
-            if gpu.is_available() {
-                return gpu.execute_matmul_q8(&spec);
-            }
+        if active_devices.len() == 1 {
+            return active_devices[0].execute_matmul_q8(&spec);
         }
-        self.cpu.execute_matmul_q8(&spec)
+
+        let parts = active_devices.len();
+        let chunks = spec.split_for(parts);
+
+        let handles: Vec<_> = active_devices
+            .iter()
+            .zip(chunks.iter())
+            .map(|(device, chunk)| {
+                let device = Arc::clone(device);
+                let chunk = chunk.clone();
+                std::thread::spawn(move || device.execute_matmul_q8(&chunk))
+            })
+            .collect();
+
+        let mut results = Vec::with_capacity(parts);
+        for h in handles {
+            results.push(h.join().map_err(|_| ComputeError::ExecutionError("Thread panicked".to_string()))??);
+        }
+
+        let mut combined = Vec::with_capacity(spec.n_out);
+        for r in results {
+            combined.extend(r);
+        }
+        Ok(combined)
+    }
+
+    fn active_devices(&self) -> Vec<Arc<dyn ComputeDevice>> {
+        if self.config.is_empty() {
+            return self.devices.iter().filter(|d| d.is_available()).cloned().collect();
+        }
+
+        self.devices
+            .iter()
+            .filter(|d| d.is_available())
+            .filter(|d| {
+                self.config.iter().any(|c| c.kind == d.kind() && !c.ratio.is_zero())
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn available_devices(&self) -> Vec<DeviceKind> {
+        self.devices.iter().filter(|d| d.is_available()).map(|d| d.kind()).collect()
+    }
+
+    pub fn gpu_configured(&self) -> bool {
+        if self.config.is_empty() {
+            return false;
+        }
+        self.config.iter().any(|c| matches!(c.kind, DeviceKind::Gpu(_)) && c.ratio.ratio() > 0)
     }
 }
 
-impl Default for HybridExecutor {
+impl Default for Scheduler {
     fn default() -> Self {
         Self::new()
     }

@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 #[cfg(feature = "parity-trace")]
 use rust_model_inference::parity_trace;
 use rust_model_inference::*;
+use rust_model_inference::compute::WorkSpec;
 
 #[derive(Clone, Copy, PartialEq)]
 enum KvFormat {
@@ -948,14 +949,47 @@ impl<'a> EmbeddingWeight<'a> {
                     );
                 }
             }
-            GGMLType::Q8_0 => matmul_q8_0_quantized(
-                self.bytes,
-                activation.q8,
-                activation.scales,
-                output,
-                self.n_cols,
-                self.n_rows,
-            ),
+            GGMLType::Q8_0 => {
+                let use_gpu = {
+                    let sched = compute::scheduler().lock().unwrap();
+                    sched.gpu_configured()
+                };
+
+                if use_gpu {
+                    let spec = WorkSpec::new_matmul_q8(
+                        self.bytes.to_vec(),
+                        activation.q8.to_vec(),
+                        activation.scales.to_vec(),
+                        self.n_cols,
+                        self.n_rows,
+                    );
+                    match compute::scheduler().lock().unwrap().execute_parallel(spec) {
+                        Ok(result) => {
+                            output.copy_from_slice(&result);
+                        }
+                        Err(e) => {
+                            eprintln!("Compute scheduler error: {:?}, falling back to CPU", e);
+                            matmul_q8_0_quantized(
+                                self.bytes,
+                                activation.q8,
+                                activation.scales,
+                                output,
+                                self.n_cols,
+                                self.n_rows,
+                            );
+                        }
+                    }
+                } else {
+                    matmul_q8_0_quantized(
+                        self.bytes,
+                        activation.q8,
+                        activation.scales,
+                        output,
+                        self.n_cols,
+                        self.n_rows,
+                    );
+                }
+            }
             _ => unreachable!("EmbeddingWeight validates its type"),
         }
         Ok(())
