@@ -1,3 +1,4 @@
+pub mod asr;
 pub mod clip_config;
 pub mod ggufrs;
 pub mod load_plan;
@@ -18,6 +19,7 @@ pub mod tokenizer;
 pub mod traits;
 pub mod vision;
 
+pub use asr::*;
 pub use clip_config::{ClipVisionConfig, Qwen35Config};
 pub use ggufrs::{
     export_ggufrs, open_model_source, ComponentInfo, ComponentRole, ExportOptions, GgufrsError,

@@ -494,6 +494,12 @@ impl BPETokenizer {
         self.semantic_tokens.get(semantic_name).copied()
     }
 
+    pub fn contains_special_literal(&self, text: &str) -> bool {
+        self.special_tokens
+            .iter()
+            .any(|token| text.contains(&token.text))
+    }
+
     pub fn bos_id(&self) -> Option<u32> {
         self.bos_id
     }

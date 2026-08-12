@@ -444,13 +444,30 @@ impl Qwen3Model {
         input: Qwen3Input<'_>,
         options: Qwen3GenerateOptions,
     ) -> Result<Qwen3Generation, String> {
+        self.generate_with_asr_trace(input, options, false)
+    }
+
+    pub(crate) fn generate_asr(
+        &self,
+        input: Qwen3Input<'_>,
+        options: Qwen3GenerateOptions,
+    ) -> Result<Qwen3Generation, String> {
+        self.generate_with_asr_trace(input, options, true)
+    }
+
+    fn generate_with_asr_trace(
+        &self,
+        input: Qwen3Input<'_>,
+        options: Qwen3GenerateOptions,
+        asr_trace: bool,
+    ) -> Result<Qwen3Generation, String> {
         validate_generation(self, &input, options)?;
         let capacity = checked_session_capacity(
             input.token_ids.len(),
             options.max_new_tokens,
             self.config.n_ctx,
         )?;
-        Qwen3Session::new(self, capacity)?.generate(input, options)
+        Qwen3Session::new(self, capacity)?.generate_with_asr_trace(input, options, asr_trace)
     }
 }
 
@@ -549,6 +566,15 @@ impl<'model> Qwen3Session<'model> {
         input: Qwen3Input<'_>,
         options: Qwen3GenerateOptions,
     ) -> Result<Qwen3Generation, String> {
+        self.generate_with_asr_trace(input, options, false)
+    }
+
+    fn generate_with_asr_trace(
+        &mut self,
+        input: Qwen3Input<'_>,
+        options: Qwen3GenerateOptions,
+        asr_trace: bool,
+    ) -> Result<Qwen3Generation, String> {
         validate_generation(self.model, &input, options)?;
         let required = checked_session_capacity(
             input.token_ids.len(),
@@ -561,13 +587,14 @@ impl<'model> Qwen3Session<'model> {
                 self.capacity
             ));
         }
-        self.generate_inner(input, options)
+        self.generate_inner(input, options, asr_trace)
     }
 
     fn generate_inner(
         &mut self,
         input: Qwen3Input<'_>,
         options: Qwen3GenerateOptions,
+        asr_trace: bool,
     ) -> Result<Qwen3Generation, String> {
         let _source = &self.model.source;
         let model = self.model;
@@ -597,16 +624,36 @@ impl<'model> Qwen3Session<'model> {
         };
 
         #[cfg(feature = "parity-trace")]
-        parity_trace::report(parity_trace::token_ids("prompt_ids", input.token_ids));
-        #[cfg(feature = "parity-trace")]
         {
-            let text_positions: Vec<usize> = input.positions.iter().map(|value| value[0]).collect();
-            parity_trace::report(parity_trace::usize_values(
-                "qwen3.positions",
-                &[text_positions.len()],
-                &text_positions,
-            ));
+            if asr_trace {
+                parity_trace::report(parity_trace::token_ids("asr.prompt_ids", input.token_ids));
+                let position_values =
+                    checked_product("ASR position values", input.positions.len(), 4)?;
+                let mut positions = Vec::new();
+                positions
+                    .try_reserve_exact(position_values)
+                    .map_err(|error| format!("Failed to allocate ASR positions: {error}"))?;
+                for position in input.positions {
+                    positions.extend_from_slice(position);
+                }
+                parity_trace::report(parity_trace::usize_values(
+                    "asr.positions",
+                    &[input.positions.len(), 4],
+                    &positions,
+                ));
+            } else {
+                parity_trace::report(parity_trace::token_ids("prompt_ids", input.token_ids));
+                let text_positions: Vec<usize> =
+                    input.positions.iter().map(|value| value[0]).collect();
+                parity_trace::report(parity_trace::usize_values(
+                    "qwen3.positions",
+                    &[text_positions.len()],
+                    &text_positions,
+                ));
+            }
         }
+        #[cfg(not(feature = "parity-trace"))]
+        let _ = asr_trace;
 
         let mut generated_tokens = Vec::new();
         generated_tokens
@@ -1053,6 +1100,16 @@ impl<'model> Qwen3Session<'model> {
                 &self.scratch.logits,
             ));
 
+            #[cfg(feature = "parity-trace")]
+            if asr_trace && step == n_prompt - 1 {
+                parity_trace::report(parity_trace::checkpoint(
+                    "asr.decoder_first_logits",
+                    None,
+                    &[config.vocab],
+                    &self.scratch.logits,
+                ));
+            }
+
             if step < n_prompt - 1 {
                 continue;
             }
@@ -1073,7 +1130,14 @@ impl<'model> Qwen3Session<'model> {
         }
 
         #[cfg(feature = "parity-trace")]
-        parity_trace::report(parity_trace::token_ids("generated_ids", &generated_tokens));
+        parity_trace::report(parity_trace::token_ids(
+            if asr_trace {
+                "asr.generated_ids"
+            } else {
+                "generated_ids"
+            },
+            &generated_tokens,
+        ));
         let tail = decoder.finish();
         if !tail.is_empty() {
             rendered_tokens.push(tail);
@@ -1084,6 +1148,56 @@ impl<'model> Qwen3Session<'model> {
             token_ids: generated_tokens,
             prompt_tokens: n_prompt,
         })
+    }
+}
+
+#[cfg(test)]
+struct TestTensorSource;
+
+#[cfg(test)]
+impl TensorSource for TestTensorSource {
+    fn metadata(&self, _key: &str) -> Option<&MetaValue> {
+        None
+    }
+
+    fn tensor_info(&self, _name: &str) -> Option<&TensorInfo> {
+        None
+    }
+
+    fn tensor_slice(&self, _name: &str) -> Option<&[u8]> {
+        None
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_model(tokenizer: Arc<BPETokenizer>, n_ctx: usize, n_embd: usize) -> Qwen3Model {
+    assert!(n_embd > 0 && n_embd % 32 == 0);
+    let row_bytes = n_embd / 32 * 34;
+    let token_embedding = Box::leak(vec![0; tokenizer.vocab_size() * row_bytes].into_boxed_slice());
+    Qwen3Model {
+        source: Arc::new(TestTensorSource),
+        pool: Arc::new(ComputePool::new(1)),
+        config: Qwen3Config {
+            architecture: "qwen3".into(),
+            n_embd,
+            n_layer: 0,
+            n_head: 1,
+            n_head_kv: 1,
+            n_embd_head_k: n_embd,
+            n_embd_head_v: n_embd,
+            n_ff: n_embd,
+            vocab: tokenizer.vocab_size(),
+            n_ctx,
+            eps: 1e-6,
+            freq_base: 1_000_000.0,
+            has_qk_norm: false,
+            rope: Qwen3Rope::Neox,
+        },
+        tokenizer,
+        layers: Vec::new(),
+        output_norm: vec![1.0; n_embd],
+        token_embedding,
+        output: token_embedding,
     }
 }
 
