@@ -257,6 +257,26 @@ impl<'a> ByteReader<'a> {
         self.data.len().saturating_sub(self.pos)
     }
 
+    fn ensure_count(
+        &self,
+        count: usize,
+        minimum_item_bytes: usize,
+        context: &str,
+    ) -> Result<(), String> {
+        if count > self.remaining() / minimum_item_bytes {
+            return Err(format!("{context} count exceeds remaining bytes"));
+        }
+        Ok(())
+    }
+
+    fn try_vec<T>(count: usize, context: &str) -> Result<Vec<T>, String> {
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(count)
+            .map_err(|_| format!("failed to allocate {context}"))?;
+        Ok(values)
+    }
+
     fn read_u8(&mut self) -> Result<u8, String> {
         if self.remaining() < 1 {
             return Err("EOF reading u8".into());
@@ -352,7 +372,16 @@ impl<'a> ByteReader<'a> {
                 let elem_type = MetaValueType::from_i32(elem_type_i32)
                     .ok_or_else(|| format!("Unknown meta value type: {}", elem_type_i32))?;
                 let n = self.read_len("array")?;
-                let mut vals = Vec::with_capacity(n);
+                let minimum_item_bytes = match elem_type {
+                    MetaValueType::Uint8 | MetaValueType::Int8 | MetaValueType::Bool => 1,
+                    MetaValueType::Uint16 | MetaValueType::Int16 => 2,
+                    MetaValueType::Uint32 | MetaValueType::Int32 | MetaValueType::Float32 => 4,
+                    MetaValueType::Uint64 | MetaValueType::Int64 | MetaValueType::Float64 => 8,
+                    MetaValueType::String => 8,
+                    MetaValueType::Array => 12,
+                };
+                self.ensure_count(n, minimum_item_bytes, "array")?;
+                let mut vals = Self::try_vec(n, "array values")?;
                 for _ in 0..n {
                     vals.push(self.read_meta_value(elem_type)?);
                 }
@@ -416,7 +445,8 @@ impl GGUFLoader {
         let n_kv = usize::try_from(reader.read_u64()?)
             .map_err(|_| "metadata count does not fit usize".to_string())?;
 
-        let mut metadata = Vec::with_capacity(n_kv);
+        reader.ensure_count(n_kv, 13, "metadata")?;
+        let mut metadata = ByteReader::try_vec(n_kv, "metadata entries")?;
         for _ in 0..n_kv {
             let key = reader.read_string()?;
             let vtype_i32 = reader.read_i32()?;
@@ -426,12 +456,14 @@ impl GGUFLoader {
             metadata.push((key, value));
         }
 
-        let mut tensors = Vec::with_capacity(n_tensors);
+        reader.ensure_count(n_tensors, 24, "tensor")?;
+        let mut tensors = ByteReader::try_vec(n_tensors, "tensor entries")?;
         for _ in 0..n_tensors {
             let name = reader.read_string()?;
             let n_dims = usize::try_from(reader.read_u32()?)
                 .map_err(|_| "tensor dimension count does not fit usize".to_string())?;
-            let mut dims = Vec::with_capacity(n_dims);
+            reader.ensure_count(n_dims, 8, "tensor dimension")?;
+            let mut dims = ByteReader::try_vec(n_dims, "tensor dimensions")?;
             for _ in 0..n_dims {
                 dims.push(reader.read_u64()?);
             }
@@ -1162,6 +1194,56 @@ mod tests {
         encoded.push(0xFF);
         let mut bad_string = ByteReader::new(&encoded);
         assert!(bad_string.read_string().is_err());
+    }
+
+    #[test]
+    fn metadata_array_count_must_fit_remaining_data() {
+        let mut encoded = Vec::new();
+        push_i32(&mut encoded, MetaValueType::Uint8 as i32);
+        push_u64(&mut encoded, 2);
+        let err = ByteReader::new(&encoded)
+            .read_meta_value(MetaValueType::Array)
+            .unwrap_err();
+        assert!(err.contains("array count exceeds remaining bytes"), "{err}");
+    }
+
+    #[test]
+    fn metadata_count_must_fit_remaining_data() {
+        let mut encoded = Vec::new();
+        push_u32(&mut encoded, u32::from_le_bytes(*b"GGUF"));
+        push_u32(&mut encoded, 3);
+        push_u64(&mut encoded, 0);
+        push_u64(&mut encoded, 1);
+        let err = parse_temp(&encoded).unwrap_err();
+        assert!(err.contains("metadata count exceeds remaining bytes"), "{err}");
+    }
+
+    #[test]
+    fn tensor_count_must_fit_remaining_data() {
+        let mut encoded = Vec::new();
+        push_u32(&mut encoded, u32::from_le_bytes(*b"GGUF"));
+        push_u32(&mut encoded, 3);
+        push_u64(&mut encoded, 1);
+        push_u64(&mut encoded, 0);
+        let err = parse_temp(&encoded).unwrap_err();
+        assert!(err.contains("tensor count exceeds remaining bytes"), "{err}");
+    }
+
+    #[test]
+    fn tensor_dimension_count_must_fit_remaining_data() {
+        let mut encoded = Vec::new();
+        push_u32(&mut encoded, u32::from_le_bytes(*b"GGUF"));
+        push_u32(&mut encoded, 3);
+        push_u64(&mut encoded, 1);
+        push_u64(&mut encoded, 0);
+        push_str(&mut encoded, "");
+        push_u32(&mut encoded, 2);
+        encoded.extend_from_slice(&[0; 12]);
+        let err = parse_temp(&encoded).unwrap_err();
+        assert!(
+            err.contains("tensor dimension count exceeds remaining bytes"),
+            "{err}"
+        );
     }
 
     #[test]
