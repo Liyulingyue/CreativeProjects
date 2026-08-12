@@ -378,7 +378,9 @@ impl<'a> ByteReader<'a> {
                     MetaValueType::Uint32 | MetaValueType::Int32 | MetaValueType::Float32 => 4,
                     MetaValueType::Uint64 | MetaValueType::Int64 | MetaValueType::Float64 => 8,
                     MetaValueType::String => 8,
-                    MetaValueType::Array => 12,
+                    MetaValueType::Array => {
+                        return Err("Nested metadata arrays are not supported".into())
+                    }
                 };
                 self.ensure_count(n, minimum_item_bytes, "array")?;
                 let mut vals = Self::try_vec(n, "array values")?;
@@ -1208,6 +1210,35 @@ mod tests {
     }
 
     #[test]
+    fn nested_metadata_arrays_are_rejected_before_recursive_decode() {
+        let mut encoded = Vec::new();
+        push_u32(&mut encoded, u32::from_le_bytes(*b"GGUF"));
+        push_u32(&mut encoded, 3);
+        push_u64(&mut encoded, 0);
+        push_u64(&mut encoded, 1);
+        push_kv(
+            &mut encoded,
+            "test.nested",
+            MetaValueType::Array,
+            |encoded| {
+                push_i32(encoded, MetaValueType::Array as i32);
+                push_u64(encoded, 1);
+                push_i32(encoded, MetaValueType::Uint32 as i32);
+                push_u64(encoded, 1);
+                push_u32(encoded, 7);
+            },
+        );
+        while encoded.len() % 32 != 0 {
+            encoded.push(0);
+        }
+
+        assert_eq!(
+            parse_temp(&encoded).unwrap_err(),
+            "Nested metadata arrays are not supported"
+        );
+    }
+
+    #[test]
     fn metadata_count_must_fit_remaining_data() {
         let mut encoded = Vec::new();
         push_u32(&mut encoded, u32::from_le_bytes(*b"GGUF"));
@@ -1215,7 +1246,10 @@ mod tests {
         push_u64(&mut encoded, 0);
         push_u64(&mut encoded, 1);
         let err = parse_temp(&encoded).unwrap_err();
-        assert!(err.contains("metadata count exceeds remaining bytes"), "{err}");
+        assert!(
+            err.contains("metadata count exceeds remaining bytes"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -1226,7 +1260,10 @@ mod tests {
         push_u64(&mut encoded, 1);
         push_u64(&mut encoded, 0);
         let err = parse_temp(&encoded).unwrap_err();
-        assert!(err.contains("tensor count exceeds remaining bytes"), "{err}");
+        assert!(
+            err.contains("tensor count exceeds remaining bytes"),
+            "{err}"
+        );
     }
 
     #[test]

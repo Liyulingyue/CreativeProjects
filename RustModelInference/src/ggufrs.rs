@@ -1146,6 +1146,15 @@ fn parse_index(superblock: &Superblock, tables: &IndexTables) -> Result<PackageI
         let name = reader
             .read_string()
             .map_err(|message| invalid(format!("{context}: {message}")))?;
+        let canonical_name = match role {
+            ComponentRole::Llm => "llm",
+            ComponentRole::Mmproj => "mmproj",
+        };
+        if name != canonical_name {
+            return Err(invalid(format!(
+                "{context}: role {role:?} requires canonical name {canonical_name}, got {name}"
+            )));
+        }
         let metadata_start = reader
             .read_u32()
             .map_err(|message| invalid(format!("{context}: {message}")))?;
@@ -3517,10 +3526,12 @@ mod tests {
         .unwrap_err();
 
         match error {
-            GgufrsError::InvalidFormat { context } => {
-                assert!(context.contains("metadata array"), "{context}")
-            }
-            other => panic!("expected InvalidFormat, got {other}"),
+            GgufrsError::SourceGguf {
+                role: ComponentRole::Llm,
+                message,
+                ..
+            } => assert_eq!(message, "Nested metadata arrays are not supported"),
+            other => panic!("expected LLM SourceGguf, got {other}"),
         }
     }
 
@@ -3721,6 +3732,17 @@ mod tests {
         let mut bytes = test_support::package_fixture_bytes();
         bytes[SUPERBLOCK_LEN - 1] = 1;
         assert_invalid(bytes, "reserved superblock bytes must be zero");
+    }
+
+    #[test]
+    fn rejects_noncanonical_component_name_for_role() {
+        let mut bytes = test_support::package_fixture_bytes();
+        let component_table = read_u64_at(&bytes, 40) as usize;
+        bytes[component_table + 16..component_table + 19].copy_from_slice(b"bad");
+        assert_invalid(
+            bytes,
+            "component 0: role Llm requires canonical name llm, got bad",
+        );
     }
 
     #[test]
