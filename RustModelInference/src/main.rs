@@ -1322,6 +1322,14 @@ fn run_embedding(
             .unwrap_or_else(|error| panic!("Failed to read embedding token row: {error}"));
     }
 
+    #[cfg(feature = "parity-trace")]
+    parity_trace::report(parity_trace::checkpoint(
+        "embedding.inp_embd",
+        None,
+        &[n_tokens, n_embd],
+        &hidden,
+    ));
+
     eprintln!(
         "DEBUG: initial embedding[0:8] = {:?}, n_embd={}, token_id={}",
         &hidden[..8],
@@ -1448,6 +1456,14 @@ fn run_embedding(
             }
         }
 
+        #[cfg(feature = "parity-trace")]
+        parity_trace::report(parity_trace::checkpoint(
+            "embedding.ffn_inp",
+            Some(layer),
+            &[n_tokens, n_embd],
+            &hidden,
+        ));
+
         for t in 0..n_tokens {
             rms_norm(
                 &hidden[t * n_embd..(t + 1) * n_embd],
@@ -1471,6 +1487,14 @@ fn run_embedding(
             &mut activation_scratch,
         )
         .unwrap_or_else(|error| panic!("Embedding FFN failed: {error}"));
+
+        #[cfg(feature = "parity-trace")]
+        parity_trace::report(parity_trace::checkpoint(
+            "embedding.l_out",
+            Some(layer),
+            &[n_tokens, n_embd],
+            &hidden,
+        ));
     }
 
     for t in 0..n_tokens {
@@ -1483,6 +1507,14 @@ fn run_embedding(
         );
         x.copy_from_slice(&normed[t * n_embd..(t + 1) * n_embd]);
     }
+
+    #[cfg(feature = "parity-trace")]
+    parity_trace::report(parity_trace::checkpoint(
+        "embedding.result_norm",
+        None,
+        &[n_tokens, n_embd],
+        &hidden,
+    ));
 
     let mut pooled = pool_embedding_rows(&hidden, n_tokens, n_embd, embedding_cfg.pooling)
         .unwrap_or_else(|error| {
