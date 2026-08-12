@@ -33,15 +33,16 @@ fn run(command: &mut Command) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
-fn rust_embedding_model(reference_model: &str) -> String {
-    std::env::var("RMI_RUST_EMBEDDING_MODEL").unwrap_or_else(|_| reference_model.to_string())
+fn rust_embedding_model(reference_model: &str, override_model: Option<&str>) -> String {
+    override_model.unwrap_or(reference_model).to_string()
 }
 
 #[test]
 #[ignore = "requires QWEN3_EMBEDDING_MODEL and LLAMA_EMBEDDING_BIN"]
 fn qwen3_embedding_vectors_match_pinned_llama_cpp() {
     let model = std::env::var("QWEN3_EMBEDDING_MODEL").unwrap();
-    let rust_model = rust_embedding_model(&model);
+    let rust_model_override = std::env::var("RMI_RUST_EMBEDDING_MODEL").ok();
+    let rust_model = rust_embedding_model(&model, rust_model_override.as_deref());
     let llama = std::env::var("LLAMA_EMBEDDING_BIN").unwrap();
     let rust = env!("CARGO_BIN_EXE_rust-model-inference");
     let mut rust_vectors = Vec::new();
@@ -134,15 +135,10 @@ fn qwen3_embedding_vectors_match_pinned_llama_cpp() {
 }
 
 #[test]
-fn rust_embedding_model_uses_the_package_override() {
-    let variable = "RMI_RUST_EMBEDDING_MODEL";
-    let previous = std::env::var_os(variable);
-    std::env::set_var(variable, "/tmp/model.ggufrs");
-
-    assert_eq!(rust_embedding_model("model.gguf"), "/tmp/model.ggufrs");
-
-    match previous {
-        Some(value) => std::env::set_var(variable, value),
-        None => std::env::remove_var(variable),
-    }
+fn rust_embedding_model_resolves_override_and_fallback() {
+    assert_eq!(
+        rust_embedding_model("model.gguf", Some("/tmp/model.ggufrs")),
+        "/tmp/model.ggufrs"
+    );
+    assert_eq!(rust_embedding_model("model.gguf", None), "model.gguf");
 }
