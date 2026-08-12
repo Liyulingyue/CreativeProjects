@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -181,6 +181,13 @@ struct Superblock {
     tensor_data_offset: u64,
 }
 
+struct IndexTables {
+    components: Vec<u8>,
+    metadata: Vec<u8>,
+    segments: Vec<u8>,
+    tensors: Vec<u8>,
+}
+
 #[derive(Debug, Clone)]
 struct ScopedMetadata {
     component_id: u32,
@@ -342,8 +349,10 @@ fn read_superblock(bytes: &[u8]) -> Result<Superblock, GgufrsError> {
     })
 }
 
-fn validate_table_layout(superblock: &Superblock, bytes: &[u8]) -> Result<(), GgufrsError> {
-    let file_len = u64::try_from(bytes.len()).map_err(|_| invalid("file length exceeds u64"))?;
+fn validate_table_layout(
+    superblock: &Superblock,
+    file_len: u64,
+) -> Result<Range<u64>, GgufrsError> {
     if superblock.declared_file_size != file_len {
         return Err(invalid(format!(
             "declared file size {} does not match actual file size {file_len}",
@@ -383,33 +392,113 @@ fn validate_table_layout(superblock: &Superblock, bytes: &[u8]) -> Result<(), Gg
             superblock.tensor_data_offset
         )));
     }
-    let padding = checked_range(
+    checked_range(
         expected_offset,
         superblock.tensor_data_offset - expected_offset,
         file_len,
         "index padding",
     )?;
-    if bytes[padding].iter().any(|byte| *byte != 0) {
-        return Err(invalid("index padding before tensor data must be zero"));
+    Ok(expected_offset..superblock.tensor_data_offset)
+}
+
+fn read_file_range(
+    file: &mut File,
+    path: &Path,
+    table: TableRange,
+    context: &str,
+) -> Result<Vec<u8>, GgufrsError> {
+    let len = usize::try_from(table.length)
+        .map_err(|_| invalid(format!("{context} length does not fit usize")))?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(len)
+        .map_err(|_| invalid(format!("failed to allocate {context}")))?;
+    bytes.resize(len, 0);
+    file.seek(SeekFrom::Start(table.offset))
+        .and_then(|_| file.read_exact(&mut bytes))
+        .map_err(|source| GgufrsError::Io {
+            operation: "read ggufrs index table",
+            path: path.to_path_buf(),
+            source,
+        })?;
+    Ok(bytes)
+}
+
+fn verify_zero_file_range(
+    file: &mut File,
+    path: &Path,
+    range: Range<u64>,
+) -> Result<(), GgufrsError> {
+    file.seek(SeekFrom::Start(range.start))
+        .map_err(|source| GgufrsError::Io {
+            operation: "seek ggufrs index padding",
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let mut remaining = range.end - range.start;
+    let mut buffer = [0u8; 8192];
+    while remaining != 0 {
+        let len = usize::try_from(remaining.min(buffer.len() as u64))
+            .expect("bounded padding read length fits usize");
+        file.read_exact(&mut buffer[..len])
+            .map_err(|source| GgufrsError::Io {
+                operation: "read ggufrs index padding",
+                path: path.to_path_buf(),
+                source,
+            })?;
+        if buffer[..len].iter().any(|byte| *byte != 0) {
+            return Err(invalid("index padding before tensor data must be zero"));
+        }
+        remaining -= len as u64;
     }
     Ok(())
 }
 
-fn table_bytes<'a>(
-    bytes: &'a [u8],
-    table: TableRange,
-    context: &str,
-) -> Result<&'a [u8], GgufrsError> {
-    let file_len = u64::try_from(bytes.len()).map_err(|_| invalid("file length exceeds u64"))?;
-    Ok(&bytes[checked_range(table.offset, table.length, file_len, context)?])
+fn read_index_tables(
+    file: &mut File,
+    path: &Path,
+    superblock: &Superblock,
+    file_len: u64,
+) -> Result<IndexTables, GgufrsError> {
+    let padding = validate_table_layout(superblock, file_len)?;
+    let tables = IndexTables {
+        components: read_file_range(file, path, superblock.component_table, "component table")?,
+        metadata: read_file_range(file, path, superblock.metadata_table, "metadata table")?,
+        segments: read_file_range(file, path, superblock.segment_table, "segment table")?,
+        tensors: read_file_range(file, path, superblock.tensor_table, "tensor table")?,
+    };
+    verify_zero_file_range(file, path, padding)?;
+    Ok(tables)
 }
 
-fn parse_index(superblock: &Superblock, bytes: &[u8]) -> Result<PackageIndex, GgufrsError> {
-    validate_table_layout(superblock, bytes)?;
+fn table_vec<T>(
+    count: u32,
+    table_len: usize,
+    minimum_entry_bytes: usize,
+    context: &str,
+) -> Result<Vec<T>, GgufrsError> {
+    let count = usize::try_from(count)
+        .map_err(|_| invalid(format!("{context} count does not fit usize")))?;
+    if count > table_len / minimum_entry_bytes {
+        return Err(invalid(format!("{context} count exceeds remaining bytes")));
+    }
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(count)
+        .map_err(|_| invalid(format!("failed to allocate {context} entries")))?;
+    Ok(values)
+}
 
-    let component_bytes = table_bytes(bytes, superblock.component_table, "component table")?;
+fn parse_index(superblock: &Superblock, tables: &IndexTables) -> Result<PackageIndex, GgufrsError> {
+    let component_bytes = tables.components.as_slice();
+
     let mut reader = ByteReader::new(component_bytes);
-    let mut components = Vec::new();
+    let mut components = table_vec(
+        superblock.component_count,
+        component_bytes.len(),
+        40,
+        "component table",
+    )?;
     for entry in 0..superblock.component_count {
         let context = format!("component {entry}");
         let id = reader
@@ -457,9 +546,14 @@ fn parse_index(superblock: &Superblock, bytes: &[u8]) -> Result<PackageIndex, Gg
         )));
     }
 
-    let metadata_bytes = table_bytes(bytes, superblock.metadata_table, "metadata table")?;
+    let metadata_bytes = tables.metadata.as_slice();
     let mut reader = ByteReader::new(metadata_bytes);
-    let mut metadata = Vec::new();
+    let mut metadata = table_vec(
+        superblock.metadata_count,
+        metadata_bytes.len(),
+        17,
+        "metadata table",
+    )?;
     for entry in 0..superblock.metadata_count {
         let context = format!("metadata {entry}");
         let component_id = reader
@@ -476,6 +570,17 @@ fn parse_index(superblock: &Superblock, bytes: &[u8]) -> Result<PackageIndex, Gg
                 "{context} key {key}: unknown metadata value type {value_type_raw}"
             ))
         })?;
+        if value_type == MetaValueType::Array {
+            let mut peek = ByteReader::new(&metadata_bytes[reader.pos()..]);
+            let element_type = peek
+                .read_i32()
+                .map_err(|message| invalid(format!("{context} key {key}: {message}")))?;
+            if element_type == MetaValueType::Array as i32 {
+                return Err(invalid(format!(
+                    "{context} key {key}: nested metadata arrays are not supported"
+                )));
+            }
+        }
         let value = reader
             .read_meta_value(value_type)
             .map_err(|message| invalid(format!("{context} key {key}: {message}")))?;
@@ -492,9 +597,14 @@ fn parse_index(superblock: &Superblock, bytes: &[u8]) -> Result<PackageIndex, Gg
         )));
     }
 
-    let segment_bytes = table_bytes(bytes, superblock.segment_table, "segment table")?;
+    let segment_bytes = tables.segments.as_slice();
     let mut reader = ByteReader::new(segment_bytes);
-    let mut segments = Vec::new();
+    let mut segments = table_vec(
+        superblock.segment_count,
+        segment_bytes.len(),
+        72,
+        "segment table",
+    )?;
     for entry in 0..superblock.segment_count {
         let context = format!("segment {entry}");
         let id = reader
@@ -556,9 +666,14 @@ fn parse_index(superblock: &Superblock, bytes: &[u8]) -> Result<PackageIndex, Gg
         )));
     }
 
-    let tensor_bytes = table_bytes(bytes, superblock.tensor_table, "tensor table")?;
+    let tensor_bytes = tables.tensors.as_slice();
     let mut reader = ByteReader::new(tensor_bytes);
-    let mut tensors = Vec::new();
+    let mut tensors = table_vec(
+        superblock.tensor_count,
+        tensor_bytes.len(),
+        40,
+        "tensor table",
+    )?;
     for entry in 0..superblock.tensor_count {
         let context = format!("tensor {entry}");
         let component_id = reader
@@ -579,7 +694,20 @@ fn parse_index(superblock: &Superblock, bytes: &[u8]) -> Result<PackageIndex, Gg
         let rank = reader
             .read_u32()
             .map_err(|message| invalid(format!("{tensor_context}: {message}")))?;
+        let rank = usize::try_from(rank)
+            .map_err(|_| invalid(format!("{tensor_context}: rank does not fit usize")))?;
+        let required = rank
+            .checked_mul(8)
+            .and_then(|bytes| bytes.checked_add(16))
+            .ok_or_else(|| invalid(format!("{tensor_context}: rank byte count overflow")))?;
+        if required > tensor_bytes.len().saturating_sub(reader.pos()) {
+            return Err(invalid(format!(
+                "{tensor_context}: rank exceeds remaining bytes including trailing offsets"
+            )));
+        }
         let mut dims = Vec::new();
+        dims.try_reserve_exact(rank)
+            .map_err(|_| invalid(format!("{tensor_context}: failed to allocate dimensions")))?;
         for _ in 0..rank {
             dims.push(
                 reader
@@ -622,7 +750,7 @@ fn parse_index(superblock: &Superblock, bytes: &[u8]) -> Result<PackageIndex, Gg
         metadata_lookup: BTreeMap::new(),
         tensor_lookup: BTreeMap::new(),
     };
-    validate_index(superblock, bytes, &mut index)?;
+    validate_index(superblock, &mut index)?;
     Ok(index)
 }
 
@@ -648,11 +776,7 @@ fn metadata_value<'a>(
         .map(|entry| &entry.value)
 }
 
-fn validate_index(
-    superblock: &Superblock,
-    _file_bytes: &[u8],
-    index: &mut PackageIndex,
-) -> Result<(), GgufrsError> {
+fn validate_index(superblock: &Superblock, index: &mut PackageIndex) -> Result<(), GgufrsError> {
     let mut roles = BTreeSet::new();
     let mut next_metadata = 0u32;
     let mut next_tensor = 0u32;
@@ -1079,7 +1203,7 @@ fn validate_index(
 impl GgufrsFile {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, GgufrsError> {
         let path = path.as_ref().to_path_buf();
-        let file = File::open(&path).map_err(|source| GgufrsError::Io {
+        let mut file = File::open(&path).map_err(|source| GgufrsError::Io {
             operation: "open ggufrs",
             path: path.clone(),
             source,
@@ -1095,13 +1219,16 @@ impl GgufrsFile {
         if file_len < SUPERBLOCK_LEN as u64 {
             return Err(invalid("file is shorter than the 128-byte superblock"));
         }
-        let bytes = unsafe { MmapOptions::new().map(&file) }.map_err(|source| GgufrsError::Io {
-            operation: "map ggufrs index",
-            path: path.clone(),
-            source,
-        })?;
-        let superblock = read_superblock(&bytes)?;
-        let index = parse_index(&superblock, &bytes)?;
+        let mut header = [0u8; SUPERBLOCK_LEN];
+        file.read_exact(&mut header)
+            .map_err(|source| GgufrsError::Io {
+                operation: "read ggufrs superblock",
+                path: path.clone(),
+                source,
+            })?;
+        let superblock = read_superblock(&header)?;
+        let tables = read_index_tables(&mut file, &path, &superblock, file_len)?;
+        let index = parse_index(&superblock, &tables)?;
         Ok(Self {
             file: Arc::new(file),
             path: Arc::new(path),
@@ -1216,6 +1343,52 @@ impl GgufrsFile {
                 expected: segment.sha256,
                 actual,
             });
+        }
+        let mut used_ranges: Vec<Range<usize>> = segment
+            .tensor_range
+            .clone()
+            .map(|position| {
+                let tensor = &self.index.tensors[position as usize];
+                let start = usize::try_from(tensor.segment_offset).map_err(|_| {
+                    invalid(format!(
+                        "component {} segment {} tensor {} offset does not fit usize",
+                        segment.component_id, segment.id, tensor.info.name
+                    ))
+                })?;
+                let len = usize::try_from(tensor.byte_len).map_err(|_| {
+                    invalid(format!(
+                        "component {} segment {} tensor {} length does not fit usize",
+                        segment.component_id, segment.id, tensor.info.name
+                    ))
+                })?;
+                let end = start.checked_add(len).ok_or_else(|| {
+                    invalid(format!(
+                        "component {} segment {} tensor {} range overflow",
+                        segment.component_id, segment.id, tensor.info.name
+                    ))
+                })?;
+                Ok(start..end)
+            })
+            .collect::<Result<_, GgufrsError>>()?;
+        used_ranges.sort_unstable_by_key(|range| range.start);
+        let mut padding_start = 0usize;
+        for range in used_ranges {
+            if bytes[padding_start..range.start]
+                .iter()
+                .any(|byte| *byte != 0)
+            {
+                return Err(invalid(format!(
+                    "component {} segment {} has nonzero padding before byte {}",
+                    segment.component_id, segment.id, range.start
+                )));
+            }
+            padding_start = range.end;
+        }
+        if bytes[padding_start..].iter().any(|byte| *byte != 0) {
+            return Err(invalid(format!(
+                "component {} segment {} has nonzero padding after byte {padding_start}",
+                segment.component_id, segment.id
+            )));
         }
         Ok(Arc::new(MappedSegment { segment_id, bytes }))
     }
@@ -1723,6 +1896,18 @@ mod tests {
         }
     }
 
+    fn assert_count_exceeds_table(
+        mut bytes: Vec<u8>,
+        count_offset: usize,
+        table_length_offset: usize,
+        minimum_entry_bytes: u64,
+        table: &str,
+    ) {
+        let count = read_u64_at(&bytes, table_length_offset) / minimum_entry_bytes + 1;
+        put_u32_at(&mut bytes, count_offset, count as u32);
+        assert_invalid(bytes, &format!("{table} count exceeds remaining bytes"));
+    }
+
     #[test]
     fn loaded_component_scopes_metadata_and_releases_segments() {
         use super::test_support::test_package;
@@ -1790,6 +1975,73 @@ mod tests {
         let outside = bytes.len() as u64 + 1;
         put_u64_at(&mut bytes, 40, outside);
         assert_invalid(bytes, "component table range");
+    }
+
+    #[test]
+    fn rejects_component_count_exceeding_table() {
+        assert_count_exceeds_table(
+            test_support::package_fixture_bytes(),
+            24,
+            48,
+            40,
+            "component table",
+        );
+    }
+
+    #[test]
+    fn rejects_metadata_count_exceeding_table() {
+        assert_count_exceeds_table(
+            test_support::package_fixture_bytes(),
+            28,
+            64,
+            17,
+            "metadata table",
+        );
+    }
+
+    #[test]
+    fn rejects_segment_count_exceeding_table() {
+        assert_count_exceeds_table(
+            test_support::package_fixture_bytes(),
+            32,
+            80,
+            72,
+            "segment table",
+        );
+    }
+
+    #[test]
+    fn rejects_tensor_count_exceeding_table() {
+        assert_count_exceeds_table(
+            test_support::package_fixture_bytes(),
+            36,
+            96,
+            40,
+            "tensor table",
+        );
+    }
+
+    #[test]
+    fn rejects_tensor_rank_exceeding_remaining_entry_bytes() {
+        let mut bytes = test_support::package_fixture_bytes();
+        let tensor_name = find_once(&bytes, b"token_embd.weight");
+        let rank_offset = tensor_name + b"token_embd.weight".len() + 4;
+        put_u32_at(&mut bytes, rank_offset, u32::MAX);
+        assert_invalid(
+            bytes,
+            "rank exceeds remaining bytes including trailing offsets",
+        );
+    }
+
+    #[test]
+    fn rejects_nested_metadata_arrays_before_recursive_decode() {
+        let mut bytes = test_support::package_fixture_bytes();
+        let key = find_once(&bytes, b"general.architecture");
+        let value_type = key + b"general.architecture".len();
+        put_u32_at(&mut bytes, value_type, MetaValueType::Array as u32);
+        put_u32_at(&mut bytes, value_type + 4, MetaValueType::Array as u32);
+        put_u64_at(&mut bytes, value_type + 8, 1);
+        assert_invalid(bytes, "nested metadata arrays are not supported");
     }
 
     #[test]
@@ -1879,6 +2131,60 @@ mod tests {
         let tensor_data_offset = read_u64_at(&bytes, 104) as usize;
         bytes[tensor_data_offset + 128] ^= 1;
         assert_checksum_mismatch(bytes, 0);
+    }
+
+    #[test]
+    fn rejects_nonzero_segment_padding_with_matching_checksum() {
+        let mut bytes = test_support::package_fixture_bytes();
+        let segment_table = read_u64_at(&bytes, 72) as usize;
+        let tensor_data_offset = read_u64_at(&bytes, 104) as usize;
+        bytes[tensor_data_offset + 128] = 1;
+        let hash: [u8; 32] = Sha256::digest(
+            &bytes[tensor_data_offset..tensor_data_offset + GGUFRS_SEGMENT_ALIGNMENT as usize],
+        )
+        .into();
+        bytes[segment_table + 40..segment_table + 72].copy_from_slice(&hash);
+
+        let path = test_support::write_package_bytes(&bytes);
+        let package = GgufrsFile::open(&path).unwrap();
+        let result = package.load_component(ComponentRole::Llm);
+        drop(package);
+        std::fs::remove_file(path).unwrap();
+        match result {
+            Err(GgufrsError::InvalidFormat { context }) => assert!(
+                context.contains("nonzero padding"),
+                "expected nonzero padding context, got {context:?}"
+            ),
+            Err(other) => panic!("expected InvalidFormat, got {other}"),
+            Ok(_) => panic!("segment padding with a matching checksum was accepted"),
+        }
+    }
+
+    #[test]
+    fn open_does_not_map_sparse_segment_region() {
+        const SPARSE_FILE_LEN: u64 = 1 << 48;
+
+        let mut bytes = test_support::package_fixture_bytes();
+        let segment_table = read_u64_at(&bytes, 72) as usize;
+        let third_segment = segment_table + 2 * 72;
+        let third_offset = read_u64_at(&bytes, third_segment + 16);
+        put_u64_at(&mut bytes, 16, SPARSE_FILE_LEN);
+        put_u64_at(
+            &mut bytes,
+            third_segment + 24,
+            SPARSE_FILE_LEN - third_offset,
+        );
+
+        let path = test_support::write_package_bytes(&bytes);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(SPARSE_FILE_LEN)
+            .unwrap();
+        let result = GgufrsFile::open(&path).map(|package| package.components().len());
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(result.unwrap(), 2);
     }
 
     #[test]
