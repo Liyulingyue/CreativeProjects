@@ -1,5 +1,5 @@
 use crate::model::{GGMLType, MetaValue, TensorSource};
-use crate::ops::{dot_f32, f16_to_f32, matmul_q8_0_quantized_parallel_rows, quantize_q8_0_into};
+use crate::ops::{dot_f32, f16_to_f32, matmul_q8_0_quantized_range, quantize_q8_0_into};
 use crate::thread_pool::ComputePool;
 use rustfft::{num_complex::Complex, FftPlanner};
 use std::sync::Arc;
@@ -1078,20 +1078,25 @@ impl AudioLinear {
             let input_width = self.input;
             let output_width = self.output;
             pool.compute(move |thread, threads| {
-                // SAFETY: each worker writes a disjoint output-row partition and the pool returns
-                // only after every worker finishes; weights and quantized inputs are immutable.
-                let output = unsafe { std::slice::from_raw_parts_mut(output_ptr, output_width) };
+                let Some(partition) = q8_worker_output_partition(output_width, thread, threads)
+                else {
+                    return;
+                };
+                // SAFETY: the checked worker partitions are disjoint, lie within the output row,
+                // and the pool returns only after every worker finishes.
+                let output = unsafe {
+                    std::slice::from_raw_parts_mut(output_ptr.add(partition.start), partition.len())
+                };
                 let q8 = unsafe { std::slice::from_raw_parts(q8_ptr, input_width) };
                 let scales = unsafe { std::slice::from_raw_parts(scales_ptr, input_width / 32) };
-                matmul_q8_0_quantized_parallel_rows(
+                matmul_q8_0_quantized_range(
                     weight,
                     q8,
                     scales,
                     output,
                     input_width,
-                    output_width,
-                    thread,
-                    threads,
+                    partition.start,
+                    partition.end,
                 );
             });
             for (value, bias) in output.iter_mut().zip(&self.bias) {
@@ -1103,6 +1108,23 @@ impl AudioLinear {
         }
         Ok(())
     }
+}
+
+fn q8_worker_output_partition(
+    output_width: usize,
+    thread: usize,
+    threads: usize,
+) -> Option<std::ops::Range<usize>> {
+    if output_width == 0 || threads == 0 || thread >= threads {
+        return None;
+    }
+    let width_per_thread = output_width / threads + usize::from(output_width % threads != 0);
+    let start = thread.checked_mul(width_per_thread)?;
+    if start >= output_width {
+        return None;
+    }
+    let end = start.saturating_add(width_per_thread).min(output_width);
+    Some(start..end)
 }
 
 fn is_q8_audio_linear(name: &str) -> bool {
@@ -1955,6 +1977,15 @@ mod tests {
             output: width,
             bias: vec![0.0; width],
         }
+    }
+
+    #[test]
+    fn q8_worker_output_partitions_are_disjoint_and_complete() {
+        let partitions: Vec<_> = (0..4)
+            .filter_map(|thread| q8_worker_output_partition(10, thread, 4))
+            .collect();
+
+        assert_eq!(partitions, vec![0..3, 3..6, 6..9, 9..10]);
     }
 
     #[test]
