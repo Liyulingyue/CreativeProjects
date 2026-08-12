@@ -22,6 +22,9 @@
 | MoveNet-SinglePose-Lightning | 轻量级单人姿态估计 | 17 关键点 |
 | MoveNet-SinglePose-Thunder | 高精度单人姿态估计 | 17 关键点 |
 | MoveNet-MultiPose-Lightning | 多人姿态估计 | 最多 6 人 × 17 关键点 |
+| MediaPipe-FaceDetection-FullRange | 人脸检测（远距离） | 边界框 |
+| MediaPipe-FaceDetection-ShortRange | 人脸检测（近距离） | 边界框 |
+| MediaPipe-FaceLandmark | 468点人脸关键点 | 468 关键点 |
 
 ## 预置 Pipeline
 
@@ -124,6 +127,12 @@ cargo run --example visualization
 
 # MoveNet 单人姿态估计示例
 cargo run --example movenet_test -- /path/to/image.png
+
+# MediaPipe FaceDetection 示例（自动下载模型）
+cargo run --example face_detection_test -- /path/to/image.jpg
+
+# MediaPipe FaceLandmark 示例（自动下载模型）
+cargo run --example face_landmark_test -- /path/to/image.jpg
 ```
 
 ## 可视化
@@ -157,6 +166,42 @@ use mixpipe::{MoveNet, MoveNetVariant, PretrainedModel, download_model_blocking}
 
 let model_path = download_model_blocking(PretrainedModel::MoveNetSinglePoseThunder)?;
 let model = MoveNet::from_file(&model_path, MoveNetVariant::SinglePoseThunder)?;
+
+let keypoints = model.infer(&pixels, width, height)?;
+
+let mut img = image::open("input.jpg")?.to_rgb8();
+model.draw(&mut img, &keypoints);  // 内置绘制方法
+
+img.save("output.png")?;
+```
+
+### MediaPipe FaceDetection 可视化
+
+```rust
+use mixpipe::{MediaPipeFaceDetection, PretrainedModel, download_model_blocking};
+
+let model_path = download_model_blocking(PretrainedModel::MediaPipeFaceDetectionFullRange)?;
+let model = MediaPipeFaceDetection::from_file(&model_path)?;
+
+let detections = model.infer(&pixels, width, height)?;
+
+let mut img = image::open("input.jpg")?.to_rgb8();
+for det in &detections {
+    // 绘制边界框
+    let [x1, y1, x2, y2] = det.bbox;
+    // ... 绘制代码
+}
+
+img.save("output.png")?;
+```
+
+### MediaPipe FaceLandmark 可视化
+
+```rust
+use mixpipe::{MediaPipeFaceLandmark, PretrainedModel, download_model_blocking};
+
+let model_path = download_model_blocking(PretrainedModel::MediaPipeFaceLandmark)?;
+let model = MediaPipeFaceLandmark::from_file(&model_path)?;
 
 let keypoints = model.infer(&pixels, width, height)?;
 

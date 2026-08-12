@@ -8,6 +8,7 @@ pub enum ModelType {
     RtmDet,
     RtmPose,
     MoveNet,
+    MediaPipeFace,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +29,9 @@ pub enum PretrainedModel {
     MoveNetSinglePoseLightning,
     MoveNetSinglePoseThunder,
     MoveNetMultiPoseLightning,
+    MediaPipeFaceDetectionFullRange,
+    MediaPipeFaceDetectionShortRange,
+    MediaPipeFaceLandmark,
 }
 
 impl PretrainedModel {
@@ -41,6 +45,9 @@ impl PretrainedModel {
             PretrainedModel::MoveNetSinglePoseLightning
             | PretrainedModel::MoveNetSinglePoseThunder
             | PretrainedModel::MoveNetMultiPoseLightning => ModelType::MoveNet,
+            PretrainedModel::MediaPipeFaceDetectionFullRange
+            | PretrainedModel::MediaPipeFaceDetectionShortRange
+            | PretrainedModel::MediaPipeFaceLandmark => ModelType::MediaPipeFace,
         }
     }
 
@@ -64,6 +71,9 @@ impl PretrainedModel {
             PretrainedModel::MoveNetSinglePoseLightning => "movenet_singlepose_lightning.onnx",
             PretrainedModel::MoveNetSinglePoseThunder => "movenet_singlepose_thunder.onnx",
             PretrainedModel::MoveNetMultiPoseLightning => "movenet_multipose_lightning.onnx",
+            PretrainedModel::MediaPipeFaceDetectionFullRange => "mediapipe_face_detection_full_range.onnx",
+            PretrainedModel::MediaPipeFaceDetectionShortRange => "mediapipe_face_detection_short_range.onnx",
+            PretrainedModel::MediaPipeFaceLandmark => "mediapipe_face_landmark.onnx",
         }
     }
 

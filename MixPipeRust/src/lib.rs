@@ -8,7 +8,7 @@ pub mod visualizer;
 
 pub use pipeline::{Pipeline, PipelineBuilder, PoseModel};
 pub use processors::{Resize, Normalize, ColorConvert};
-pub use models::{MoveNet, MoveNetVariant, RtmDet, RtmPose, Detection, Keypoint};
+pub use models::{MediaPipeFaceDetection, MediaPipeFaceLandmark, MoveNet, MoveNetVariant, RtmDet, RtmPose, Detection, Keypoint};
 pub use node::{Node, Frame, FrameMeta, FrameData, ImageData, AudioData, TextData, VideoData, MediaType, PixelFormat, NodeError, Result, Person};
 pub use model_hub::{PretrainedModel, download_model, download_model_blocking, get_model_path, get_cache_dir};
 pub use visualizer::Visualizer;

@@ -5,10 +5,6 @@ use mixpipe::{
 };
 use std::path::PathBuf;
 
-fn get_project_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
 fn main() -> anyhow::Result<()> {
     println!("=== MoveNet Inference Test ===\n");
 
@@ -62,10 +58,8 @@ fn main() -> anyhow::Result<()> {
     let mut output_img = img.to_rgb8();
     model.draw(&mut output_img, &keypoints);
 
-    let output_path = get_project_root()
-        .join("/path/to/movenet_rust_output.png");
-    output_img.save(&output_path)?;
-    println!("\nVisualization saved to: {}", output_path.display());
+    output_img.save("output.jpg")?;
+    println!("\nVisualization saved to: output.jpg");
 
     Ok(())
 }
