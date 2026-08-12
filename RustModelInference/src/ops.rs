@@ -389,6 +389,37 @@ pub fn dot_f16_f32(a: &[f32], b_f16: &[u16], n: usize) -> f32 {
     s
 }
 
+pub fn dot_f16_f16_bytes(a: &[u16], b: &[u8], n: usize) -> f32 {
+    debug_assert!(a.len() >= n && b.len() >= n * 2);
+    #[cfg(target_arch = "aarch64")]
+    if n % 32 == 0 {
+        let mut sums = [[half::f16::from_f32(0.0); 8]; 4];
+        for offset in (0..n).step_by(32) {
+            for (group, sum) in sums.iter_mut().enumerate() {
+                for lane in 0..8 {
+                    let index = offset + group * 8 + lane;
+                    let weight =
+                        u16::from_le_bytes(b[index * 2..index * 2 + 2].try_into().unwrap());
+                    sum[lane] = half::f16::from_f32(
+                        f16_to_f32(a[index]).mul_add(f16_to_f32(weight), sum[lane].to_f32()),
+                    );
+                }
+            }
+        }
+        for lane in 0..8 {
+            sums[0][lane] = half::f16::from_f32(sums[0][lane].to_f32() + sums[2][lane].to_f32());
+            sums[1][lane] = half::f16::from_f32(sums[1][lane].to_f32() + sums[3][lane].to_f32());
+            sums[0][lane] = half::f16::from_f32(sums[0][lane].to_f32() + sums[1][lane].to_f32());
+        }
+        return sums[0].iter().map(|value| value.to_f32()).sum();
+    }
+    a[..n]
+        .iter()
+        .zip(b[..n * 2].chunks_exact(2))
+        .map(|(&x, y)| f16_to_f32(x) * f16_to_f32(u16::from_le_bytes(y.try_into().unwrap())))
+        .sum()
+}
+
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 unsafe fn dot_f16_f32_neon(a: &[f32], b: &[u16], n: usize) -> f32 {

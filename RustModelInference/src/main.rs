@@ -65,6 +65,139 @@ mod cli_tests {
     use std::collections::HashMap;
     use std::time::Duration;
 
+    struct TestTensorSource {
+        info: TensorInfo,
+        bytes: Vec<u8>,
+    }
+
+    impl TensorSource for TestTensorSource {
+        fn metadata(&self, _key: &str) -> Option<&MetaValue> {
+            None
+        }
+
+        fn tensor_info(&self, name: &str) -> Option<&TensorInfo> {
+            (name == self.info.name).then_some(&self.info)
+        }
+
+        fn tensor_slice(&self, name: &str) -> Option<&[u8]> {
+            (name == self.info.name).then_some(&self.bytes)
+        }
+    }
+
+    #[test]
+    fn f16_embedding_rows_decode_little_endian_half_values() {
+        let source = TestTensorSource {
+            info: TensorInfo {
+                name: "token_embd.weight".into(),
+                dims: vec![4, 1],
+                ggml_type: GGMLType::F16,
+                offset: 0,
+            },
+            bytes: [0x00, 0x3c, 0x00, 0xc0, 0x55, 0x35, 0x00, 0x00].to_vec(),
+        };
+
+        let weight = EmbeddingWeight::load(&source, "token_embd.weight", 4, 1).unwrap();
+        let mut row = [0.0; 4];
+        weight.get_row(0, &mut row).unwrap();
+        assert_eq!(row, [1.0, -2.0, 0.333_251_95, 0.0]);
+    }
+
+    #[test]
+    fn f16_embedding_matmul_uses_ggml_fp16_vector_accumulation() {
+        let bytes = half::f16::from_f32(0.1).to_bits().to_le_bytes();
+        let source = TestTensorSource {
+            info: TensorInfo {
+                name: "weight".into(),
+                dims: vec![32, 1],
+                ggml_type: GGMLType::F16,
+                offset: 0,
+            },
+            bytes: bytes.repeat(32),
+        };
+        let weight = EmbeddingWeight::load(&source, "weight", 32, 1).unwrap();
+        let mut output = [0.0];
+
+        weight.matmul(&[0.1; 32], &mut output).unwrap();
+
+        #[cfg(target_arch = "aarch64")]
+        assert_eq!(output[0].to_bits(), 0x3ea3_c000);
+        #[cfg(not(target_arch = "aarch64"))]
+        assert_eq!(output[0].to_bits(), 0x3ea3_c28e);
+    }
+
+    #[test]
+    fn q8_embedding_matmul_uses_the_existing_quantized_kernel() {
+        let source = TestTensorSource {
+            info: TensorInfo {
+                name: "weight".into(),
+                dims: vec![32, 1],
+                ggml_type: GGMLType::Q8_0,
+                offset: 0,
+            },
+            bytes: [half::f16::from_f32(1.0).to_bits().to_le_bytes().as_slice(), &[1; 32]].concat(),
+        };
+        let weight = EmbeddingWeight::load(&source, "weight", 32, 1).unwrap();
+        let mut output = [0.0];
+
+        weight.matmul(&[1.0; 32], &mut output).unwrap();
+
+        assert_eq!(output, [31.998_047]);
+    }
+
+    #[test]
+    fn embedding_weight_rejects_invalid_type_shape_length_and_row() {
+        let invalid_type = TestTensorSource {
+            info: TensorInfo {
+                name: "weight".into(),
+                dims: vec![4, 1],
+                ggml_type: GGMLType::F32,
+                offset: 0,
+            },
+            bytes: vec![0; 16],
+        };
+        assert!(EmbeddingWeight::load(&invalid_type, "weight", 4, 1)
+            .unwrap_err()
+            .contains("unsupported type"));
+
+        let wrong_shape = TestTensorSource {
+            info: TensorInfo {
+                name: "weight".into(),
+                dims: vec![2, 2],
+                ggml_type: GGMLType::F16,
+                offset: 0,
+            },
+            bytes: vec![0; 8],
+        };
+        assert!(EmbeddingWeight::load(&wrong_shape, "weight", 4, 1)
+            .unwrap_err()
+            .contains("shape"));
+
+        let wrong_length = TestTensorSource {
+            info: TensorInfo {
+                name: "weight".into(),
+                dims: vec![4, 1],
+                ggml_type: GGMLType::F16,
+                offset: 0,
+            },
+            bytes: vec![0; 7],
+        };
+        assert!(EmbeddingWeight::load(&wrong_length, "weight", 4, 1)
+            .unwrap_err()
+            .contains("expected 8"));
+
+        let valid = TestTensorSource {
+            info: TensorInfo {
+                name: "weight".into(),
+                dims: vec![4, 1],
+                ggml_type: GGMLType::F16,
+                offset: 0,
+            },
+            bytes: vec![0; 8],
+        };
+        let weight = EmbeddingWeight::load(&valid, "weight", 4, 1).unwrap();
+        assert!(weight.get_row(1, &mut [0.0; 4]).unwrap_err().contains("out of range"));
+    }
+
     #[test]
     fn embedding_output_accepts_only_summary_or_raw() {
         assert_eq!(
@@ -162,6 +295,12 @@ mod cli_tests {
     #[test]
     fn embedding_ffn_keeps_each_tokens_projection_independent() {
         let identity = q8_identity(32);
+        let weight = EmbeddingWeight {
+            bytes: &identity,
+            ggml_type: GGMLType::Q8_0,
+            n_cols: 32,
+            n_rows: 32,
+        };
         let mut normed = vec![0.0f32; 64];
         normed[0] = 1.0;
         normed[33] = 2.0;
@@ -170,18 +309,19 @@ mod cli_tests {
         hidden[0] = 10.0;
         hidden[33] = 20.0;
 
-        apply_embedding_ffn_q8_0(
+        apply_embedding_ffn_typed(
             &mut hidden,
             &normed,
             32,
             32,
-            &identity,
-            &identity,
-            &identity,
+            &weight,
+            &weight,
+            &weight,
             &mut [0.0; 32],
             &mut [0.0; 32],
             &mut [0.0; 32],
-        );
+        )
+        .unwrap();
 
         assert!((hidden[0] - 10.731059).abs() < 1e-4, "{}", hidden[0]);
         assert!((hidden[33] - 23.523041).abs() < 1e-4, "{}", hidden[33]);
@@ -580,6 +720,147 @@ struct LayerWeights<'a> {
     w_down: &'a [u8],
 }
 
+#[derive(Debug)]
+struct EmbeddingWeight<'a> {
+    bytes: &'a [u8],
+    ggml_type: GGMLType,
+    n_cols: usize,
+    n_rows: usize,
+}
+
+impl<'a> EmbeddingWeight<'a> {
+    fn load(
+        source: &'a dyn TensorSource,
+        name: &str,
+        n_cols: usize,
+        n_rows: usize,
+    ) -> Result<Self, String> {
+        let info = source
+            .tensor_info(name)
+            .ok_or_else(|| format!("Embedding tensor {name} not found"))?;
+        let expected_dims = [n_cols as u64, n_rows as u64];
+        if info.dims != expected_dims {
+            return Err(format!(
+                "Embedding tensor {name} has shape {:?}; expected {:?}",
+                info.dims, expected_dims
+            ));
+        }
+        if !matches!(info.ggml_type, GGMLType::F16 | GGMLType::Q8_0) {
+            return Err(format!(
+                "Embedding tensor {name} has unsupported type {:?}; expected F16 or Q8_0",
+                info.ggml_type
+            ));
+        }
+        if info.ggml_type == GGMLType::Q8_0 && n_cols % 32 != 0 {
+            return Err(format!(
+                "Embedding tensor {name} has Q8_0 columns {n_cols}; expected a multiple of 32"
+            ));
+        }
+        let n_elements = n_cols
+            .checked_mul(n_rows)
+            .ok_or_else(|| format!("Embedding tensor {name} shape overflows"))?;
+        let expected_bytes = info.ggml_type.nbytes(n_elements);
+        let bytes = source
+            .tensor_slice(name)
+            .ok_or_else(|| format!("Embedding tensor {name} data not found"))?;
+        if bytes.len() != expected_bytes {
+            return Err(format!(
+                "Embedding tensor {name} has {} bytes; expected {expected_bytes}",
+                bytes.len()
+            ));
+        }
+        Ok(Self {
+            bytes,
+            ggml_type: info.ggml_type,
+            n_cols,
+            n_rows,
+        })
+    }
+
+    fn get_row(&self, row: usize, output: &mut [f32]) -> Result<(), String> {
+        if row >= self.n_rows {
+            return Err(format!(
+                "Embedding row {row} is out of range for {} rows",
+                self.n_rows
+            ));
+        }
+        if output.len() != self.n_cols {
+            return Err(format!(
+                "Embedding row output has {} values; expected {}",
+                output.len(), self.n_cols
+            ));
+        }
+        match self.ggml_type {
+            GGMLType::F16 => {
+                let offset = row * self.n_cols * 2;
+                for (value, bytes) in output
+                    .iter_mut()
+                    .zip(self.bytes[offset..offset + self.n_cols * 2].chunks_exact(2))
+                {
+                    *value = f16_to_f32(u16::from_le_bytes(bytes.try_into().unwrap()));
+                }
+            }
+            GGMLType::Q8_0 => embedding_lookup_q8_0(self.bytes, row as u32, self.n_cols, output),
+            _ => unreachable!("EmbeddingWeight validates its type"),
+        }
+        Ok(())
+    }
+
+    fn matmul(&self, input: &[f32], output: &mut [f32]) -> Result<(), String> {
+        if input.len() != self.n_cols || output.len() != self.n_rows {
+            return Err(format!(
+                "Embedding matmul has input/output shape {}/{}; expected {}/{}",
+                input.len(),
+                output.len(),
+                self.n_cols,
+                self.n_rows
+            ));
+        }
+        match self.ggml_type {
+            GGMLType::F16 => {
+                let input_f16: Vec<u16> = input.iter().copied().map(f32_to_f16).collect();
+                for (row, value) in output.iter_mut().enumerate() {
+                    let offset = row * self.n_cols * 2;
+                    *value = dot_f16_f16_bytes(
+                        &input_f16,
+                        &self.bytes[offset..offset + self.n_cols * 2],
+                        self.n_cols,
+                    );
+                }
+            }
+            GGMLType::Q8_0 => {
+                let mut input_q8 = vec![0u8; self.n_cols];
+                let mut input_scales = vec![0.0f32; self.n_cols / 32];
+                quantize_q8_0_into(input, self.n_cols, &mut input_q8, &mut input_scales);
+                matmul_q8_0_quantized(
+                    self.bytes,
+                    &input_q8,
+                    &input_scales,
+                    output,
+                    self.n_cols,
+                    self.n_rows,
+                );
+            }
+            _ => unreachable!("EmbeddingWeight validates its type"),
+        }
+        Ok(())
+    }
+}
+
+struct EmbeddingLayerWeights<'a> {
+    attn_norm: Vec<f32>,
+    ffn_norm: Vec<f32>,
+    q_norm: Option<Vec<f32>>,
+    k_norm: Option<Vec<f32>>,
+    wq: EmbeddingWeight<'a>,
+    wk: EmbeddingWeight<'a>,
+    wv: EmbeddingWeight<'a>,
+    wo: EmbeddingWeight<'a>,
+    w_gate: EmbeddingWeight<'a>,
+    w_up: EmbeddingWeight<'a>,
+    w_down: EmbeddingWeight<'a>,
+}
+
 macro_rules! slice_from_mut {
     ($ptr:expr, $len:expr) => {
         unsafe { std::slice::from_raw_parts_mut($ptr, $len) }
@@ -666,69 +947,41 @@ fn attention_key_end(query: usize, n_tokens: usize, causal: bool) -> usize {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn apply_embedding_ffn_q8_0(
+fn apply_embedding_ffn_typed(
     hidden: &mut [f32],
     normed: &[f32],
     n_embd: usize,
     n_ff: usize,
-    w_gate: &[u8],
-    w_up: &[u8],
-    w_down: &[u8],
+    w_gate: &EmbeddingWeight<'_>,
+    w_up: &EmbeddingWeight<'_>,
+    w_down: &EmbeddingWeight<'_>,
     gate_buf: &mut [f32],
     up_buf: &mut [f32],
     down_buf: &mut [f32],
-) {
+) -> Result<(), String> {
     assert_eq!(hidden.len(), normed.len());
     assert!(n_embd > 0 && n_ff > 0);
-    assert_eq!(n_embd % 32, 0);
-    assert_eq!(n_ff % 32, 0);
     assert_eq!(hidden.len() % n_embd, 0);
     assert_eq!(gate_buf.len(), n_ff);
     assert_eq!(up_buf.len(), n_ff);
     assert_eq!(down_buf.len(), n_embd);
 
-    let max_input = n_embd.max(n_ff);
-    let mut q8 = vec![0u8; max_input];
-    let mut scales = vec![0.0f32; max_input / 32];
-
     for (input, residual) in normed
         .chunks_exact(n_embd)
         .zip(hidden.chunks_exact_mut(n_embd))
     {
-        quantize_q8_0_into(input, n_embd, &mut q8[..n_embd], &mut scales[..n_embd / 32]);
-        matmul_q8_0_quantized(
-            w_gate,
-            &q8[..n_embd],
-            &scales[..n_embd / 32],
-            gate_buf,
-            n_embd,
-            n_ff,
-        );
-        matmul_q8_0_quantized(
-            w_up,
-            &q8[..n_embd],
-            &scales[..n_embd / 32],
-            up_buf,
-            n_embd,
-            n_ff,
-        );
+        w_gate.matmul(input, gate_buf)?;
+        w_up.matmul(input, up_buf)?;
 
         silu_mul_inplace(gate_buf, up_buf);
 
-        quantize_q8_0_into(up_buf, n_ff, &mut q8[..n_ff], &mut scales[..n_ff / 32]);
-        matmul_q8_0_quantized(
-            w_down,
-            &q8[..n_ff],
-            &scales[..n_ff / 32],
-            down_buf,
-            n_ff,
-            n_embd,
-        );
+        w_down.matmul(up_buf, down_buf)?;
 
         for index in 0..n_embd {
             residual[index] += down_buf[index];
         }
     }
+    Ok(())
 }
 
 fn pool_embedding_rows(
@@ -841,11 +1094,11 @@ fn run_embedding(
     let freq_base = config.rope_freq_base;
 
     let output_norm = get_f32_tensor(source, "output_norm.weight", n_embd);
-    let embd_weight = source.tensor_slice("token_embd.weight").expect("no embd");
-    let output_weight = source.tensor_slice("output.weight").unwrap_or(embd_weight);
+    let embd_weight = EmbeddingWeight::load(source, "token_embd.weight", n_embd, tokenizer.vocab_size())
+        .unwrap_or_else(|error| panic!("Failed to load embedding token weights: {error}"));
 
-    let layers: Vec<LayerWeights> = (0..n_layer)
-        .map(|l| LayerWeights {
+    let layers: Vec<EmbeddingLayerWeights> = (0..n_layer)
+        .map(|l| EmbeddingLayerWeights {
             attn_norm: get_f32_tensor(source, &format!("blk.{}.attn_norm.weight", l), n_embd),
             ffn_norm: get_f32_tensor(source, &format!("blk.{}.ffn_norm.weight", l), n_embd),
             q_norm: if is_qwen3 {
@@ -866,27 +1119,20 @@ fn run_embedding(
             } else {
                 None
             },
-            wq: source
-                .tensor_slice(&format!("blk.{}.attn_q.weight", l))
-                .unwrap(),
-            wk: source
-                .tensor_slice(&format!("blk.{}.attn_k.weight", l))
-                .unwrap(),
-            wv: source
-                .tensor_slice(&format!("blk.{}.attn_v.weight", l))
-                .unwrap(),
-            wo: source
-                .tensor_slice(&format!("blk.{}.attn_output.weight", l))
-                .unwrap(),
-            w_gate: source
-                .tensor_slice(&format!("blk.{}.ffn_gate.weight", l))
-                .unwrap(),
-            w_up: source
-                .tensor_slice(&format!("blk.{}.ffn_up.weight", l))
-                .unwrap(),
-            w_down: source
-                .tensor_slice(&format!("blk.{}.ffn_down.weight", l))
-                .unwrap(),
+            wq: EmbeddingWeight::load(source, &format!("blk.{l}.attn_q.weight"), n_embd, n_embd_q)
+                .unwrap_or_else(|error| panic!("Failed to load embedding Q weights: {error}")),
+            wk: EmbeddingWeight::load(source, &format!("blk.{l}.attn_k.weight"), n_embd, n_embd_gqa)
+                .unwrap_or_else(|error| panic!("Failed to load embedding K weights: {error}")),
+            wv: EmbeddingWeight::load(source, &format!("blk.{l}.attn_v.weight"), n_embd, n_embd_gqa)
+                .unwrap_or_else(|error| panic!("Failed to load embedding V weights: {error}")),
+            wo: EmbeddingWeight::load(source, &format!("blk.{l}.attn_output.weight"), n_embd_q, n_embd)
+                .unwrap_or_else(|error| panic!("Failed to load embedding output weights: {error}")),
+            w_gate: EmbeddingWeight::load(source, &format!("blk.{l}.ffn_gate.weight"), n_embd, n_ff)
+                .unwrap_or_else(|error| panic!("Failed to load embedding gate weights: {error}")),
+            w_up: EmbeddingWeight::load(source, &format!("blk.{l}.ffn_up.weight"), n_embd, n_ff)
+                .unwrap_or_else(|error| panic!("Failed to load embedding up weights: {error}")),
+            w_down: EmbeddingWeight::load(source, &format!("blk.{l}.ffn_down.weight"), n_ff, n_embd)
+                .unwrap_or_else(|error| panic!("Failed to load embedding down weights: {error}")),
         })
         .collect();
 
@@ -898,7 +1144,6 @@ fn run_embedding(
         );
     }
 
-    let vocab = tokenizer.vocab_size();
     let prompt_tokens = encode_embedding_input(&tokenizer, prompt);
     if prompt_tokens.is_empty() {
         eprintln!("Embedding input produced no tokens");
@@ -910,7 +1155,6 @@ fn run_embedding(
         .unwrap_or(4);
     let n_threads = resolve_thread_count(n_threads_arg, available_threads);
 
-    let max_n_in = n_embd_q.max(n_ff);
     let pool = std::sync::Arc::new(thread_pool::ComputePool::new(n_threads));
     eprintln!("compute pool: {} threads", pool.n_threads());
     if output == EmbeddingOutput::Summary {
@@ -927,8 +1171,6 @@ fn run_embedding(
     let mut attn_out = vec![0.0f32; n_tokens * n_embd_q];
     let mut attn_proj = vec![0.0f32; n_tokens * n_embd];
     let mut normed = vec![0.0f32; n_tokens * n_embd];
-    let mut q8_buf = vec![0u8; max_n_in];
-    let mut scale_buf = vec![0.0f32; max_n_in / 32];
     let mut gate_buf = vec![0.0f32; n_ff];
     let mut up_buf = vec![0.0f32; n_ff];
     let mut down_buf = vec![0.0f32; n_embd];
@@ -939,7 +1181,9 @@ fn run_embedding(
     for t in 0..n_tokens {
         let token_id = prompt_tokens[t];
         let x_slice = &mut hidden[t * n_embd..(t + 1) * n_embd];
-        embedding_lookup_q8_0(embd_weight, token_id, n_embd, x_slice);
+        embd_weight
+            .get_row(token_id as usize, x_slice)
+            .unwrap_or_else(|error| panic!("Failed to read embedding token row: {error}"));
     }
 
     eprintln!(
@@ -967,39 +1211,9 @@ fn run_embedding(
             let k = &mut k_buf[t * n_embd_gqa..(t + 1) * n_embd_gqa];
             let v = &mut v_buf[t * n_embd_gqa..(t + 1) * n_embd_gqa];
 
-            let mut local_q8 = vec![0u8; max_n_in];
-            let mut local_sc = vec![0.0f32; max_n_in / 32];
-            quantize_q8_0_into(
-                x,
-                n_embd,
-                &mut local_q8[..n_embd],
-                &mut local_sc[..n_embd / 32],
-            );
-
-            matmul_q8_0_quantized(
-                lw.wq,
-                &local_q8[..n_embd],
-                &local_sc[..n_embd / 32],
-                q,
-                n_embd,
-                n_embd_q,
-            );
-            matmul_q8_0_quantized(
-                lw.wk,
-                &local_q8[..n_embd],
-                &local_sc[..n_embd / 32],
-                k,
-                n_embd,
-                n_embd_gqa,
-            );
-            matmul_q8_0_quantized(
-                lw.wv,
-                &local_q8[..n_embd],
-                &local_sc[..n_embd / 32],
-                v,
-                n_embd,
-                n_embd_gqa,
-            );
+            lw.wq.matmul(x, q).unwrap_or_else(|error| panic!("Embedding Q matmul failed: {error}"));
+            lw.wk.matmul(x, k).unwrap_or_else(|error| panic!("Embedding K matmul failed: {error}"));
+            lw.wv.matmul(x, v).unwrap_or_else(|error| panic!("Embedding V matmul failed: {error}"));
         }
 
         if let (Some(qn), Some(kn)) = (&lw.q_norm, &lw.k_norm) {
@@ -1079,11 +1293,7 @@ fn run_embedding(
             let attn = &attn_out[t * n_embd_q..(t + 1) * n_embd_q];
             let proj = &mut attn_proj[t * n_embd..(t + 1) * n_embd];
 
-            let mut local_q8 = vec![0u8; n_embd_q];
-            let mut local_sc = vec![0.0f32; n_embd_q / 32];
-            quantize_q8_0_into(attn, n_embd_q, &mut local_q8, &mut local_sc);
-
-            matmul_q8_0_quantized(lw.wo, &local_q8, &local_sc, proj, n_embd_q, n_embd);
+            lw.wo.matmul(attn, proj).unwrap_or_else(|error| panic!("Embedding output matmul failed: {error}"));
         }
 
         for t in 0..n_tokens {
@@ -1103,18 +1313,19 @@ fn run_embedding(
             );
         }
 
-        apply_embedding_ffn_q8_0(
+        apply_embedding_ffn_typed(
             &mut hidden,
             &normed,
             n_embd,
             n_ff,
-            lw.w_gate,
-            lw.w_up,
-            lw.w_down,
+            &lw.w_gate,
+            &lw.w_up,
+            &lw.w_down,
             &mut gate_buf,
             &mut up_buf,
             &mut down_buf,
-        );
+        )
+        .unwrap_or_else(|error| panic!("Embedding FFN failed: {error}"));
     }
 
     for t in 0..n_tokens {
