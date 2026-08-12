@@ -147,7 +147,7 @@ Any loaded component without an explicit rule defaults to `cpu0`. When no placem
 
 For a component with `N` layers, each positive target receives the floor of its normalized quota. Remaining layers are assigned by descending fractional remainder, with declaration order as the tie-breaker. Each target receives one contiguous layer span in declaration order.
 
-A positive target that would receive zero layers makes the plan invalid. This prevents a placement from appearing active while doing no work. Shared, rank-one, embedding, final-normalization, and output-head tensors reside on the primary device.
+A positive target that would receive zero layers makes the plan invalid. This prevents a placement from appearing active while doing no work. Shared, rank-one, embedding, final-normalization, and output-head tensors reside on the primary device. The embedding output chains directly into the first layer span when that span is on primary; otherwise it crosses one hidden-only transfer boundary, without an unconditional host readback.
 
 Every transformer layer is indivisible in layer mode:
 
@@ -165,6 +165,8 @@ Host waits are limited to backend transitions, final host-visible output, and ex
 Every supported Q8_0 matrix is split into contiguous output-row shards using the same normalized quota and largest-remainder rule. Shards align to complete GGML rows; no 34-byte Q8_0 block is split. Every positive target must receive at least one complete output row for every routed matrix, otherwise plan compilation fails.
 
 Each target stores only its assigned weight rows. The primary device owns non-Q8 operators and the component's KV/recurrent state. The input activation is broadcast from the primary device to the participating devices, devices execute concurrently, and results land in preallocated shard result slots associated with their final output offsets. The coordinator gathers or exposes those ranges on the primary device at the dependent operation boundary without allocating a new weight or result buffer.
+
+In this delivery, Row mode requires a CPU primary because the existing Qwen runners own the non-Q8 operators and KV/recurrent state on the host. A Row rule whose first positive target is Vulkan, Metal, or NPU is rejected during plan compilation, before any session is opened. This restriction does not affect Q8_0 row sharding: every Q8_0 matrix, including the output head, still submits all device shards before the first wait. A future non-CPU Row primary requires a fixed primary-stage program contract rather than an implicit host fallback.
 
 Row mode necessarily synchronizes at each dependent matrix result and transfers activation/result data more frequently than layer mode. It exists for heterogeneous capacity sharing and experiments; layer mode is the preferred performance path.
 
