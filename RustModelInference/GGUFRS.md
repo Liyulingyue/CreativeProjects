@@ -121,7 +121,7 @@ cargo run --release --bin ggufrs -- \
   --output model.ggufrs
 ```
 
-`--mmproj` is optional. The default never replaces an output. `--overwrite` requests atomic replacement. Export writes a unique file in the output directory, syncs it, reopens it through the production reader, verifies every segment, then publishes it. Unsupported atomic publication returns an error and never deletes the destination first.
+`--mmproj` is optional. The default never replaces an output. `--overwrite` requests atomic replacement. Export writes a unique file in the output directory, retains and syncs its `create_new` handle, verifies every segment through a clone of that handle and the production reader, then publishes it. Unsupported atomic publication returns an error and never deletes the destination first.
 
 ## Runtime and load planning
 

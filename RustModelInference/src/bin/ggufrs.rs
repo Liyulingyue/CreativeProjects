@@ -16,9 +16,13 @@ enum Command {
 }
 
 fn take_value(args: &mut VecDeque<OsString>, flag: &str) -> Result<PathBuf, String> {
-    args.pop_front()
-        .map(PathBuf::from)
-        .ok_or_else(|| format!("Missing value for {flag}"))
+    let value = args
+        .pop_front()
+        .ok_or_else(|| format!("Missing value for {flag}"))?;
+    if value.as_os_str().as_encoded_bytes().starts_with(b"--") {
+        return Err(format!("Missing value for {flag}"));
+    }
+    Ok(PathBuf::from(value))
 }
 
 fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Command, String> {
@@ -127,6 +131,8 @@ mod tests {
             vec!["export", "--llm"],
             vec!["export", "--llm", "a.gguf"],
             vec!["export", "--output", "a.ggufrs"],
+            vec!["export", "--llm", "--overwrite", "--output", "x.ggufrs"],
+            vec!["export", "--llm", "a.gguf", "--output", "--output"],
             vec![
                 "export", "--llm", "a.gguf", "--llm", "b.gguf", "--output", "x.ggufrs",
             ],
