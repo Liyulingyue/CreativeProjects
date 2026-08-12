@@ -516,10 +516,20 @@ mod cli_tests {
     }
 
     #[test]
-    fn embedding_l2_normalizes_subnormal_vector() {
+    fn embedding_l2_matches_llama_f32_product_and_scale_bits() {
+        let mut values = [1.0f32, 3.0];
+        l2_normalize_embedding(&mut values).unwrap();
+        assert_eq!(
+            values.map(f32::to_bits),
+            [0x3ea1e89b, 0x3f72dce8],
+        );
+    }
+
+    #[test]
+    fn embedding_l2_matches_llama_subnormal_underflow_to_zero() {
         let mut values = [f32::from_bits(1)];
         l2_normalize_embedding(&mut values).unwrap();
-        assert_eq!(values, [1.0]);
+        assert_eq!(values, [0.0]);
     }
 
     #[test]
@@ -1157,21 +1167,19 @@ fn l2_normalize_embedding(values: &mut [f32]) -> Result<(), String> {
         return Err("Embedding contains a non-finite value".into());
     }
 
-    let norm = values
+    let sum = values
         .iter()
-        .map(|&value| {
-            let value = f64::from(value);
-            value * value
-        })
-        .sum::<f64>()
-        .sqrt();
+        .map(|&value| f64::from(value * value))
+        .sum::<f64>();
 
-    if norm == 0.0 {
-        return Ok(());
-    }
+    let scale = if sum > 0.0 {
+        (1.0 / sum.sqrt()) as f32
+    } else {
+        0.0
+    };
 
     for value in values.iter_mut() {
-        *value = (f64::from(*value) / norm) as f32;
+        *value *= scale;
     }
 
     if values.iter().any(|value| !value.is_finite()) {
@@ -1279,6 +1287,8 @@ fn run_embedding(
     }
 
     let prompt_tokens = encode_embedding_input(&tokenizer, prompt);
+    #[cfg(feature = "parity-trace")]
+    parity_trace::report(parity_trace::token_ids("embedding.tokens", &prompt_tokens));
     if prompt_tokens.is_empty() {
         eprintln!("Embedding input produced no tokens");
         std::process::exit(1);
@@ -1321,6 +1331,14 @@ fn run_embedding(
             .get_row(token_id as usize, x_slice)
             .unwrap_or_else(|error| panic!("Failed to read embedding token row: {error}"));
     }
+
+    #[cfg(feature = "parity-trace")]
+    parity_trace::report(parity_trace::checkpoint(
+        "embedding.inp_embd",
+        None,
+        &[n_tokens, n_embd],
+        &hidden,
+    ));
 
     eprintln!(
         "DEBUG: initial embedding[0:8] = {:?}, n_embd={}, token_id={}",
@@ -1448,6 +1466,14 @@ fn run_embedding(
             }
         }
 
+        #[cfg(feature = "parity-trace")]
+        parity_trace::report(parity_trace::checkpoint(
+            "embedding.ffn_inp",
+            Some(layer),
+            &[n_tokens, n_embd],
+            &hidden,
+        ));
+
         for t in 0..n_tokens {
             rms_norm(
                 &hidden[t * n_embd..(t + 1) * n_embd],
@@ -1471,6 +1497,14 @@ fn run_embedding(
             &mut activation_scratch,
         )
         .unwrap_or_else(|error| panic!("Embedding FFN failed: {error}"));
+
+        #[cfg(feature = "parity-trace")]
+        parity_trace::report(parity_trace::checkpoint(
+            "embedding.l_out",
+            Some(layer),
+            &[n_tokens, n_embd],
+            &hidden,
+        ));
     }
 
     for t in 0..n_tokens {
@@ -1484,15 +1518,39 @@ fn run_embedding(
         x.copy_from_slice(&normed[t * n_embd..(t + 1) * n_embd]);
     }
 
+    #[cfg(feature = "parity-trace")]
+    parity_trace::report(parity_trace::checkpoint(
+        "embedding.result_norm",
+        None,
+        &[n_tokens, n_embd],
+        &hidden,
+    ));
+
     let mut pooled = pool_embedding_rows(&hidden, n_tokens, n_embd, embedding_cfg.pooling)
         .unwrap_or_else(|error| {
             eprintln!("Embedding pooling error: {error}");
             std::process::exit(1);
         });
+    #[cfg(feature = "parity-trace")]
+    parity_trace::report(parity_trace::checkpoint(
+        "embedding.pooled",
+        None,
+        &[n_embd],
+        &pooled,
+    ));
+
     l2_normalize_embedding(&mut pooled).unwrap_or_else(|error| {
         eprintln!("Embedding normalization error: {error}");
         std::process::exit(1);
     });
+
+    #[cfg(feature = "parity-trace")]
+    parity_trace::report(parity_trace::checkpoint(
+        "embedding.final",
+        None,
+        &[n_embd],
+        &pooled,
+    ));
 
     let embed_ms = t_embed.elapsed().as_millis();
     match output {
