@@ -269,49 +269,39 @@ pub fn rope_mrope(x: &mut [f32], positions: [usize; 4], sections: [i32; 4], head
     }
 }
 
-pub fn rope_mrope_interleaved(x: &mut [f32], positions: [usize; 4], sections: [i32; 4], head_dim: usize, freq_base: f32, n_rope_dims: usize) {
-    let n_heads = x.len() / head_dim;
-    let half = head_dim / 2;
-    let sect_dims: usize = sections.iter().map(|&s| s as usize).sum();
-
-    for h in 0..n_heads {
-        let base = h * head_dim;
-        let mut theta_t = positions[0] as f32;
-        let mut theta_h = positions[1] as f32;
-        let mut theta_w = positions[2] as f32;
-        let mut theta_e = positions[3] as f32;
-        let theta_scale = 1.0f32 / freq_base;
-
-        for i0 in 0..n_rope_dims {
-            let sector = i0 % sect_dims;
-            let pos_f = if sector % 3 == 0 && sector < 3 * sections[0] as usize {
-                theta_t
-            } else if sector % 3 == 1 && sector < 3 * sections[1] as usize {
-                theta_h
+pub fn rope_mrope_interleaved(
+    x: &mut [f32],
+    positions: [usize; 4],
+    sections: [i32; 4],
+    head_dim: usize,
+    freq_base: f32,
+    n_rope_dims: usize,
+) {
+    assert!(n_rope_dims <= head_dim && n_rope_dims % 2 == 0);
+    let pair_count = n_rope_dims / 2;
+    let section_pairs: usize = sections.iter().map(|&value| value as usize).sum();
+    let theta_scale = freq_base.powf(-2.0 / n_rope_dims as f32);
+    for head in x.chunks_exact_mut(head_dim) {
+        let mut theta = positions.map(|value| value as f32);
+        for pair in 0..pair_count {
+            let sector = pair % section_pairs;
+            let axis = if sector % 3 == 1 && sector < 3 * sections[1] as usize {
+                1
             } else if sector % 3 == 2 && sector < 3 * sections[2] as usize {
-                theta_w
+                2
+            } else if sector % 3 == 0 && sector < 3 * sections[0] as usize {
+                0
             } else {
-                theta_e
+                3
             };
-
-            let freq = 1.0f32 / freq_base.powf(2.0 * i0 as f32 / sect_dims as f32);
-            let angle = pos_f * freq;
-            let cos_a = angle.cos();
-            let sin_a = angle.sin();
-
-            let idx0 = base + i0;
-            let idx1 = base + i0 + half;
-            if idx1 < x.len() {
-                let x0 = x[idx0];
-                let x1 = x[idx1];
-                x[idx0] = x0 * cos_a - x1 * sin_a;
-                x[idx1] = x0 * sin_a + x1 * cos_a;
+            let (sin, cos) = theta[axis].sin_cos();
+            let x0 = head[pair];
+            let x1 = head[pair + pair_count];
+            head[pair] = x0.mul_add(cos, -(x1 * sin));
+            head[pair + pair_count] = x0.mul_add(sin, x1 * cos);
+            for value in &mut theta {
+                *value *= theta_scale;
             }
-
-            theta_t *= theta_scale;
-            theta_h *= theta_scale;
-            theta_w *= theta_scale;
-            theta_e *= theta_scale;
         }
     }
 }
@@ -1796,6 +1786,41 @@ pub fn conv1d_silu(kernel: &[f32], state: &[f32], d_conv: usize, conv_dim: usize
             conv_val += kernel[c * d_conv + k] * state[k * conv_dim + c];
         }
         output[c] = conv_val / (1.0 + (-conv_val).exp());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn imrope_matches_pinned_llama_cpp_qwen3vl_vector() {
+        let mut values: [f32; 128] =
+            std::array::from_fn(|index| (index as f32 - 64.0) * 0.03125);
+        rope_mrope_interleaved(
+            &mut values,
+            [1, 2, 3, 4],
+            [24, 20, 20, 0],
+            128,
+            1_000_000.0,
+            128,
+        );
+
+        let expected = [
+            (0, 0xbf8a_5140), (1, 0x3d49_bc65), (2, 0x3f27_e158),
+            (20, 0xbfb3_0f0c), (21, 0xbfac_e489),
+            (40, 0xbf40_1d22), (41, 0xbf38_2418),
+            (59, 0xbe20_0444), (60, 0xbe00_012a),
+            (61, 0xbdc0_07a4), (62, 0xbd80_0642), (63, 0xbd00_0290),
+            (64, 0xbfd7_6aa4), (65, 0xbffb_f3f1), (66, 0xbfe9_7fe5),
+            (84, 0x3f11_cb34), (85, 0x3f24_4b31),
+            (104, 0x3f9f_f741), (105, 0x3fa3_f5df),
+            (123, 0x3feb_fff4), (124, 0x3fef_fffe),
+            (125, 0x3ff3_fffa), (126, 0x3ff7_fffd), (127, 0x3ffc_0000),
+        ];
+        for (index, bits) in expected {
+            assert_eq!(values[index].to_bits(), bits, "index={index}");
+        }
     }
 }
 

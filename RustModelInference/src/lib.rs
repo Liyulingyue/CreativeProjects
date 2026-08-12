@@ -9,6 +9,7 @@ pub mod ops;
 pub mod parity_trace;
 pub mod prompt;
 pub mod quant;
+pub mod qwen3;
 pub mod qwen35;
 pub mod qwen3a;
 pub mod scratchpad;
@@ -36,6 +37,7 @@ pub use prompt::{
     append_qwen_assistant_prefix, append_qwen_message_tokens, build_qwen_chat_prompt, QwenMessage,
 };
 pub use quant::dequant_weight_q4k;
+pub use qwen3::*;
 pub use qwen35::{build_qwen35_positions, Qwen35Model};
 pub use scratchpad::{ExecutionScratchpad, KvCache, KvCacheF16, KvCacheF32};
 pub use tokenizer::{BPETokenizer, EncodeOptions, StreamingDecoder};
