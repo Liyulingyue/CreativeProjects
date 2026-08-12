@@ -1837,11 +1837,17 @@ fn validate_index(superblock: &Superblock, index: &mut PackageIndex) -> Result<(
 impl GgufrsFile {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, GgufrsError> {
         let path = path.as_ref().to_path_buf();
-        let mut file = File::open(&path).map_err(|source| GgufrsError::Io {
+        let file = File::open(&path).map_err(|source| GgufrsError::Io {
             operation: "open ggufrs",
             path: path.clone(),
             source,
         })?;
+        Self::from_file(file, path)
+    }
+
+    fn from_file(mut file: File, path: PathBuf) -> Result<Self, GgufrsError> {
+        file.seek(SeekFrom::Start(0))
+            .map_err(|source| io_error("seek to ggufrs start", &path, source))?;
         let file_len = file
             .metadata()
             .map_err(|source| GgufrsError::Io {
@@ -2346,6 +2352,7 @@ fn write_planned_package(
 static PENDING_OUTPUT_ID: AtomicU64 = AtomicU64::new(0);
 
 struct PendingOutput {
+    file: File,
     path: PathBuf,
     output: PathBuf,
     overwrite: bool,
@@ -2372,10 +2379,15 @@ impl PendingOutput {
         loop {
             let id = PENDING_OUTPUT_ID.fetch_add(1, Ordering::Relaxed);
             let path = parent.join(format!(".ggufrs-{}-{id}.tmp", std::process::id()));
-            match OpenOptions::new().create_new(true).write(true).open(&path) {
+            match OpenOptions::new()
+                .create_new(true)
+                .read(true)
+                .write(true)
+                .open(&path)
+            {
                 Ok(file) => {
-                    drop(file);
                     return Ok(Self {
+                        file,
                         path,
                         output: output.to_path_buf(),
                         overwrite,
@@ -2398,8 +2410,61 @@ impl PendingOutput {
         &self.path
     }
 
+    fn file_mut(&mut self) -> &mut File {
+        &mut self.file
+    }
+
+    #[cfg(unix)]
+    fn path_matches_file(&self) -> Result<bool, GgufrsError> {
+        use std::os::unix::fs::MetadataExt;
+
+        let file = self
+            .file
+            .metadata()
+            .map_err(|source| io_error("read temporary package identity", &self.path, source))?;
+        let path = std::fs::symlink_metadata(&self.path).map_err(|source| {
+            io_error("read temporary package path identity", &self.path, source)
+        })?;
+        Ok(file.dev() == path.dev() && file.ino() == path.ino())
+    }
+
+    #[cfg(windows)]
+    fn path_matches_file(&self) -> Result<bool, GgufrsError> {
+        use std::os::windows::fs::MetadataExt;
+
+        let file = self
+            .file
+            .metadata()
+            .map_err(|source| io_error("read temporary package identity", &self.path, source))?;
+        let path = std::fs::symlink_metadata(&self.path).map_err(|source| {
+            io_error("read temporary package path identity", &self.path, source)
+        })?;
+        Ok(file.volume_serial_number() == path.volume_serial_number()
+            && file.file_index() == path.file_index())
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn path_matches_file(&self) -> Result<bool, GgufrsError> {
+        Err(invalid(
+            "temporary package identity checks are unsupported on this platform",
+        ))
+    }
+
     fn publish(mut self) -> Result<(), GgufrsError> {
-        GgufrsFile::open(&self.path)?.verify_all()?;
+        self.file
+            .flush()
+            .map_err(|source| io_error("flush temporary package", &self.path, source))?;
+        let verification_file = self
+            .file
+            .try_clone()
+            .map_err(|source| io_error("clone temporary package handle", &self.path, source))?;
+        GgufrsFile::from_file(verification_file, self.path.clone())?.verify_all()?;
+        if !self.path_matches_file()? {
+            return Err(invalid(format!(
+                "temporary package identity changed: {}",
+                self.path.display()
+            )));
+        }
         if self.overwrite {
             std::fs::rename(&self.path, &self.output).map_err(|source| {
                 GgufrsError::UnsupportedPublish {
@@ -2447,7 +2512,7 @@ impl PendingOutput {
 
 impl Drop for PendingOutput {
     fn drop(&mut self) {
-        if !self.published {
+        if !self.published && self.path_matches_file().unwrap_or(false) {
             let _ = std::fs::remove_file(&self.path);
         }
     }
@@ -2469,18 +2534,9 @@ pub fn export_ggufrs(
         sources.push(load_export_source(ComponentRole::Mmproj, path)?);
     }
     let mut plan = plan_export(&sources)?;
-    let pending = PendingOutput::create(output, options.overwrite)?;
-    let mut file = OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .open(pending.path())
-        .map_err(|source| GgufrsError::Io {
-            operation: "open temporary package",
-            path: pending.path().to_path_buf(),
-            source,
-        })?;
-    write_planned_package(&mut file, pending.path(), &sources, &mut plan)?;
-    drop(file);
+    let mut pending = PendingOutput::create(output, options.overwrite)?;
+    let pending_path = pending.path().to_path_buf();
+    write_planned_package(pending.file_mut(), &pending_path, &sources, &mut plan)?;
     pending.publish()
 }
 
@@ -3168,6 +3224,40 @@ mod tests {
         assert!(!output.exists());
         assert!(inputs.llm.exists());
         assert!(inputs.mmproj.exists());
+    }
+
+    #[test]
+    fn replaced_temp_path_cannot_truncate_or_publish_an_unrelated_inode() {
+        let inputs = test_support::test_gguf_pair();
+        let output = inputs.dir.join("model.ggufrs");
+        let unrelated = inputs.dir.join("unrelated.ggufrs");
+        let unrelated_bytes = test_support::package_fixture_bytes();
+        std::fs::write(&unrelated, &unrelated_bytes).unwrap();
+
+        let mut temp = PendingOutput::create(&output, false).unwrap();
+        let temp_path = temp.path().to_path_buf();
+        std::fs::remove_file(&temp_path).unwrap();
+        std::fs::hard_link(&unrelated, &temp_path).unwrap();
+
+        temp.file_mut()
+            .write_all(&test_support::package_fixture_bytes())
+            .unwrap();
+        assert_eq!(std::fs::read(&unrelated).unwrap(), unrelated_bytes);
+
+        let error = temp.publish().unwrap_err();
+
+        match error {
+            GgufrsError::InvalidFormat { context } => {
+                assert!(
+                    context.contains("temporary package identity changed"),
+                    "{context}"
+                )
+            }
+            other => panic!("expected InvalidFormat, got {other}"),
+        }
+        assert!(!output.exists());
+        assert_eq!(std::fs::read(&unrelated).unwrap(), unrelated_bytes);
+        assert_eq!(std::fs::read(&temp_path).unwrap(), unrelated_bytes);
     }
 
     #[test]
