@@ -115,14 +115,21 @@ mod cli_tests {
             bytes: bytes.repeat(32),
         };
         let weight = EmbeddingWeight::load(&source, "weight", 32, 1).unwrap();
+        let mut scratch = EmbeddingActivationScratch::new(32);
+        let activation = scratch.prepare(&weight, &[0.1; 32]).unwrap();
         let mut output = [0.0];
 
-        weight.matmul(&[0.1; 32], &mut output).unwrap();
+        weight.matmul_prepared(&activation, &mut output).unwrap();
 
-        #[cfg(target_arch = "aarch64")]
-        assert_eq!(output[0].to_bits(), 0x3ea3_c000);
-        #[cfg(not(target_arch = "aarch64"))]
-        assert_eq!(output[0].to_bits(), 0x3ea3_c28e);
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        let expected = if std::arch::is_aarch64_feature_detected!("fp16") {
+            0x3ea3_c000
+        } else {
+            0x3ea3_c28e
+        };
+        #[cfg(not(all(target_arch = "aarch64", target_endian = "little")))]
+        let expected = 0x3ea3_c28e;
+        assert_eq!(output[0].to_bits(), expected);
     }
 
     #[test]
@@ -137,11 +144,49 @@ mod cli_tests {
             bytes: [half::f16::from_f32(1.0).to_bits().to_le_bytes().as_slice(), &[1; 32]].concat(),
         };
         let weight = EmbeddingWeight::load(&source, "weight", 32, 1).unwrap();
+        let mut scratch = EmbeddingActivationScratch::new(32);
+        let activation = scratch.prepare(&weight, &[1.0; 32]).unwrap();
         let mut output = [0.0];
 
-        weight.matmul(&[1.0; 32], &mut output).unwrap();
+        weight.matmul_prepared(&activation, &mut output).unwrap();
 
         assert_eq!(output, [31.998_047]);
+    }
+
+    #[test]
+    fn prepared_embedding_activation_is_reused_across_projections() {
+        let f16_bytes = half::f16::from_f32(1.0).to_bits().to_le_bytes().repeat(32);
+        let f16 = EmbeddingWeight {
+            bytes: &f16_bytes,
+            ggml_type: GGMLType::F16,
+            n_cols: 32,
+            n_rows: 1,
+        };
+        let q8_bytes = [
+            half::f16::from_f32(1.0).to_bits().to_le_bytes().as_slice(),
+            &[1; 32],
+        ]
+        .concat();
+        let q8 = EmbeddingWeight {
+            bytes: &q8_bytes,
+            ggml_type: GGMLType::Q8_0,
+            n_cols: 32,
+            n_rows: 1,
+        };
+        let mut scratch = EmbeddingActivationScratch::new(32);
+        let input = [1.0; 32];
+
+        let f16_activation = scratch.prepare(&f16, &input).unwrap();
+        let f16_ptr = f16_activation.f16.as_ptr();
+        f16.matmul_prepared(&f16_activation, &mut [0.0]).unwrap();
+        let f16_activation = scratch.prepare(&f16, &input).unwrap();
+        assert_eq!(f16_activation.f16.as_ptr(), f16_ptr);
+
+        let q8_activation = scratch.prepare(&q8, &input).unwrap();
+        let q8_ptr = q8_activation.q8.as_ptr();
+        q8.matmul_prepared(&q8_activation, &mut [0.0]).unwrap();
+        let q8_activation = scratch.prepare(&q8, &input).unwrap();
+        assert_eq!(q8_activation.q8.as_ptr(), q8_ptr);
     }
 
     #[test]
@@ -320,6 +365,7 @@ mod cli_tests {
             &mut [0.0; 32],
             &mut [0.0; 32],
             &mut [0.0; 32],
+            &mut EmbeddingActivationScratch::new(32),
         )
         .unwrap();
 
@@ -728,6 +774,62 @@ struct EmbeddingWeight<'a> {
     n_rows: usize,
 }
 
+struct EmbeddingActivationScratch {
+    f16: Vec<u16>,
+    q8: Vec<u8>,
+    scales: Vec<f32>,
+}
+
+struct EmbeddingActivation<'a> {
+    ggml_type: GGMLType,
+    n_cols: usize,
+    f16: &'a [u16],
+    q8: &'a [u8],
+    scales: &'a [f32],
+}
+
+impl EmbeddingActivationScratch {
+    fn new(max_cols: usize) -> Self {
+        Self {
+            f16: vec![0; max_cols],
+            q8: vec![0; max_cols],
+            scales: vec![0.0; max_cols.div_ceil(32)],
+        }
+    }
+
+    fn prepare<'a>(
+        &'a mut self,
+        weight: &EmbeddingWeight<'_>,
+        input: &[f32],
+    ) -> Result<EmbeddingActivation<'a>, String> {
+        if input.len() != weight.n_cols || input.len() > self.f16.len() {
+            return Err(format!(
+                "Embedding activation has {} values; expected {} (scratch capacity {})",
+                input.len(),
+                weight.n_cols,
+                self.f16.len()
+            ));
+        }
+        match weight.ggml_type {
+            GGMLType::F16 => f32_slice_to_f16(input, &mut self.f16[..input.len()]),
+            GGMLType::Q8_0 => quantize_q8_0_into(
+                input,
+                input.len(),
+                &mut self.q8[..input.len()],
+                &mut self.scales[..input.len() / 32],
+            ),
+            _ => unreachable!("EmbeddingWeight validates its type"),
+        }
+        Ok(EmbeddingActivation {
+            ggml_type: weight.ggml_type,
+            n_cols: input.len(),
+            f16: &self.f16[..input.len()],
+            q8: &self.q8[..input.len()],
+            scales: &self.scales[..input.len() / 32],
+        })
+    }
+}
+
 impl<'a> EmbeddingWeight<'a> {
     fn load(
         source: &'a dyn TensorSource,
@@ -806,45 +908,69 @@ impl<'a> EmbeddingWeight<'a> {
         Ok(())
     }
 
-    fn matmul(&self, input: &[f32], output: &mut [f32]) -> Result<(), String> {
-        if input.len() != self.n_cols || output.len() != self.n_rows {
+    fn matmul_prepared(
+        &self,
+        activation: &EmbeddingActivation<'_>,
+        output: &mut [f32],
+    ) -> Result<(), String> {
+        if activation.ggml_type != self.ggml_type
+            || activation.n_cols != self.n_cols
+            || output.len() != self.n_rows
+        {
             return Err(format!(
-                "Embedding matmul has input/output shape {}/{}; expected {}/{}",
-                input.len(),
+                "Embedding matmul has activation/output type {:?} shape {}/{}; expected {:?} {}/{}",
+                activation.ggml_type,
+                activation.n_cols,
                 output.len(),
+                self.ggml_type,
                 self.n_cols,
                 self.n_rows
             ));
         }
         match self.ggml_type {
             GGMLType::F16 => {
-                let input_f16: Vec<u16> = input.iter().copied().map(f32_to_f16).collect();
                 for (row, value) in output.iter_mut().enumerate() {
                     let offset = row * self.n_cols * 2;
                     *value = dot_f16_f16_bytes(
-                        &input_f16,
+                        activation.f16,
                         &self.bytes[offset..offset + self.n_cols * 2],
                         self.n_cols,
                     );
                 }
             }
-            GGMLType::Q8_0 => {
-                let mut input_q8 = vec![0u8; self.n_cols];
-                let mut input_scales = vec![0.0f32; self.n_cols / 32];
-                quantize_q8_0_into(input, self.n_cols, &mut input_q8, &mut input_scales);
-                matmul_q8_0_quantized(
-                    self.bytes,
-                    &input_q8,
-                    &input_scales,
-                    output,
-                    self.n_cols,
-                    self.n_rows,
-                );
-            }
+            GGMLType::Q8_0 => matmul_q8_0_quantized(
+                self.bytes,
+                activation.q8,
+                activation.scales,
+                output,
+                self.n_cols,
+                self.n_rows,
+            ),
             _ => unreachable!("EmbeddingWeight validates its type"),
         }
         Ok(())
     }
+}
+
+fn embedding_matmul_group(
+    input: &[f32],
+    projections: &mut [(&EmbeddingWeight<'_>, &mut [f32])],
+    scratch: &mut EmbeddingActivationScratch,
+) -> Result<(), String> {
+    for ggml_type in [GGMLType::F16, GGMLType::Q8_0] {
+        if let Some(index) = projections
+            .iter()
+            .position(|(weight, _)| weight.ggml_type == ggml_type)
+        {
+            let activation = scratch.prepare(projections[index].0, input)?;
+            for (weight, output) in projections.iter_mut() {
+                if weight.ggml_type == ggml_type {
+                    weight.matmul_prepared(&activation, output)?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 struct EmbeddingLayerWeights<'a> {
@@ -958,6 +1084,7 @@ fn apply_embedding_ffn_typed(
     gate_buf: &mut [f32],
     up_buf: &mut [f32],
     down_buf: &mut [f32],
+    activation_scratch: &mut EmbeddingActivationScratch,
 ) -> Result<(), String> {
     assert_eq!(hidden.len(), normed.len());
     assert!(n_embd > 0 && n_ff > 0);
@@ -970,12 +1097,19 @@ fn apply_embedding_ffn_typed(
         .chunks_exact(n_embd)
         .zip(hidden.chunks_exact_mut(n_embd))
     {
-        w_gate.matmul(input, gate_buf)?;
-        w_up.matmul(input, up_buf)?;
+        embedding_matmul_group(
+            input,
+            &mut [(w_gate, &mut *gate_buf), (w_up, &mut *up_buf)],
+            activation_scratch,
+        )?;
 
         silu_mul_inplace(gate_buf, up_buf);
 
-        w_down.matmul(up_buf, down_buf)?;
+        embedding_matmul_group(
+            up_buf,
+            &mut [(w_down, &mut *down_buf)],
+            activation_scratch,
+        )?;
 
         for index in 0..n_embd {
             residual[index] += down_buf[index];
@@ -1174,6 +1308,8 @@ fn run_embedding(
     let mut gate_buf = vec![0.0f32; n_ff];
     let mut up_buf = vec![0.0f32; n_ff];
     let mut down_buf = vec![0.0f32; n_embd];
+    let mut activation_scratch =
+        EmbeddingActivationScratch::new(n_embd.max(n_embd_q).max(n_ff));
     let max_n_padded = (n_tokens + 255) / 256 * 256;
     let mut scores = vec![0.0f32; max_n_padded];
     let mut values = vec![0.0f32; max_n_padded];
@@ -1211,9 +1347,12 @@ fn run_embedding(
             let k = &mut k_buf[t * n_embd_gqa..(t + 1) * n_embd_gqa];
             let v = &mut v_buf[t * n_embd_gqa..(t + 1) * n_embd_gqa];
 
-            lw.wq.matmul(x, q).unwrap_or_else(|error| panic!("Embedding Q matmul failed: {error}"));
-            lw.wk.matmul(x, k).unwrap_or_else(|error| panic!("Embedding K matmul failed: {error}"));
-            lw.wv.matmul(x, v).unwrap_or_else(|error| panic!("Embedding V matmul failed: {error}"));
+            embedding_matmul_group(
+                x,
+                &mut [(&lw.wq, q), (&lw.wk, k), (&lw.wv, v)],
+                &mut activation_scratch,
+            )
+            .unwrap_or_else(|error| panic!("Embedding Q/K/V matmul failed: {error}"));
         }
 
         if let (Some(qn), Some(kn)) = (&lw.q_norm, &lw.k_norm) {
@@ -1293,7 +1432,12 @@ fn run_embedding(
             let attn = &attn_out[t * n_embd_q..(t + 1) * n_embd_q];
             let proj = &mut attn_proj[t * n_embd..(t + 1) * n_embd];
 
-            lw.wo.matmul(attn, proj).unwrap_or_else(|error| panic!("Embedding output matmul failed: {error}"));
+            embedding_matmul_group(
+                attn,
+                &mut [(&lw.wo, proj)],
+                &mut activation_scratch,
+            )
+            .unwrap_or_else(|error| panic!("Embedding output matmul failed: {error}"));
         }
 
         for t in 0..n_tokens {
@@ -1324,6 +1468,7 @@ fn run_embedding(
             &mut gate_buf,
             &mut up_buf,
             &mut down_buf,
+            &mut activation_scratch,
         )
         .unwrap_or_else(|error| panic!("Embedding FFN failed: {error}"));
     }
