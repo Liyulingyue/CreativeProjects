@@ -1,5 +1,6 @@
 use crate::model::{GGMLType, MetaValue, TensorSource};
-use crate::ops::f16_to_f32;
+use crate::ops::{dot_f32, f16_to_f32, matmul_q8_0_quantized_parallel_rows, quantize_q8_0_into};
+use crate::thread_pool::ComputePool;
 use rustfft::{num_complex::Complex, FftPlanner};
 use std::sync::Arc;
 
@@ -457,15 +458,63 @@ struct AudioHidden {
     tokens: usize,
 }
 
-struct Qwen3AudioModel {
+pub(crate) struct AudioEmbeddings {
+    pub values: Vec<f32>,
+    pub tokens: usize,
+    pub dim: usize,
+}
+
+struct LayerNormWeights {
+    weight: Vec<f32>,
+    bias: Vec<f32>,
+}
+
+struct AudioTransformerLayer {
+    ln1: LayerNormWeights,
+    q: AudioLinear,
+    k: AudioLinear,
+    v: AudioLinear,
+    output: AudioLinear,
+    ln2: LayerNormWeights,
+    up: AudioLinear,
+    down: AudioLinear,
+}
+
+struct AudioScratch {
+    normed: Vec<f32>,
+    q: Vec<f32>,
+    k: Vec<f32>,
+    v: Vec<f32>,
+    attention: Vec<f32>,
+    attention_output: Vec<f32>,
+    ffn_up: Vec<f32>,
+    ffn_down: Vec<f32>,
+    projected: Vec<f32>,
+    q8: Vec<u8>,
+    scales: Vec<f32>,
+    scores: Vec<f32>,
+}
+
+pub struct Qwen3AudioModel {
     source: Arc<dyn TensorSource>,
     config: Qwen3AudioConfig,
+    pool: Arc<ComputePool>,
     conv: [Conv2dWeights; 3],
     conv_out: AudioLinear,
+    positions: Vec<f32>,
+    layers: Vec<AudioTransformerLayer>,
+    post_ln: LayerNormWeights,
+    projector_1: AudioLinear,
+    projector_2: AudioLinear,
+    #[cfg(test)]
+    encoded_window_tokens: std::sync::Mutex<Vec<usize>>,
 }
 
 impl Qwen3AudioModel {
-    fn from_source(source: Arc<dyn TensorSource>) -> Result<Self, String> {
+    pub fn from_source(
+        source: Arc<dyn TensorSource>,
+        pool: Arc<ComputePool>,
+    ) -> Result<Self, String> {
         let config = Qwen3AudioConfig::from_source(source.as_ref())?;
         let conv = [
             load_conv2d(&source, "a.conv2d.1", 1, 480)?,
@@ -480,11 +529,297 @@ impl Qwen3AudioModel {
             config.hidden,
             GGMLType::F16,
         )?;
+        let positions = load_f32_tensor(
+            source.as_ref(),
+            "a.position_embd.weight",
+            &[to_u64(config.hidden, "audio hidden width")?, 1500],
+        )?;
+        let hidden_dim = [to_u64(config.hidden, "audio hidden width")?];
+        let mut layers = Vec::new();
+        layers
+            .try_reserve_exact(config.layers)
+            .map_err(|_| "Failed to allocate audio Transformer layers".to_string())?;
+        for layer in 0..config.layers {
+            let prefix = format!("a.blk.{layer}");
+            layers.push(AudioTransformerLayer {
+                ln1: LayerNormWeights::load(
+                    source.as_ref(),
+                    &format!("{prefix}.ln1"),
+                    &hidden_dim,
+                )?,
+                q: AudioLinear::load(
+                    &source,
+                    &format!("{prefix}.attn_q.weight"),
+                    Some(&format!("{prefix}.attn_q.bias")),
+                    config.hidden,
+                    config.hidden,
+                    GGMLType::Q8_0,
+                )?,
+                k: AudioLinear::load(
+                    &source,
+                    &format!("{prefix}.attn_k.weight"),
+                    Some(&format!("{prefix}.attn_k.bias")),
+                    config.hidden,
+                    config.hidden,
+                    GGMLType::Q8_0,
+                )?,
+                v: AudioLinear::load(
+                    &source,
+                    &format!("{prefix}.attn_v.weight"),
+                    Some(&format!("{prefix}.attn_v.bias")),
+                    config.hidden,
+                    config.hidden,
+                    GGMLType::Q8_0,
+                )?,
+                output: AudioLinear::load(
+                    &source,
+                    &format!("{prefix}.attn_out.weight"),
+                    Some(&format!("{prefix}.attn_out.bias")),
+                    config.hidden,
+                    config.hidden,
+                    GGMLType::Q8_0,
+                )?,
+                ln2: LayerNormWeights::load(
+                    source.as_ref(),
+                    &format!("{prefix}.ln2"),
+                    &hidden_dim,
+                )?,
+                up: AudioLinear::load(
+                    &source,
+                    &format!("{prefix}.ffn_up.weight"),
+                    Some(&format!("{prefix}.ffn_up.bias")),
+                    config.hidden,
+                    config.ffn,
+                    GGMLType::Q8_0,
+                )?,
+                down: AudioLinear::load(
+                    &source,
+                    &format!("{prefix}.ffn_down.weight"),
+                    Some(&format!("{prefix}.ffn_down.bias")),
+                    config.ffn,
+                    config.hidden,
+                    GGMLType::Q8_0,
+                )?,
+            });
+        }
+        let post_ln = LayerNormWeights::load(source.as_ref(), "a.post_ln", &hidden_dim)?;
+        let projector_1 = AudioLinear::load(
+            &source,
+            "mm.a.mlp.1.weight",
+            Some("mm.a.mlp.1.bias"),
+            config.hidden,
+            config.hidden,
+            GGMLType::Q8_0,
+        )?;
+        let projector_2 = AudioLinear::load(
+            &source,
+            "mm.a.mlp.2.weight",
+            Some("mm.a.mlp.2.bias"),
+            config.hidden,
+            config.projection,
+            GGMLType::Q8_0,
+        )?;
         Ok(Self {
             source,
             config,
+            pool,
             conv,
             conv_out,
+            positions,
+            layers,
+            post_ln,
+            projector_1,
+            projector_2,
+            #[cfg(test)]
+            encoded_window_tokens: std::sync::Mutex::new(Vec::new()),
+        })
+    }
+
+    pub(crate) fn encode(&self, windows: &[MelWindow]) -> Result<AudioEmbeddings, String> {
+        if windows.is_empty() {
+            return Err("Audio encoder requires at least one Mel window".into());
+        }
+        let total_tokens = windows.iter().try_fold(0usize, |total, window| {
+            let tokens = window_token_count(window)?;
+            total
+                .checked_add(tokens)
+                .ok_or_else(|| "Audio token count overflow".to_string())
+        })?;
+        let output_len = checked_product(
+            "audio embedding values",
+            total_tokens,
+            self.config.projection,
+        )?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(output_len)
+            .map_err(|_| "Failed to allocate audio embedding values".to_string())?;
+        for window in windows {
+            let embeddings = self.encode_window(window)?;
+            if embeddings.dim != self.config.projection
+                || embeddings.tokens == 0
+                || embeddings.values.len()
+                    != checked_product(
+                        "window audio embedding values",
+                        embeddings.tokens,
+                        embeddings.dim,
+                    )?
+                || embeddings.values.iter().any(|value| !value.is_finite())
+            {
+                return Err("Invalid projected audio window".into());
+            }
+            values.extend_from_slice(&embeddings.values);
+        }
+        if values.len() != output_len || values.iter().any(|value| !value.is_finite()) {
+            return Err("Invalid audio embedding output".into());
+        }
+        Ok(AudioEmbeddings {
+            values,
+            tokens: total_tokens,
+            dim: self.config.projection,
+        })
+    }
+
+    pub fn config(&self) -> Qwen3AudioConfig {
+        self.config
+    }
+
+    fn encode_window(&self, window: &MelWindow) -> Result<AudioEmbeddings, String> {
+        let mut hidden = self.encode_convolution(window)?;
+        if hidden.tokens == 0 || self.layers.len() != self.config.layers {
+            return Err("Invalid audio Transformer configuration".into());
+        }
+        #[cfg(test)]
+        self.encoded_window_tokens
+            .lock()
+            .map_err(|_| "Audio test counter poisoned".to_string())?
+            .push(hidden.tokens);
+        add_position_embeddings(&mut hidden, &self.positions, self.config.hidden)?;
+        let head_dim = self
+            .config
+            .hidden
+            .checked_div(self.config.heads)
+            .filter(|head_dim| *head_dim > 0 && *head_dim * self.config.heads == self.config.hidden)
+            .ok_or_else(|| "Invalid audio attention head shape".to_string())?;
+        let mut scratch = AudioScratch::new(
+            hidden.tokens,
+            self.config.hidden,
+            self.config.ffn,
+            self.config.projection,
+        )?;
+
+        for (layer_index, layer) in self.layers.iter().enumerate() {
+            layer_norm_rows(
+                &hidden.values,
+                hidden.tokens,
+                &layer.ln1,
+                self.config.epsilon,
+                &mut scratch.normed,
+            )?;
+            layer.q.project_q8(
+                &scratch.normed,
+                hidden.tokens,
+                &self.pool,
+                &mut scratch.q,
+                &mut scratch.q8,
+                &mut scratch.scales,
+            )?;
+            layer.k.project_q8(
+                &scratch.normed,
+                hidden.tokens,
+                &self.pool,
+                &mut scratch.k,
+                &mut scratch.q8,
+                &mut scratch.scales,
+            )?;
+            layer.v.project_q8(
+                &scratch.normed,
+                hidden.tokens,
+                &self.pool,
+                &mut scratch.v,
+                &mut scratch.q8,
+                &mut scratch.scales,
+            )?;
+            full_attention_into(
+                &scratch.q,
+                &scratch.k,
+                &scratch.v,
+                hidden.tokens,
+                self.config.heads,
+                head_dim,
+                &mut scratch.scores,
+                &mut scratch.attention,
+            )?;
+            layer.output.project_q8(
+                &scratch.attention,
+                hidden.tokens,
+                &self.pool,
+                &mut scratch.attention_output,
+                &mut scratch.q8,
+                &mut scratch.scales,
+            )?;
+            add_residual(&mut hidden.values, &scratch.attention_output)?;
+            layer_norm_rows(
+                &hidden.values,
+                hidden.tokens,
+                &layer.ln2,
+                self.config.epsilon,
+                &mut scratch.normed,
+            )?;
+            let normed = std::mem::take(&mut scratch.normed);
+            audio_ffn(
+                &normed,
+                hidden.tokens,
+                &layer.up,
+                &layer.down,
+                &self.pool,
+                &mut scratch,
+            )?;
+            scratch.normed = normed;
+            add_residual(&mut hidden.values, &scratch.ffn_down)?;
+
+            #[cfg(feature = "parity-trace")]
+            if layer_index == 0 {
+                crate::parity_trace::report(crate::parity_trace::checkpoint(
+                    "asr.transformer_layer_0",
+                    None,
+                    &[hidden.tokens, self.config.hidden],
+                    &hidden.values,
+                ));
+            }
+            #[cfg(not(feature = "parity-trace"))]
+            let _ = layer_index;
+        }
+
+        audio_projector(
+            &hidden.values,
+            hidden.tokens,
+            &self.post_ln,
+            &self.projector_1,
+            &self.projector_2,
+            self.config.epsilon,
+            &self.pool,
+            &mut scratch,
+        )?;
+        #[cfg(feature = "parity-trace")]
+        {
+            crate::parity_trace::report(crate::parity_trace::checkpoint(
+                "asr.after_transformer",
+                None,
+                &[hidden.tokens, self.config.hidden],
+                &scratch.normed,
+            ));
+            crate::parity_trace::report(crate::parity_trace::checkpoint(
+                "asr.projected",
+                None,
+                &[hidden.tokens, self.config.projection],
+                &scratch.projected,
+            ));
+        }
+        Ok(AudioEmbeddings {
+            values: std::mem::take(&mut scratch.projected),
+            tokens: hidden.tokens,
+            dim: self.config.projection,
         })
     }
 
@@ -587,6 +922,45 @@ impl Qwen3AudioModel {
     }
 }
 
+impl LayerNormWeights {
+    fn load(source: &dyn TensorSource, prefix: &str, dims: &[u64]) -> Result<Self, String> {
+        Ok(Self {
+            weight: load_f32_tensor(source, &format!("{prefix}.weight"), dims)?,
+            bias: load_f32_tensor(source, &format!("{prefix}.bias"), dims)?,
+        })
+    }
+}
+
+impl AudioScratch {
+    fn new(tokens: usize, hidden: usize, ffn: usize, projection: usize) -> Result<Self, String> {
+        if tokens == 0 || hidden == 0 || ffn == 0 || projection == 0 {
+            return Err("Audio scratch dimensions must be non-zero".into());
+        }
+        let hidden_values = checked_product("audio scratch hidden values", tokens, hidden)?;
+        let ffn_values = checked_product("audio scratch FFN values", tokens, ffn)?;
+        let projected_values =
+            checked_product("audio scratch projected values", tokens, projection)?;
+        let max_input = hidden.max(ffn);
+        if max_input % 32 != 0 {
+            return Err("Q8_0 audio width must be divisible by 32".into());
+        }
+        Ok(Self {
+            normed: reserved_f32("audio normalized values", hidden_values)?,
+            q: reserved_f32("audio queries", hidden_values)?,
+            k: reserved_f32("audio keys", hidden_values)?,
+            v: reserved_f32("audio values", hidden_values)?,
+            attention: reserved_f32("audio attention values", hidden_values)?,
+            attention_output: reserved_f32("audio attention output", hidden_values)?,
+            ffn_up: reserved_f32("audio FFN up values", ffn_values)?,
+            ffn_down: reserved_f32("audio FFN down values", hidden_values)?,
+            projected: reserved_f32("projected audio values", projected_values)?,
+            q8: reserved_u8("audio quantized values", max_input)?,
+            scales: reserved_f32("audio quantization scales", max_input / 32)?,
+            scores: reserved_f32("audio attention scores", tokens)?,
+        })
+    }
+}
+
 impl AudioLinear {
     fn load(
         source: &Arc<dyn TensorSource>,
@@ -650,6 +1024,81 @@ impl AudioLinear {
                     return Err("Non-finite audio projection output".into());
                 }
                 result[row * self.output + output] = sum;
+            }
+        }
+        Ok(())
+    }
+
+    fn project_q8(
+        &self,
+        input: &[f32],
+        rows: usize,
+        pool: &ComputePool,
+        result: &mut Vec<f32>,
+        q8: &mut [u8],
+        scales: &mut [f32],
+    ) -> Result<(), String> {
+        if self.kind != GGMLType::Q8_0
+            || rows == 0
+            || self.input == 0
+            || self.input % 32 != 0
+            || self.output == 0
+            || self.bias.len() != self.output
+            || self.bias.iter().any(|value| !value.is_finite())
+        {
+            return Err("Invalid Q8_0 audio projection".into());
+        }
+        let input_len = checked_product("Q8_0 audio projection input", rows, self.input)?;
+        let output_len = checked_product("Q8_0 audio projection output", rows, self.output)?;
+        let row_bytes = checked_product("Q8_0 audio projection row bytes", self.input / 32, 34)?;
+        let weight_len =
+            checked_product("Q8_0 audio projection weight bytes", self.output, row_bytes)?;
+        if input.len() != input_len
+            || input.iter().any(|value| !value.is_finite())
+            || self.weight.len() != weight_len
+            || q8.len() < self.input
+            || scales.len() < self.input / 32
+        {
+            return Err("Invalid Q8_0 audio projection tensors".into());
+        }
+        resize_f32(result, "Q8_0 audio projection output", output_len)?;
+        for row in 0..rows {
+            let input = &input[row * self.input..(row + 1) * self.input];
+            quantize_q8_0_into(
+                input,
+                self.input,
+                &mut q8[..self.input],
+                &mut scales[..self.input / 32],
+            );
+            let output = &mut result[row * self.output..(row + 1) * self.output];
+            let output_ptr = output.as_mut_ptr();
+            let weight = self.weight;
+            let q8_ptr = q8.as_ptr();
+            let scales_ptr = scales.as_ptr();
+            let input_width = self.input;
+            let output_width = self.output;
+            pool.compute(move |thread, threads| {
+                // SAFETY: each worker writes a disjoint output-row partition and the pool returns
+                // only after every worker finishes; weights and quantized inputs are immutable.
+                let output = unsafe { std::slice::from_raw_parts_mut(output_ptr, output_width) };
+                let q8 = unsafe { std::slice::from_raw_parts(q8_ptr, input_width) };
+                let scales = unsafe { std::slice::from_raw_parts(scales_ptr, input_width / 32) };
+                matmul_q8_0_quantized_parallel_rows(
+                    weight,
+                    q8,
+                    scales,
+                    output,
+                    input_width,
+                    output_width,
+                    thread,
+                    threads,
+                );
+            });
+            for (value, bias) in output.iter_mut().zip(&self.bias) {
+                *value += *bias;
+                if !value.is_finite() {
+                    return Err("Non-finite Q8_0 audio projection output".into());
+                }
             }
         }
         Ok(())
@@ -850,21 +1299,337 @@ fn flatten_conv_output(
 
 fn apply_gelu(values: &mut [f32]) -> Result<(), String> {
     for value in values {
-        let x = *value;
-        let sign = if x < 0.0 { -1.0 } else { 1.0 };
-        let t = 1.0 / (1.0 + 0.3275911 * (x / std::f32::consts::SQRT_2).abs());
-        let erf = sign
-            * (1.0
-                - (((((1.0614054 * t - 1.4531521) * t) + 1.4214138) * t - 0.28449672) * t
-                    + 0.2548296)
-                    * t
-                    * (-(x * x) / 2.0).exp());
-        *value = 0.5 * x * (1.0 + erf);
+        *value = gelu_erf(*value);
         if !value.is_finite() {
             return Err("Non-finite convolution GELU output".into());
         }
     }
     Ok(())
+}
+
+fn window_token_count(window: &MelWindow) -> Result<usize, String> {
+    if window.frames == 0
+        || window.frames > WINDOW_FRAMES
+        || window.frames % CHUNK_FRAMES != 0
+        || window.valid_frames == 0
+        || window.valid_frames > window.frames
+    {
+        return Err("Invalid Mel window frame count".into());
+    }
+    let expected = checked_product("Mel window values", MEL_BINS, window.frames)?;
+    if window.values.len() != expected || window.values.iter().any(|value| !value.is_finite()) {
+        return Err("Invalid Mel window values".into());
+    }
+    checked_product("convolution tokens", window.frames / CHUNK_FRAMES, 13)
+}
+
+fn layer_norm(
+    input: &[f32],
+    weight: &[f32],
+    bias: &[f32],
+    epsilon: f32,
+    output: &mut [f32],
+) -> Result<(), String> {
+    if input.is_empty()
+        || input.len() != weight.len()
+        || input.len() != bias.len()
+        || input.len() != output.len()
+        || !epsilon.is_finite()
+        || epsilon < 0.0
+        || input
+            .iter()
+            .chain(weight)
+            .chain(bias)
+            .any(|value| !value.is_finite())
+    {
+        return Err("Invalid layer norm tensors".into());
+    }
+    let count = input.len() as f32;
+    let mean = input.iter().sum::<f32>() / count;
+    let variance = input
+        .iter()
+        .map(|value| {
+            let centered = *value - mean;
+            centered * centered
+        })
+        .sum::<f32>()
+        / count;
+    let inverse = 1.0 / (variance + epsilon).sqrt();
+    if !mean.is_finite() || !inverse.is_finite() {
+        return Err("Non-finite layer norm statistics".into());
+    }
+    for (((value, weight), bias), output) in input.iter().zip(weight).zip(bias).zip(output) {
+        *output = (*value - mean) * inverse * *weight + *bias;
+        if !output.is_finite() {
+            return Err("Non-finite layer norm output".into());
+        }
+    }
+    Ok(())
+}
+
+fn layer_norm_rows(
+    input: &[f32],
+    rows: usize,
+    weights: &LayerNormWeights,
+    epsilon: f32,
+    output: &mut Vec<f32>,
+) -> Result<(), String> {
+    if rows == 0 || weights.weight.is_empty() || weights.weight.len() != weights.bias.len() {
+        return Err("Invalid audio layer norm weights".into());
+    }
+    let width = weights.weight.len();
+    let len = checked_product("audio layer norm values", rows, width)?;
+    if input.len() != len {
+        return Err("Invalid audio layer norm input".into());
+    }
+    resize_f32(output, "audio layer norm output", len)?;
+    for row in 0..rows {
+        layer_norm(
+            &input[row * width..(row + 1) * width],
+            &weights.weight,
+            &weights.bias,
+            epsilon,
+            &mut output[row * width..(row + 1) * width],
+        )?;
+    }
+    Ok(())
+}
+
+fn erf_approx(value: f32) -> f32 {
+    let sign = if value < 0.0 { -1.0 } else { 1.0 };
+    let x = value.abs();
+    let t = 1.0 / (1.0 + 0.327_591_1 * x);
+    let polynomial = (((((1.061_405_4 * t - 1.453_152_1) * t) + 1.421_413_8) * t - 0.284_496_72)
+        * t
+        + 0.254_829_6)
+        * t;
+    sign * (1.0 - polynomial * (-x * x).exp())
+}
+
+fn gelu_erf(value: f32) -> f32 {
+    0.5 * value * (1.0 + erf_approx(value * std::f32::consts::FRAC_1_SQRT_2))
+}
+
+fn apply_gelu_erf(values: &mut [f32]) -> Result<(), String> {
+    if values.is_empty() || values.iter().any(|value| !value.is_finite()) {
+        return Err("Invalid audio GELU input".into());
+    }
+    for value in values {
+        *value = gelu_erf(*value);
+        if !value.is_finite() {
+            return Err("Non-finite audio GELU output".into());
+        }
+    }
+    Ok(())
+}
+
+fn full_attention(
+    query: &[f32],
+    key: &[f32],
+    value: &[f32],
+    tokens: usize,
+    heads: usize,
+    head_dim: usize,
+) -> Result<Vec<f32>, String> {
+    let mut scores = reserved_f32("attention scores", tokens)?;
+    let mut output = Vec::new();
+    full_attention_into(
+        query,
+        key,
+        value,
+        tokens,
+        heads,
+        head_dim,
+        &mut scores,
+        &mut output,
+    )?;
+    Ok(output)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn full_attention_into(
+    query: &[f32],
+    key: &[f32],
+    value: &[f32],
+    tokens: usize,
+    heads: usize,
+    head_dim: usize,
+    scores: &mut Vec<f32>,
+    output: &mut Vec<f32>,
+) -> Result<(), String> {
+    if tokens == 0 || heads == 0 || head_dim == 0 {
+        return Err("Attention dimensions must be non-zero".into());
+    }
+    let width = checked_product("attention width", heads, head_dim)?;
+    let len = checked_product("attention values", tokens, width)?;
+    if query.len() != len
+        || key.len() != len
+        || value.len() != len
+        || query
+            .iter()
+            .chain(key)
+            .chain(value)
+            .any(|value| !value.is_finite())
+    {
+        return Err("Invalid full attention tensors".into());
+    }
+    resize_f32(scores, "attention scores", tokens)?;
+    resize_f32(output, "attention output", len)?;
+    output.fill(0.0);
+    let scale = 1.0 / (head_dim as f32).sqrt();
+    for query_token in 0..tokens {
+        for head in 0..heads {
+            let query_start = query_token * width + head * head_dim;
+            let query_head = &query[query_start..query_start + head_dim];
+            let mut maximum = f32::NEG_INFINITY;
+            for key_token in 0..tokens {
+                let key_start = key_token * width + head * head_dim;
+                let score =
+                    dot_f32(query_head, &key[key_start..key_start + head_dim], head_dim) * scale;
+                if !score.is_finite() {
+                    return Err("Non-finite attention score".into());
+                }
+                scores[key_token] = score;
+                maximum = maximum.max(score);
+            }
+            let mut denominator = 0.0;
+            for score in scores.iter_mut() {
+                *score = (*score - maximum).exp();
+                denominator += *score;
+            }
+            if !denominator.is_finite() || denominator <= 0.0 {
+                return Err("Invalid attention softmax".into());
+            }
+            let output_start = query_token * width + head * head_dim;
+            for key_token in 0..tokens {
+                let probability = scores[key_token] / denominator;
+                let value_start = key_token * width + head * head_dim;
+                for lane in 0..head_dim {
+                    output[output_start + lane] += probability * value[value_start + lane];
+                }
+            }
+        }
+    }
+    if output.iter().any(|value| !value.is_finite()) {
+        return Err("Non-finite attention output".into());
+    }
+    Ok(())
+}
+
+fn add_position_embeddings(
+    hidden: &mut AudioHidden,
+    positions: &[f32],
+    width: usize,
+) -> Result<(), String> {
+    let hidden_len = checked_product("positioned audio values", hidden.tokens, width)?;
+    let minimum_positions = checked_product("audio position values", 13, width)?;
+    if hidden.tokens == 0
+        || width == 0
+        || hidden.values.len() != hidden_len
+        || positions.len() < minimum_positions
+        || positions.len() % width != 0
+        || hidden
+            .values
+            .iter()
+            .chain(positions)
+            .any(|value| !value.is_finite())
+    {
+        return Err("Invalid audio position tensors".into());
+    }
+    for token in 0..hidden.tokens {
+        let position = token % 13;
+        for lane in 0..width {
+            let value = &mut hidden.values[token * width + lane];
+            *value += positions[position * width + lane];
+            if !value.is_finite() {
+                return Err("Non-finite positioned audio value".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn add_residual(hidden: &mut [f32], update: &[f32]) -> Result<(), String> {
+    if hidden.is_empty()
+        || hidden.len() != update.len()
+        || hidden.iter().chain(update).any(|value| !value.is_finite())
+    {
+        return Err("Invalid audio residual tensors".into());
+    }
+    for (hidden, update) in hidden.iter_mut().zip(update) {
+        *hidden += *update;
+        if !hidden.is_finite() {
+            return Err("Non-finite audio residual".into());
+        }
+    }
+    Ok(())
+}
+
+fn audio_ffn(
+    input: &[f32],
+    rows: usize,
+    up: &AudioLinear,
+    down: &AudioLinear,
+    pool: &ComputePool,
+    scratch: &mut AudioScratch,
+) -> Result<(), String> {
+    if up.output != down.input || up.input != down.output {
+        return Err("Invalid audio FFN shape".into());
+    }
+    up.project_q8(
+        input,
+        rows,
+        pool,
+        &mut scratch.ffn_up,
+        &mut scratch.q8,
+        &mut scratch.scales,
+    )?;
+    apply_gelu_erf(&mut scratch.ffn_up)?;
+    down.project_q8(
+        &scratch.ffn_up,
+        rows,
+        pool,
+        &mut scratch.ffn_down,
+        &mut scratch.q8,
+        &mut scratch.scales,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn audio_projector(
+    input: &[f32],
+    rows: usize,
+    post_ln: &LayerNormWeights,
+    first: &AudioLinear,
+    second: &AudioLinear,
+    epsilon: f32,
+    pool: &ComputePool,
+    scratch: &mut AudioScratch,
+) -> Result<(), String> {
+    if first.input != post_ln.weight.len()
+        || first.output != second.input
+        || post_ln.weight.len() != post_ln.bias.len()
+    {
+        return Err("Invalid audio projector shape".into());
+    }
+    layer_norm_rows(input, rows, post_ln, epsilon, &mut scratch.normed)?;
+    first.project_q8(
+        &scratch.normed,
+        rows,
+        pool,
+        &mut scratch.ffn_up,
+        &mut scratch.q8,
+        &mut scratch.scales,
+    )?;
+    apply_gelu_erf(&mut scratch.ffn_up)?;
+    second.project_q8(
+        &scratch.ffn_up,
+        rows,
+        pool,
+        &mut scratch.projected,
+        &mut scratch.q8,
+        &mut scratch.scales,
+    )
 }
 
 fn checked_product(name: &str, left: usize, right: usize) -> Result<usize, String> {
@@ -878,6 +1643,15 @@ fn reserved_f32(name: &str, len: usize) -> Result<Vec<f32>, String> {
         .try_reserve_exact(len)
         .map_err(|_| format!("Failed to allocate {name}"))?;
     values.resize(len, 0.0);
+    Ok(values)
+}
+
+fn reserved_u8(name: &str, len: usize) -> Result<Vec<u8>, String> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(len)
+        .map_err(|_| format!("Failed to allocate {name}"))?;
+    values.resize(len, 0);
     Ok(values)
 }
 
@@ -1127,6 +1901,248 @@ mod tests {
     use super::*;
     use crate::model::{GGMLType, MetaValue, TensorInfo, TensorSource};
     use std::collections::HashMap;
+
+    #[test]
+    fn layer_norm_uses_weight_bias_and_population_variance() {
+        let mut output = [0.0; 2];
+        layer_norm(&[1.0, 3.0], &[2.0, 0.5], &[0.25, -0.25], 0.0, &mut output).unwrap();
+        assert_eq!(output, [-1.75, 0.25]);
+    }
+
+    #[test]
+    fn gelu_erf_keeps_zero_and_matches_fixed_values() {
+        assert_eq!(gelu_erf(0.0), 0.0);
+        assert!((gelu_erf(1.0) - 0.841_344_7).abs() < 1e-6);
+        assert!((gelu_erf(-1.0) + 0.158_655_26).abs() < 1e-6);
+    }
+
+    #[test]
+    fn full_attention_is_bidirectional() {
+        let output = full_attention(
+            &[1.0, 0.0, 0.0, 1.0],
+            &[1.0, 0.0, 0.0, 1.0],
+            &[1.0, 2.0, 3.0, 4.0],
+            2,
+            1,
+            2,
+        )
+        .unwrap();
+        assert!((output[0] - 1.660_476_9).abs() < 1e-5);
+        assert!((output[1] - 2.660_477).abs() < 1e-5);
+        assert!((output[2] - 2.339_523).abs() < 1e-5);
+        assert!((output[3] - 3.339_523).abs() < 1e-5);
+    }
+
+    fn q8_identity(width: usize) -> &'static [u8] {
+        assert_eq!(width % 32, 0);
+        let blocks = width / 32;
+        let mut bytes = vec![0; width * blocks * 34];
+        for row in 0..width {
+            let block = row / 32;
+            let offset = (row * blocks + block) * 34;
+            bytes[offset..offset + 2]
+                .copy_from_slice(&half::f16::from_f32(1.0).to_bits().to_le_bytes());
+            bytes[offset + 2 + row % 32] = 1;
+        }
+        Box::leak(bytes.into_boxed_slice())
+    }
+
+    fn q8_identity_linear(width: usize) -> AudioLinear {
+        AudioLinear {
+            weight: q8_identity(width),
+            kind: GGMLType::Q8_0,
+            input: width,
+            output: width,
+            bias: vec![0.0; width],
+        }
+    }
+
+    #[test]
+    fn audio_ffn_is_up_gelu_down_not_gated() {
+        let up = q8_identity_linear(32);
+        let down = q8_identity_linear(32);
+        let mut input = vec![0.0; 32];
+        input[0] = 2.0;
+        let pool = crate::thread_pool::ComputePool::new(1);
+        let mut scratch = AudioScratch::new(1, 32, 32, 32).unwrap();
+
+        audio_ffn(&input, 1, &up, &down, &pool, &mut scratch).unwrap();
+
+        assert!((scratch.ffn_down[0] - 1.954_5).abs() < 2e-3);
+        assert!(scratch.ffn_down[1..].iter().all(|value| *value == 0.0));
+    }
+
+    #[test]
+    fn position_embedding_repeats_for_each_thirteen_token_chunk() {
+        let hidden = 4;
+        let mut audio = AudioHidden {
+            values: vec![0.0; 26 * hidden],
+            tokens: 26,
+        };
+        let mut positions = vec![0.0; 1500 * hidden];
+        for position in 0..1500 {
+            positions[position * hidden] = position as f32;
+        }
+
+        add_position_embeddings(&mut audio, &positions, hidden).unwrap();
+
+        assert_eq!(audio.values.len(), 26 * hidden);
+        assert_eq!(
+            audio
+                .values
+                .chunks_exact(hidden)
+                .map(|row| row[0] as usize)
+                .collect::<Vec<_>>(),
+            (0..13).chain(0..13).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn projector_is_post_ln_then_linear_gelu_linear() {
+        let width = 32;
+        let post_ln = LayerNormWeights {
+            weight: vec![1.0; width],
+            bias: vec![0.0; width],
+        };
+        let first = q8_identity_linear(width);
+        let second = q8_identity_linear(width);
+        let input: Vec<f32> = (0..width)
+            .map(|index| if index % 2 == 0 { -2.0 } else { 2.0 })
+            .collect();
+        let pool = crate::thread_pool::ComputePool::new(1);
+        let mut scratch = AudioScratch::new(1, width, width, width).unwrap();
+
+        audio_projector(
+            &input,
+            1,
+            &post_ln,
+            &first,
+            &second,
+            0.0,
+            &pool,
+            &mut scratch,
+        )
+        .unwrap();
+
+        for (actual, expected) in scratch
+            .projected
+            .iter()
+            .zip([-0.158_655_26, 0.841_344_7].into_iter().cycle())
+        {
+            assert!((actual - expected).abs() < 2e-3, "{actual} != {expected}");
+        }
+    }
+
+    fn zero_q8_linear(input: usize, output: usize) -> AudioLinear {
+        let bytes = output * (input / 32) * 34;
+        AudioLinear {
+            weight: Box::leak(vec![0; bytes].into_boxed_slice()),
+            kind: GGMLType::Q8_0,
+            input,
+            output,
+            bias: vec![0.0; output],
+        }
+    }
+
+    fn zero_conv(
+        input_channels: usize,
+        output_channels: usize,
+        bytes: &'static [u8],
+    ) -> Conv2dWeights {
+        Conv2dWeights {
+            weight: F16Tensor {
+                bytes,
+                dims: vec![3, 3, input_channels as u64, output_channels as u64],
+            },
+            bias: vec![0.0; output_channels],
+            input_channels,
+            output_channels,
+        }
+    }
+
+    fn synthetic_audio_model() -> Qwen3AudioModel {
+        let hidden = 32;
+        let shared_conv: &'static [u8] =
+            Box::leak(vec![0; 3 * 3 * 480 * 480 * 2].into_boxed_slice());
+        let norm = || LayerNormWeights {
+            weight: vec![1.0; hidden],
+            bias: vec![0.0; hidden],
+        };
+        Qwen3AudioModel {
+            source: Arc::new(MapTensorSource::default()),
+            config: Qwen3AudioConfig {
+                hidden,
+                ffn: hidden,
+                layers: 1,
+                heads: 1,
+                mel_bins: MEL_BINS,
+                projection: hidden,
+                epsilon: 1e-5,
+            },
+            pool: Arc::new(crate::thread_pool::ComputePool::new(1)),
+            conv: [
+                zero_conv(
+                    1,
+                    480,
+                    Box::leak(vec![0; 3 * 3 * 480 * 2].into_boxed_slice()),
+                ),
+                zero_conv(480, 480, shared_conv),
+                zero_conv(480, 480, shared_conv),
+            ],
+            conv_out: AudioLinear {
+                weight: Box::leak(vec![0; 7680 * hidden * 2].into_boxed_slice()),
+                kind: GGMLType::F16,
+                input: 7680,
+                output: hidden,
+                bias: Vec::new(),
+            },
+            positions: vec![0.0; 1500 * hidden],
+            layers: vec![AudioTransformerLayer {
+                ln1: norm(),
+                q: zero_q8_linear(hidden, hidden),
+                k: zero_q8_linear(hidden, hidden),
+                v: zero_q8_linear(hidden, hidden),
+                output: zero_q8_linear(hidden, hidden),
+                ln2: norm(),
+                up: zero_q8_linear(hidden, hidden),
+                down: zero_q8_linear(hidden, hidden),
+            }],
+            post_ln: norm(),
+            projector_1: zero_q8_linear(hidden, hidden),
+            projector_2: zero_q8_linear(hidden, hidden),
+            encoded_window_tokens: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    #[test]
+    fn two_mel_chunks_produce_twenty_six_projected_rows() {
+        let model = synthetic_audio_model();
+        let windows = split_mel_windows(&vec![0.0; MEL_BINS * 200], 200).unwrap();
+
+        let embeddings = model.encode(&windows).unwrap();
+
+        assert_eq!(embeddings.tokens, 26);
+        assert_eq!(embeddings.dim, 32);
+        assert_eq!(embeddings.values.len(), 26 * 32);
+    }
+
+    #[test]
+    fn nine_hundred_frames_keep_attention_windows_separate() {
+        let model = synthetic_audio_model();
+        let windows = split_mel_windows(&vec![0.0; MEL_BINS * 900], 900).unwrap();
+
+        let embeddings = model.encode(&windows).unwrap();
+
+        assert_eq!(embeddings.tokens, 104 + 13);
+        assert_eq!(embeddings.values.len(), (104 + 13) * 32);
+        assert_eq!(*model.encoded_window_tokens.lock().unwrap(), vec![104, 13]);
+        assert!(model
+            .encoded_window_tokens
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|tokens| *tokens < 117));
+    }
 
     fn append_wav_chunk(bytes: &mut Vec<u8>, id: &[u8; 4], chunk: &[u8]) {
         bytes.extend_from_slice(id);
@@ -1751,7 +2767,35 @@ mod tests {
         source
             .data
             .insert("a.conv_out.weight".into(), filled_f16(7680 * 896, 0.001));
-        let model = Qwen3AudioModel::from_source(std::sync::Arc::new(source)).unwrap();
+        let source: Arc<dyn TensorSource> = Arc::new(source);
+        let model = Qwen3AudioModel {
+            config: Qwen3AudioConfig::from_source(source.as_ref()).unwrap(),
+            pool: Arc::new(crate::thread_pool::ComputePool::new(1)),
+            conv: [
+                load_conv2d(&source, "a.conv2d.1", 1, 480).unwrap(),
+                load_conv2d(&source, "a.conv2d.2", 480, 480).unwrap(),
+                load_conv2d(&source, "a.conv2d.3", 480, 480).unwrap(),
+            ],
+            conv_out: AudioLinear::load(
+                &source,
+                "a.conv_out.weight",
+                None,
+                7680,
+                896,
+                GGMLType::F16,
+            )
+            .unwrap(),
+            source,
+            positions: Vec::new(),
+            layers: Vec::new(),
+            post_ln: LayerNormWeights {
+                weight: Vec::new(),
+                bias: Vec::new(),
+            },
+            projector_1: zero_q8_linear(32, 32),
+            projector_2: zero_q8_linear(32, 32),
+            encoded_window_tokens: std::sync::Mutex::new(Vec::new()),
+        };
         let window = MelWindow {
             values: vec![0.0; 128 * 100],
             frames: 100,
