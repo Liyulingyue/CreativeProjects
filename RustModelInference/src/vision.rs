@@ -1,5 +1,5 @@
 use crate::clip_config::ClipVisionConfig;
-use crate::model::GGUFLoader;
+use crate::model::TensorSource;
 use crate::ops::{dot_f32, dot_f16_f32, rope_mrope_interleaved, softmax, vec_mad_f32};
 use rayon::prelude::*;
 
@@ -254,37 +254,37 @@ pub struct VisionLayer<'a> {
 }
 
 impl<'a> VisionEncoder<'a> {
-    pub fn from_gguf(loader: &'a GGUFLoader) -> Result<Self, String> {
-        let config = ClipVisionConfig::from_gguf(loader)?;
+    pub fn from_source<S: TensorSource + ?Sized>(source: &'a S) -> Result<Self, String> {
+        let config = ClipVisionConfig::from_source(source)?;
 
-        let patch_embd_weight = loader.tensor_slice("v.patch_embd.weight")
+        let patch_embd_weight = source.tensor_slice("v.patch_embd.weight")
             .ok_or("Missing v.patch_embd.weight")?;
-        let patch_embd_weight_1 = loader.tensor_slice("v.patch_embd.weight.1");
-        let position_embd = loader.tensor_slice("v.position_embd.weight");
-        let post_ln_weight = loader.tensor_slice("v.post_ln.weight");
-        let post_ln_bias = loader.tensor_slice("v.post_ln.bias");
-        let patch_bias = loader.tensor_slice("v.patch_embd.bias");
+        let patch_embd_weight_1 = source.tensor_slice("v.patch_embd.weight.1");
+        let position_embd = source.tensor_slice("v.position_embd.weight");
+        let post_ln_weight = source.tensor_slice("v.post_ln.weight");
+        let post_ln_bias = source.tensor_slice("v.post_ln.bias");
+        let patch_bias = source.tensor_slice("v.patch_embd.bias");
 
         let mut layers = Vec::with_capacity(config.n_layer);
         for i in 0..config.n_layer {
-            let ln1_weight = loader.tensor_slice(&format!("v.blk.{}.ln1.weight", i))
+            let ln1_weight = source.tensor_slice(&format!("v.blk.{}.ln1.weight", i))
                 .ok_or_else(|| format!("Missing v.blk.{}.ln1.weight", i))?;
-            let ln1_bias = loader.tensor_slice(&format!("v.blk.{}.ln1.bias", i));
-            let ln2_weight = loader.tensor_slice(&format!("v.blk.{}.ln2.weight", i))
+            let ln1_bias = source.tensor_slice(&format!("v.blk.{}.ln1.bias", i));
+            let ln2_weight = source.tensor_slice(&format!("v.blk.{}.ln2.weight", i))
                 .ok_or_else(|| format!("Missing v.blk.{}.ln2.weight", i))?;
-            let ln2_bias = loader.tensor_slice(&format!("v.blk.{}.ln2.bias", i));
-            let qkv_weight = loader.tensor_slice(&format!("v.blk.{}.attn_qkv.weight", i))
+            let ln2_bias = source.tensor_slice(&format!("v.blk.{}.ln2.bias", i));
+            let qkv_weight = source.tensor_slice(&format!("v.blk.{}.attn_qkv.weight", i))
                 .ok_or_else(|| format!("Missing v.blk.{}.attn_qkv.weight", i))?;
-            let qkv_bias = loader.tensor_slice(&format!("v.blk.{}.attn_qkv.bias", i));
-            let out_weight = loader.tensor_slice(&format!("v.blk.{}.attn_out.weight", i))
+            let qkv_bias = source.tensor_slice(&format!("v.blk.{}.attn_qkv.bias", i));
+            let out_weight = source.tensor_slice(&format!("v.blk.{}.attn_out.weight", i))
                 .ok_or_else(|| format!("Missing v.blk.{}.attn_out.weight", i))?;
-            let out_bias = loader.tensor_slice(&format!("v.blk.{}.attn_out.bias", i));
-            let ffn_up_weight = loader.tensor_slice(&format!("v.blk.{}.ffn_up.weight", i))
+            let out_bias = source.tensor_slice(&format!("v.blk.{}.attn_out.bias", i));
+            let ffn_up_weight = source.tensor_slice(&format!("v.blk.{}.ffn_up.weight", i))
                 .ok_or_else(|| format!("Missing v.blk.{}.ffn_up.weight", i))?;
-            let ffn_up_bias = loader.tensor_slice(&format!("v.blk.{}.ffn_up.bias", i));
-            let ffn_down_weight = loader.tensor_slice(&format!("v.blk.{}.ffn_down.weight", i))
+            let ffn_up_bias = source.tensor_slice(&format!("v.blk.{}.ffn_up.bias", i));
+            let ffn_down_weight = source.tensor_slice(&format!("v.blk.{}.ffn_down.weight", i))
                 .ok_or_else(|| format!("Missing v.blk.{}.ffn_down.weight", i))?;
-            let ffn_down_bias = loader.tensor_slice(&format!("v.blk.{}.ffn_down.bias", i));
+            let ffn_down_bias = source.tensor_slice(&format!("v.blk.{}.ffn_down.bias", i));
 
             layers.push(VisionLayer {
                 ln1_weight, ln1_bias,
@@ -296,12 +296,12 @@ impl<'a> VisionEncoder<'a> {
             });
         }
 
-        let mm_0_weight = loader.tensor_slice("mm.0.weight")
+        let mm_0_weight = source.tensor_slice("mm.0.weight")
             .ok_or("Missing mm.0.weight")?;
-        let mm_0_bias = loader.tensor_slice("mm.0.bias");
-        let mm_2_weight = loader.tensor_slice("mm.2.weight")
+        let mm_0_bias = source.tensor_slice("mm.0.bias");
+        let mm_2_weight = source.tensor_slice("mm.2.weight")
             .ok_or("Missing mm.2.weight")?;
-        let mm_2_bias = loader.tensor_slice("mm.2.bias");
+        let mm_2_bias = source.tensor_slice("mm.2.bias");
 
         Ok(Self {
             config,

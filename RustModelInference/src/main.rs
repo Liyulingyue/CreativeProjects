@@ -1,9 +1,10 @@
 use std::io::{self, Write};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
-use rust_model_inference::*;
 #[cfg(feature = "parity-trace")]
 use rust_model_inference::parity_trace;
+use rust_model_inference::*;
 
 #[derive(Clone, Copy, PartialEq)]
 enum KvFormat {
@@ -347,9 +348,9 @@ mod cli_tests {
     #[ignore = "requires QWEN3_EMBEDDING_MODEL"]
     fn qwen3_embedding_tokens_match_pinned_llama_cpp() {
         let model = std::env::var("QWEN3_EMBEDDING_MODEL").unwrap();
-        let loader = GGUFLoader::from_file(&model).unwrap();
+        let source = open_model_source(Path::new(&model), ComponentRole::Llm).unwrap();
         let tokenizer =
-            BPETokenizer::from_gguf_metadata(|key| loader.metadata(key).cloned()).unwrap();
+            BPETokenizer::from_gguf_metadata(|key| source.metadata(key).cloned()).unwrap();
 
         for &(text, expected) in EMBEDDING_TOKEN_CASES {
             assert_eq!(
@@ -469,46 +470,62 @@ fn main() {
         i += 1;
     }
 
-    let result: Result<(), String> = (|| -> Result<(), String> {
-        if !model_path.is_empty() && (!mmproj_path.is_empty() || !image_path.is_empty()) {
-            return run_multimodal(
-                &model_path,
-                &mmproj_path,
-                &image_path,
+    if model_path.is_empty() {
+        run_self_test();
+        return;
+    }
+
+    let model_path = Path::new(&model_path);
+    let source = open_or_exit(model_path, ComponentRole::Llm);
+    let arch = source
+        .metadata("general.architecture")
+        .and_then(MetaValue::to_string_val)
+        .unwrap_or_default();
+    let explicit_mmproj = (!mmproj_path.is_empty()).then(|| Path::new(mmproj_path.as_str()));
+    let image = (!image_path.is_empty()).then(|| Path::new(image_path.as_str()));
+
+    if explicit_mmproj.is_some() || image.is_some() {
+        run_or_exit(run_multimodal(
+            source.as_ref(),
+            model_path,
+            explicit_mmproj,
+            image,
+            &prompt,
+            max_tokens,
+            temperature,
+            n_threads,
+        ));
+    } else if !prompt.is_empty() {
+        if arch == "qwen35" {
+            run_or_exit(run_multimodal(
+                source.as_ref(),
+                model_path,
+                None,
+                None,
                 &prompt,
                 max_tokens,
                 temperature,
                 n_threads,
+            ));
+        } else if embedding_mode {
+            run_embedding(
+                source.as_ref(),
+                &prompt,
+                n_threads,
+                kv_format,
+                embedding_output,
             );
-        }
-
-        if !model_path.is_empty() && !prompt.is_empty() {
-            let loader = GGUFLoader::from_file(&model_path)
-                .map_err(|error| format!("Failed to load model {model_path}: {error}"))?;
-            let arch = loader
-                .metadata("general.architecture")
-                .and_then(MetaValue::to_string_val)
-                .unwrap_or_default();
-            if arch == "qwen35" {
-                return run_multimodal(
-                    &model_path,
-                    "",
-                    "",
-                    &prompt,
-                    max_tokens,
-                    temperature,
-                    n_threads,
-                );
-            }
-            if embedding_mode {
-                run_embedding(&model_path, &prompt, n_threads, kv_format, embedding_output);
-                return Ok(());
-            }
-            if dump_logits {
-                return run_dump_logits(&model_path, &prompt, max_tokens, n_threads, kv_format);
-            }
-            return run_inference(
-                &model_path,
+        } else if dump_logits {
+            run_or_exit(run_dump_logits(
+                source.as_ref(),
+                &prompt,
+                max_tokens,
+                n_threads,
+                kv_format,
+            ));
+        } else {
+            run_or_exit(run_inference(
+                source.as_ref(),
                 &prompt,
                 max_tokens,
                 temperature,
@@ -516,17 +533,30 @@ fn main() {
                 bench,
                 profile,
                 kv_format,
-            );
+            ));
         }
+    } else {
+        run_or_exit(run_interactive(
+            source.as_ref(),
+            max_tokens,
+            temperature,
+            n_threads,
+        ));
+    }
+}
 
-        if !model_path.is_empty() {
-            return run_interactive(&model_path, max_tokens, temperature, n_threads);
-        }
-
-        run_self_test();
-        Ok(())
-    })();
-    run_or_exit(result);
+fn open_or_exit(path: &Path, role: ComponentRole) -> Box<dyn TensorSource> {
+    open_model_source(path, role).unwrap_or_else(|error| {
+        eprintln!(
+            "Failed to load {} component from {}: {error}",
+            match role {
+                ComponentRole::Llm => "LLM",
+                ComponentRole::Mmproj => "mmproj",
+            },
+            path.display(),
+        );
+        std::process::exit(1);
+    })
 }
 
 fn run_or_exit(result: Result<(), String>) {
@@ -764,28 +794,24 @@ fn l2_normalize_embedding(values: &mut [f32]) -> Result<(), String> {
 }
 
 fn run_embedding(
-    model_path: &str,
+    source: &dyn TensorSource,
     prompt: &str,
     n_threads_arg: usize,
     _kv_format: KvFormat,
     output: EmbeddingOutput,
 ) {
     let t0 = Instant::now();
-    if output == EmbeddingOutput::Summary {
-        println!("Loading {} ...", model_path);
-    }
-    let loader = GGUFLoader::from_file(model_path).expect("Failed to load GGUF");
-    let config = loader.model_config().expect("Failed to parse model config");
+    let config = model_config_from_source(source).expect("Failed to parse model config");
 
-    let arch = loader
+    let arch = source
         .metadata("general.architecture")
         .and_then(|v| v.to_string_val())
         .unwrap_or_default();
     let is_qwen3 = arch == "qwen3";
 
-    let tokenizer = BPETokenizer::from_gguf_metadata(|k| loader.metadata(k).cloned())
+    let tokenizer = BPETokenizer::from_gguf_metadata(|k| source.metadata(k).cloned())
         .expect("Failed to init tokenizer");
-    let embedding_cfg = embedding_config(&arch, |key| loader.metadata(key).cloned())
+    let embedding_cfg = embedding_config(&arch, |key| source.metadata(key).cloned())
         .unwrap_or_else(|error| {
             eprintln!("Embedding metadata error: {error}");
             std::process::exit(1);
@@ -796,14 +822,14 @@ fn run_embedding(
     let n_head = config.n_head;
     let n_head_kv = config.n_head_kv;
     let n_embd_head = config.n_embd_head;
-    let n_embd_head_k = if let Some(v) = loader.metadata(&format!("{}.attention.key_length", arch))
+    let n_embd_head_k = if let Some(v) = source.metadata(&format!("{}.attention.key_length", arch))
     {
         v.to_u64().unwrap_or(n_embd_head as u64) as usize
     } else {
         n_embd_head
     };
     let n_embd_head_v =
-        if let Some(v) = loader.metadata(&format!("{}.attention.value_length", arch)) {
+        if let Some(v) = source.metadata(&format!("{}.attention.value_length", arch)) {
             v.to_u64().unwrap_or(n_embd_head as u64) as usize
         } else {
             n_embd_head
@@ -814,17 +840,17 @@ fn run_embedding(
     let eps = config.norm_eps;
     let freq_base = config.rope_freq_base;
 
-    let output_norm = get_f32_tensor(&loader, "output_norm.weight", n_embd);
-    let embd_weight = loader.tensor_slice("token_embd.weight").expect("no embd");
-    let output_weight = loader.tensor_slice("output.weight").unwrap_or(embd_weight);
+    let output_norm = get_f32_tensor(source, "output_norm.weight", n_embd);
+    let embd_weight = source.tensor_slice("token_embd.weight").expect("no embd");
+    let output_weight = source.tensor_slice("output.weight").unwrap_or(embd_weight);
 
     let layers: Vec<LayerWeights> = (0..n_layer)
         .map(|l| LayerWeights {
-            attn_norm: get_f32_tensor(&loader, &format!("blk.{}.attn_norm.weight", l), n_embd),
-            ffn_norm: get_f32_tensor(&loader, &format!("blk.{}.ffn_norm.weight", l), n_embd),
+            attn_norm: get_f32_tensor(source, &format!("blk.{}.attn_norm.weight", l), n_embd),
+            ffn_norm: get_f32_tensor(source, &format!("blk.{}.ffn_norm.weight", l), n_embd),
             q_norm: if is_qwen3 {
                 Some(get_f32_tensor(
-                    &loader,
+                    source,
                     &format!("blk.{}.attn_q_norm.weight", l),
                     n_embd_head_k,
                 ))
@@ -833,32 +859,32 @@ fn run_embedding(
             },
             k_norm: if is_qwen3 {
                 Some(get_f32_tensor(
-                    &loader,
+                    source,
                     &format!("blk.{}.attn_k_norm.weight", l),
                     n_embd_head_k,
                 ))
             } else {
                 None
             },
-            wq: loader
+            wq: source
                 .tensor_slice(&format!("blk.{}.attn_q.weight", l))
                 .unwrap(),
-            wk: loader
+            wk: source
                 .tensor_slice(&format!("blk.{}.attn_k.weight", l))
                 .unwrap(),
-            wv: loader
+            wv: source
                 .tensor_slice(&format!("blk.{}.attn_v.weight", l))
                 .unwrap(),
-            wo: loader
+            wo: source
                 .tensor_slice(&format!("blk.{}.attn_output.weight", l))
                 .unwrap(),
-            w_gate: loader
+            w_gate: source
                 .tensor_slice(&format!("blk.{}.ffn_gate.weight", l))
                 .unwrap(),
-            w_up: loader
+            w_up: source
                 .tensor_slice(&format!("blk.{}.ffn_up.weight", l))
                 .unwrap(),
-            w_down: loader
+            w_down: source
                 .tensor_slice(&format!("blk.{}.ffn_down.weight", l))
                 .unwrap(),
         })
@@ -1141,28 +1167,25 @@ fn run_embedding(
 }
 
 fn run_dump_logits(
-    model_path: &str,
+    source: &dyn TensorSource,
     prompt: &str,
     max_tokens: usize,
     n_threads_arg: usize,
     kv_format: KvFormat,
 ) -> Result<(), String> {
-    let loader = GGUFLoader::from_file(model_path)
-        .map_err(|error| format!("Failed to load model {model_path}: {error}"))?;
-    let config = loader
-        .model_config()
+    let config = model_config_from_source(source)
         .map_err(|error| format!("Failed to parse model config: {error}"))?;
 
     let mut bin_out = std::fs::File::create("/tmp/rust_logits.bin")
         .map_err(|error| format!("Failed to create /tmp/rust_logits.bin: {error}"))?;
 
-    let arch = loader
+    let arch = source
         .metadata("general.architecture")
         .and_then(|v| v.to_string_val())
         .unwrap_or_default();
     let is_qwen3 = arch == "qwen3";
 
-    let tokenizer = BPETokenizer::from_gguf_metadata(|k| loader.metadata(k).cloned())
+    let tokenizer = BPETokenizer::from_gguf_metadata(|k| source.metadata(k).cloned())
         .map_err(|error| format!("Failed to initialize tokenizer: {error}"))?;
 
     let max_ctx = 512usize.min(config.n_ctx);
@@ -1171,14 +1194,14 @@ fn run_dump_logits(
     let n_head = config.n_head;
     let n_head_kv = config.n_head_kv;
     let n_embd_head = config.n_embd_head;
-    let n_embd_head_k = if let Some(v) = loader.metadata(&format!("{}.attention.key_length", arch))
+    let n_embd_head_k = if let Some(v) = source.metadata(&format!("{}.attention.key_length", arch))
     {
         v.to_u64().unwrap_or(n_embd_head as u64) as usize
     } else {
         n_embd_head
     };
     let n_embd_head_v =
-        if let Some(v) = loader.metadata(&format!("{}.attention.value_length", arch)) {
+        if let Some(v) = source.metadata(&format!("{}.attention.value_length", arch)) {
             v.to_u64().unwrap_or(n_embd_head as u64) as usize
         } else {
             n_embd_head
@@ -1189,17 +1212,17 @@ fn run_dump_logits(
     let eps = config.norm_eps;
     let freq_base = config.rope_freq_base;
 
-    let output_norm = get_f32_tensor(&loader, "output_norm.weight", n_embd);
-    let embd_weight = loader.tensor_slice("token_embd.weight").expect("no embd");
-    let output_weight = loader.tensor_slice("output.weight").unwrap_or(embd_weight);
+    let output_norm = get_f32_tensor(source, "output_norm.weight", n_embd);
+    let embd_weight = source.tensor_slice("token_embd.weight").expect("no embd");
+    let output_weight = source.tensor_slice("output.weight").unwrap_or(embd_weight);
 
     let layers: Vec<LayerWeights> = (0..n_layer)
         .map(|l| LayerWeights {
-            attn_norm: get_f32_tensor(&loader, &format!("blk.{}.attn_norm.weight", l), n_embd),
-            ffn_norm: get_f32_tensor(&loader, &format!("blk.{}.ffn_norm.weight", l), n_embd),
+            attn_norm: get_f32_tensor(source, &format!("blk.{}.attn_norm.weight", l), n_embd),
+            ffn_norm: get_f32_tensor(source, &format!("blk.{}.ffn_norm.weight", l), n_embd),
             q_norm: if is_qwen3 {
                 Some(get_f32_tensor(
-                    &loader,
+                    source,
                     &format!("blk.{}.attn_q_norm.weight", l),
                     n_embd_head_k,
                 ))
@@ -1208,32 +1231,32 @@ fn run_dump_logits(
             },
             k_norm: if is_qwen3 {
                 Some(get_f32_tensor(
-                    &loader,
+                    source,
                     &format!("blk.{}.attn_k_norm.weight", l),
                     n_embd_head_k,
                 ))
             } else {
                 None
             },
-            wq: loader
+            wq: source
                 .tensor_slice(&format!("blk.{}.attn_q.weight", l))
                 .unwrap(),
-            wk: loader
+            wk: source
                 .tensor_slice(&format!("blk.{}.attn_k.weight", l))
                 .unwrap(),
-            wv: loader
+            wv: source
                 .tensor_slice(&format!("blk.{}.attn_v.weight", l))
                 .unwrap(),
-            wo: loader
+            wo: source
                 .tensor_slice(&format!("blk.{}.attn_output.weight", l))
                 .unwrap(),
-            w_gate: loader
+            w_gate: source
                 .tensor_slice(&format!("blk.{}.ffn_gate.weight", l))
                 .unwrap(),
-            w_up: loader
+            w_up: source
                 .tensor_slice(&format!("blk.{}.ffn_up.weight", l))
                 .unwrap(),
-            w_down: loader
+            w_down: source
                 .tensor_slice(&format!("blk.{}.ffn_down.weight", l))
                 .unwrap(),
         })
@@ -1771,7 +1794,7 @@ fn run_dump_logits(
 }
 
 fn run_inference(
-    model_path: &str,
+    source: &dyn TensorSource,
     prompt: &str,
     max_tokens: usize,
     temperature: f32,
@@ -1781,20 +1804,16 @@ fn run_inference(
     kv_format: KvFormat,
 ) -> Result<(), String> {
     let t0 = Instant::now();
-    println!("Loading {} ...", model_path);
-    let loader = GGUFLoader::from_file(model_path)
-        .map_err(|error| format!("Failed to load model {model_path}: {error}"))?;
-    let config = loader
-        .model_config()
+    let config = model_config_from_source(source)
         .map_err(|error| format!("Failed to parse model config: {error}"))?;
 
-    let arch = loader
+    let arch = source
         .metadata("general.architecture")
         .and_then(|v| v.to_string_val())
         .unwrap_or_default();
     let is_qwen3 = arch == "qwen3";
 
-    let tokenizer = BPETokenizer::from_gguf_metadata(|k| loader.metadata(k).cloned())
+    let tokenizer = BPETokenizer::from_gguf_metadata(|k| source.metadata(k).cloned())
         .map_err(|error| format!("Failed to initialize tokenizer: {error}"))?;
 
     let max_ctx = 512usize.min(config.n_ctx);
@@ -1803,14 +1822,14 @@ fn run_inference(
     let n_head = config.n_head;
     let n_head_kv = config.n_head_kv;
     let n_embd_head = config.n_embd_head;
-    let n_embd_head_k = if let Some(v) = loader.metadata(&format!("{}.attention.key_length", arch))
+    let n_embd_head_k = if let Some(v) = source.metadata(&format!("{}.attention.key_length", arch))
     {
         v.to_u64().unwrap_or(n_embd_head as u64) as usize
     } else {
         n_embd_head
     };
     let n_embd_head_v =
-        if let Some(v) = loader.metadata(&format!("{}.attention.value_length", arch)) {
+        if let Some(v) = source.metadata(&format!("{}.attention.value_length", arch)) {
             v.to_u64().unwrap_or(n_embd_head as u64) as usize
         } else {
             n_embd_head
@@ -1821,17 +1840,17 @@ fn run_inference(
     let eps = config.norm_eps;
     let freq_base = config.rope_freq_base;
 
-    let output_norm = get_f32_tensor(&loader, "output_norm.weight", n_embd);
-    let embd_weight = loader.tensor_slice("token_embd.weight").expect("no embd");
-    let output_weight = loader.tensor_slice("output.weight").unwrap_or(embd_weight);
+    let output_norm = get_f32_tensor(source, "output_norm.weight", n_embd);
+    let embd_weight = source.tensor_slice("token_embd.weight").expect("no embd");
+    let output_weight = source.tensor_slice("output.weight").unwrap_or(embd_weight);
 
     let layers: Vec<LayerWeights> = (0..n_layer)
         .map(|l| LayerWeights {
-            attn_norm: get_f32_tensor(&loader, &format!("blk.{}.attn_norm.weight", l), n_embd),
-            ffn_norm: get_f32_tensor(&loader, &format!("blk.{}.ffn_norm.weight", l), n_embd),
+            attn_norm: get_f32_tensor(source, &format!("blk.{}.attn_norm.weight", l), n_embd),
+            ffn_norm: get_f32_tensor(source, &format!("blk.{}.ffn_norm.weight", l), n_embd),
             q_norm: if is_qwen3 {
                 Some(get_f32_tensor(
-                    &loader,
+                    source,
                     &format!("blk.{}.attn_q_norm.weight", l),
                     n_embd_head_k,
                 ))
@@ -1840,32 +1859,32 @@ fn run_inference(
             },
             k_norm: if is_qwen3 {
                 Some(get_f32_tensor(
-                    &loader,
+                    source,
                     &format!("blk.{}.attn_k_norm.weight", l),
                     n_embd_head_k,
                 ))
             } else {
                 None
             },
-            wq: loader
+            wq: source
                 .tensor_slice(&format!("blk.{}.attn_q.weight", l))
                 .unwrap(),
-            wk: loader
+            wk: source
                 .tensor_slice(&format!("blk.{}.attn_k.weight", l))
                 .unwrap(),
-            wv: loader
+            wv: source
                 .tensor_slice(&format!("blk.{}.attn_v.weight", l))
                 .unwrap(),
-            wo: loader
+            wo: source
                 .tensor_slice(&format!("blk.{}.attn_output.weight", l))
                 .unwrap(),
-            w_gate: loader
+            w_gate: source
                 .tensor_slice(&format!("blk.{}.ffn_gate.weight", l))
                 .unwrap(),
-            w_up: loader
+            w_up: source
                 .tensor_slice(&format!("blk.{}.ffn_up.weight", l))
                 .unwrap(),
-            w_down: loader
+            w_down: source
                 .tensor_slice(&format!("blk.{}.ffn_down.weight", l))
                 .unwrap(),
         })
@@ -2518,37 +2537,33 @@ fn run_inference(
     Ok(())
 }
 
-fn get_f32_tensor(loader: &GGUFLoader, name: &str, expected_len: usize) -> Vec<f32> {
-    let ti = loader
+fn get_f32_tensor<S: TensorSource + ?Sized>(
+    source: &S,
+    name: &str,
+    expected_len: usize,
+) -> Vec<f32> {
+    let info = source
         .tensor_info(name)
-        .expect(&format!("tensor {} not found", name));
-    let slice = loader
+        .unwrap_or_else(|| panic!("tensor {name} not found"));
+    let bytes = source
         .tensor_slice(name)
-        .expect(&format!("slice {} not found", name));
-    let mut out = vec![0.0f32; expected_len];
-    if ti.ggml_type == GGMLType::F32 {
-        let n = expected_len.min(slice.len() / 4);
-        for i in 0..n {
-            let bytes = [
-                slice[i * 4],
-                slice[i * 4 + 1],
-                slice[i * 4 + 2],
-                slice[i * 4 + 3],
-            ];
-            out[i] = f32::from_le_bytes(bytes);
+        .unwrap_or_else(|| panic!("slice {name} not found"));
+    let mut output = vec![0.0; expected_len];
+    if info.ggml_type == GGMLType::F32 {
+        for (value, chunk) in output.iter_mut().zip(bytes.chunks_exact(4)) {
+            *value = f32::from_le_bytes(chunk.try_into().unwrap());
         }
     }
-    out
+    output
 }
 
 fn run_interactive(
-    model_path: &str,
+    source: &dyn TensorSource,
     max_tokens: usize,
     temperature: f32,
     n_threads_arg: usize,
 ) -> Result<(), String> {
     println!("=== RustModelInference Interactive Mode ===");
-    println!("Model: {}", model_path);
     println!("Type your prompt and press Enter. Ctrl+C to exit.\n");
 
     loop {
@@ -2569,7 +2584,7 @@ fn run_interactive(
             continue;
         }
         run_inference(
-            model_path,
+            source,
             line,
             max_tokens,
             temperature,
@@ -2685,11 +2700,11 @@ fn sample_token(logits: &[f32], temperature: f32) -> i32 {
     (logits.len() - 1) as i32
 }
 
-fn decode_image(path: &str) -> Result<image::DynamicImage, String> {
+fn decode_image(path: &Path) -> Result<image::DynamicImage, String> {
     let bytes = std::fs::read(path)
-        .map_err(|error| format!("Failed to read image {path}: {error}"))?;
+        .map_err(|error| format!("Failed to read image {}: {error}", path.display()))?;
     image::load_from_memory(&bytes)
-        .map_err(|error| format!("Failed to decode image {path}: {error}"))
+        .map_err(|error| format!("Failed to decode image {}: {error}", path.display()))
 }
 
 fn normalize_resized_image(
@@ -2726,25 +2741,16 @@ fn normalize_resized_image(
 }
 
 fn run_multimodal(
-    model_path: &str,
-    mmproj_path: &str,
-    image_path: &str,
+    llm_source: &dyn TensorSource,
+    model_path: &Path,
+    mmproj_path: Option<&Path>,
+    image_path: Option<&Path>,
     prompt: &str,
     max_tokens: usize,
     temperature: f32,
     n_threads_arg: usize,
 ) -> Result<(), String> {
-    let has_image = !image_path.is_empty();
-    let has_mmproj = !mmproj_path.is_empty();
-    if has_image != has_mmproj {
-        return Err("Multimodal inference requires both --image and --mmproj".into());
-    }
-
-    println!("Loading model {} ...", model_path);
-    let llm_loader = GGUFLoader::from_file(model_path)
-        .map_err(|error| format!("Failed to load model {model_path}: {error}"))?;
-
-    let arch = llm_loader
+    let arch = llm_source
         .metadata("general.architecture")
         .and_then(|v| v.to_string_val())
         .unwrap_or_default();
@@ -2757,11 +2763,24 @@ fn run_multimodal(
 
     #[cfg(feature = "parity-trace")]
     let mut vision_original_size = None;
-    let (image_grid, vis_embeddings_vec) = if has_image {
-        println!("Loading mmproj {} ...", mmproj_path);
-        let mmproj_loader = GGUFLoader::from_file(mmproj_path)
-            .map_err(|error| format!("Failed to load mmproj {mmproj_path}: {error}"))?;
-        let mut encoder = VisionEncoder::from_gguf(&mmproj_loader)
+    let (image_grid, vis_embeddings_vec) = if let Some(image_path) = image_path {
+        let projector_path = mmproj_path.unwrap_or(model_path);
+        println!("Loading mmproj {} ...", projector_path.display());
+        let mmproj_source =
+            open_model_source(projector_path, ComponentRole::Mmproj).map_err(|error| {
+                if mmproj_path.is_none() {
+                    format!(
+                        "Model {} has no bundled mmproj; pass --mmproj: {error}",
+                        model_path.display()
+                    )
+                } else {
+                    format!(
+                        "Failed to load mmproj {}: {error}",
+                        projector_path.display()
+                    )
+                }
+            })?;
+        let mut encoder = VisionEncoder::from_source(mmproj_source.as_ref())
             .map_err(|error| format!("Failed to parse vision encoder: {error}"))?;
         encoder.precompute();
         println!(
@@ -2819,26 +2838,30 @@ fn run_multimodal(
                 scratch.projected.len()
             ));
         }
-        println!("Vision tokens: {} (dim={})", grid.token_count(), projection_dim);
+        println!(
+            "Vision tokens: {} (dim={})",
+            grid.token_count(),
+            projection_dim
+        );
         (Some(grid), scratch.projected[..projected_len].to_vec())
     } else {
         (None, Vec::new())
     };
     let n_vis_tokens = image_grid.map(VisionGrid::token_count).unwrap_or(0);
     let vis_embeddings = &vis_embeddings_vec[..];
-    if has_image {
+    if image_grid.is_some() {
         println!(
             "First 5 vision embedding values: {:?}",
             &vis_embeddings[..5.min(vis_embeddings.len())]
         );
     }
 
-    let llm = Qwen35Model::from_gguf(&llm_loader)
+    let llm = Qwen35Model::from_source(llm_source)
         .map_err(|error| format!("Failed to parse Qwen3.5 model: {error}"))?;
     println!("Qwen3.5 model loaded: {} layers, n_embd={}, n_head={}, n_ff={}, rope_freq_base={}, rope_sections={:?}, rope_dim_count={}", llm.config.n_layer, llm.config.n_embd, llm.config.n_head, llm.config.n_ff, llm.config.rope_freq_base, llm.config.rope_dimension_sections, llm.config.rope_dimension_count);
     // llm.precompute_f32();
 
-    let tokenizer = BPETokenizer::from_gguf_metadata(|k| llm_loader.metadata(k).cloned())
+    let tokenizer = BPETokenizer::from_gguf_metadata(|k| llm_source.metadata(k).cloned())
         .map_err(|error| format!("Failed to initialize tokenizer: {error}"))?;
     let image_token_id = if image_grid.is_some() {
         Some(

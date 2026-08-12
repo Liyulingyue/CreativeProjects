@@ -2039,6 +2039,15 @@ impl LoadedComponent {
         self.component_id
     }
 
+    pub fn component_metadata_entries(&self) -> impl Iterator<Item = (&String, &MetaValue)> + '_ {
+        let range = self.index.components[self.component_id as usize]
+            .metadata_range
+            .clone();
+        self.index.metadata[range.start as usize..range.end as usize]
+            .iter()
+            .map(|entry| (&entry.key, &entry.value))
+    }
+
     pub fn map_segment(&mut self, segment_id: u32) -> Result<(), GgufrsError> {
         let segment = self
             .index
@@ -3166,6 +3175,46 @@ mod tests {
                 .metadata("general.name")
                 .and_then(MetaValue::to_string_val),
             Some("test-mmproj")
+        );
+    }
+
+    #[test]
+    fn gguf_and_ggufrs_expose_the_same_tensor_contract() {
+        use super::test_support::*;
+
+        let fixture = test_gguf_pair();
+        let output = fixture.dir.join("model.ggufrs");
+        export_ggufrs(
+            &output,
+            &fixture.llm,
+            Some(&fixture.mmproj),
+            ExportOptions::default(),
+        )
+        .unwrap();
+
+        let gguf = GGUFLoader::from_file(&fixture.llm).unwrap();
+        let package = GgufrsFile::open(&output).unwrap();
+        let loaded = package.load_component(ComponentRole::Llm).unwrap();
+        for source_info in gguf.tensors() {
+            let loaded_info = loaded.tensor_info(&source_info.name).unwrap();
+            assert_eq!(loaded_info.name, source_info.name);
+            assert_eq!(loaded_info.dims, source_info.dims);
+            assert_eq!(loaded_info.ggml_type, source_info.ggml_type);
+            assert_eq!(
+                loaded.tensor_slice(&source_info.name).unwrap(),
+                gguf.tensor_slice(&source_info.name).unwrap()
+            );
+        }
+
+        let mut gguf_metadata = gguf
+            .metadata_entries()
+            .iter()
+            .map(|(key, value)| (key, value))
+            .collect::<Vec<_>>();
+        gguf_metadata.sort_by(|(left, _), (right, _)| left.as_bytes().cmp(right.as_bytes()));
+        assert_eq!(
+            gguf_metadata,
+            loaded.component_metadata_entries().collect::<Vec<_>>(),
         );
     }
 
