@@ -1,9 +1,14 @@
-use crate::model::TensorSource;
+use crate::ggufrs::{ComponentRole, GgufrsFile};
+use crate::model::{MetaValue, TensorSource};
 use crate::qwen3::{Qwen3GenerateOptions, Qwen3Input, Qwen3Model};
 use crate::qwen3a::{
-    decode_pcm16_wav, log_mel_windows, AsrAudioError, AudioEmbeddings, Qwen3AudioModel,
+    decode_pcm16_wav, log_mel_windows, validate_qwen3a_source, AsrAudioError, AudioEmbeddings,
+    Qwen3AudioModel,
 };
 use crate::tokenizer::{BPETokenizer, EncodeOptions};
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
 use std::sync::Arc;
 
 const LANGUAGES: &[(&str, &str)] = &[
@@ -113,6 +118,38 @@ pub struct Transcription {
 pub struct AsrRuntime {
     decoder: Arc<Qwen3Model>,
     audio: Qwen3AudioModel,
+}
+
+pub fn open_bundled_audio_source(
+    model_path: &Path,
+) -> Result<Option<Arc<dyn TensorSource>>, String> {
+    let mut file = File::open(model_path)
+        .map_err(|error| format!("Failed to open {}: {error}", model_path.display()))?;
+    let mut magic = [0; 8];
+    file.read_exact(&mut magic)
+        .map_err(|error| format!("Failed to read {} magic: {error}", model_path.display()))?;
+    if &magic != b"GGUFRS\0\0" {
+        return Ok(None);
+    }
+
+    let package = GgufrsFile::open(model_path).map_err(|error| error.to_string())?;
+    if package.component_id(ComponentRole::Mmproj).is_none() {
+        return Ok(None);
+    }
+    let source = package
+        .load_component(ComponentRole::Mmproj)
+        .map_err(|error| error.to_string())?;
+    match source.metadata("clip.has_audio_encoder") {
+        None | Some(MetaValue::Bool(false)) => return Ok(None),
+        Some(MetaValue::Bool(true)) => {}
+        Some(_) => return Err("Invalid clip.has_audio_encoder: expected bool".into()),
+    }
+    match source.metadata("clip.audio.projector_type") {
+        Some(MetaValue::String(value)) if value == "qwen3a" => {}
+        _ => return Err("Invalid clip.audio.projector_type: expected qwen3a".into()),
+    }
+    validate_qwen3a_source(&source)?;
+    Ok(Some(Arc::new(source)))
 }
 
 impl AsrRuntime {
@@ -455,8 +492,10 @@ fn internal(message: impl Into<String>) -> AsrError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ggufrs::{export_ggufrs, test_support, ExportOptions};
     use crate::model::{MetaValue, MetaValueType};
     use std::collections::HashMap;
+    use std::io::{Read, Seek, SeekFrom, Write};
     use std::sync::Arc;
 
     const SPECIAL_LITERALS: &[&str] = &[
@@ -541,6 +580,85 @@ mod tests {
         .unwrap();
         let decoded = tokenizer.decode(&prompt.token_ids, true);
         (prompt, decoded)
+    }
+
+    fn overwrite_package_text(path: &std::path::Path, before: &[u8], after: &[u8]) {
+        assert_eq!(before.len(), after.len());
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        let mut prefix =
+            vec![0; usize::try_from(file.metadata().unwrap().len().min(1 << 20)).unwrap()];
+        file.read_exact(&mut prefix).unwrap();
+        let positions = prefix
+            .windows(before.len())
+            .enumerate()
+            .filter_map(|(position, bytes)| (bytes == before).then_some(position))
+            .collect::<Vec<_>>();
+        assert_eq!(positions.len(), 1, "expected one package metadata match");
+        file.seek(SeekFrom::Start(positions[0] as u64)).unwrap();
+        file.write_all(after).unwrap();
+    }
+
+    #[test]
+    fn bundled_audio_source_resolution_is_strict() {
+        let inputs = test_support::test_gguf_pair_with_arch("qwen3vl");
+        assert!(open_bundled_audio_source(&inputs.llm).unwrap().is_none());
+
+        let llm_only = inputs.dir.join("llm-only.ggufrs");
+        export_ggufrs(&llm_only, &inputs.llm, None, ExportOptions::default()).unwrap();
+        assert!(open_bundled_audio_source(&llm_only).unwrap().is_none());
+
+        let vision = inputs.dir.join("vision.ggufrs");
+        export_ggufrs(
+            &vision,
+            &inputs.llm,
+            Some(&inputs.mmproj),
+            ExportOptions::default(),
+        )
+        .unwrap();
+        assert!(open_bundled_audio_source(&vision).unwrap().is_none());
+
+        let audio = inputs.dir.join("audio.gguf");
+        test_support::write_qwen3a_mmproj(&audio, "qwen3a");
+        let package = inputs.dir.join("audio.ggufrs");
+        export_ggufrs(
+            &package,
+            &inputs.llm,
+            Some(&audio),
+            ExportOptions::default(),
+        )
+        .unwrap();
+        let source = open_bundled_audio_source(&package).unwrap().unwrap();
+        assert_eq!(
+            source
+                .metadata("clip.audio.projector_type")
+                .and_then(MetaValue::to_string_val),
+            Some("qwen3a")
+        );
+        drop(source);
+
+        overwrite_package_text(&package, b"qwen3a", b"other!");
+        assert!(open_bundled_audio_source(&package)
+            .err()
+            .unwrap()
+            .contains("clip.audio.projector_type"));
+        overwrite_package_text(&package, b"other!", b"qwen3a");
+        overwrite_package_text(
+            &package,
+            b"clip.audio.projector_type",
+            b"clip.audio.projector_typx",
+        );
+        assert!(open_bundled_audio_source(&package)
+            .err()
+            .unwrap()
+            .contains("clip.audio.projector_type"));
+
+        let malformed = inputs.dir.join("malformed.ggufrs");
+        std::fs::write(&malformed, b"GGUFRS\0\0").unwrap();
+        assert!(open_bundled_audio_source(&malformed).is_err());
     }
 
     #[test]
