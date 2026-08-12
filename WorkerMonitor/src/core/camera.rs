@@ -144,6 +144,6 @@ fn camera_thread_fn(rx: mpsc::Receiver<CameraCommand>, frame_reader: FrameReader
             }
         }
 
-        thread::sleep(Duration::from_millis(66));
+        thread::sleep(Duration::from_millis(33));
     }
 }

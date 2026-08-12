@@ -1,7 +1,142 @@
 use crate::clip_config::ClipVisionConfig;
-use crate::model::GGUFLoader;
-use crate::ops::{dot_f32, dot_f16_f32, rope_mrope_interleaved, softmax};
+use crate::model::TensorSource;
+use crate::ops::{dot_f32, dot_f16_f32, rope_mrope_interleaved, softmax, vec_mad_f32};
 use rayon::prelude::*;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisionGrid {
+    pub grid_t: usize,
+    pub grid_h: usize,
+    pub grid_w: usize,
+    pub patch_size: usize,
+    pub merge_size: usize,
+}
+
+impl VisionGrid {
+    pub fn from_image_size(
+        grid_t: usize,
+        image_width: usize,
+        image_height: usize,
+        patch_size: usize,
+        merge_size: usize,
+    ) -> Result<Self, String> {
+        if grid_t != 1 || patch_size == 0 || merge_size == 0 {
+            return Err("Qwen image v1 requires grid_t=1 and nonzero patch/merge sizes".into());
+        }
+        let factor = patch_size
+            .checked_mul(merge_size)
+            .ok_or("Vision grid factor overflow")?;
+        if image_width == 0
+            || image_height == 0
+            || image_width % factor != 0
+            || image_height % factor != 0
+        {
+            return Err(format!(
+                "Image {image_width}x{image_height} is not aligned to patch*merge={factor}"
+            ));
+        }
+        let grid = Self {
+            grid_t,
+            grid_h: image_height / factor,
+            grid_w: image_width / factor,
+            patch_size,
+            merge_size,
+        };
+        grid.checked_token_count()?;
+        Ok(grid)
+    }
+
+    pub(crate) fn checked_token_count(self) -> Result<usize, String> {
+        if self.grid_t == 0 || self.grid_h == 0 || self.grid_w == 0 {
+            return Err("Vision grid dimensions must be nonzero".into());
+        }
+        self.grid_t
+            .checked_mul(self.grid_h)
+            .and_then(|count| count.checked_mul(self.grid_w))
+            .ok_or_else(|| "Vision grid token count overflow".into())
+    }
+
+    pub fn token_count(self) -> usize {
+        self.checked_token_count()
+            .expect("Vision grid token count must be validated")
+    }
+
+    pub fn image_width(self) -> usize {
+        self.grid_w * self.patch_size * self.merge_size
+    }
+
+    pub fn image_height(self) -> usize {
+        self.grid_h * self.patch_size * self.merge_size
+    }
+
+    pub fn position_span(self) -> usize {
+        self.grid_h.max(self.grid_w)
+    }
+}
+
+fn aligned_round(value: f64, factor: usize) -> usize {
+    ((value / factor as f64).round().max(1.0) as usize) * factor
+}
+
+pub fn qwen_smart_resize(
+    original_width: usize,
+    original_height: usize,
+    config: &ClipVisionConfig,
+) -> Result<VisionGrid, String> {
+    if original_width == 0 || original_height == 0 {
+        return Err("Image dimensions must be nonzero".into());
+    }
+    let factor = config
+        .patch_size
+        .checked_mul(config.spatial_merge_size)
+        .ok_or("Vision resize factor overflow")?;
+    let ratio = original_width.max(original_height) as f64
+        / original_width.min(original_height) as f64;
+    if ratio > 200.0 {
+        return Err(format!("Image aspect ratio {ratio:.2} exceeds 200"));
+    }
+
+    let original_pixels = original_width
+        .checked_mul(original_height)
+        .ok_or("Original image pixel count overflow")?;
+    let mut width = aligned_round(original_width as f64, factor);
+    let mut height = aligned_round(original_height as f64, factor);
+    let aligned_pixels = width
+        .checked_mul(height)
+        .ok_or("Aligned image pixel count overflow")?;
+    if aligned_pixels > config.image_max_pixels {
+        // Pinned llama.cpp chooses the branch from aligned dimensions but
+        // computes beta from the original dimensions.
+        let scale = (original_pixels as f64 / config.image_max_pixels as f64).sqrt();
+        width = (((original_width as f64 / scale) / factor as f64)
+            .floor()
+            .max(1.0) as usize)
+            * factor;
+        height = (((original_height as f64 / scale) / factor as f64)
+            .floor()
+            .max(1.0) as usize)
+            * factor;
+    } else if aligned_pixels < config.image_min_pixels {
+        let scale = (config.image_min_pixels as f64 / original_pixels as f64).sqrt();
+        width = (((original_width as f64 * scale) / factor as f64).ceil() as usize) * factor;
+        height = (((original_height as f64 * scale) / factor as f64).ceil() as usize) * factor;
+    }
+    VisionGrid::from_image_size(
+        1,
+        width,
+        height,
+        config.patch_size,
+        config.spatial_merge_size,
+    )
+}
+
+fn checked_len(label: &str, factors: &[usize]) -> Result<usize, String> {
+    factors.iter().try_fold(1usize, |value, factor| {
+        value
+            .checked_mul(*factor)
+            .ok_or_else(|| format!("{label} length overflow"))
+    })
+}
 
 struct Q8Weight {
     data: Vec<u8>,
@@ -119,37 +254,37 @@ pub struct VisionLayer<'a> {
 }
 
 impl<'a> VisionEncoder<'a> {
-    pub fn from_gguf(loader: &'a GGUFLoader) -> Result<Self, String> {
-        let config = ClipVisionConfig::from_gguf(loader)?;
+    pub fn from_source<S: TensorSource + ?Sized>(source: &'a S) -> Result<Self, String> {
+        let config = ClipVisionConfig::from_source(source)?;
 
-        let patch_embd_weight = loader.tensor_slice("v.patch_embd.weight")
+        let patch_embd_weight = source.tensor_slice("v.patch_embd.weight")
             .ok_or("Missing v.patch_embd.weight")?;
-        let patch_embd_weight_1 = loader.tensor_slice("v.patch_embd.weight.1");
-        let position_embd = loader.tensor_slice("v.position_embd.weight");
-        let post_ln_weight = loader.tensor_slice("v.post_ln.weight");
-        let post_ln_bias = loader.tensor_slice("v.post_ln.bias");
-        let patch_bias = loader.tensor_slice("v.patch_embd.bias");
+        let patch_embd_weight_1 = source.tensor_slice("v.patch_embd.weight.1");
+        let position_embd = source.tensor_slice("v.position_embd.weight");
+        let post_ln_weight = source.tensor_slice("v.post_ln.weight");
+        let post_ln_bias = source.tensor_slice("v.post_ln.bias");
+        let patch_bias = source.tensor_slice("v.patch_embd.bias");
 
         let mut layers = Vec::with_capacity(config.n_layer);
         for i in 0..config.n_layer {
-            let ln1_weight = loader.tensor_slice(&format!("v.blk.{}.ln1.weight", i))
+            let ln1_weight = source.tensor_slice(&format!("v.blk.{}.ln1.weight", i))
                 .ok_or_else(|| format!("Missing v.blk.{}.ln1.weight", i))?;
-            let ln1_bias = loader.tensor_slice(&format!("v.blk.{}.ln1.bias", i));
-            let ln2_weight = loader.tensor_slice(&format!("v.blk.{}.ln2.weight", i))
+            let ln1_bias = source.tensor_slice(&format!("v.blk.{}.ln1.bias", i));
+            let ln2_weight = source.tensor_slice(&format!("v.blk.{}.ln2.weight", i))
                 .ok_or_else(|| format!("Missing v.blk.{}.ln2.weight", i))?;
-            let ln2_bias = loader.tensor_slice(&format!("v.blk.{}.ln2.bias", i));
-            let qkv_weight = loader.tensor_slice(&format!("v.blk.{}.attn_qkv.weight", i))
+            let ln2_bias = source.tensor_slice(&format!("v.blk.{}.ln2.bias", i));
+            let qkv_weight = source.tensor_slice(&format!("v.blk.{}.attn_qkv.weight", i))
                 .ok_or_else(|| format!("Missing v.blk.{}.attn_qkv.weight", i))?;
-            let qkv_bias = loader.tensor_slice(&format!("v.blk.{}.attn_qkv.bias", i));
-            let out_weight = loader.tensor_slice(&format!("v.blk.{}.attn_out.weight", i))
+            let qkv_bias = source.tensor_slice(&format!("v.blk.{}.attn_qkv.bias", i));
+            let out_weight = source.tensor_slice(&format!("v.blk.{}.attn_out.weight", i))
                 .ok_or_else(|| format!("Missing v.blk.{}.attn_out.weight", i))?;
-            let out_bias = loader.tensor_slice(&format!("v.blk.{}.attn_out.bias", i));
-            let ffn_up_weight = loader.tensor_slice(&format!("v.blk.{}.ffn_up.weight", i))
+            let out_bias = source.tensor_slice(&format!("v.blk.{}.attn_out.bias", i));
+            let ffn_up_weight = source.tensor_slice(&format!("v.blk.{}.ffn_up.weight", i))
                 .ok_or_else(|| format!("Missing v.blk.{}.ffn_up.weight", i))?;
-            let ffn_up_bias = loader.tensor_slice(&format!("v.blk.{}.ffn_up.bias", i));
-            let ffn_down_weight = loader.tensor_slice(&format!("v.blk.{}.ffn_down.weight", i))
+            let ffn_up_bias = source.tensor_slice(&format!("v.blk.{}.ffn_up.bias", i));
+            let ffn_down_weight = source.tensor_slice(&format!("v.blk.{}.ffn_down.weight", i))
                 .ok_or_else(|| format!("Missing v.blk.{}.ffn_down.weight", i))?;
-            let ffn_down_bias = loader.tensor_slice(&format!("v.blk.{}.ffn_down.bias", i));
+            let ffn_down_bias = source.tensor_slice(&format!("v.blk.{}.ffn_down.bias", i));
 
             layers.push(VisionLayer {
                 ln1_weight, ln1_bias,
@@ -161,12 +296,12 @@ impl<'a> VisionEncoder<'a> {
             });
         }
 
-        let mm_0_weight = loader.tensor_slice("mm.0.weight")
+        let mm_0_weight = source.tensor_slice("mm.0.weight")
             .ok_or("Missing mm.0.weight")?;
-        let mm_0_bias = loader.tensor_slice("mm.0.bias");
-        let mm_2_weight = loader.tensor_slice("mm.2.weight")
+        let mm_0_bias = source.tensor_slice("mm.0.bias");
+        let mm_2_weight = source.tensor_slice("mm.2.weight")
             .ok_or("Missing mm.2.weight")?;
-        let mm_2_bias = loader.tensor_slice("mm.2.bias");
+        let mm_2_bias = source.tensor_slice("mm.2.bias");
 
         Ok(Self {
             config,
@@ -248,76 +383,146 @@ impl<'a> VisionEncoder<'a> {
         img_w: usize,
         img_h: usize,
         scratch: &mut VisionScratchpad,
-    ) -> usize {
+    ) -> Result<VisionGrid, String> {
         let cfg = &self.config;
-        let ps = cfg.patch_size;
         let n_embd = cfg.n_embd;
         let merge = cfg.spatial_merge_size;
+        let grid = VisionGrid::from_image_size(1, img_w, img_h, cfg.patch_size, merge)?;
+        let expected_pixels = checked_len(
+            "normalized image",
+            &[grid.image_width(), grid.image_height(), 3],
+        )?;
+        if image_pixels.len() != expected_pixels {
+            return Err(format!(
+                "Normalized image length mismatch: expected {expected_pixels}, got {}",
+                image_pixels.len()
+            ));
+        }
 
-        let n_patches_x = img_w / ps;
-        let n_patches_y = img_h / ps;
-        let n_patches = n_patches_x * n_patches_y;
-
-        self.patch_embed(image_pixels, img_w, img_h, scratch);
-
-        spatial_merge(&mut scratch.patch_embd[..n_patches * n_embd], n_patches_x, n_patches_y, n_embd, merge, &mut scratch.merged[..n_patches * n_embd]);
+        let n_patches_x = grid
+            .grid_w
+            .checked_mul(grid.merge_size)
+            .ok_or("Vision patch columns overflow")?;
+        let n_patches_y = grid
+            .grid_h
+            .checked_mul(grid.merge_size)
+            .ok_or("Vision patch rows overflow")?;
+        let n_patches = checked_len(
+            "vision patch grid",
+            &[grid.grid_t, n_patches_x, n_patches_y],
+        )?;
         let n_tokens = n_patches;
+        let n_projected = checked_len(
+            "projected token grid",
+            &[grid.grid_t, grid.grid_h, grid.grid_w],
+        )?;
+        let merge_area = checked_len("vision merge area", &[merge, merge])?;
+        if n_tokens / merge_area != n_projected {
+            return Err(format!(
+                "Vision token mismatch: patches={n_tokens}, merge_area={merge_area}, projected={n_projected}"
+            ));
+        }
 
-        if let Some(ref pc) = self.precomputed {
-            if let Some(ref bias) = pc.patch_bias {
-                for t in 0..n_tokens {
-                    let off = t * n_embd;
-                    for e in 0..n_embd {
-                        scratch.merged[off + e] += bias[e];
+        scratch.ensure_capacity(cfg, grid)?;
+        self.patch_embed(
+            image_pixels,
+            grid.image_width(),
+            grid.image_height(),
+            scratch,
+        );
+        spatial_merge(
+            &mut scratch.patch_embd[..n_patches * n_embd],
+            n_patches_x,
+            n_patches_y,
+            n_embd,
+            merge,
+            &mut scratch.merged[..n_patches * n_embd],
+        );
+
+        if let Some(ref precomputed) = self.precomputed {
+            if let Some(ref bias) = precomputed.patch_bias {
+                for token in 0..n_tokens {
+                    let offset = token * n_embd;
+                    for embd in 0..n_embd {
+                        scratch.merged[offset + embd] += bias[embd];
                     }
                 }
             }
         } else if let Some(patch_bias_data) = self.patch_bias {
             let bias = decode_f32_slice(patch_bias_data);
-            for t in 0..n_tokens {
-                let off = t * n_embd;
-                for e in 0..n_embd {
-                    scratch.merged[off + e] += bias[e];
+            for token in 0..n_tokens {
+                let offset = token * n_embd;
+                for embd in 0..n_embd {
+                    scratch.merged[offset + embd] += bias[embd];
                 }
             }
         }
 
-        if let Some(pos_embd_data) = self.position_embd {
-            self.apply_position_embedding_merged(&mut scratch.merged[..n_tokens * n_embd], n_patches_x, n_patches_y, n_embd, merge, pos_embd_data, &mut scratch.pos_embd_buf);
+        if let Some(position_data) = self.position_embd {
+            self.apply_position_embedding_merged(
+                &mut scratch.merged[..n_tokens * n_embd],
+                n_patches_x,
+                n_patches_y,
+                n_embd,
+                merge,
+                position_data,
+                &mut scratch.pos_embd_buf,
+            );
         }
 
         let mrope_positions = build_vit_mrope_positions(n_patches_x, n_patches_y, merge);
-
-        let t_start = std::time::Instant::now();
-        for il in 0..cfg.n_layer {
-            self.forward_vit_layer(il, scratch, n_tokens, &mrope_positions);
+        for layer in 0..cfg.n_layer {
+            self.forward_vit_layer(layer, scratch, n_tokens, &mrope_positions);
         }
-        eprintln!("ViT total: {:.2}ms", t_start.elapsed().as_millis());
 
-        if let Some(ref pc) = self.precomputed {
-            if !pc.post_ln_weight.is_empty() {
-                for t in 0..n_tokens {
-                    let off = t * n_embd;
-                    if let Some(ref b) = pc.post_ln_bias {
-                        layer_norm_with_bias(&mut scratch.merged[off..off + n_embd], &pc.post_ln_weight, b, cfg.eps);
+        if let Some(ref precomputed) = self.precomputed {
+            if !precomputed.post_ln_weight.is_empty() {
+                for token in 0..n_tokens {
+                    let offset = token * n_embd;
+                    if let Some(ref bias) = precomputed.post_ln_bias {
+                        layer_norm_with_bias(
+                            &mut scratch.merged[offset..offset + n_embd],
+                            &precomputed.post_ln_weight,
+                            bias,
+                            cfg.eps,
+                        );
                     } else {
-                        layer_norm_without_bias(&mut scratch.merged[off..off + n_embd], &pc.post_ln_weight, cfg.eps);
+                        layer_norm_without_bias(
+                            &mut scratch.merged[offset..offset + n_embd],
+                            &precomputed.post_ln_weight,
+                            cfg.eps,
+                        );
                     }
                 }
             }
-        } else if let (Some(ln_w), Some(ln_b)) = (self.post_ln_weight, self.post_ln_bias) {
-            let w = decode_f32_slice(ln_w);
-            let b = decode_f32_slice(ln_b);
-            for t in 0..n_tokens {
-                let off = t * n_embd;
-                layer_norm_with_bias(&mut scratch.merged[off..off + n_embd], &w, &b, cfg.eps);
+        } else if let (Some(weight_data), Some(bias_data)) =
+            (self.post_ln_weight, self.post_ln_bias)
+        {
+            let weight = decode_f32_slice(weight_data);
+            let bias = decode_f32_slice(bias_data);
+            for token in 0..n_tokens {
+                let offset = token * n_embd;
+                layer_norm_with_bias(
+                    &mut scratch.merged[offset..offset + n_embd],
+                    &weight,
+                    &bias,
+                    cfg.eps,
+                );
             }
         }
 
-        let n_projected = n_tokens / (merge * merge);
         self.project(n_patches_x, n_patches_y, n_embd, merge, scratch);
-
-        n_projected
+        let expected_projected = checked_len(
+            "projected vision output",
+            &[n_projected, cfg.projection_dim],
+        )?;
+        if scratch.projected.len() != expected_projected {
+            return Err(format!(
+                "Projected vision length mismatch: expected {expected_projected}, got {}",
+                scratch.projected.len()
+            ));
+        }
+        Ok(grid)
     }
 
     fn patch_embed(&self, pixels: &[f32], img_w: usize, img_h: usize, scratch: &mut VisionScratchpad) {
@@ -372,7 +577,7 @@ impl<'a> VisionEncoder<'a> {
             decoded_pos = decode_f32_slice(pos_data);
         } else {
             let raw = decode_f32_slice(pos_data);
-            decoded_pos = bilinear_resize_2d(&raw, pos_side, pos_side, n_embd, n_patches_x, n_patches_y);
+            decoded_pos = bilinear_resize_2d(&raw, pos_side, pos_side, n_embd, n_patches_y, n_patches_x);
         }
 
         let total = n_patches_x * n_patches_y * n_embd;
@@ -507,6 +712,7 @@ impl<'a> VisionEncoder<'a> {
 
         let sw = PtrWrap(scores);
         let ow = PtrWrap(out_buf);
+        #[cfg(target_arch = "x86_64")]
         let use_avx2 = crate::ops::has_avx2_fma();
 
         (0..n_head).into_par_iter().for_each(move |h| {
@@ -519,6 +725,7 @@ impl<'a> VisionEncoder<'a> {
                 let out_slice = ow.slice(h * n_tokens * d_head, n_tokens * d_head);
                 for t in 0..n_tokens {
                     let q_ptr = attn_buf.as_ptr().add(q_base + t * d_head);
+                    #[cfg(target_arch = "x86_64")]
                     if use_avx2 {
                         unsafe { attention_qk_avx2(q_ptr, attn_buf.as_ptr().add(k_base), &mut score_slice[t * n_tokens..t * n_tokens + n_tokens], n_tokens, d_head, scale); }
                     } else {
@@ -529,12 +736,22 @@ impl<'a> VisionEncoder<'a> {
                             score_slice[t * n_tokens + s] = sum * scale;
                         }
                     }
+                    #[cfg(not(target_arch = "x86_64"))]
+                    {
+                        let q_slice = std::slice::from_raw_parts(q_ptr, d_head);
+                        for s in 0..n_tokens {
+                            let k_ptr = attn_buf.as_ptr().add(k_base + s * d_head);
+                            let k_slice = std::slice::from_raw_parts(k_ptr, d_head);
+                            score_slice[t * n_tokens + s] = dot_f32(q_slice, k_slice, d_head) * scale;
+                        }
+                    }
                     softmax(&mut score_slice[t * n_tokens..t * n_tokens + n_tokens]);
 
                     let out_base = t * d_head;
                     for d in 0..d_head {
                         out_slice[out_base + d] = 0.0;
                     }
+                    #[cfg(target_arch = "x86_64")]
                     if use_avx2 {
                         for s in 0..n_tokens {
                             let sc = score_slice[t * n_tokens + s];
@@ -545,9 +762,19 @@ impl<'a> VisionEncoder<'a> {
                             let sc = score_slice[t * n_tokens + s];
                             let v_ptr = attn_buf.as_ptr().add(v_base + s * d_head);
                             for d in 0..d_head {
-                                out_slice[out_base + d] += sc * unsafe { *v_ptr.add(d) };
+                                out_slice[out_base + d] += sc * *v_ptr.add(d);
                             }
                         }
+                    }
+                    #[cfg(not(target_arch = "x86_64"))]
+                    for s in 0..n_tokens {
+                        let v_ptr = attn_buf.as_ptr().add(v_base + s * d_head);
+                        let value = std::slice::from_raw_parts(v_ptr, d_head);
+                        vec_mad_f32(
+                            &mut out_slice[out_base..out_base + d_head],
+                            value,
+                            score_slice[t * n_tokens + s],
+                        );
                     }
                 }
             }
@@ -929,33 +1156,110 @@ pub struct VisionScratchpad {
 }
 
 impl VisionScratchpad {
-    pub fn new(config: &ClipVisionConfig) -> Self {
-        let n_patches = config.n_patches();
-        let n_embd = config.n_embd;
-        let n_head = config.n_head;
-        let d_head = config.d_head();
-        let n_tokens = n_patches;
-
+    pub fn new(_config: &ClipVisionConfig) -> Self {
         Self {
-            patch_embd: vec![0.0; n_patches * n_embd],
-            merged: vec![0.0; n_patches * n_embd],
-            pos_embd_buf: vec![0.0; n_patches * n_embd],
-            qkv_buf: vec![0.0; n_tokens * n_embd * 3],
-            attn_buf: vec![0.0; 3 * n_head * n_tokens * d_head],
-            attn_out_buf: vec![0.0; n_head * n_tokens * d_head],
-            score_buf: vec![0.0; n_head * n_tokens * n_tokens],
-            proj_buf: vec![0.0; n_tokens * n_embd],
-            ffn_buf: vec![0.0; n_tokens * config.n_ff],
-            projected: vec![0.0; (n_patches / (config.spatial_merge_size * config.spatial_merge_size)) * config.projection_dim],
-            attn_concat: vec![0.0; n_tokens * n_embd],
-            residual: vec![0.0; n_tokens * n_embd],
+            patch_embd: Vec::new(),
+            merged: Vec::new(),
+            pos_embd_buf: Vec::new(),
+            qkv_buf: Vec::new(),
+            attn_buf: Vec::new(),
+            attn_out_buf: Vec::new(),
+            score_buf: Vec::new(),
+            proj_buf: Vec::new(),
+            ffn_buf: Vec::new(),
+            projected: Vec::new(),
+            attn_concat: Vec::new(),
+            residual: Vec::new(),
             patch_weight_buf: Vec::new(),
             patch_weight_1_buf: None,
             project_concat_buf: Vec::new(),
             project_mm0_out: Vec::new(),
-            q8_buf: vec![0u8; n_tokens * config.n_ff],
-            q8_scale_buf: vec![0.0f32; n_tokens * config.n_ff / 32],
+            q8_buf: Vec::new(),
+            q8_scale_buf: Vec::new(),
         }
+    }
+
+    fn ensure_capacity(
+        &mut self,
+        config: &ClipVisionConfig,
+        grid: VisionGrid,
+    ) -> Result<(), String> {
+        let n_patches = checked_len(
+            "vision patch",
+            &[grid.token_count(), grid.merge_size, grid.merge_size],
+        )?;
+        let n_tokens = n_patches;
+        let n_embd = config.n_embd;
+        let n_head = config.n_head;
+        let d_head = config.d_head();
+        let n_projected = grid.token_count();
+
+        self.patch_embd.resize(
+            checked_len("patch_embd", &[n_patches, n_embd])?,
+            0.0,
+        );
+        self.merged
+            .resize(checked_len("merged", &[n_tokens, n_embd])?, 0.0);
+        self.pos_embd_buf.resize(
+            checked_len("pos_embd_buf", &[n_tokens, n_embd])?,
+            0.0,
+        );
+        self.qkv_buf.resize(
+            checked_len("qkv_buf", &[n_tokens, n_embd, 3])?,
+            0.0,
+        );
+        self.attn_buf.resize(
+            checked_len("attn_buf", &[3, n_head, n_tokens, d_head])?,
+            0.0,
+        );
+        self.attn_out_buf.resize(
+            checked_len("attn_out_buf", &[n_head, n_tokens, d_head])?,
+            0.0,
+        );
+        self.score_buf.resize(
+            checked_len("score_buf", &[n_head, n_tokens, n_tokens])?,
+            0.0,
+        );
+        self.proj_buf
+            .resize(checked_len("proj_buf", &[n_tokens, n_embd])?, 0.0);
+        self.ffn_buf.resize(
+            checked_len("ffn_buf", &[n_tokens, config.n_ff])?,
+            0.0,
+        );
+        self.projected.resize(
+            checked_len("projected", &[n_projected, config.projection_dim])?,
+            0.0,
+        );
+        self.attn_concat.resize(
+            checked_len("attn_concat", &[n_tokens, n_embd])?,
+            0.0,
+        );
+        self.residual
+            .resize(checked_len("residual", &[n_tokens, n_embd])?, 0.0);
+        self.project_concat_buf.resize(
+            checked_len(
+                "project_concat_buf",
+                &[n_projected, n_embd, grid.merge_size, grid.merge_size],
+            )?,
+            0.0,
+        );
+        self.project_mm0_out.resize(
+            checked_len(
+                "project_mm0_out",
+                &[n_projected, n_embd, grid.merge_size, grid.merge_size],
+            )?,
+            0.0,
+        );
+        self.q8_buf.resize(
+            checked_len("q8_buf", &[n_tokens, config.n_ff])?,
+            0,
+        );
+        let q8_values = checked_len("q8_scale_buf", &[n_tokens, config.n_ff])?;
+        if q8_values % 32 != 0 {
+            return Err("q8_scale_buf length is not Q8_0 block aligned".into());
+        }
+        self.q8_scale_buf.resize(q8_values / 32, 0.0);
+        Ok(())
     }
 }
 
@@ -1005,7 +1309,31 @@ fn sum_f32(x: &[f32]) -> f32 {
             return unsafe { sum_f32_avx2(x) };
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if crate::ops::has_neon() {
+            return unsafe { sum_f32_neon(x) };
+        }
+    }
     x.iter().sum()
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn sum_f32_neon(x: &[f32]) -> f32 {
+    use std::arch::aarch64::*;
+    let mut acc = vdupq_n_f32(0.0);
+    let mut i = 0;
+    while i + 4 <= x.len() {
+        acc = vaddq_f32(acc, vld1q_f32(x.as_ptr().add(i)));
+        i += 4;
+    }
+    let mut sum = vaddvq_f32(acc);
+    while i < x.len() {
+        sum += x[i];
+        i += 1;
+    }
+    sum
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1033,7 +1361,34 @@ fn sum_sq_centered_f32(x: &[f32], mean: f32) -> f32 {
             return unsafe { sum_sq_centered_f32_avx2(x, mean) };
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if crate::ops::has_neon() {
+            return unsafe { sum_sq_centered_f32_neon(x, mean) };
+        }
+    }
     x.iter().map(|&v| (v - mean) * (v - mean)).sum()
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn sum_sq_centered_f32_neon(x: &[f32], mean: f32) -> f32 {
+    use std::arch::aarch64::*;
+    let mean_v = vdupq_n_f32(mean);
+    let mut acc = vdupq_n_f32(0.0);
+    let mut i = 0;
+    while i + 4 <= x.len() {
+        let delta = vsubq_f32(vld1q_f32(x.as_ptr().add(i)), mean_v);
+        acc = vfmaq_f32(acc, delta, delta);
+        i += 4;
+    }
+    let mut sum = vaddvq_f32(acc);
+    while i < x.len() {
+        let delta = x[i] - mean;
+        sum += delta * delta;
+        i += 1;
+    }
+    sum
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1064,8 +1419,41 @@ fn layer_norm_scale_bias(x: &mut [f32], w: &[f32], b: &[f32], mean: f32, inv: f3
             return;
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if crate::ops::has_neon() {
+            unsafe { layer_norm_scale_bias_neon(x, w, b, mean, inv); }
+            return;
+        }
+    }
     for i in 0..x.len() {
         x[i] = (x[i] - mean) * inv * w[i] + b[i];
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn layer_norm_scale_bias_neon(
+    x: &mut [f32],
+    weight: &[f32],
+    bias: &[f32],
+    mean: f32,
+    inv: f32,
+) {
+    use std::arch::aarch64::*;
+    let mean_v = vdupq_n_f32(mean);
+    let inv_v = vdupq_n_f32(inv);
+    let mut i = 0;
+    while i + 4 <= x.len() {
+        let centered = vsubq_f32(vld1q_f32(x.as_ptr().add(i)), mean_v);
+        let normalized = vmulq_f32(vmulq_f32(centered, inv_v), vld1q_f32(weight.as_ptr().add(i)));
+        let value = vaddq_f32(normalized, vld1q_f32(bias.as_ptr().add(i)));
+        vst1q_f32(x.as_mut_ptr().add(i), value);
+        i += 4;
+    }
+    while i < x.len() {
+        x[i] = (x[i] - mean) * inv * weight[i] + bias[i];
+        i += 1;
     }
 }
 
@@ -1098,8 +1486,34 @@ fn layer_norm_scale(x: &mut [f32], w: &[f32], mean: f32, inv: f32) {
             return;
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if crate::ops::has_neon() {
+            unsafe { layer_norm_scale_neon(x, w, mean, inv); }
+            return;
+        }
+    }
     for i in 0..x.len() {
         x[i] = (x[i] - mean) * inv * w[i];
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn layer_norm_scale_neon(x: &mut [f32], weight: &[f32], mean: f32, inv: f32) {
+    use std::arch::aarch64::*;
+    let mean_v = vdupq_n_f32(mean);
+    let inv_v = vdupq_n_f32(inv);
+    let mut i = 0;
+    while i + 4 <= x.len() {
+        let centered = vsubq_f32(vld1q_f32(x.as_ptr().add(i)), mean_v);
+        let value = vmulq_f32(vmulq_f32(centered, inv_v), vld1q_f32(weight.as_ptr().add(i)));
+        vst1q_f32(x.as_mut_ptr().add(i), value);
+        i += 4;
+    }
+    while i < x.len() {
+        x[i] = (x[i] - mean) * inv * weight[i];
+        i += 1;
     }
 }
 
@@ -1249,17 +1663,6 @@ unsafe fn attention_qk_avx2(q: *const f32, k_base: *const f32, scores: &mut [f32
     }
 }
 
-#[cfg(not(target_arch = "x86_64"))]
-unsafe fn attention_qk_avx2(q: *const f32, k_base: *const f32, scores: &mut [f32], n_tokens: usize, d_head: usize, scale: f32) {
-    let d_stride = d_head as isize;
-    for s in 0..n_tokens {
-        let k_ptr = k_base.offset((s as isize) * d_stride);
-        let mut sum = 0.0f32;
-        for i in 0..d_head { sum += *q.add(i) * *k_ptr.add(i); }
-        scores[s] = sum * scale;
-    }
-}
-
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn attn_scaled_add_avx2(out: &mut [f32], v: *const f32, scale: f32, d: usize) {
@@ -1280,9 +1683,138 @@ unsafe fn attn_scaled_add_avx2(out: &mut [f32], v: *const f32, scale: f32, d: us
     }
 }
 
-#[cfg(not(target_arch = "x86_64"))]
-unsafe fn attention_dot_avx2(q: *const f32, k: *const f32, d: usize) -> f32 {
-    let mut sum = 0.0f32;
-    for i in 0..d { sum += *q.add(i) * *k.add(i); }
-    sum
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_clip_config(
+        patch_size: usize,
+        spatial_merge_size: usize,
+        min_grid_tokens: usize,
+        max_grid_tokens: usize,
+    ) -> ClipVisionConfig {
+        let factor = patch_size * spatial_merge_size;
+        let factor_pixels = factor * factor;
+        ClipVisionConfig {
+            projection_dim: 8,
+            image_size: 224,
+            patch_size,
+            n_embd: 8,
+            n_ff: 32,
+            n_layer: 1,
+            n_head: 1,
+            spatial_merge_size,
+            image_min_pixels: factor_pixels * min_grid_tokens,
+            image_max_pixels: factor_pixels * max_grid_tokens,
+            eps: 1e-6,
+            use_gelu: true,
+            image_mean: [0.0; 3],
+            image_std: [1.0; 3],
+            has_deepstack_layers: vec![false],
+        }
+    }
+
+    #[test]
+    fn smart_resize_preserves_ratio_and_alignment() {
+        let config = test_clip_config(16, 2, 8, 4096);
+        let grid = qwen_smart_resize(100, 50, &config).unwrap();
+        assert_eq!(grid.image_width(), 128);
+        assert_eq!(grid.image_height(), 64);
+        assert_eq!(grid.grid_w, 4);
+        assert_eq!(grid.grid_h, 2);
+        assert_eq!(grid.token_count(), 8);
+    }
+
+    #[test]
+    fn smart_resize_uses_original_pixels_for_the_scale() {
+        let config = test_clip_config(16, 2, 8, 4096);
+        let grid = qwen_smart_resize(30, 46, &config).unwrap();
+        assert_eq!((grid.image_width(), grid.image_height()), (96, 128));
+    }
+
+    #[test]
+    fn vision_grid_rejects_unaligned_dimensions() {
+        assert!(VisionGrid::from_image_size(1, 100, 64, 16, 2).is_err());
+    }
+
+    #[test]
+    fn vision_grid_rejects_token_count_overflow() {
+        assert!(VisionGrid::from_image_size(1, usize::MAX, 2, 1, 1).is_err());
+    }
+
+    #[test]
+    fn rectangular_position_embedding_keeps_width_and_height_orientation() {
+        let mut config = test_clip_config(1, 1, 1, 64);
+        config.n_embd = 1;
+        let encoder = VisionEncoder {
+            config,
+            patch_embd_weight: &[],
+            patch_embd_weight_1: None,
+            position_embd: None,
+            post_ln_weight: None,
+            post_ln_bias: None,
+            patch_bias: None,
+            layers: Vec::new(),
+            mm_0_weight: &[],
+            mm_0_bias: None,
+            mm_2_weight: &[],
+            mm_2_bias: None,
+            precomputed: None,
+        };
+        let position_data: Vec<u8> = [0.0f32, 10.0, 20.0, 30.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        let mut merged = vec![0.0; 6];
+        let mut position_buffer = vec![0.0; 6];
+
+        encoder.apply_position_embedding_merged(
+            &mut merged,
+            3,
+            2,
+            1,
+            1,
+            &position_data,
+            &mut position_buffer,
+        );
+
+        assert_eq!(merged, [0.0, 5.0, 10.0, 20.0, 25.0, 30.0]);
+    }
+
+    fn close(a: f32, b: f32) {
+        assert!((a - b).abs() <= 1e-4 + 1e-4 * b.abs(), "a={a} b={b}");
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_layer_norm_helpers_match_scalar() {
+        let input: Vec<f32> = (0..13).map(|i| i as f32 * 0.1 - 0.7).collect();
+        let weight: Vec<f32> = (0..13).map(|i| 0.9 + i as f32 * 0.01).collect();
+        let bias: Vec<f32> = (0..13).map(|i| i as f32 * -0.005).collect();
+        let mean = input.iter().sum::<f32>() / input.len() as f32;
+        let inv = 1.0 / (input.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / input.len() as f32 + 1e-6).sqrt();
+        let mut expected = input.clone();
+        for i in 0..expected.len() {
+            expected[i] = (expected[i] - mean) * inv * weight[i] + bias[i];
+        }
+        let mut actual = input.clone();
+        unsafe { layer_norm_scale_bias_neon(&mut actual, &weight, &bias, mean, inv) };
+        for i in 0..actual.len() {
+            close(actual[i], expected[i]);
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn shared_neon_attention_ops_match_scalar() {
+        let q: Vec<f32> = (0..13).map(|i| i as f32 * 0.07 - 0.3).collect();
+        let k: Vec<f32> = (0..13).map(|i| 0.4 - i as f32 * 0.02).collect();
+        let expected: f32 = q.iter().zip(&k).map(|(x, y)| x * y).sum();
+        close(dot_f32(&q, &k, q.len()), expected);
+        let mut out = vec![0.25f32; 13];
+        vec_mad_f32(&mut out, &k, 0.5);
+        for i in 0..13 {
+            close(out[i], 0.25 + 0.5 * k[i]);
+        }
+    }
 }

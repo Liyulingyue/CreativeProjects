@@ -55,11 +55,15 @@ class SearchResult(BaseModel):
 
 
 class AppSettings(BaseModel):
-    openai_api_key: str = ""
-    openai_base_url: str = "https://api.minimaxi.com/v1"
+    llm_api_key: str = ""
+    llm_base_url: str = "https://api.minimaxi.com/v1"
+    llm_model: str = "gpt-4o-mini"
+    embedding_api_key: str = ""
+    embedding_base_url: str = "https://api.minimaxi.com/v1"
     embedding_model: str = "text-embedding-3-small"
+    embedding_dim: str = "AUTO"
     index_interval: int = 300
-    storage_path: str = "/data"
+    storage_path: str = "./data"
     theme: str = "light"
 
 

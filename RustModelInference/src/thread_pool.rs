@@ -28,7 +28,7 @@ impl ComputePool {
                 inner: Arc::new(Inner {
                     call_fn: AtomicUsize::new(0),
                     call_data: AtomicUsize::new(0),
-                    n_complete: AtomicI32::new(0),
+                    n_complete: AtomicI32::new(1),
                     epoch: AtomicU32::new(0),
                     shutdown: AtomicBool::new(true),
                     chunk_counter: AtomicI32::new(0),
@@ -229,5 +229,27 @@ fn worker_loop(tid: usize, n_threads: usize, inner: &Inner) {
         }
 
         inner.n_complete.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn single_thread_pool_drops_without_spinning() {
+        let (tx, rx) = mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let pool = ComputePool::new(1);
+            pool.compute(|ith, nth| assert_eq!((ith, nth), (0, 1)));
+            drop(pool);
+            tx.send(()).unwrap();
+        });
+
+        rx.recv_timeout(Duration::from_secs(1))
+            .expect("single-thread ComputePool::drop timed out");
+        handle.join().unwrap();
     }
 }

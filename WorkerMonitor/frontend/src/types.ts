@@ -19,6 +19,7 @@ export interface Keypoint {
 }
 
 export interface DetectionResult {
+  sample_seq: number;
   person_detected: boolean;
   keypoints: Keypoint[];
   score: number;
@@ -40,6 +41,7 @@ export interface AppConfig {
 }
 
 export interface PostureResult {
+  sampleSeq?: number;
   score: number;
   headForward: boolean;
   headTilt: boolean;

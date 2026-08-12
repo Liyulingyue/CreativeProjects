@@ -3,8 +3,7 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIHTTPException
-from fastapi import HTTPException
+from fastapi import APIRouter, HTTPException
 from ..deps import state
 from ..models import (
     BrowseResult,
@@ -14,6 +13,8 @@ from ..models import (
     FileOperation,
     MoveRequest,
 )
+
+fs = APIRouter()
 
 
 def _get_mime_type(path: Path) -> str:
@@ -74,14 +75,17 @@ def _safe_path(base: str, target: str) -> Path:
 
 
 def _path_to_filenode(path: Path) -> FileNode:
+    import datetime
     stat = path.stat()
+    modified_dt = datetime.datetime.fromtimestamp(stat.st_mtime)
+    created_dt = datetime.datetime.fromtimestamp(stat.st_ctime)
     return FileNode(
         name=path.name,
         path=str(path),
         is_dir=path.is_dir(),
         size=stat.st_size if path.is_file() else 0,
-        modified=path.strftime("%Y-%m-%dT%H:%M:%S"),
-        created=path.strftime("%Y-%m-%dT%H:%M:%S"),
+        modified=modified_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+        created=created_dt.strftime("%Y-%m-%dT%H:%M:%S"),
         extension=path.suffix.lower(),
         mime_type=_get_mime_type(path),
     )

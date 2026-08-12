@@ -7,6 +7,8 @@ const MODELSCOPE_BASE: &str = "https://www.modelscope.cn/models/Liyulingyue/mixp
 pub enum ModelType {
     RtmDet,
     RtmPose,
+    MoveNet,
+    MediaPipeFace,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +26,12 @@ pub enum PretrainedModel {
     RtmPoseFace,
     RtmPoseHand,
     RtmPoseWholeBody,
+    MoveNetSinglePoseLightning,
+    MoveNetSinglePoseThunder,
+    MoveNetMultiPoseLightning,
+    MediaPipeFaceDetectionFullRange,
+    MediaPipeFaceDetectionShortRange,
+    MediaPipeFaceLandmark,
 }
 
 impl PretrainedModel {
@@ -34,6 +42,12 @@ impl PretrainedModel {
             | PretrainedModel::RtmPoseFace
             | PretrainedModel::RtmPoseHand
             | PretrainedModel::RtmPoseWholeBody => ModelType::RtmPose,
+            PretrainedModel::MoveNetSinglePoseLightning
+            | PretrainedModel::MoveNetSinglePoseThunder
+            | PretrainedModel::MoveNetMultiPoseLightning => ModelType::MoveNet,
+            PretrainedModel::MediaPipeFaceDetectionFullRange
+            | PretrainedModel::MediaPipeFaceDetectionShortRange
+            | PretrainedModel::MediaPipeFaceLandmark => ModelType::MediaPipeFace,
         }
     }
 
@@ -54,6 +68,12 @@ impl PretrainedModel {
             PretrainedModel::RtmPoseFace => "rtmpose-face-mmdeploy.onnx",
             PretrainedModel::RtmPoseHand => "rtmpose-hand-mmdeploy.onnx",
             PretrainedModel::RtmPoseWholeBody => "rtmpose-wholebody-mmdeploy.onnx",
+            PretrainedModel::MoveNetSinglePoseLightning => "movenet_singlepose_lightning.onnx",
+            PretrainedModel::MoveNetSinglePoseThunder => "movenet_singlepose_thunder.onnx",
+            PretrainedModel::MoveNetMultiPoseLightning => "movenet_multipose_lightning.onnx",
+            PretrainedModel::MediaPipeFaceDetectionFullRange => "mediapipe_face_detection_full_range.onnx",
+            PretrainedModel::MediaPipeFaceDetectionShortRange => "mediapipe_face_detection_short_range.onnx",
+            PretrainedModel::MediaPipeFaceLandmark => "mediapipe_face_landmark.onnx",
         }
     }
 
@@ -73,9 +93,9 @@ pub fn get_model_path(model: PretrainedModel) -> Option<PathBuf> {
 pub async fn download_model(model: PretrainedModel) -> anyhow::Result<PathBuf> {
     let cache_dir = get_cache_dir()
         .context("Cannot find local data directory")?;
-    
+
     let model_path = cache_dir.join(model.filename());
-    
+
     if model_path.exists() {
         println!("Using cached model: {:?}", model_path);
         return Ok(model_path);
@@ -105,8 +125,11 @@ pub async fn download_model(model: PretrainedModel) -> anyhow::Result<PathBuf> {
     let bytes = response.bytes().await
         .context("Failed to read response body")?;
 
-    println!("Downloaded {:.1} MB, saving to cache...", bytes.len() as f64 / 1_048_576.0);
-    
+    println!(
+        "Downloaded {:.1} MB, saving to cache...",
+        bytes.len() as f64 / 1_048_576.0
+    );
+
     std::fs::write(&model_path, &bytes)
         .context("Failed to write model to cache")?;
 
@@ -117,9 +140,9 @@ pub async fn download_model(model: PretrainedModel) -> anyhow::Result<PathBuf> {
 pub fn download_model_blocking(model: PretrainedModel) -> anyhow::Result<PathBuf> {
     let cache_dir = get_cache_dir()
         .context("Cannot find local data directory")?;
-    
+
     let model_path = cache_dir.join(model.filename());
-    
+
     if model_path.exists() {
         println!("Using cached model: {:?}", model_path);
         return Ok(model_path);
@@ -145,14 +168,17 @@ pub fn download_model_blocking(model: PretrainedModel) -> anyhow::Result<PathBuf
         anyhow::bail!("Download failed with status: {}", response.status());
     }
 
-    let mut file = std::fs::File::create(&model_path)
-        .context("Failed to create model file")?;
-    
-    use std::io::copy;
-    let total_bytes = copy(&mut response, &mut file)
-        .context("Failed to copy response to file")?;
+    let mut file =
+        std::fs::File::create(&model_path).context("Failed to create model file")?;
 
-    println!("Downloaded {:.1} MB, saved to {:?}", 
-        total_bytes as f64 / 1_048_576.0, model_path);
+    use std::io::copy;
+    let total_bytes =
+        copy(&mut response, &mut file).context("Failed to copy response to file")?;
+
+    println!(
+        "Downloaded {:.1} MB, saved to {:?}",
+        total_bytes as f64 / 1_048_576.0,
+        model_path
+    );
     Ok(model_path)
 }

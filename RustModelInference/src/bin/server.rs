@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use axum::{
@@ -12,28 +12,25 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use tokio_stream::StreamExt;
 use tower_http::cors::CorsLayer;
 
 use rust_model_inference::*;
 
 struct Qwen3State {
-    loader: Arc<GGUFLoader>,
+    source: Arc<dyn TensorSource>,
     layers: Vec<LayerWeightsOwned>,
     output_norm: Vec<f32>,
     embd_weight: &'static [u8],
     output_weight: &'static [u8],
     config: Qwen3Config,
     tokenizer: Arc<BPETokenizer>,
-    special_tokens: HashMap<String, u32>,
     pool: Arc<thread_pool::ComputePool>,
 }
 
 struct Qwen35State {
-    loader: Arc<GGUFLoader>,
+    source: Arc<dyn TensorSource>,
     model: Arc<Qwen35Model>,
     tokenizer: Arc<BPETokenizer>,
-    special_tokens: HashMap<String, u32>,
     pool: Arc<thread_pool::ComputePool>,
 }
 
@@ -176,7 +173,12 @@ fn make_id() -> String {
 
 fn sample_token_from_logits(logits: &[f32], temperature: f32) -> i32 {
     if temperature <= 0.0 {
-        return logits.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).map(|(i, _)| i as i32).unwrap_or(0);
+        return logits
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .map(|(i, _)| i as i32)
+            .unwrap_or(0);
     }
     let max_logit = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let mut sum = 0.0f32;
@@ -185,26 +187,18 @@ fn sample_token_from_logits(logits: &[f32], temperature: f32) -> i32 {
         probs[i] = ((l - max_logit) / temperature).exp();
         sum += probs[i];
     }
-    for p in probs.iter_mut() { *p /= sum; }
+    for p in probs.iter_mut() {
+        *p /= sum;
+    }
     let r: f32 = rand::random();
     let mut cumsum = 0.0f32;
     for (i, p) in probs.iter().enumerate() {
         cumsum += p;
-        if cumsum >= r { return i as i32; }
-    }
-    (logits.len() - 1) as i32
-}
-
-fn decode_token_from_loader(loader: &GGUFLoader, token_id: i32) -> String {
-    if let Some(MetaValue::Array(_, vals)) = loader.metadata("tokenizer.ggml.tokens") {
-        let idx = token_id as usize;
-        if idx < vals.len() {
-            if let Some(s) = vals[idx].to_string_val() {
-                return s.replace("Ġ", " ").replace("Ċ", "\n").replace("▁", " ");
-            }
+        if cumsum >= r {
+            return i as i32;
         }
     }
-    format!("<{}>", token_id)
+    (logits.len() - 1) as i32
 }
 
 async fn health() -> &'static str {
@@ -262,7 +256,14 @@ async fn chat_completions(
                 return;
             }
 
-            let result = generate(&model, &req.messages, max_tokens, temperature);
+            let result = match generate(&model, &req.messages, max_tokens, temperature) {
+                Ok(result) => result,
+                Err(error) => {
+                    let data = serde_json::json!({ "error": error }).to_string();
+                    let _ = tx.blocking_send(Ok(Event::default().event("error").data(data)));
+                    return;
+                }
+            };
 
             for text in &result.tokens {
                 let chunk = ChatCompletionChunk {
@@ -314,11 +315,29 @@ async fn chat_completions(
             .as_secs();
 
         let model_clone = state.model.clone();
-        let result = tokio::task::spawn_blocking(move || {
+        let result = match tokio::task::spawn_blocking(move || {
             generate(&model_clone, &req.messages, max_tokens, temperature)
         })
         .await
-        .unwrap();
+        {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => {
+                return (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(ErrorResponse { error }),
+                )
+                    .into_response();
+            }
+            Err(error) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("generation worker failed: {error}"),
+                    }),
+                )
+                    .into_response();
+            }
+        };
 
         let response = ChatCompletionResponse {
             id,
@@ -351,14 +370,44 @@ struct GenerateResult {
     completion_tokens: usize,
 }
 
-fn generate(model: &ModelBackend, messages: &[ChatMessage], max_tokens: usize, temperature: f32) -> GenerateResult {
+#[derive(Serialize)]
+struct ErrorResponse {
+    error: String,
+}
+
+fn server_prompt_tokens(
+    tokenizer: &BPETokenizer,
+    messages: &[ChatMessage],
+) -> Result<Vec<u32>, String> {
+    let prompt_messages: Vec<QwenMessage<'_>> = messages
+        .iter()
+        .map(|message| QwenMessage {
+            role: &message.role,
+            content: &message.content,
+        })
+        .collect();
+    build_qwen_chat_prompt(tokenizer, &prompt_messages)
+}
+
+fn generate(
+    model: &ModelBackend,
+    messages: &[ChatMessage],
+    max_tokens: usize,
+    temperature: f32,
+) -> Result<GenerateResult, String> {
     match model {
         ModelBackend::Qwen3(s) => generate_qwen3(s, messages, max_tokens, temperature),
         ModelBackend::Qwen35(s) => generate_qwen35(s, messages, max_tokens, temperature),
     }
 }
 
-fn generate_qwen3(s: &Qwen3State, messages: &[ChatMessage], max_tokens: usize, temperature: f32) -> GenerateResult {
+fn generate_qwen3(
+    s: &Qwen3State,
+    messages: &[ChatMessage],
+    max_tokens: usize,
+    temperature: f32,
+) -> Result<GenerateResult, String> {
+    let _source = &s.source;
     let cfg = &s.config;
     let n_embd = cfg.n_embd;
     let n_layer = cfg.n_layer;
@@ -376,36 +425,23 @@ fn generate_qwen3(s: &Qwen3State, messages: &[ChatMessage], max_tokens: usize, t
     let group_size = n_head / n_head_kv;
     let kq_scale = 1.0f32 / (n_embd_head_k as f32).sqrt();
 
-    let im_start_id = *s.special_tokens.get("im_start").unwrap_or(&151644u32);
-    let im_end_id = *s.special_tokens.get("im_end").unwrap_or(&151645u32);
-    let eos_id = s.tokenizer.eos_id();
-
-    let mut input_tokens: Vec<u32> = Vec::new();
-    for msg in messages {
-        input_tokens.push(im_start_id);
-        let role_bytes = match msg.role.as_str() {
-            "system" => b"system\n" as &[u8],
-            "assistant" => b"assistant\n" as &[u8],
-            _ => b"user\n" as &[u8],
-        };
-        for &b in role_bytes {
-            input_tokens.push(b as u32);
-        }
-        let encoded = s.tokenizer.encode(&msg.content);
-        input_tokens.extend_from_slice(&encoded);
-        input_tokens.push(im_end_id);
-    }
-    input_tokens.push(im_start_id);
-    for &b in b"assistant\n" {
-        input_tokens.push(b as u32);
-    }
+    let input_tokens = server_prompt_tokens(&s.tokenizer, messages)?;
 
     let n_prompt = input_tokens.len();
     let mut kv_cache = KvCache::new_f16(n_layer, max_ctx, n_embd_gqa);
-    let mut scratch = ExecutionScratchpad::new(n_embd, n_embd_q, n_embd_gqa, n_ff, vocab, s.pool.n_threads(), max_ctx);
+    let mut scratch = ExecutionScratchpad::new(
+        n_embd,
+        n_embd_q,
+        n_embd_gqa,
+        n_ff,
+        vocab,
+        s.pool.n_threads(),
+        max_ctx,
+    );
     let mut all_tokens: Vec<u32> = input_tokens.clone();
     let mut generated_tokens: Vec<u32> = Vec::new();
     let mut token_strings: Vec<String> = Vec::new();
+    let mut decoder = s.tokenizer.streaming_decoder(false);
 
     for step in 0..(n_prompt + max_tokens) {
         let token_id = if step < n_prompt {
@@ -445,7 +481,12 @@ fn generate_qwen3(s: &Qwen3State, messages: &[ChatMessage], max_tokens: usize, t
             let scale_buf = unsafe { std::slice::from_raw_parts_mut(scale_buf_ptr, max_n_in / 32) };
 
             rms_norm(x, &lw.attn_norm, normed, eps);
-            quantize_q8_0_into(normed, n_embd, &mut q8_buf[..n_embd], &mut scale_buf[..n_embd / 32]);
+            quantize_q8_0_into(
+                normed,
+                n_embd,
+                &mut q8_buf[..n_embd],
+                &mut scale_buf[..n_embd / 32],
+            );
             let q8 = q8_buf[..n_embd].as_ptr();
             let sc = scale_buf[..n_embd / 32].as_ptr();
 
@@ -464,8 +505,26 @@ fn generate_qwen3(s: &Qwen3State, messages: &[ChatMessage], max_tokens: usize, t
                 let k_new = unsafe { std::slice::from_raw_parts_mut(k_ptr, n_embd_gqa_v) };
                 let v_new = unsafe { std::slice::from_raw_parts_mut(v_ptr, n_embd_gqa_v) };
                 matmul_q8_0_quantized_parallel_rows(wq, q8, sc, q, n_embd_v, n_embd_q_v, ith, nth);
-                matmul_q8_0_quantized_parallel_rows(wk, q8, sc, k_new, n_embd_v, n_embd_gqa_v, ith, nth);
-                matmul_q8_0_quantized_parallel_rows(wv, q8, sc, v_new, n_embd_v, n_embd_gqa_v, ith, nth);
+                matmul_q8_0_quantized_parallel_rows(
+                    wk,
+                    q8,
+                    sc,
+                    k_new,
+                    n_embd_v,
+                    n_embd_gqa_v,
+                    ith,
+                    nth,
+                );
+                matmul_q8_0_quantized_parallel_rows(
+                    wv,
+                    q8,
+                    sc,
+                    v_new,
+                    n_embd_v,
+                    n_embd_gqa_v,
+                    ith,
+                    nth,
+                );
             });
 
             {
@@ -477,27 +536,55 @@ fn generate_qwen3(s: &Qwen3State, messages: &[ChatMessage], max_tokens: usize, t
 
                 if let (Some(qn), Some(kn)) = (q_norm, k_norm) {
                     for h in 0..n_head {
-                        rms_norm_inplace(&mut q[h * n_embd_head_k..(h + 1) * n_embd_head_k], qn, eps);
+                        rms_norm_inplace(
+                            &mut q[h * n_embd_head_k..(h + 1) * n_embd_head_k],
+                            qn,
+                            eps,
+                        );
                     }
                     for h in 0..n_head_kv {
-                        rms_norm_inplace(&mut k_new[h * n_embd_head_k..(h + 1) * n_embd_head_k], kn, eps);
+                        rms_norm_inplace(
+                            &mut k_new[h * n_embd_head_k..(h + 1) * n_embd_head_k],
+                            kn,
+                            eps,
+                        );
                     }
                 }
 
                 for h in 0..n_head {
-                    rope_neox(&mut q[h * n_embd_head_k..(h + 1) * n_embd_head_k], pos, n_embd_head_k, freq_base);
+                    rope_neox(
+                        &mut q[h * n_embd_head_k..(h + 1) * n_embd_head_k],
+                        pos,
+                        n_embd_head_k,
+                        freq_base,
+                    );
                 }
                 for h in 0..n_head_kv {
-                    rope_neox(&mut k_new[h * n_embd_head_k..(h + 1) * n_embd_head_k], pos, n_embd_head_k, freq_base);
+                    rope_neox(
+                        &mut k_new[h * n_embd_head_k..(h + 1) * n_embd_head_k],
+                        pos,
+                        n_embd_head_k,
+                        freq_base,
+                    );
                 }
 
                 let kb = layer * max_ctx * n_embd_gqa;
-                let k_cache = unsafe { std::slice::from_raw_parts_mut(k_cache_f16_ptr, kv_cache_size) };
-                let v_cache = unsafe { std::slice::from_raw_parts_mut(v_cache_f16_ptr, kv_cache_size) };
+                let k_cache =
+                    unsafe { std::slice::from_raw_parts_mut(k_cache_f16_ptr, kv_cache_size) };
+                let v_cache =
+                    unsafe { std::slice::from_raw_parts_mut(v_cache_f16_ptr, kv_cache_size) };
                 for h in 0..n_head_kv {
                     let off = h * n_embd_head_k;
-                    f32_slice_to_f16(&k_new[off..off + n_embd_head_k], &mut k_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_k]);
-                    f32_slice_to_f16(&v_new[off..off + n_embd_head_v], &mut v_cache[kb + pos * n_embd_gqa + off..kb + pos * n_embd_gqa + off + n_embd_head_v]);
+                    f32_slice_to_f16(
+                        &k_new[off..off + n_embd_head_k],
+                        &mut k_cache[kb + pos * n_embd_gqa + off
+                            ..kb + pos * n_embd_gqa + off + n_embd_head_k],
+                    );
+                    f32_slice_to_f16(
+                        &v_new[off..off + n_embd_head_v],
+                        &mut v_cache[kb + pos * n_embd_gqa + off
+                            ..kb + pos * n_embd_gqa + off + n_embd_head_v],
+                    );
                 }
             }
 
@@ -519,22 +606,32 @@ fn generate_qwen3(s: &Qwen3State, messages: &[ChatMessage], max_tokens: usize, t
                     let out_base = h * n_embd_head_v;
                     let mut ms = 0.0f32;
                     let mut s_sum = 0.0f32;
-                    for d in 0..n_embd_head_v { attn_out[out_base + d] = 0.0; }
+                    for d in 0..n_embd_head_v {
+                        attn_out[out_base + d] = 0.0;
+                    }
                     for t in 0..n_cached {
                         let score = dot_f16_f32(
                             &q[q_off..q_off + n_embd_head_k],
-                            &k_cache[kb + t * n_embd_gqa + kv_h * n_embd_head_v..kb + t * n_embd_gqa + kv_h * n_embd_head_v + n_embd_head_k],
+                            &k_cache[kb + t * n_embd_gqa + kv_h * n_embd_head_v
+                                ..kb + t * n_embd_gqa + kv_h * n_embd_head_v + n_embd_head_k],
                             n_embd_head_k,
                         ) * kq_scale;
                         if score > ms {
                             let rescale = (ms - score).exp();
-                            vec_scale_f32(&mut attn_out[out_base..out_base + n_embd_head_v], rescale);
+                            vec_scale_f32(
+                                &mut attn_out[out_base..out_base + n_embd_head_v],
+                                rescale,
+                            );
                             s_sum *= rescale;
                             ms = score;
                         }
                         let vs = (score - ms).exp();
                         let v_base = kb + t * n_embd_gqa + kv_h * n_embd_head_v;
-                        vec_mad_f16_f32(&mut attn_out[out_base..out_base + n_embd_head_v], &v_cache[v_base..v_base + n_embd_head_v], vs);
+                        vec_mad_f16_f32(
+                            &mut attn_out[out_base..out_base + n_embd_head_v],
+                            &v_cache[v_base..v_base + n_embd_head_v],
+                            vs,
+                        );
                         s_sum += vs;
                     }
                     let inv_sum = 1.0 / s_sum;
@@ -545,7 +642,12 @@ fn generate_qwen3(s: &Qwen3State, messages: &[ChatMessage], max_tokens: usize, t
             let attn_out = unsafe { std::slice::from_raw_parts_mut(attn_out_ptr, n_embd_q) };
             let q8_buf = unsafe { std::slice::from_raw_parts_mut(q8_buf_ptr, max_n_in) };
             let scale_buf = unsafe { std::slice::from_raw_parts_mut(scale_buf_ptr, max_n_in / 32) };
-            quantize_q8_0_into(attn_out, n_embd_q, &mut q8_buf[..n_embd_q], &mut scale_buf[..n_embd_q / 32]);
+            quantize_q8_0_into(
+                attn_out,
+                n_embd_q,
+                &mut q8_buf[..n_embd_q],
+                &mut scale_buf[..n_embd_q / 32],
+            );
             let q8 = q8_buf[..n_embd_q].as_ptr();
             let sc = scale_buf[..n_embd_q / 32].as_ptr();
             let wo = lw.wo;
@@ -554,16 +656,25 @@ fn generate_qwen3(s: &Qwen3State, messages: &[ChatMessage], max_tokens: usize, t
                 let q8 = unsafe { std::slice::from_raw_parts(q8, n_embd_q) };
                 let sc = unsafe { std::slice::from_raw_parts(sc, n_embd_q / 32) };
                 let attn_proj = unsafe { std::slice::from_raw_parts_mut(attn_proj_ptr, n_embd) };
-                matmul_q8_0_quantized_parallel_rows(wo, q8, sc, attn_proj, n_embd_q, n_embd, ith, nth);
+                matmul_q8_0_quantized_parallel_rows(
+                    wo, q8, sc, attn_proj, n_embd_q, n_embd, ith, nth,
+                );
             });
 
             let attn_proj = unsafe { std::slice::from_raw_parts_mut(attn_proj_ptr, n_embd) };
             let x = unsafe { std::slice::from_raw_parts_mut(x_ptr, n_embd) };
-            for i in 0..n_embd { x[i] += attn_proj[i]; }
+            for i in 0..n_embd {
+                x[i] += attn_proj[i];
+            }
 
             let normed = unsafe { std::slice::from_raw_parts_mut(normed_ptr, n_embd) };
             rms_norm(x, &lw.ffn_norm, normed, eps);
-            quantize_q8_0_into(normed, n_embd, &mut q8_buf[..n_embd], &mut scale_buf[..n_embd / 32]);
+            quantize_q8_0_into(
+                normed,
+                n_embd,
+                &mut q8_buf[..n_embd],
+                &mut scale_buf[..n_embd / 32],
+            );
             let q8 = q8_buf[..n_embd].as_ptr();
             let sc = scale_buf[..n_embd / 32].as_ptr();
             let w_gate = lw.w_gate;
@@ -574,21 +685,29 @@ fn generate_qwen3(s: &Qwen3State, messages: &[ChatMessage], max_tokens: usize, t
                 let sc = unsafe { std::slice::from_raw_parts(sc, n_embd / 32) };
                 let gate_buf = unsafe { std::slice::from_raw_parts_mut(gate_buf_ptr, n_ff) };
                 let up_buf = unsafe { std::slice::from_raw_parts_mut(up_buf_ptr, n_ff) };
-                matmul_q8_0_quantized_parallel_rows(w_gate, q8, sc, gate_buf, n_embd, n_ff, ith, nth);
-                matmul_q8_0_quantized_parallel_rows(w_up, q8, sc, up_buf, n_embd, n_ff, ith, nth);
+                matmul_q8_0_quantized_parallel_rows(w_gate, q8, sc, up_buf, n_embd, n_ff, ith, nth);
+                matmul_q8_0_quantized_parallel_rows(w_up, q8, sc, gate_buf, n_embd, n_ff, ith, nth);
                 let rows_per = n_ff / nth;
                 let r_start = ith * rows_per;
-                let r_end = if ith == nth - 1 { n_ff } else { r_start + rows_per };
-                for i in r_start..r_end {
-                    gate_buf[i] = silu(gate_buf[i]) * up_buf[i];
-                }
+                let r_end = if ith == nth - 1 {
+                    n_ff
+                } else {
+                    r_start + rows_per
+                };
+                silu_mul_inplace(&up_buf[r_start..r_end], &mut gate_buf[r_start..r_end]);
             });
 
             {
                 let gate_buf = unsafe { std::slice::from_raw_parts_mut(gate_buf_ptr, n_ff) };
                 let q8_buf = unsafe { std::slice::from_raw_parts_mut(q8_buf_ptr, max_n_in) };
-                let scale_buf = unsafe { std::slice::from_raw_parts_mut(scale_buf_ptr, max_n_in / 32) };
-                quantize_q8_0_into(gate_buf, n_ff, &mut q8_buf[..n_ff], &mut scale_buf[..n_ff / 32]);
+                let scale_buf =
+                    unsafe { std::slice::from_raw_parts_mut(scale_buf_ptr, max_n_in / 32) };
+                quantize_q8_0_into(
+                    gate_buf,
+                    n_ff,
+                    &mut q8_buf[..n_ff],
+                    &mut scale_buf[..n_ff / 32],
+                );
             }
 
             let q8 = q8_buf[..n_ff].as_ptr();
@@ -599,12 +718,16 @@ fn generate_qwen3(s: &Qwen3State, messages: &[ChatMessage], max_tokens: usize, t
                 let q8 = unsafe { std::slice::from_raw_parts(q8, n_ff) };
                 let sc = unsafe { std::slice::from_raw_parts(sc, n_ff / 32) };
                 let down_buf = unsafe { std::slice::from_raw_parts_mut(down_buf_ptr, n_embd) };
-                matmul_q8_0_quantized_parallel_rows(w_down, q8, sc, down_buf, n_ff, n_embd, ith, nth);
+                matmul_q8_0_quantized_parallel_rows(
+                    w_down, q8, sc, down_buf, n_ff, n_embd, ith, nth,
+                );
             });
 
             let down_buf = unsafe { std::slice::from_raw_parts_mut(down_buf_ptr, n_embd) };
             let x = unsafe { std::slice::from_raw_parts_mut(x_ptr, n_embd) };
-            for i in 0..n_embd { x[i] += down_buf[i]; }
+            for i in 0..n_embd {
+                x[i] += down_buf[i];
+            }
         }
 
         {
@@ -615,7 +738,12 @@ fn generate_qwen3(s: &Qwen3State, messages: &[ChatMessage], max_tokens: usize, t
             let scale_buf = &mut scratch.scale_buf;
 
             rms_norm(x, &s.output_norm, normed, eps);
-            quantize_q8_0_into(normed, n_embd, &mut q8_buf[..n_embd], &mut scale_buf[..n_embd / 32]);
+            quantize_q8_0_into(
+                normed,
+                n_embd,
+                &mut q8_buf[..n_embd],
+                &mut scale_buf[..n_embd / 32],
+            );
             let q8 = q8_buf[..n_embd].as_ptr();
             let sc = scale_buf[..n_embd / 32].as_ptr();
             let ow = s.output_weight;
@@ -628,162 +756,173 @@ fn generate_qwen3(s: &Qwen3State, messages: &[ChatMessage], max_tokens: usize, t
             });
         }
 
-        if step < n_prompt - 1 { continue; }
+        if step < n_prompt - 1 {
+            continue;
+        }
 
         let next_token = sample_token_from_logits(&scratch.logits, temperature);
-        if next_token as u32 == eos_id || next_token as u32 == im_end_id { break; }
-        if generated_tokens.len() >= max_tokens { break; }
+        if s.tokenizer.eos_id() == Some(next_token as u32)
+            || s.tokenizer.special_token_id("im_end") == Some(next_token as u32)
+        {
+            break;
+        }
+        if generated_tokens.len() >= max_tokens {
+            break;
+        }
 
-        let text = s.tokenizer.decode(&[next_token as u32]);
-        token_strings.push(text);
+        let text = decoder.push(next_token as u32);
+        if !text.is_empty() {
+            token_strings.push(text);
+        }
         generated_tokens.push(next_token as u32);
         all_tokens.push(next_token as u32);
     }
 
-    GenerateResult {
+    let tail = decoder.finish();
+    if !tail.is_empty() {
+        token_strings.push(tail);
+    }
+
+    Ok(GenerateResult {
         text: token_strings.join(""),
         tokens: token_strings,
         prompt_tokens: n_prompt,
         completion_tokens: generated_tokens.len(),
-    }
+    })
 }
 
-fn generate_qwen35(s: &Qwen35State, messages: &[ChatMessage], max_tokens: usize, temperature: f32) -> GenerateResult {
-    let im_start = *s.special_tokens.get("im_start").unwrap_or(&248045u32) as i32;
-    let im_end = *s.special_tokens.get("im_end").unwrap_or(&248046u32) as i32;
-
-    let mut prompt_tokens: Vec<i32> = Vec::new();
-    for msg in messages {
-        prompt_tokens.push(im_start);
-        let role_bytes = match msg.role.as_str() {
-            "system" => b"system\n" as &[u8],
-            "assistant" => b"assistant\n" as &[u8],
-            _ => b"user\n" as &[u8],
-        };
-        let role_toks = s.tokenizer.encode(std::str::from_utf8(role_bytes).unwrap_or("user\n"));
-        for &t in &role_toks {
-            prompt_tokens.push(t as i32);
-        }
-        let encoded = s.tokenizer.encode(&msg.content);
-        for &t in &encoded {
-            prompt_tokens.push(t as i32);
-        }
-        prompt_tokens.push(im_end);
-    }
-    prompt_tokens.push(im_start);
-    let asst_toks = s.tokenizer.encode("assistant\n");
-    for &t in &asst_toks {
-        prompt_tokens.push(t as i32);
-    }
+fn generate_qwen35(
+    state: &Qwen35State,
+    messages: &[ChatMessage],
+    max_tokens: usize,
+    temperature: f32,
+) -> Result<GenerateResult, String> {
+    let _source = &state.source;
+    let prompt_ids = server_prompt_tokens(&state.tokenizer, messages)?;
+    let (prompt_positions, mut next_text_position) =
+        build_qwen35_positions(&prompt_ids, None, &[])?;
+    let prompt_tokens: Vec<i32> = prompt_ids
+        .iter()
+        .copied()
+        .map(|id| i32::try_from(id).map_err(|_| format!("Token ID {id} exceeds i32")))
+        .collect::<Result<_, _>>()?;
 
     let n_prompt = prompt_tokens.len();
-    let max_seq = s.model.config.n_ctx;
+    let max_seq = state.model.config.n_ctx;
     let mut kv_cache = KvCache::new_f32(
-        s.model.config.n_layer,
+        state.model.config.n_layer,
         max_seq,
-        s.model.config.n_embd_head() * s.model.config.n_head_kv,
+        state.model.config.n_embd_head() * state.model.config.n_head_kv,
     );
-    let mut llm_scratch = qwen35::Qwen35Scratchpad::new(&s.model.config, n_prompt.max(max_tokens));
+    let mut llm_scratch =
+        qwen35::Qwen35Scratchpad::new(&state.model.config, n_prompt.max(max_tokens));
 
     let mut all_tokens = prompt_tokens.clone();
-
-    let mut mrope_positions_prompt: Vec<[usize; 4]> = Vec::with_capacity(n_prompt);
-    {
-        let mut seq_pos = 0usize;
-        for _ in 0..n_prompt {
-            mrope_positions_prompt.push([seq_pos, seq_pos, seq_pos, 0]);
-            seq_pos += 1;
-        }
-    }
-
-    let mut token_strings: Vec<String> = Vec::new();
-    let mut generated_tokens: Vec<i32> = Vec::new();
+    let mut decoder = state.tokenizer.streaming_decoder(false);
+    let mut generated_ids = Vec::<u32>::new();
+    let mut rendered_chunks = Vec::<String>::new();
 
     for step in 0..max_tokens {
-        let tokens = if step == 0 { &prompt_tokens } else { &all_tokens[all_tokens.len()-1..all_tokens.len()-1+1] };
-        let n_tok = tokens.len();
+        let tokens = if step == 0 {
+            &prompt_tokens[..]
+        } else {
+            &all_tokens[all_tokens.len() - 1..]
+        };
 
         if step == 0 {
             for t in 0..n_prompt {
-                let embd_off = t * s.model.config.n_embd;
+                let embd_off = t * state.model.config.n_embd;
                 let tok = prompt_tokens[t] as usize;
-                let tok_off = tok * s.model.config.n_embd;
-                for e in 0..s.model.config.n_embd {
-                    if tok_off + e < s.model.tok_embd.len() {
-                        llm_scratch.x[embd_off + e] = s.model.tok_embd[tok_off + e];
+                let tok_off = tok * state.model.config.n_embd;
+                for e in 0..state.model.config.n_embd {
+                    if tok_off + e < state.model.tok_embd.len() {
+                        llm_scratch.x[embd_off + e] = state.model.tok_embd[tok_off + e];
                     }
                 }
             }
         } else {
             let tok = tokens[0] as usize;
-            let tok_off = tok * s.model.config.n_embd;
-            for e in 0..s.model.config.n_embd {
-                if tok_off + e < s.model.tok_embd.len() {
-                    llm_scratch.x[e] = s.model.tok_embd[tok_off + e];
+            let tok_off = tok * state.model.config.n_embd;
+            for e in 0..state.model.config.n_embd {
+                if tok_off + e < state.model.tok_embd.len() {
+                    llm_scratch.x[e] = state.model.tok_embd[tok_off + e];
                 }
             }
         }
 
-        let mrope_ref = if step == 0 {
-            Some(&mrope_positions_prompt[..])
+        let decode_position = [[
+            next_text_position,
+            next_text_position,
+            next_text_position,
+            0,
+        ]];
+        let positions = if step == 0 {
+            &prompt_positions[..]
         } else {
-            None
+            &decode_position[..]
         };
-        let logits = s.model.forward(n_tok, &mut kv_cache, &mut llm_scratch, &s.pool, mrope_ref);
-
-        let next_token = if temperature <= 0.0 {
-            logits.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).map(|(i, _)| i as i32).unwrap_or(0)
-        } else {
-            sample_token_from_logits(&logits, temperature)
-        };
-
-        if next_token == im_end { break; }
-        if generated_tokens.len() >= max_tokens { break; }
-
-        let text = decode_token_from_loader(&s.loader, next_token);
-        token_strings.push(text);
-        generated_tokens.push(next_token);
+        let logits = state.model.forward(
+            tokens.len(),
+            &mut kv_cache,
+            &mut llm_scratch,
+            &state.pool,
+            positions,
+        )?;
+        if step > 0 {
+            next_text_position = next_text_position
+                .checked_add(1)
+                .ok_or("Qwen3.5 server decode position overflow")?;
+        }
+        let next_token = sample_token_from_logits(&logits, temperature);
+        let next_id = u32::try_from(next_token)
+            .map_err(|_| format!("Model produced negative token ID {next_token}"))?;
+        if state.tokenizer.eos_id() == Some(next_id)
+            || state.tokenizer.special_token_id("im_end") == Some(next_id)
+        {
+            break;
+        }
+        let rendered = decoder.push(next_id);
+        if !rendered.is_empty() {
+            rendered_chunks.push(rendered);
+        }
+        generated_ids.push(next_id);
         all_tokens.push(next_token);
     }
 
-    GenerateResult {
-        text: token_strings.join(""),
-        tokens: token_strings,
+    let tail = decoder.finish();
+    if !tail.is_empty() {
+        rendered_chunks.push(tail);
+    }
+    let text = rendered_chunks.concat();
+    Ok(GenerateResult {
+        text,
+        tokens: rendered_chunks,
         prompt_tokens: n_prompt,
-        completion_tokens: generated_tokens.len(),
-    }
+        completion_tokens: generated_ids.len(),
+    })
 }
 
-fn detect_special_tokens(_loader: &GGUFLoader, tokenizer: &BPETokenizer) -> HashMap<String, u32> {
-    let mut specials = HashMap::new();
-    let candidates = [
-        ("<|im_start|>", "im_start"),
-        ("<|im_end|>", "im_end"),
-        ("<|image_pad|>", "image_pad"),
-        ("<|vision_pad|>", "vision_pad"),
-        ("<|vision_start|>", "vision_start"),
-        ("<|vision_end|>", "vision_end"),
-        ("</s>", "eos"),
-    ];
-    for (text, name) in &candidates {
-        for i in 0..tokenizer.vocab_size() {
-            if tokenizer.token_str(i as u32) == *text {
-                specials.insert(name.to_string(), i as u32);
-                break;
-            }
-        }
-    }
-    specials
-}
-
-fn get_f32_tensor_from_loader(loader: &GGUFLoader, name: &str, expected_len: usize) -> Vec<f32> {
-    let ti = loader.tensor_info(name).unwrap_or_else(|| panic!("tensor {} not found", name));
-    let slice = loader.tensor_slice(name).unwrap_or_else(|| panic!("slice {} not found", name));
+fn get_f32_tensor_from_source(
+    source: &dyn TensorSource,
+    name: &str,
+    expected_len: usize,
+) -> Vec<f32> {
+    let ti = source
+        .tensor_info(name)
+        .unwrap_or_else(|| panic!("tensor {} not found", name));
+    let slice = source
+        .tensor_slice(name)
+        .unwrap_or_else(|| panic!("slice {} not found", name));
     let mut out = vec![0.0f32; expected_len];
     if ti.ggml_type == GGMLType::F32 {
         let n = expected_len.min(slice.len() / 4);
         for i in 0..n {
-            let bytes = [slice[i * 4], slice[i * 4 + 1], slice[i * 4 + 2], slice[i * 4 + 3]];
+            let bytes = [
+                slice[i * 4],
+                slice[i * 4 + 1],
+                slice[i * 4 + 2],
+                slice[i * 4 + 3],
+            ];
             out[i] = f32::from_le_bytes(bytes);
         }
     }
@@ -801,57 +940,94 @@ async fn main() {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--model" => { if i + 1 < args.len() { model_path = args[i + 1].clone(); i += 1; } }
-            "--host" => { if i + 1 < args.len() { host = args[i + 1].clone(); i += 1; } }
-            "--port" => { if i + 1 < args.len() { port = args[i + 1].parse().unwrap_or(8080); i += 1; } }
-            "--threads" => { if i + 1 < args.len() { n_threads = args[i + 1].parse().unwrap_or(0); i += 1; } }
+            "--model" => {
+                if i + 1 < args.len() {
+                    model_path = args[i + 1].clone();
+                    i += 1;
+                }
+            }
+            "--host" => {
+                if i + 1 < args.len() {
+                    host = args[i + 1].clone();
+                    i += 1;
+                }
+            }
+            "--port" => {
+                if i + 1 < args.len() {
+                    port = args[i + 1].parse().unwrap_or(8080);
+                    i += 1;
+                }
+            }
+            "--threads" => {
+                if i + 1 < args.len() {
+                    n_threads = args[i + 1].parse().unwrap_or(0);
+                    i += 1;
+                }
+            }
             _ => {}
         }
         i += 1;
     }
 
     if model_path.is_empty() {
-        eprintln!("Usage: rust-model-server --model <path.gguf> [--host 0.0.0.0] [--port 8080] [--threads 4]");
+        eprintln!("Usage: rust-model-server --model <path.gguf-or-ggufrs> [--host 0.0.0.0] [--port 8080] [--threads 4]");
         std::process::exit(1);
     }
 
     let n_threads = if n_threads > 0 { n_threads } else { 4 };
     eprintln!("Loading model: {} ...", model_path);
 
-    let loader = Arc::new(GGUFLoader::from_file(&model_path).unwrap_or_else(|e| {
-        eprintln!("Failed to load model: {}", e);
-        std::process::exit(1);
-    }));
-    let arch = loader.metadata("general.architecture").and_then(|v| v.to_string_val()).unwrap_or_default();
+    let source: Arc<dyn TensorSource> = Arc::from(
+        open_model_source(Path::new(&model_path), ComponentRole::Llm).unwrap_or_else(|error| {
+            eprintln!("Failed to load model: {error}");
+            std::process::exit(1);
+        }),
+    );
+    let arch = source
+        .metadata("general.architecture")
+        .and_then(|v| v.to_string_val())
+        .unwrap_or_default();
     let pool = Arc::new(thread_pool::ComputePool::new(n_threads));
 
-    let mut tokenizer = BPETokenizer::from_gguf_metadata(|k| loader.metadata(k).cloned())
-        .unwrap_or_else(|e| { eprintln!("Failed to init tokenizer: {}", e); std::process::exit(1); });
-    let special_tokens = detect_special_tokens(&loader, &tokenizer);
-    tokenizer.set_special_tokens(special_tokens.clone());
+    let tokenizer = BPETokenizer::from_gguf_metadata(|k| source.metadata(k).cloned())
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to init tokenizer: {}", e);
+            std::process::exit(1);
+        });
 
     let model: ModelBackend = if arch == "qwen35" {
-        let model = Qwen35Model::from_gguf(&loader).unwrap_or_else(|e| { eprintln!("Failed to parse Qwen3.5 model: {}", e); std::process::exit(1); });
+        let model = Qwen35Model::from_source(source.as_ref()).unwrap_or_else(|e| {
+            eprintln!("Failed to parse Qwen3.5 model: {}", e);
+            std::process::exit(1);
+        });
         ModelBackend::Qwen35(Qwen35State {
-            loader: loader.clone(),
+            source: Arc::clone(&source),
             model: Arc::new(model),
             tokenizer: Arc::new(tokenizer),
-            special_tokens,
             pool,
         })
     } else {
-        let config = loader.model_config().unwrap_or_else(|e| { eprintln!("Failed to parse config: {}", e); std::process::exit(1); });
+        let config = model_config_from_source(source.as_ref()).unwrap_or_else(|e| {
+            eprintln!("Failed to parse config: {}", e);
+            std::process::exit(1);
+        });
         let n_embd = config.n_embd;
         let n_layer = config.n_layer;
         let n_head = config.n_head;
         let n_head_kv = config.n_head_kv;
         let n_embd_head = config.n_embd_head;
-        let n_embd_head_k = if let Some(v) = loader.metadata(&format!("{}.attention.key_length", arch)) {
-            v.to_u64().unwrap_or(n_embd_head as u64) as usize
-        } else { n_embd_head };
-        let n_embd_head_v = if let Some(v) = loader.metadata(&format!("{}.attention.value_length", arch)) {
-            v.to_u64().unwrap_or(n_embd_head as u64) as usize
-        } else { n_embd_head };
+        let n_embd_head_k =
+            if let Some(v) = source.metadata(&format!("{}.attention.key_length", arch)) {
+                v.to_u64().unwrap_or(n_embd_head as u64) as usize
+            } else {
+                n_embd_head
+            };
+        let n_embd_head_v =
+            if let Some(v) = source.metadata(&format!("{}.attention.value_length", arch)) {
+                v.to_u64().unwrap_or(n_embd_head as u64) as usize
+            } else {
+                n_embd_head
+            };
         let n_ff = config.n_ff;
         let eps = config.norm_eps;
         let freq_base = config.rope_freq_base;
@@ -859,39 +1035,118 @@ async fn main() {
         let n_ctx = config.n_ctx.min(4096);
         let is_qwen3 = arch == "qwen3";
 
-        let output_norm = get_f32_tensor_from_loader(&loader, "output_norm.weight", n_embd);
-        let embd_weight = unsafe { std::mem::transmute::<&[u8], &'static [u8]>(loader.tensor_slice("token_embd.weight").expect("no embd")) };
-        let output_weight = unsafe { std::mem::transmute::<&[u8], &'static [u8]>(loader.tensor_slice("output.weight").unwrap_or(loader.tensor_slice("token_embd.weight").unwrap())) };
+        let output_norm = get_f32_tensor_from_source(source.as_ref(), "output_norm.weight", n_embd);
+        let (embd_weight, output_weight) = unsafe {
+            // SAFETY: every slice comes from the immutable `source` Arc stored in the
+            // same state, and this task does not expose source/segment unloading.
+            (
+                std::mem::transmute::<&[u8], &'static [u8]>(
+                    source.tensor_slice("token_embd.weight").expect("no embd"),
+                ),
+                std::mem::transmute::<&[u8], &'static [u8]>(
+                    source
+                        .tensor_slice("output.weight")
+                        .unwrap_or(source.tensor_slice("token_embd.weight").unwrap()),
+                ),
+            )
+        };
 
-        let layers: Vec<LayerWeightsOwned> = (0..n_layer).map(|l| LayerWeightsOwned {
-            attn_norm: get_f32_tensor_from_loader(&loader, &format!("blk.{}.attn_norm.weight", l), n_embd),
-            ffn_norm: get_f32_tensor_from_loader(&loader, &format!("blk.{}.ffn_norm.weight", l), n_embd),
-            q_norm: if is_qwen3 { Some(get_f32_tensor_from_loader(&loader, &format!("blk.{}.attn_q_norm.weight", l), n_embd_head_k)) } else { None },
-            k_norm: if is_qwen3 { Some(get_f32_tensor_from_loader(&loader, &format!("blk.{}.attn_k_norm.weight", l), n_embd_head_k)) } else { None },
-            wq: unsafe { std::mem::transmute::<&[u8], &'static [u8]>(loader.tensor_slice(&format!("blk.{}.attn_q.weight", l)).unwrap()) },
-            wk: unsafe { std::mem::transmute::<&[u8], &'static [u8]>(loader.tensor_slice(&format!("blk.{}.attn_k.weight", l)).unwrap()) },
-            wv: unsafe { std::mem::transmute::<&[u8], &'static [u8]>(loader.tensor_slice(&format!("blk.{}.attn_v.weight", l)).unwrap()) },
-            wo: unsafe { std::mem::transmute::<&[u8], &'static [u8]>(loader.tensor_slice(&format!("blk.{}.attn_output.weight", l)).unwrap()) },
-            w_gate: unsafe { std::mem::transmute::<&[u8], &'static [u8]>(loader.tensor_slice(&format!("blk.{}.ffn_gate.weight", l)).unwrap()) },
-            w_up: unsafe { std::mem::transmute::<&[u8], &'static [u8]>(loader.tensor_slice(&format!("blk.{}.ffn_up.weight", l)).unwrap()) },
-            w_down: unsafe { std::mem::transmute::<&[u8], &'static [u8]>(loader.tensor_slice(&format!("blk.{}.ffn_down.weight", l)).unwrap()) },
-        }).collect();
+        let layers: Vec<LayerWeightsOwned> = (0..n_layer)
+            .map(|l| unsafe {
+                // SAFETY: every slice comes from the immutable `source` Arc stored in the
+                // same state, and this task does not expose source/segment unloading.
+                LayerWeightsOwned {
+                    attn_norm: get_f32_tensor_from_source(
+                        source.as_ref(),
+                        &format!("blk.{}.attn_norm.weight", l),
+                        n_embd,
+                    ),
+                    ffn_norm: get_f32_tensor_from_source(
+                        source.as_ref(),
+                        &format!("blk.{}.ffn_norm.weight", l),
+                        n_embd,
+                    ),
+                    q_norm: if is_qwen3 {
+                        Some(get_f32_tensor_from_source(
+                            source.as_ref(),
+                            &format!("blk.{}.attn_q_norm.weight", l),
+                            n_embd_head_k,
+                        ))
+                    } else {
+                        None
+                    },
+                    k_norm: if is_qwen3 {
+                        Some(get_f32_tensor_from_source(
+                            source.as_ref(),
+                            &format!("blk.{}.attn_k_norm.weight", l),
+                            n_embd_head_k,
+                        ))
+                    } else {
+                        None
+                    },
+                    wq: std::mem::transmute::<&[u8], &'static [u8]>(
+                        source
+                            .tensor_slice(&format!("blk.{}.attn_q.weight", l))
+                            .unwrap(),
+                    ),
+                    wk: std::mem::transmute::<&[u8], &'static [u8]>(
+                        source
+                            .tensor_slice(&format!("blk.{}.attn_k.weight", l))
+                            .unwrap(),
+                    ),
+                    wv: std::mem::transmute::<&[u8], &'static [u8]>(
+                        source
+                            .tensor_slice(&format!("blk.{}.attn_v.weight", l))
+                            .unwrap(),
+                    ),
+                    wo: std::mem::transmute::<&[u8], &'static [u8]>(
+                        source
+                            .tensor_slice(&format!("blk.{}.attn_output.weight", l))
+                            .unwrap(),
+                    ),
+                    w_gate: std::mem::transmute::<&[u8], &'static [u8]>(
+                        source
+                            .tensor_slice(&format!("blk.{}.ffn_gate.weight", l))
+                            .unwrap(),
+                    ),
+                    w_up: std::mem::transmute::<&[u8], &'static [u8]>(
+                        source
+                            .tensor_slice(&format!("blk.{}.ffn_up.weight", l))
+                            .unwrap(),
+                    ),
+                    w_down: std::mem::transmute::<&[u8], &'static [u8]>(
+                        source
+                            .tensor_slice(&format!("blk.{}.ffn_down.weight", l))
+                            .unwrap(),
+                    ),
+                }
+            })
+            .collect();
 
         let qwen3_cfg = Qwen3Config {
-            n_embd, n_layer, n_head, n_head_kv, n_embd_head,
-            n_embd_head_k, n_embd_head_v, n_ff, vocab, n_ctx,
-            eps, freq_base, has_qk_norm: is_qwen3,
+            n_embd,
+            n_layer,
+            n_head,
+            n_head_kv,
+            n_embd_head,
+            n_embd_head_k,
+            n_embd_head_v,
+            n_ff,
+            vocab,
+            n_ctx,
+            eps,
+            freq_base,
+            has_qk_norm: is_qwen3,
         };
 
         ModelBackend::Qwen3(Qwen3State {
-            loader: loader.clone(),
+            source: Arc::clone(&source),
             layers,
             output_norm,
             embd_weight,
             output_weight,
             config: qwen3_cfg,
             tokenizer: Arc::new(tokenizer),
-            special_tokens,
             pool,
         })
     };
@@ -902,7 +1157,10 @@ async fn main() {
         .to_string_lossy()
         .to_string();
 
-    eprintln!("Model '{}' loaded (arch={}), {} threads", model_name, arch, n_threads);
+    eprintln!(
+        "Model '{}' loaded (arch={}), {} threads",
+        model_name, arch, n_threads
+    );
 
     let state = AppState {
         model: Arc::new(model),

@@ -8,7 +8,7 @@ interface FileListProps {
 }
 
 function formatSize(bytes: number): string {
-  if (bytes === 0) return '0 B';
+  if (bytes === 0) return '';
   const k = 1024;
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
@@ -17,7 +17,12 @@ function formatSize(bytes: number): string {
 
 function formatDate(dateStr: string): string {
   try {
-    return new Date(dateStr).toLocaleDateString();
+    return new Date(dateStr).toLocaleDateString('zh-CN', {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
   } catch {
     return dateStr;
   }
@@ -48,30 +53,38 @@ export function FileList({ items, selectedPath, onSelect, onDoubleClick }: FileL
     return (
       <div className="empty-state">
         <div className="empty-state-icon">📂</div>
-        <p>This folder is empty</p>
+        <p className="empty-state-text">这个文件夹是空的</p>
       </div>
     );
   }
 
   return (
-    <div className="file-list">
-      {items.map((item) => (
-        <div
-          key={item.path}
-          className={`file-item ${selectedPath === item.path ? 'selected' : ''}`}
-          onClick={() => onSelect(item)}
-          onDoubleClick={() => onDoubleClick(item)}
-        >
-          <div className="file-icon">{getFileIcon(item)}</div>
-          <div className="file-info">
-            <div className="file-name">{item.name}</div>
-            <div className="file-meta">
-              {!item.is_dir && <span className="file-size">{formatSize(item.size)}</span>}
-              <span>{formatDate(item.modified)}</span>
+    <div className="file-list-container">
+      <div className="file-list">
+        {items.map((item) => (
+          <div
+            key={item.path}
+            className={`file-item ${selectedPath === item.path ? 'selected' : ''}`}
+            onClick={() => onSelect(item)}
+            onDoubleClick={() => onDoubleClick(item)}
+          >
+            <div className="file-icon">{getFileIcon(item)}</div>
+            <div className="file-info">
+              <div className="file-name" title={item.name}>{item.name}</div>
+              <div className="file-meta">
+                {item.is_dir ? (
+                  <span>文件夹</span>
+                ) : (
+                  <>
+                    {item.size > 0 && <span>{formatSize(item.size)}</span>}
+                    <span>{formatDate(item.modified)}</span>
+                  </>
+                )}
+              </div>
             </div>
           </div>
-        </div>
-      ))}
+        ))}
+      </div>
     </div>
   );
 }

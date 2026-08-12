@@ -15,6 +15,7 @@
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  -webkit-app-region: drag;
 }
 
 .app-header-left {
@@ -75,9 +76,11 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  -webkit-app-region: no-drag;
 }
 
 .icon-btn {
+  -webkit-app-region: no-drag;
   background: var(--bg-tertiary);
   border: 1px solid var(--border);
   color: var(--text-secondary);
@@ -180,7 +183,8 @@
   min-height: 0;
 }
 
-.camera-wrapper video {
+.camera-wrapper video,
+.camera-wrapper img {
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -945,6 +949,63 @@
 
 .compact-monitor-btn:hover {
   border-color: var(--text-muted);
+}
+
+.mini-break-alert {
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  right: 4px;
+  background: var(--accent-red);
+  border-radius: 6px;
+  padding: 6px 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 50;
+  cursor: pointer;
+}
+
+.mini-break-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.mini-break-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.mini-break-title {
+  font-size: 10px;
+  font-weight: 600;
+  color: white;
+}
+
+.mini-break-time {
+  font-size: 12px;
+  font-weight: 700;
+  color: white;
+  font-variant-numeric: tabular-nums;
+}
+
+.mini-break-btn {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.2);
+  border: none;
+  color: white;
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.mini-break-btn:hover {
+  background: rgba(255, 255, 255, 0.3);
 }
 
 .toast-container {

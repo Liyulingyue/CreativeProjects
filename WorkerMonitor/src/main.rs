@@ -4,12 +4,15 @@ mod core;
 
 use std::sync::{Arc, Mutex};
 use std::borrow::Cow;
+use std::io::{Read, Write};
 use serde::Deserialize;
 use base64::Engine;
+use tao::platform::windows::WindowExtWindows;
 use wry::http::{Response, StatusCode};
 use tray_icon::{menu::{Menu, MenuItem}, TrayIconBuilder};
 use include_dir::{include_dir, Dir};
 use once_cell::sync::OnceCell;
+use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -97,7 +100,19 @@ fn avg_ms(sum: u64, count: u64) -> u64 {
     if count == 0 { 0 } else { sum / count }
 }
 
-fn init_logging() {
+fn init_logging() -> bool {
+    let enabled = matches!(
+        std::env::var("WORKER_MONITOR_ENABLE_LOG")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    );
+
+    if !enabled {
+        return false;
+    }
+
     let log_root = dirs::data_local_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("WorkerMonitor")
@@ -105,7 +120,7 @@ fn init_logging() {
 
     if let Err(err) = std::fs::create_dir_all(&log_root) {
         eprintln!("[WorkerMonitor] Failed to create log dir {}: {}", log_root.display(), err);
-        return;
+        return false;
     }
 
     let file_appender = tracing_appender::rolling::daily(&log_root, "worker-monitor.log");
@@ -124,15 +139,112 @@ fn init_logging() {
         .try_init()
     {
         eprintln!("[WorkerMonitor] Failed to init logging subscriber: {}", err);
-        return;
+        return false;
     }
 
     info!("logging initialized at {}", log_root.display());
+    true
 }
 
 struct AppState {
     monitor: Arc<Mutex<core::Monitor>>,
     camera: Arc<Mutex<core::Camera>>,
+}
+
+const CAMERA_STREAM_ADDR: &str = "127.0.0.1:18181";
+
+fn spawn_camera_stream_server(frame_reader: core::camera::FrameReader) {
+    thread::spawn(move || {
+        let listener = match TcpListener::bind(CAMERA_STREAM_ADDR) {
+            Ok(listener) => listener,
+            Err(err) => {
+                eprintln!("[CameraStream] Failed to bind {}: {}", CAMERA_STREAM_ADDR, err);
+                return;
+            }
+        };
+
+        info!("camera stream server listening on {}", CAMERA_STREAM_ADDR);
+
+        for incoming in listener.incoming() {
+            match incoming {
+                Ok(stream) => {
+                    let frame_reader = frame_reader.clone();
+                    thread::spawn(move || handle_camera_stream_connection(stream, frame_reader));
+                }
+                Err(err) => {
+                    warn!("[CameraStream] incoming connection error: {}", err);
+                }
+            }
+        }
+    });
+}
+
+fn handle_camera_stream_connection(mut stream: TcpStream, frame_reader: core::camera::FrameReader) {
+    let mut request_buf = [0_u8; 1024];
+    let read_len = match stream.read(&mut request_buf) {
+        Ok(len) => len,
+        Err(err) => {
+            warn!("[CameraStream] failed to read request: {}", err);
+            return;
+        }
+    };
+
+    let request_text = String::from_utf8_lossy(&request_buf[..read_len]);
+    let request_line = request_text.lines().next().unwrap_or_default();
+    let raw_path = request_line.split_whitespace().nth(1).unwrap_or("/");
+    let path = raw_path.split('?').next().unwrap_or("/");
+
+    if path != "/camera.mjpg" && path != "/" {
+        let _ = write!(
+            stream,
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        return;
+    }
+
+    let header = concat!(
+        "HTTP/1.1 200 OK\r\n",
+        "Connection: close\r\n",
+        "Cache-Control: no-cache, no-store, must-revalidate\r\n",
+        "Pragma: no-cache\r\n",
+        "Expires: 0\r\n",
+        "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n"
+    );
+
+    if stream.write_all(header.as_bytes()).is_err() {
+        return;
+    }
+
+    let _ = stream.flush();
+
+    loop {
+        let frame = frame_reader.get_frame();
+
+        let Some(frame) = frame else {
+            thread::sleep(Duration::from_millis(20));
+            continue;
+        };
+
+        let part_header = format!(
+            "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
+            frame.len()
+        );
+
+        if stream.write_all(part_header.as_bytes()).is_err() {
+            break;
+        }
+        if stream.write_all(&frame).is_err() {
+            break;
+        }
+        if stream.write_all(b"\r\n").is_err() {
+            break;
+        }
+        if stream.flush().is_err() {
+            break;
+        }
+
+        thread::sleep(Duration::from_millis(16));
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -220,7 +332,7 @@ fn handle_ipc(state: &AppState, req: &IpcRequest, stats: &RuntimeStats) -> Resul
                 "frame": base64::engine::general_purpose::STANDARD.encode(&frame)
             }))
         }
-        "enter_compact_mode" | "enter_expanded_mode" | "hide_to_tray" => {
+        "enter_compact_mode" | "enter_expanded_mode" | "hide_to_tray" | "start_window_drag" | "quit_app" => {
             Ok(serde_json::json!({ "ok": true }))
         }
         _ => Err(format!("unknown method: {}", req.method)),
@@ -395,12 +507,31 @@ fn asset_protocol_handler(
     }
 }
 
+fn load_tray_icon() -> Result<tray_icon::icon::Icon, Box<dyn std::error::Error>> {
+    let icon_bytes = include_bytes!("../icons/icon.png");
+    let image = image::load_from_memory(icon_bytes)?.into_rgba8();
+    let (width, height) = image.dimensions();
+    tray_icon::icon::Icon::from_rgba(image.into_raw(), width, height).map_err(|e| e.into())
+}
+
+fn load_window_icon() -> Result<tao::window::Icon, Box<dyn std::error::Error>> {
+    let icon_bytes = include_bytes!("../icons/icon.png");
+    let image = image::load_from_memory(icon_bytes)?.into_rgba8();
+    let (width, height) = image.dimensions();
+    tao::window::Icon::from_rgba(image.into_raw(), width, height).map_err(|e| e.into())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    init_logging();
-    std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--remote-debugging-port=9222");
+    let logging_enabled = init_logging();
+    std::env::set_var(
+        "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+        "--remote-debugging-port=9222 --allow-running-insecure-content --unsafely-treat-insecure-origin-as-secure=http://localhost:18181",
+    );
 
     let stats = Arc::new(RuntimeStats::new());
-    spawn_metrics_reporter(stats.clone());
+    if logging_enabled {
+        spawn_metrics_reporter(stats.clone());
+    }
 
     let app_state = Arc::new(AppState {
         monitor: Arc::new(Mutex::new(core::Monitor::new())),
@@ -408,6 +539,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     spawn_background_detection_worker(app_state.clone(), stats.clone());
+    let frame_reader = {
+        let camera = match app_state.camera.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        camera.frame_reader()
+    };
+    spawn_camera_stream_server(frame_reader);
 
     if let Err(e) = core::PoseDetector::init() {
         warn!("[WorkerMonitor] Detector init failed: {}", e);
@@ -425,23 +564,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("[WorkerMonitor] Frontend dist path: {}", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("frontend/dist").display());
 
     let event_loop = tao::event_loop::EventLoop::new();
+    let window_icon = load_window_icon().ok();
     let window = tao::window::WindowBuilder::new()
         .with_title("WorkerMonitor")
         .with_inner_size(tao::dpi::LogicalSize::new(1024.0, 720.0))
+        .with_window_icon(window_icon)
+        .with_decorations(false)
         .with_resizable(true)
         .with_visible(true)
         .build(&event_loop)?;
 
     let tray_menu = Menu::new();
     let show_item = MenuItem::new("Show", true, None);
+    let mini_item = MenuItem::new("Mini Mode", true, None);
+    let hide_item = MenuItem::new("Hide", true, None);
     let quit_item = MenuItem::new("Quit", true, None);
     let show_id = show_item.id();
+    let mini_id = mini_item.id();
+    let hide_id = hide_item.id();
     let quit_id = quit_item.id();
-    tray_menu.append_items(&[&show_item, &quit_item]);
+    tray_menu.append_items(&[&show_item, &mini_item, &hide_item, &quit_item]);
 
-    let _tray = TrayIconBuilder::new()
-        .with_menu(Box::new(tray_menu))
-        .build()?;
+    let mut tray_builder = TrayIconBuilder::new().with_menu(Box::new(tray_menu));
+    if let Ok(icon) = load_tray_icon() {
+        tray_builder = tray_builder.with_icon(icon);
+    }
+    let _tray = tray_builder.build()?;
 
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     let tx_clone = tx.clone();
@@ -539,6 +687,79 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
                 };
+
+                let mut handled_in_ui = true;
+                let ui_result: Result<serde_json::Value, String> = match req.method.as_str() {
+                    "enter_compact_mode" => {
+                        let win = webview.window();
+                        let compact_size = tao::dpi::LogicalSize::new(220.0, 148.0);
+                        let _ = win.set_decorations(false);
+                        let _ = win.set_always_on_top(true);
+                        let _ = win.set_skip_taskbar(true);
+                        let _ = win.set_resizable(false);
+                        win.set_min_inner_size(Some(compact_size));
+                        win.set_max_inner_size(Some(compact_size));
+                        win.set_inner_size(compact_size);
+                        win.set_visible(true);
+                        let _ = win.set_focus();
+                        Ok(serde_json::json!({ "ok": true }))
+                    }
+                    "enter_expanded_mode" => {
+                        let win = webview.window();
+                        let expanded_size = tao::dpi::LogicalSize::new(1024.0, 720.0);
+                        let _ = win.set_decorations(false);
+                        let _ = win.set_always_on_top(false);
+                        let _ = win.set_skip_taskbar(false);
+                        let _ = win.set_resizable(true);
+                        win.set_min_inner_size(None::<tao::dpi::LogicalSize<f64>>);
+                        win.set_max_inner_size(None::<tao::dpi::LogicalSize<f64>>);
+                        win.set_inner_size(expanded_size);
+                        win.set_visible(true);
+                        let _ = win.set_focus();
+                        Ok(serde_json::json!({ "ok": true }))
+                    }
+                    "hide_to_tray" => {
+                        webview.window().set_visible(false);
+                        Ok(serde_json::json!({ "ok": true }))
+                    }
+                    "start_window_drag" => {
+                        match webview.window().drag_window() {
+                            Ok(_) => Ok(serde_json::json!({ "ok": true })),
+                            Err(err) => Err(err.to_string()),
+                        }
+                    }
+                    "quit_app" => {
+                        *control_flow = tao::event_loop::ControlFlow::Exit;
+                        Ok(serde_json::json!({ "ok": true }))
+                    }
+                    _ => {
+                        handled_in_ui = false;
+                        Ok(serde_json::Value::Null)
+                    }
+                };
+
+                if handled_in_ui {
+                    let response_json = match ui_result {
+                        Ok(result) => serde_json::json!({
+                            "id": req.id,
+                            "ok": true,
+                            "result": result
+                        }),
+                        Err(err) => serde_json::json!({
+                            "id": req.id,
+                            "ok": false,
+                            "error": err
+                        })
+                    };
+
+                    let js = format!(
+                        "(window.__workerMonitorOnResponse && window.__workerMonitorOnResponse({0})) || (window.ipc && window.ipc.onResponse && window.ipc.onResponse({0}))",
+                        response_json
+                    );
+                    let _ = webview.evaluate_script(&js);
+                    continue;
+                }
+
                 let method = req.method.clone();
                 let send_result = if is_heavy_ipc_method(&method) {
                     ipc_req_tx_heavy.send(req)
@@ -575,7 +796,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         while let Ok(menu_event) = tray_icon::menu::menu_event_receiver().try_recv() {
             if menu_event.id == show_id {
+                let full_size = tao::dpi::LogicalSize::new(1024.0, 720.0);
+                let _ = webview.window().set_decorations(false);
+                let _ = webview.window().set_always_on_top(false);
+                let _ = webview.window().set_skip_taskbar(false);
+                let _ = webview.window().set_resizable(true);
+                let _ = webview.window().set_min_inner_size(None::<tao::dpi::LogicalSize<f64>>);
+                let _ = webview.window().set_max_inner_size(None::<tao::dpi::LogicalSize<f64>>);
+                let _ = webview.window().set_inner_size(full_size);
+                let _ = webview.window().set_visible(true);
                 let _ = webview.window().set_focus();
+                let js = "window.dispatchEvent(new CustomEvent('view-change', {detail: 'expanded'}))";
+                let _ = webview.evaluate_script(js);
+            } else if menu_event.id == mini_id {
+                let compact_size = tao::dpi::LogicalSize::new(220.0, 148.0);
+                let _ = webview.window().set_decorations(false);
+                let _ = webview.window().set_always_on_top(true);
+                let _ = webview.window().set_skip_taskbar(true);
+                let _ = webview.window().set_resizable(false);
+                let _ = webview.window().set_min_inner_size(Some(compact_size));
+                let _ = webview.window().set_max_inner_size(Some(compact_size));
+                let _ = webview.window().set_inner_size(compact_size);
+                let _ = webview.window().set_visible(true);
+                let _ = webview.window().set_focus();
+                let js = "window.dispatchEvent(new CustomEvent('view-change', {detail: 'compact'}))";
+                let _ = webview.evaluate_script(js);
+            } else if menu_event.id == hide_id {
+                let _ = webview.window().set_visible(false);
             } else if menu_event.id == quit_id {
                 *control_flow = tao::event_loop::ControlFlow::Exit;
             }

@@ -1,4 +1,6 @@
+import { MouseEvent } from "react";
 import { PostureResult } from "../types";
+import { startWindowDrag } from "../utils/windowMode";
 
 interface CompactViewProps {
   status: "idle" | "present" | "away" | "overworked";
@@ -11,6 +13,7 @@ interface CompactViewProps {
   onExpand: () => void;
   onToggleMonitoring: () => void;
   onHide: () => void;
+  onQuit: () => void;
 }
 
 function formatTimer(secs: number): string {
@@ -40,18 +43,31 @@ export default function CompactView({
   onExpand,
   onToggleMonitoring,
   onHide,
+  onQuit,
 }: CompactViewProps) {
   const timerValue = status === "away" ? breakSecs : workSecs;
   const postureScore = posture?.score ?? -1;
   const safeThresholdSecs = Math.max(workThresholdSecs, 1);
 
+  const handleTitlebarMouseDown = async (event: MouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement;
+    if (target.closest(".compact-btn")) return;
+    try {
+      await startWindowDrag();
+    } catch {
+      // Keep CSS drag as fallback when IPC drag is unavailable.
+    }
+  };
+
   return (
     <div className="compact">
-      <div className="compact-titlebar">
+      <div className="compact-titlebar" onMouseDown={handleTitlebarMouseDown}>
         <div className="compact-drag" />
         <span className="compact-brand">WM</span>
         <button className="compact-btn" onClick={onExpand} title="展开">⤢</button>
         <button className="compact-btn" onClick={onHide} title="隐藏到托盘">─</button>
+        <button className="compact-btn" onClick={onQuit} title="退出">×</button>
       </div>
 
       <div className="compact-body">

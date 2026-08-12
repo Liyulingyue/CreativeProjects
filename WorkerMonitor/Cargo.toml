@@ -11,7 +11,7 @@ tray-menu = "0.1"
 image = "0.24"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-mixpipe = "0.1"
+mixpipe = "0.1.2"
 once_cell = "1"
 dirs = "5"
 base64 = "0.22"

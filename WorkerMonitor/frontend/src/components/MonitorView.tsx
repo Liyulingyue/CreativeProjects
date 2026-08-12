@@ -1,10 +1,12 @@
-import { RefObject, useState, useEffect } from "react";
+import { MouseEvent, useRef, useState, useEffect } from "react";
 import { PostureResult } from "../types";
+import { CameraTransportMode } from "../hooks/useCamera";
 
 interface MonitorViewProps {
-  videoRef: RefObject<HTMLImageElement | null>;
+  videoRef: (node: HTMLImageElement | null) => void;
   isCameraReady: boolean;
   cameraError: string | null;
+  cameraTransportMode: CameraTransportMode;
   status: "idle" | "present" | "away" | "overworked";
   isMonitoring: boolean;
   personDetected: boolean;
@@ -21,6 +23,8 @@ interface MonitorViewProps {
   onToggleMonitoring: () => void;
   onCompact: () => void;
   onSettings: () => void;
+  onQuit: () => void;
+  onStartWindowDrag: (event: MouseEvent<HTMLElement>) => void;
 }
 
 function formatDuration(secs: number): string {
@@ -34,6 +38,7 @@ function formatDuration(secs: number): string {
 
 function formatShort(secs: number): string {
   const total = Math.floor(secs);
+  if (total < 60) return `${total}秒`;
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);
   if (h > 0) return `${h}小时${m}分`;
@@ -92,6 +97,7 @@ export default function MonitorView({
   videoRef,
   isCameraReady,
   cameraError,
+  cameraTransportMode,
   status,
   isMonitoring,
   personDetected,
@@ -108,9 +114,12 @@ export default function MonitorView({
   onToggleMonitoring,
   onCompact,
   onSettings,
+  onQuit,
+  onStartWindowDrag,
 }: MonitorViewProps) {
   const [postureHistory, setPostureHistory] = useState<number[]>([]);
   const [currentTime, setCurrentTime] = useState(new Date());
+  const lastSampleSeqRef = useRef<number>(-1);
 
   useEffect(() => {
     const t = setInterval(() => setCurrentTime(new Date()), 1000);
@@ -119,12 +128,17 @@ export default function MonitorView({
 
   useEffect(() => {
     if (posture && personDetected) {
+      const sampleSeq = posture.sampleSeq ?? -1;
+      if (sampleSeq === lastSampleSeqRef.current) {
+        return;
+      }
+      lastSampleSeqRef.current = sampleSeq;
       setPostureHistory(prev => {
         const next = [...prev, posture.score];
         return next.slice(-20);
       });
     }
-  }, [posture, personDetected]);
+  }, [posture?.sampleSeq, posture?.score, personDetected]);
 
   const safeThresholdSecs = Math.max(workThresholdSecs, 1);
   const workProgress = workSecs > 0 ? Math.min((workSecs / safeThresholdSecs) * 100, 100) : 0;
@@ -139,7 +153,7 @@ export default function MonitorView({
 
   return (
     <>
-      <header className="app-header">
+      <header className="app-header" onMouseDown={onStartWindowDrag}>
         <div className="app-header-left">
           <span className="app-logo">🖥️</span>
           <span className="app-header-title">WorkerMonitor</span>
@@ -153,6 +167,7 @@ export default function MonitorView({
           <div className="header-actions">
             <button className="icon-btn" onClick={onCompact} title="紧凑模式">◻</button>
             <button className="icon-btn" onClick={onSettings} title="设置">⚙</button>
+            <button className="icon-btn" onClick={onQuit} title="退出">×</button>
           </div>
         </div>
       </header>
@@ -162,9 +177,14 @@ export default function MonitorView({
           <div className="dash-card camera-card">
             <div className="dash-card-header">
               <span className="dash-card-title">摄像头</span>
-              <span className={`dash-card-badge ${personDetected ? "green" : "yellow"}`}>
-                {personDetected ? "检测到人员" : "未检测"}
-              </span>
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <span className={`dash-card-badge ${personDetected ? "green" : "yellow"}`}>
+                  {personDetected ? "检测到人员" : "未检测"}
+                </span>
+                <span className={`dash-card-badge ${cameraTransportMode === "stream" ? "blue" : cameraTransportMode === "fallback-polling" ? "yellow" : "red"}`} title="摄像头预览链路">
+                  {cameraTransportMode === "stream" ? "STREAM" : cameraTransportMode === "fallback-polling" ? "FALLBACK" : "IDLE"}
+                </span>
+              </div>
             </div>
             <div className="camera-wrapper">
               <img ref={videoRef} alt="" style={{ transform: mirrorVideo ? "scaleX(-1)" : "none" }} />
@@ -264,11 +284,11 @@ export default function MonitorView({
             <div className="stats-grid">
               <div className="stat-box">
                 <div className="stat-label">累计工作</div>
-                <div className="stat-value work">{formatShort(totalWork + workSecs)}</div>
+                <div className="stat-value work">{formatShort(totalWork)}</div>
               </div>
               <div className="stat-box">
                 <div className="stat-label">累计休息</div>
-                <div className="stat-value break">{formatShort(totalBreak + (status === "away" ? breakSecs : 0))}</div>
+                <div className="stat-value break">{formatShort(totalBreak)}</div>
               </div>
             </div>
           </div>
