@@ -64,8 +64,8 @@ impl GGMLType {
             Self::Q5_1 => (32, 24),
             Self::Q8_0 => (32, 34),
             Self::Q8_1 => (32, 36),
-            Self::Q2K => (256, 256),
-            Self::Q3K => (256, 256),
+            Self::Q2K => (256, 84),
+            Self::Q3K => (256, 110),
             Self::Q4K => (256, 144),
             Self::Q5K => (256, 176),
             Self::Q6K => (256, 210),
@@ -122,7 +122,7 @@ impl MetaValueType {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MetaValue {
     Uint8(u8),
     Int8(i8),
@@ -183,7 +183,7 @@ impl MetaValue {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TensorInfo {
     pub name: String,
     pub dims: Vec<u64>,
@@ -192,23 +192,65 @@ pub struct TensorInfo {
 }
 
 impl TensorInfo {
+    pub fn checked_n_elements(&self) -> Option<u64> {
+        let (first, rest) = self.dims.split_first()?;
+        rest.iter()
+            .try_fold(*first, |count, dimension| count.checked_mul(*dimension))
+    }
+
+    pub fn checked_nbytes(&self) -> Option<u64> {
+        let row_elements = *self.dims.first()?;
+        let rows = self.dims[1..]
+            .iter()
+            .try_fold(1u64, |count, dimension| count.checked_mul(*dimension))?;
+        let (block_elements, block_bytes) = self.ggml_type.type_traits();
+        let block_elements = block_elements as u64;
+        if row_elements % block_elements != 0 {
+            return None;
+        }
+        row_elements
+            .checked_div(block_elements)?
+            .checked_mul(block_bytes as u64)?
+            .checked_mul(rows)
+    }
+
     pub fn n_elements(&self) -> usize {
-        self.dims.iter().product::<u64>() as usize
+        usize::try_from(self.checked_n_elements().expect("validated tensor shape"))
+            .expect("validated tensor element count fits usize")
     }
 
     pub fn nbytes(&self) -> usize {
-        self.ggml_type.nbytes(self.n_elements())
+        usize::try_from(self.checked_nbytes().expect("validated tensor byte size"))
+            .expect("validated tensor byte size fits usize")
     }
 }
 
-struct ByteReader<'a> {
+pub(crate) struct ByteReader<'a> {
     data: &'a [u8],
     pos: usize,
 }
 
 impl<'a> ByteReader<'a> {
-    fn new(data: &'a [u8]) -> Self {
+    pub(crate) fn new(data: &'a [u8]) -> Self {
         Self { data, pos: 0 }
+    }
+
+    fn read_len(&mut self, context: &str) -> Result<usize, String> {
+        usize::try_from(self.read_u64()?)
+            .map_err(|_| format!("{context} length does not fit usize"))
+    }
+
+    pub(crate) fn read_exact(&mut self, len: usize, context: &str) -> Result<&'a [u8], String> {
+        let end = self
+            .pos
+            .checked_add(len)
+            .ok_or_else(|| format!("{context} range overflow"))?;
+        let value = self
+            .data
+            .get(self.pos..end)
+            .ok_or_else(|| format!("EOF reading {context} of length {len}"))?;
+        self.pos = end;
+        Ok(value)
     }
 
     fn remaining(&self) -> usize {
@@ -241,7 +283,7 @@ impl<'a> ByteReader<'a> {
         Ok(self.read_u16()? as i16)
     }
 
-    fn read_u32(&mut self) -> Result<u32, String> {
+    pub(crate) fn read_u32(&mut self) -> Result<u32, String> {
         if self.remaining() < 4 {
             return Err("EOF reading u32".into());
         }
@@ -255,11 +297,11 @@ impl<'a> ByteReader<'a> {
         Ok(v)
     }
 
-    fn read_i32(&mut self) -> Result<i32, String> {
+    pub(crate) fn read_i32(&mut self) -> Result<i32, String> {
         Ok(self.read_u32()? as i32)
     }
 
-    fn read_u64(&mut self) -> Result<u64, String> {
+    pub(crate) fn read_u64(&mut self) -> Result<u64, String> {
         if self.remaining() < 8 {
             return Err("EOF reading u64".into());
         }
@@ -281,17 +323,13 @@ impl<'a> ByteReader<'a> {
         Ok(f64::from_bits(self.read_u64()?))
     }
 
-    fn read_string(&mut self) -> Result<String, String> {
-        let len = self.read_u64()? as usize;
-        if self.remaining() < len {
-            return Err(format!("EOF reading string of len {}", len));
-        }
-        let s = String::from_utf8_lossy(&self.data[self.pos..self.pos + len]).into_owned();
-        self.pos += len;
-        Ok(s)
+    pub(crate) fn read_string(&mut self) -> Result<String, String> {
+        let len = self.read_len("string")?;
+        let bytes = self.read_exact(len, "string")?;
+        String::from_utf8(bytes.to_vec()).map_err(|error| format!("Invalid UTF-8 string: {error}"))
     }
 
-    fn read_meta_value(&mut self, vtype: MetaValueType) -> Result<MetaValue, String> {
+    pub(crate) fn read_meta_value(&mut self, vtype: MetaValueType) -> Result<MetaValue, String> {
         match vtype {
             MetaValueType::Uint8 => Ok(MetaValue::Uint8(self.read_u8()?)),
             MetaValueType::Int8 => Ok(MetaValue::Int8(self.read_i8()?)),
@@ -300,7 +338,11 @@ impl<'a> ByteReader<'a> {
             MetaValueType::Uint32 => Ok(MetaValue::Uint32(self.read_u32()?)),
             MetaValueType::Int32 => Ok(MetaValue::Int32(self.read_i32()?)),
             MetaValueType::Float32 => Ok(MetaValue::Float32(self.read_f32()?)),
-            MetaValueType::Bool => Ok(MetaValue::Bool(self.read_u8()? != 0)),
+            MetaValueType::Bool => match self.read_u8()? {
+                0 => Ok(MetaValue::Bool(false)),
+                1 => Ok(MetaValue::Bool(true)),
+                value => Err(format!("Invalid bool value: {value}")),
+            },
             MetaValueType::String => Ok(MetaValue::String(self.read_string()?)),
             MetaValueType::Uint64 => Ok(MetaValue::Uint64(self.read_u64()?)),
             MetaValueType::Int64 => Ok(MetaValue::Int64(self.read_i64()?)),
@@ -309,7 +351,7 @@ impl<'a> ByteReader<'a> {
                 let elem_type_i32 = self.read_i32()?;
                 let elem_type = MetaValueType::from_i32(elem_type_i32)
                     .ok_or_else(|| format!("Unknown meta value type: {}", elem_type_i32))?;
-                let n = self.read_u64()? as usize;
+                let n = self.read_len("array")?;
                 let mut vals = Vec::with_capacity(n);
                 for _ in 0..n {
                     vals.push(self.read_meta_value(elem_type)?);
@@ -319,7 +361,7 @@ impl<'a> ByteReader<'a> {
         }
     }
 
-    fn pos(&self) -> usize {
+    pub(crate) fn pos(&self) -> usize {
         self.pos
     }
 }
@@ -346,7 +388,7 @@ impl std::fmt::Debug for GGUFLoader {
 }
 
 impl GGUFLoader {
-    pub fn from_file(path: &str) -> Result<Self, String> {
+    pub fn from_file(path: impl AsRef<std::path::Path>) -> Result<Self, String> {
         let file = File::open(path).map_err(|e| format!("Failed to open GGUF file: {}", e))?;
         let mmap = unsafe { Mmap::map(&file) }.map_err(|e| format!("Failed to mmap: {}", e))?;
         Self::from_mmap(mmap)
@@ -369,10 +411,12 @@ impl GGUFLoader {
             return Err(format!("Unsupported GGUF version: {}", version));
         }
 
-        let n_tensors = reader.read_u64()?;
-        let n_kv = reader.read_u64()?;
+        let n_tensors = usize::try_from(reader.read_u64()?)
+            .map_err(|_| "tensor count does not fit usize".to_string())?;
+        let n_kv = usize::try_from(reader.read_u64()?)
+            .map_err(|_| "metadata count does not fit usize".to_string())?;
 
-        let mut metadata = Vec::with_capacity(n_kv as usize);
+        let mut metadata = Vec::with_capacity(n_kv);
         for _ in 0..n_kv {
             let key = reader.read_string()?;
             let vtype_i32 = reader.read_i32()?;
@@ -382,11 +426,12 @@ impl GGUFLoader {
             metadata.push((key, value));
         }
 
-        let mut tensors = Vec::with_capacity(n_tensors as usize);
+        let mut tensors = Vec::with_capacity(n_tensors);
         for _ in 0..n_tensors {
             let name = reader.read_string()?;
-            let n_dims = reader.read_u32()?;
-            let mut dims = Vec::with_capacity(n_dims as usize);
+            let n_dims = usize::try_from(reader.read_u32()?)
+                .map_err(|_| "tensor dimension count does not fit usize".to_string())?;
+            let mut dims = Vec::with_capacity(n_dims);
             for _ in 0..n_dims {
                 dims.push(reader.read_u64()?);
             }
@@ -407,15 +452,44 @@ impl GGUFLoader {
             .find(|(k, _)| k == "general.alignment")
             .and_then(|(_, v)| v.to_u64())
             .unwrap_or(GGUF_DEFAULT_ALIGNMENT);
+        if alignment == 0 {
+            return Err("GGUF alignment must be nonzero".into());
+        }
+        let alignment = usize::try_from(alignment)
+            .map_err(|_| "GGUF alignment does not fit usize".to_string())?;
 
         let data_offset = reader.pos();
-        let padded_data_offset =
-            ((data_offset as u64 + alignment - 1) / alignment * alignment) as usize;
+        let remainder = data_offset % alignment;
+        let padded_data_offset = if remainder == 0 {
+            data_offset
+        } else {
+            data_offset
+                .checked_add(alignment - remainder)
+                .ok_or_else(|| "GGUF data offset overflow".to_string())?
+        };
+
+        for tensor in &tensors {
+            let offset = usize::try_from(tensor.offset)
+                .map_err(|_| format!("tensor {} offset does not fit usize", tensor.name))?;
+            let nbytes = usize::try_from(
+                tensor
+                    .checked_nbytes()
+                    .ok_or_else(|| format!("invalid tensor shape: {}", tensor.name))?,
+            )
+            .map_err(|_| format!("tensor {} byte size does not fit usize", tensor.name))?;
+            let end = padded_data_offset
+                .checked_add(offset)
+                .and_then(|start| start.checked_add(nbytes))
+                .ok_or_else(|| format!("tensor {} range overflow", tensor.name))?;
+            if end > mmap.len() {
+                return Err(format!("tensor {} exceeds GGUF data", tensor.name));
+            }
+        }
 
         Ok(Self {
             mmap,
             version,
-            alignment,
+            alignment: alignment as u64,
             data_offset: padded_data_offset,
             metadata,
             tensors,
@@ -436,6 +510,10 @@ impl GGUFLoader {
 
     pub fn tensors(&self) -> &[TensorInfo] {
         &self.tensors
+    }
+
+    pub fn metadata_entries(&self) -> &[(String, MetaValue)] {
+        &self.metadata
     }
 
     pub fn metadata(&self, key: &str) -> Option<&MetaValue> {
@@ -462,57 +540,98 @@ impl GGUFLoader {
 
     pub fn tensor_slice(&self, name: &str) -> Option<&[u8]> {
         let tensor = self.tensor_info(name)?;
-        let abs_offset = self.data_offset + tensor.offset as usize;
-        let nbytes = tensor.nbytes();
-        if abs_offset + nbytes <= self.mmap.len() {
-            Some(&self.mmap[abs_offset..abs_offset + nbytes])
-        } else {
-            None
-        }
+        let abs_offset = self
+            .data_offset
+            .checked_add(usize::try_from(tensor.offset).ok()?)?;
+        let nbytes = usize::try_from(tensor.checked_nbytes()?).ok()?;
+        let end = abs_offset.checked_add(nbytes)?;
+        self.mmap.get(abs_offset..end)
     }
 
     pub fn model_config(&self) -> Result<ModelConfig, String> {
-        let arch = self
-            .metadata("general.architecture")
-            .and_then(|v| v.to_string_val())
-            .unwrap_or_default();
+        model_config_from_source(self)
+    }
+}
 
-        let prefix = match &arch as &str {
-            "qwen2" | "qwen3" | "qwen35" | "llama" => arch,
-            _ => return Err(format!("Unsupported architecture: {}", arch)),
-        };
+pub trait TensorSource: Send + Sync {
+    fn metadata(&self, key: &str) -> Option<&MetaValue>;
+    fn tensor_info(&self, name: &str) -> Option<&TensorInfo>;
+    fn tensor_slice(&self, name: &str) -> Option<&[u8]>;
 
-        let get_u64 = |key: &str| -> Result<u64, String> {
-            self.metadata(key)
-                .and_then(|v| v.to_u64())
-                .ok_or_else(|| format!("Missing metadata: {}", key))
-        };
+    fn model_config(&self) -> Result<ModelConfig, String> {
+        model_config_from_source(self)
+    }
+}
 
-        let get_f64 = |key: &str| -> Result<f64, String> {
-            self.metadata(key)
-                .and_then(|v| v.to_f64())
-                .ok_or_else(|| format!("Missing metadata: {}", key))
-        };
+pub fn model_config_from_source<S: TensorSource + ?Sized>(
+    source: &S,
+) -> Result<ModelConfig, String> {
+    let arch = source
+        .metadata("general.architecture")
+        .and_then(MetaValue::to_string_val)
+        .unwrap_or_default();
+    let prefix = match arch {
+        "qwen2" | "qwen3" | "qwen35" | "llama" => arch,
+        _ => return Err(format!("Unsupported architecture: {arch}")),
+    };
+    let get_u64 = |key: &str| -> Result<u64, String> {
+        source
+            .metadata(key)
+            .and_then(MetaValue::to_u64)
+            .ok_or_else(|| format!("Missing metadata: {key}"))
+    };
+    let get_f64 = |key: &str| -> Result<f64, String> {
+        source
+            .metadata(key)
+            .and_then(MetaValue::to_f64)
+            .ok_or_else(|| format!("Missing metadata: {key}"))
+    };
+    let n_embd = usize::try_from(get_u64(&format!("{prefix}.embedding_length"))?)
+        .map_err(|_| format!("{prefix}.embedding_length does not fit usize"))?;
+    let n_head = usize::try_from(get_u64(&format!("{prefix}.attention.head_count"))?)
+        .map_err(|_| format!("{prefix}.attention.head_count does not fit usize"))?;
+    if n_head == 0 || n_embd % n_head != 0 {
+        return Err(format!(
+            "Invalid {prefix} head shape: embedding_length={n_embd}, head_count={n_head}"
+        ));
+    }
+    let as_usize = |key: String| -> Result<usize, String> {
+        usize::try_from(get_u64(&key)?).map_err(|_| format!("{key} does not fit usize"))
+    };
 
-        let n_embd = get_u64(&format!("{}.embedding_length", prefix))? as usize;
-        let n_head = get_u64(&format!("{}.attention.head_count", prefix))? as usize;
+    Ok(ModelConfig {
+        n_embd,
+        n_layer: as_usize(format!("{prefix}.block_count"))?,
+        n_head,
+        n_head_kv: as_usize(format!("{prefix}.attention.head_count_kv"))?,
+        n_embd_head: n_embd / n_head,
+        n_ff: as_usize(format!("{prefix}.feed_forward_length"))?,
+        n_ctx: as_usize(format!("{prefix}.context_length"))?,
+        vocab_size: match get_u64(&format!("{prefix}.vocab_size")) {
+            Ok(value) => usize::try_from(value)
+                .map_err(|_| format!("{prefix}.vocab_size does not fit usize"))?,
+            Err(_) => source
+                .metadata("tokenizer.ggml.tokens")
+                .and_then(MetaValue::to_arr)
+                .map(Vec::len)
+                .unwrap_or(0),
+        },
+        rope_freq_base: get_f64(&format!("{prefix}.rope.freq_base"))? as f32,
+        norm_eps: get_f64(&format!("{prefix}.attention.layer_norm_rms_epsilon"))? as f32,
+    })
+}
 
-        Ok(ModelConfig {
-            n_embd,
-            n_layer: get_u64(&format!("{}.block_count", prefix))? as usize,
-            n_head,
-            n_head_kv: get_u64(&format!("{}.attention.head_count_kv", prefix))? as usize,
-            n_embd_head: n_embd / n_head,
-            n_ff: get_u64(&format!("{}.feed_forward_length", prefix))? as usize,
-            n_ctx: get_u64(&format!("{}.context_length", prefix))? as usize,
-            vocab_size: get_u64(&format!("{}.vocab_size", prefix)).unwrap_or_else(|_| {
-                self.metadata("tokenizer.ggml.tokens")
-                    .and_then(|v| v.to_arr().map(|a| a.len()))
-                    .unwrap_or(0) as u64
-            }) as usize,
-            rope_freq_base: get_f64(&format!("{}.rope.freq_base", prefix))? as f32,
-            norm_eps: get_f64(&format!("{}.attention.layer_norm_rms_epsilon", prefix))? as f32,
-        })
+impl TensorSource for GGUFLoader {
+    fn metadata(&self, key: &str) -> Option<&MetaValue> {
+        GGUFLoader::metadata(self, key)
+    }
+
+    fn tensor_info(&self, name: &str) -> Option<&TensorInfo> {
+        GGUFLoader::tensor_info(self, name)
+    }
+
+    fn tensor_slice(&self, name: &str) -> Option<&[u8]> {
+        GGUFLoader::tensor_slice(self, name)
     }
 }
 
@@ -542,16 +661,16 @@ impl<'a> QuantizedLinear<'a> {
         }
     }
 
-    pub fn from_gguf(
-        loader: &'a GGUFLoader,
+    pub fn from_source<S: TensorSource + ?Sized>(
+        source: &'a S,
         weight_name: &str,
         bias_name: Option<&str>,
         in_features: usize,
         out_features: usize,
         name: &'a str,
     ) -> Option<Self> {
-        let weight = loader.tensor_slice(weight_name)?;
-        let bias = bias_name.and_then(|n| loader.tensor_slice(n));
+        let weight = source.tensor_slice(weight_name)?;
+        let bias = bias_name.and_then(|n| source.tensor_slice(n));
         Some(Self {
             weight,
             bias,
@@ -663,22 +782,45 @@ impl<'a> ModelGraph<'a> {
 mod tests {
     use super::*;
 
-    fn push_u8(buf: &mut Vec<u8>, v: u8) { buf.push(v); }
-    fn push_u16(buf: &mut Vec<u8>, v: u16) { buf.extend_from_slice(&v.to_le_bytes()); }
-    fn push_i16(buf: &mut Vec<u8>, v: i16) { buf.extend_from_slice(&v.to_le_bytes()); }
-    fn push_u32(buf: &mut Vec<u8>, v: u32) { buf.extend_from_slice(&v.to_le_bytes()); }
-    fn push_i32(buf: &mut Vec<u8>, v: i32) { buf.extend_from_slice(&v.to_le_bytes()); }
-    fn push_u64(buf: &mut Vec<u8>, v: u64) { buf.extend_from_slice(&v.to_le_bytes()); }
-    fn push_i64(buf: &mut Vec<u8>, v: i64) { buf.extend_from_slice(&v.to_le_bytes()); }
-    fn push_f32(buf: &mut Vec<u8>, v: f32) { buf.extend_from_slice(&v.to_le_bytes()); }
-    fn push_f64(buf: &mut Vec<u8>, v: f64) { buf.extend_from_slice(&v.to_le_bytes()); }
+    fn push_u8(buf: &mut Vec<u8>, v: u8) {
+        buf.push(v);
+    }
+    fn push_u16(buf: &mut Vec<u8>, v: u16) {
+        buf.extend_from_slice(&v.to_le_bytes());
+    }
+    fn push_i16(buf: &mut Vec<u8>, v: i16) {
+        buf.extend_from_slice(&v.to_le_bytes());
+    }
+    fn push_u32(buf: &mut Vec<u8>, v: u32) {
+        buf.extend_from_slice(&v.to_le_bytes());
+    }
+    fn push_i32(buf: &mut Vec<u8>, v: i32) {
+        buf.extend_from_slice(&v.to_le_bytes());
+    }
+    fn push_u64(buf: &mut Vec<u8>, v: u64) {
+        buf.extend_from_slice(&v.to_le_bytes());
+    }
+    fn push_i64(buf: &mut Vec<u8>, v: i64) {
+        buf.extend_from_slice(&v.to_le_bytes());
+    }
+    fn push_f32(buf: &mut Vec<u8>, v: f32) {
+        buf.extend_from_slice(&v.to_le_bytes());
+    }
+    fn push_f64(buf: &mut Vec<u8>, v: f64) {
+        buf.extend_from_slice(&v.to_le_bytes());
+    }
 
     fn push_str(buf: &mut Vec<u8>, s: &str) {
         push_u64(buf, s.len() as u64);
         buf.extend_from_slice(s.as_bytes());
     }
 
-    fn push_kv(buf: &mut Vec<u8>, key: &str, vtype: MetaValueType, write_val: impl FnOnce(&mut Vec<u8>)) {
+    fn push_kv(
+        buf: &mut Vec<u8>,
+        key: &str,
+        vtype: MetaValueType,
+        write_val: impl FnOnce(&mut Vec<u8>),
+    ) {
         push_str(buf, key);
         push_i32(buf, vtype as i32);
         write_val(buf);
@@ -689,13 +831,59 @@ mod tests {
         push_u32(&mut b, u32::from_le_bytes(*b"GGUF"));
         push_u32(&mut b, 3);
         push_u64(&mut b, 2);
-        push_u64(&mut b, 5);
+        push_u64(&mut b, 11);
 
-        push_kv(&mut b, "general.architecture", MetaValueType::String, |b| push_str(b, "qwen2"));
-        push_kv(&mut b, "qwen2.embedding_length", MetaValueType::Uint32, |b| push_u32(b, 1024));
-        push_kv(&mut b, "qwen2.block_count", MetaValueType::Uint32, |b| push_u32(b, 24));
-        push_kv(&mut b, "qwen2.attention.head_count", MetaValueType::Uint32, |b| push_u32(b, 16));
-        push_kv(&mut b, "general.alignment", MetaValueType::Uint64, |b| push_u64(b, 32));
+        push_kv(&mut b, "general.architecture", MetaValueType::String, |b| {
+            push_str(b, "qwen2")
+        });
+        push_kv(
+            &mut b,
+            "qwen2.embedding_length",
+            MetaValueType::Uint32,
+            |b| push_u32(b, 1024),
+        );
+        push_kv(&mut b, "qwen2.block_count", MetaValueType::Uint32, |b| {
+            push_u32(b, 24)
+        });
+        push_kv(
+            &mut b,
+            "qwen2.attention.head_count",
+            MetaValueType::Uint32,
+            |b| push_u32(b, 16),
+        );
+        push_kv(&mut b, "general.alignment", MetaValueType::Uint64, |b| {
+            push_u64(b, 32)
+        });
+        push_kv(
+            &mut b,
+            "qwen2.attention.head_count_kv",
+            MetaValueType::Uint32,
+            |b| push_u32(b, 16),
+        );
+        push_kv(
+            &mut b,
+            "qwen2.feed_forward_length",
+            MetaValueType::Uint32,
+            |b| push_u32(b, 2816),
+        );
+        push_kv(&mut b, "qwen2.context_length", MetaValueType::Uint32, |b| {
+            push_u32(b, 4096)
+        });
+        push_kv(&mut b, "qwen2.vocab_size", MetaValueType::Uint32, |b| {
+            push_u32(b, 151936)
+        });
+        push_kv(
+            &mut b,
+            "qwen2.rope.freq_base",
+            MetaValueType::Float32,
+            |b| push_f32(b, 1_000_000.0),
+        );
+        push_kv(
+            &mut b,
+            "qwen2.attention.layer_norm_rms_epsilon",
+            MetaValueType::Float32,
+            |b| push_f32(b, 1e-6),
+        );
 
         push_str(&mut b, "token_embd.weight");
         push_u32(&mut b, 2);
@@ -713,7 +901,9 @@ mod tests {
         let padded = ((embd_nbytes as u64 + 31) / 32 * 32) as u64;
         push_u64(&mut b, padded);
 
-        while b.len() % 32 != 0 { b.push(0); }
+        while b.len() % 32 != 0 {
+            b.push(0);
+        }
         let data_start = b.len();
         let total_data = padded as usize + GGMLType::Q4K.nbytes(1024 * 1024);
         b.resize(data_start + total_data, 0xAB);
@@ -727,18 +917,40 @@ mod tests {
         push_u64(&mut b, 0);
         push_u64(&mut b, 13);
 
-        push_kv(&mut b, "test.uint8", MetaValueType::Uint8, |b| push_u8(b, 42));
-        push_kv(&mut b, "test.int8", MetaValueType::Int8, |b| push_u8(b, (-1i8) as u8));
-        push_kv(&mut b, "test.uint16", MetaValueType::Uint16, |b| push_u16(b, 1000));
-        push_kv(&mut b, "test.int16", MetaValueType::Int16, |b| push_i16(b, -100));
-        push_kv(&mut b, "test.uint32", MetaValueType::Uint32, |b| push_u32(b, 1024));
-        push_kv(&mut b, "test.int32", MetaValueType::Int32, |b| push_i32(b, -24));
-        push_kv(&mut b, "test.float32", MetaValueType::Float32, |b| push_f32(b, 3.14));
+        push_kv(&mut b, "test.uint8", MetaValueType::Uint8, |b| {
+            push_u8(b, 42)
+        });
+        push_kv(&mut b, "test.int8", MetaValueType::Int8, |b| {
+            push_u8(b, (-1i8) as u8)
+        });
+        push_kv(&mut b, "test.uint16", MetaValueType::Uint16, |b| {
+            push_u16(b, 1000)
+        });
+        push_kv(&mut b, "test.int16", MetaValueType::Int16, |b| {
+            push_i16(b, -100)
+        });
+        push_kv(&mut b, "test.uint32", MetaValueType::Uint32, |b| {
+            push_u32(b, 1024)
+        });
+        push_kv(&mut b, "test.int32", MetaValueType::Int32, |b| {
+            push_i32(b, -24)
+        });
+        push_kv(&mut b, "test.float32", MetaValueType::Float32, |b| {
+            push_f32(b, 3.14)
+        });
         push_kv(&mut b, "test.bool", MetaValueType::Bool, |b| push_u8(b, 1));
-        push_kv(&mut b, "test.string", MetaValueType::String, |b| push_str(b, "hello"));
-        push_kv(&mut b, "test.uint64", MetaValueType::Uint64, |b| push_u64(b, 999999));
-        push_kv(&mut b, "test.int64", MetaValueType::Int64, |b| push_i64(b, -123456));
-        push_kv(&mut b, "test.float64", MetaValueType::Float64, |b| push_f64(b, 2.71828));
+        push_kv(&mut b, "test.string", MetaValueType::String, |b| {
+            push_str(b, "hello")
+        });
+        push_kv(&mut b, "test.uint64", MetaValueType::Uint64, |b| {
+            push_u64(b, 999999)
+        });
+        push_kv(&mut b, "test.int64", MetaValueType::Int64, |b| {
+            push_i64(b, -123456)
+        });
+        push_kv(&mut b, "test.float64", MetaValueType::Float64, |b| {
+            push_f64(b, 2.71828)
+        });
         push_kv(&mut b, "test.array", MetaValueType::Array, |b| {
             push_i32(b, MetaValueType::Uint32 as i32);
             push_u64(b, 3);
@@ -747,7 +959,9 @@ mod tests {
             push_u32(b, 30);
         });
 
-        while b.len() % 32 != 0 { b.push(0); }
+        while b.len() % 32 != 0 {
+            b.push(0);
+        }
         b
     }
 
@@ -770,12 +984,25 @@ mod tests {
         assert_eq!(loader.version, 3);
         assert_eq!(loader.alignment, 32);
         assert_eq!(loader.n_tensors(), 2);
-        assert_eq!(loader.n_kv(), 5);
+        assert_eq!(loader.n_kv(), 11);
 
-        let arch = loader.metadata("general.architecture").and_then(|v| v.to_string_val()).unwrap();
+        let arch = loader
+            .metadata("general.architecture")
+            .and_then(|v| v.to_string_val())
+            .unwrap();
         assert_eq!(arch, "qwen2");
-        assert_eq!(loader.metadata("qwen2.embedding_length").and_then(|v| v.to_u64()), Some(1024));
-        assert_eq!(loader.metadata("qwen2.block_count").and_then(|v| v.to_u64()), Some(24));
+        assert_eq!(
+            loader
+                .metadata("qwen2.embedding_length")
+                .and_then(|v| v.to_u64()),
+            Some(1024)
+        );
+        assert_eq!(
+            loader
+                .metadata("qwen2.block_count")
+                .and_then(|v| v.to_u64()),
+            Some(24)
+        );
 
         let ti0 = loader.tensor_info("token_embd.weight").expect("tensor 0");
         assert_eq!(ti0.dims, vec![1024, 151936]);
@@ -791,31 +1018,98 @@ mod tests {
         assert_eq!(s1.len(), ti1.nbytes());
     }
 
+    struct DelegatingSource<'a>(&'a GGUFLoader);
+
+    impl TensorSource for DelegatingSource<'_> {
+        fn metadata(&self, key: &str) -> Option<&MetaValue> {
+            self.0.metadata(key)
+        }
+
+        fn tensor_info(&self, name: &str) -> Option<&TensorInfo> {
+            self.0.tensor_info(name)
+        }
+
+        fn tensor_slice(&self, name: &str) -> Option<&[u8]> {
+            self.0.tensor_slice(name)
+        }
+    }
+
+    #[test]
+    fn model_config_and_linear_accept_a_tensor_source() {
+        let loader = parse_temp(&build_minimal_gguf()).unwrap();
+        let source = DelegatingSource(&loader);
+        assert_eq!(source.model_config().unwrap().n_embd, 1024);
+        assert!(QuantizedLinear::from_source(
+            &source,
+            "blk.0.attn_q.weight",
+            None,
+            1024,
+            1024,
+            "attn_q",
+        )
+        .is_some());
+    }
+
     #[test]
     fn test_gguf_all_meta_types() {
         let data = build_all_meta_types_gguf();
         let loader = parse_temp(&data).expect("parse all meta types");
 
-        assert_eq!(loader.metadata("test.uint8").and_then(|v| v.to_u64()), Some(42));
-        assert_eq!(loader.metadata("test.int8").and_then(|v| v.to_u64()), Some((-1i8) as u64));
-        assert_eq!(loader.metadata("test.uint16").and_then(|v| v.to_u64()), Some(1000));
-        assert_eq!(loader.metadata("test.int16").and_then(|v| v.to_u64()), Some((-100i16) as u64));
-        assert_eq!(loader.metadata("test.uint32").and_then(|v| v.to_u64()), Some(1024));
-        assert_eq!(loader.metadata("test.int32").and_then(|v| v.to_u64()), Some((-24i32) as u64));
+        assert_eq!(
+            loader.metadata("test.uint8").and_then(|v| v.to_u64()),
+            Some(42)
+        );
+        assert_eq!(
+            loader.metadata("test.int8").and_then(|v| v.to_u64()),
+            Some((-1i8) as u64)
+        );
+        assert_eq!(
+            loader.metadata("test.uint16").and_then(|v| v.to_u64()),
+            Some(1000)
+        );
+        assert_eq!(
+            loader.metadata("test.int16").and_then(|v| v.to_u64()),
+            Some((-100i16) as u64)
+        );
+        assert_eq!(
+            loader.metadata("test.uint32").and_then(|v| v.to_u64()),
+            Some(1024)
+        );
+        assert_eq!(
+            loader.metadata("test.int32").and_then(|v| v.to_u64()),
+            Some((-24i32) as u64)
+        );
 
-        let f32v = loader.metadata("test.float32").and_then(|v| v.to_f64()).unwrap();
+        let f32v = loader
+            .metadata("test.float32")
+            .and_then(|v| v.to_f64())
+            .unwrap();
         assert!((f32v - 3.14).abs() < 0.01);
 
         match loader.metadata("test.bool") {
-            Some(MetaValue::Bool(true)) => {},
+            Some(MetaValue::Bool(true)) => {}
             other => panic!("expected Bool(true), got {:?}", other),
         }
 
-        assert_eq!(loader.metadata("test.string").and_then(|v| v.to_string_val()), Some("hello"));
-        assert_eq!(loader.metadata("test.uint64").and_then(|v| v.to_u64()), Some(999999));
-        assert_eq!(loader.metadata("test.int64").and_then(|v| v.to_u64()), Some((-123456i64) as u64));
+        assert_eq!(
+            loader
+                .metadata("test.string")
+                .and_then(|v| v.to_string_val()),
+            Some("hello")
+        );
+        assert_eq!(
+            loader.metadata("test.uint64").and_then(|v| v.to_u64()),
+            Some(999999)
+        );
+        assert_eq!(
+            loader.metadata("test.int64").and_then(|v| v.to_u64()),
+            Some((-123456i64) as u64)
+        );
 
-        let f64v = loader.metadata("test.float64").and_then(|v| v.to_f64()).unwrap();
+        let f64v = loader
+            .metadata("test.float64")
+            .and_then(|v| v.to_f64())
+            .unwrap();
         assert!((f64v - 2.71828).abs() < 0.001);
 
         match loader.metadata("test.array") {
@@ -825,7 +1119,7 @@ mod tests {
                 assert_eq!(vals[0].to_u64(), Some(10));
                 assert_eq!(vals[1].to_u64(), Some(20));
                 assert_eq!(vals[2].to_u64(), Some(30));
-            },
+            }
             other => panic!("expected Array, got {:?}", other),
         }
     }
@@ -838,6 +1132,36 @@ mod tests {
         assert_eq!(GGMLType::Q4K.nbytes(512), 288);
         assert_eq!(GGMLType::Q4_0.nbytes(32), 18);
         assert_eq!(GGMLType::Q8_0.nbytes(32), 34);
+    }
+
+    #[test]
+    fn k_quant_block_sizes_match_ggml() {
+        assert_eq!(GGMLType::Q2K.nbytes(256), 84);
+        assert_eq!(GGMLType::Q3K.nbytes(256), 110);
+    }
+
+    #[test]
+    fn tensor_size_overflow_is_rejected() {
+        let info = TensorInfo {
+            name: "bad".into(),
+            dims: vec![u64::MAX, 2],
+            ggml_type: GGMLType::F32,
+            offset: 0,
+        };
+        assert_eq!(info.checked_n_elements(), None);
+        assert_eq!(info.checked_nbytes(), None);
+    }
+
+    #[test]
+    fn malformed_bool_and_utf8_are_rejected() {
+        let mut bad_bool = ByteReader::new(&[2]);
+        assert!(bad_bool.read_meta_value(MetaValueType::Bool).is_err());
+
+        let mut encoded = Vec::new();
+        push_u64(&mut encoded, 1);
+        encoded.push(0xFF);
+        let mut bad_string = ByteReader::new(&encoded);
+        assert!(bad_string.read_string().is_err());
     }
 
     #[test]

@@ -17,7 +17,8 @@ pub mod vision;
 pub use clip_config::{ClipVisionConfig, Qwen35Config};
 pub use memory::{BlockAllocator, KVCacheView, MemoryArena, PagedKVBlock};
 pub use model::{
-    GGMLType, GGUFLoader, MetaValue, MetaValueType, ModelGraph, QuantizedLinear, TensorInfo,
+    model_config_from_source, GGMLType, GGUFLoader, MetaValue, MetaValueType, ModelGraph,
+    QuantizedLinear, TensorInfo, TensorSource,
 };
 pub use ops::*;
 pub use prompt::{
