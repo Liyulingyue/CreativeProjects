@@ -729,6 +729,14 @@ mod cli_tests {
             .unwrap_err()
             .contains("--language"));
 
+        let args: Vec<String> = ["rmi", "--audio", "-recording.wav", "--language", "English"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let options = parse_cli_options(&args).unwrap();
+        assert_eq!(options.audio.as_deref(), Some(Path::new("-recording.wav")));
+        assert_eq!(options.language.as_deref(), Some("English"));
+
         let args: Vec<String> = ["rmi", "--audio", "missing.wav", "--language", ""]
             .into_iter()
             .map(str::to_string)
@@ -906,7 +914,7 @@ fn parse_cli_options(args: &[String]) -> Result<CliOptions, String> {
             "--audio" => {
                 let value = args
                     .get(i + 1)
-                    .filter(|value| !value.is_empty() && !value.starts_with('-'))
+                    .filter(|value| !value.is_empty() && !value.starts_with("--"))
                     .ok_or("Missing value for --audio")?;
                 options.audio = Some(value.as_str().into());
                 i += 1;
@@ -914,7 +922,7 @@ fn parse_cli_options(args: &[String]) -> Result<CliOptions, String> {
             "--language" => {
                 let value = args
                     .get(i + 1)
-                    .filter(|value| !value.starts_with('-'))
+                    .filter(|value| !value.starts_with("--"))
                     .ok_or("Missing value for --language")?;
                 options.language = Some(value.clone());
                 i += 1;
