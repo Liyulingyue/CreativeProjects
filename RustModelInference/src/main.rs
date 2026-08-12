@@ -1489,10 +1489,26 @@ fn run_embedding(
             eprintln!("Embedding pooling error: {error}");
             std::process::exit(1);
         });
+    #[cfg(feature = "parity-trace")]
+    parity_trace::report(parity_trace::checkpoint(
+        "embedding.pooled",
+        None,
+        &[n_embd],
+        &pooled,
+    ));
+
     l2_normalize_embedding(&mut pooled).unwrap_or_else(|error| {
         eprintln!("Embedding normalization error: {error}");
         std::process::exit(1);
     });
+
+    #[cfg(feature = "parity-trace")]
+    parity_trace::report(parity_trace::checkpoint(
+        "embedding.final",
+        None,
+        &[n_embd],
+        &pooled,
+    ));
 
     let embed_ms = t_embed.elapsed().as_millis();
     match output {
