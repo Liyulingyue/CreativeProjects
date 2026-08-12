@@ -1,6 +1,9 @@
 #[cfg(target_arch = "x86_64")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+use std::arch::asm;
+
 #[cfg(target_arch = "x86_64")]
 static HAS_AVX2_FMA: AtomicBool = AtomicBool::new(false);
 #[cfg(target_arch = "x86_64")]
@@ -387,6 +390,68 @@ pub fn dot_f16_f32(a: &[f32], b_f16: &[u16], n: usize) -> f32 {
     let mut s = 0.0f32;
     for i in 0..n { s += a[i] * f16_to_f32(b_f16[i]); }
     s
+}
+
+pub fn dot_f16_f16_bytes(a: &[u16], b: &[u8], n: usize) -> f32 {
+    debug_assert!(a.len() >= n && b.len() >= n * 2);
+    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    let (mut sum, tail_start) = {
+        let prefix = n & !31;
+        if prefix > 0 && std::arch::is_aarch64_feature_detected!("fp16") {
+            (
+                f64::from(unsafe { dot_f16_f16_fp16_neon(a.as_ptr(), b.as_ptr(), prefix) }),
+                prefix,
+            )
+        } else {
+            (0.0, 0)
+        }
+    };
+    #[cfg(not(all(target_arch = "aarch64", target_endian = "little")))]
+    let (mut sum, tail_start) = (0.0f64, 0usize);
+    for index in tail_start..n {
+        let weight = u16::from_le_bytes(b[index * 2..index * 2 + 2].try_into().unwrap());
+        sum += f64::from(f16_to_f32(a[index]) * f16_to_f32(weight));
+    }
+    sum as f32
+}
+
+#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+unsafe fn dot_f16_f16_fp16_neon(x: *const u16, y: *const u8, n: usize) -> f32 {
+    debug_assert_eq!(n % 32, 0);
+    let bits: u32;
+    asm!(
+        "movi v0.8h, #0", "movi v1.8h, #0",
+        "movi v2.8h, #0", "movi v3.8h, #0",
+        "cbz {n}, 2f",
+        "1:",
+        "ld1 {{v4.8h-v7.8h}}, [{x}], #64",
+        "ld1 {{v16.8h-v19.8h}}, [{y}], #64",
+        "fmla v0.8h, v4.8h, v16.8h",
+        "fmla v1.8h, v5.8h, v17.8h",
+        "fmla v2.8h, v6.8h, v18.8h",
+        "fmla v3.8h, v7.8h, v19.8h",
+        "subs {n}, {n}, #32",
+        "b.ne 1b",
+        "2:",
+        "fadd v0.8h, v0.8h, v2.8h",
+        "fadd v1.8h, v1.8h, v3.8h",
+        "fadd v0.8h, v0.8h, v1.8h",
+        "fcvtl v4.4s, v0.4h",
+        "fcvtl2 v5.4s, v0.8h",
+        "fadd v4.4s, v4.4s, v5.4s",
+        "faddp v4.4s, v4.4s, v4.4s",
+        "faddp s4, v4.2s",
+        "fmov {bits:w}, s4",
+        x = inout(reg) x => _,
+        y = inout(reg) y => _,
+        n = inout(reg) n => _,
+        bits = lateout(reg) bits,
+        out("v0") _, out("v1") _, out("v2") _, out("v3") _,
+        out("v4") _, out("v5") _, out("v6") _, out("v7") _,
+        out("v16") _, out("v17") _, out("v18") _, out("v19") _,
+        options(nostack, readonly),
+    );
+    f32::from_bits(bits)
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -2129,6 +2194,52 @@ mod neon_tests {
 
         let expected_dot: f32 = src.iter().zip(&bits).map(|(x, h)| x * f16_to_f32(*h)).sum();
         assert_close(unsafe { dot_f16_f32_neon(&src, &bits, src.len()) }, expected_dot);
+    }
+
+    #[test]
+    fn f16_dot_dispatch_matches_native_or_scalar_reduction() {
+        fn pinned_inputs(n: usize) -> (Vec<u16>, Vec<u8>) {
+            let x = (0..n)
+                .map(|index| {
+                    ((if index % 3 == 0 { 0x8000 } else { 0 })
+                        | ((14 + index % 3) << 10)
+                        | ((index * 73 + 19) & 0x03ff)) as u16
+                })
+                .collect();
+            let mut y = Vec::with_capacity(n * 2);
+            for index in 0..n {
+                let bits = ((if matches!(index % 5, 1 | 2) { 0x8000 } else { 0 })
+                    | ((13 + index % 4) << 10)
+                    | ((index * 151 + 7) & 0x03ff)) as u16;
+                y.extend_from_slice(&bits.to_le_bytes());
+            }
+            (x, y)
+        }
+
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        let native_fp16 = std::arch::is_aarch64_feature_detected!("fp16");
+        #[cfg(not(all(target_arch = "aarch64", target_endian = "little")))]
+        let native_fp16 = false;
+        let expected = if native_fp16 {
+            [(32, 0xc086_b000), (37, 0x4035_3bf4), (64, 0x4122_9e00)]
+        } else {
+            [(32, 0xc086_612e), (37, 0x4035_d999), (64, 0x4122_a161)]
+        };
+        for (n, expected) in expected {
+            let (x, y) = pinned_inputs(n);
+            assert_eq!(dot_f16_f16_bytes(&x, &y, n).to_bits(), expected, "n={n}");
+        }
+
+        if !native_fp16 {
+            return;
+        }
+        let mut x = vec![0; 64];
+        let mut y = vec![0; 128];
+        x[0] = 0x3c00;
+        y[..2].copy_from_slice(&0x3c00u16.to_le_bytes());
+        x[32] = 0x0475;
+        y[64..66].copy_from_slice(&0x472eu16.to_le_bytes());
+        assert_eq!(dot_f16_f16_bytes(&x, &y, 64).to_bits(), 0x3f80_2000);
     }
 
     fn valid_q8_weights(n_in: usize, n_out: usize) -> Vec<u8> {

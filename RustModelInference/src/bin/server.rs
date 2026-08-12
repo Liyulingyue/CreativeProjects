@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use axum::{
@@ -16,6 +17,7 @@ use tower_http::cors::CorsLayer;
 use rust_model_inference::*;
 
 struct Qwen3State {
+    source: Arc<dyn TensorSource>,
     layers: Vec<LayerWeightsOwned>,
     output_norm: Vec<f32>,
     embd_weight: &'static [u8],
@@ -26,6 +28,7 @@ struct Qwen3State {
 }
 
 struct Qwen35State {
+    source: Arc<dyn TensorSource>,
     model: Arc<Qwen35Model>,
     tokenizer: Arc<BPETokenizer>,
     pool: Arc<thread_pool::ComputePool>,
@@ -404,6 +407,7 @@ fn generate_qwen3(
     max_tokens: usize,
     temperature: f32,
 ) -> Result<GenerateResult, String> {
+    let _source = &s.source;
     let cfg = &s.config;
     let n_embd = cfg.n_embd;
     let n_layer = cfg.n_layer;
@@ -681,9 +685,7 @@ fn generate_qwen3(
                 let sc = unsafe { std::slice::from_raw_parts(sc, n_embd / 32) };
                 let gate_buf = unsafe { std::slice::from_raw_parts_mut(gate_buf_ptr, n_ff) };
                 let up_buf = unsafe { std::slice::from_raw_parts_mut(up_buf_ptr, n_ff) };
-                matmul_q8_0_quantized_parallel_rows(
-                    w_gate, q8, sc, up_buf, n_embd, n_ff, ith, nth,
-                );
+                matmul_q8_0_quantized_parallel_rows(w_gate, q8, sc, up_buf, n_embd, n_ff, ith, nth);
                 matmul_q8_0_quantized_parallel_rows(w_up, q8, sc, gate_buf, n_embd, n_ff, ith, nth);
                 let rows_per = n_ff / nth;
                 let r_start = ith * rows_per;
@@ -795,6 +797,7 @@ fn generate_qwen35(
     max_tokens: usize,
     temperature: f32,
 ) -> Result<GenerateResult, String> {
+    let _source = &state.source;
     let prompt_ids = server_prompt_tokens(&state.tokenizer, messages)?;
     let (prompt_positions, mut next_text_position) =
         build_qwen35_positions(&prompt_ids, None, &[])?;
@@ -899,11 +902,15 @@ fn generate_qwen35(
     })
 }
 
-fn get_f32_tensor_from_loader(loader: &GGUFLoader, name: &str, expected_len: usize) -> Vec<f32> {
-    let ti = loader
+fn get_f32_tensor_from_source(
+    source: &dyn TensorSource,
+    name: &str,
+    expected_len: usize,
+) -> Vec<f32> {
+    let ti = source
         .tensor_info(name)
         .unwrap_or_else(|| panic!("tensor {} not found", name));
-    let slice = loader
+    let slice = source
         .tensor_slice(name)
         .unwrap_or_else(|| panic!("slice {} not found", name));
     let mut out = vec![0.0f32; expected_len];
@@ -963,41 +970,44 @@ async fn main() {
     }
 
     if model_path.is_empty() {
-        eprintln!("Usage: rust-model-server --model <path.gguf> [--host 0.0.0.0] [--port 8080] [--threads 4]");
+        eprintln!("Usage: rust-model-server --model <path.gguf-or-ggufrs> [--host 0.0.0.0] [--port 8080] [--threads 4]");
         std::process::exit(1);
     }
 
     let n_threads = if n_threads > 0 { n_threads } else { 4 };
     eprintln!("Loading model: {} ...", model_path);
 
-    let loader = Arc::new(GGUFLoader::from_file(&model_path).unwrap_or_else(|e| {
-        eprintln!("Failed to load model: {}", e);
-        std::process::exit(1);
-    }));
-    let arch = loader
+    let source: Arc<dyn TensorSource> = Arc::from(
+        open_model_source(Path::new(&model_path), ComponentRole::Llm).unwrap_or_else(|error| {
+            eprintln!("Failed to load model: {error}");
+            std::process::exit(1);
+        }),
+    );
+    let arch = source
         .metadata("general.architecture")
         .and_then(|v| v.to_string_val())
         .unwrap_or_default();
     let pool = Arc::new(thread_pool::ComputePool::new(n_threads));
 
-    let tokenizer = BPETokenizer::from_gguf_metadata(|k| loader.metadata(k).cloned())
+    let tokenizer = BPETokenizer::from_gguf_metadata(|k| source.metadata(k).cloned())
         .unwrap_or_else(|e| {
             eprintln!("Failed to init tokenizer: {}", e);
             std::process::exit(1);
         });
 
     let model: ModelBackend = if arch == "qwen35" {
-        let model = Qwen35Model::from_gguf(&loader).unwrap_or_else(|e| {
+        let model = Qwen35Model::from_source(source.as_ref()).unwrap_or_else(|e| {
             eprintln!("Failed to parse Qwen3.5 model: {}", e);
             std::process::exit(1);
         });
         ModelBackend::Qwen35(Qwen35State {
+            source: Arc::clone(&source),
             model: Arc::new(model),
             tokenizer: Arc::new(tokenizer),
             pool,
         })
     } else {
-        let config = loader.model_config().unwrap_or_else(|e| {
+        let config = model_config_from_source(source.as_ref()).unwrap_or_else(|e| {
             eprintln!("Failed to parse config: {}", e);
             std::process::exit(1);
         });
@@ -1007,13 +1017,13 @@ async fn main() {
         let n_head_kv = config.n_head_kv;
         let n_embd_head = config.n_embd_head;
         let n_embd_head_k =
-            if let Some(v) = loader.metadata(&format!("{}.attention.key_length", arch)) {
+            if let Some(v) = source.metadata(&format!("{}.attention.key_length", arch)) {
                 v.to_u64().unwrap_or(n_embd_head as u64) as usize
             } else {
                 n_embd_head
             };
         let n_embd_head_v =
-            if let Some(v) = loader.metadata(&format!("{}.attention.value_length", arch)) {
+            if let Some(v) = source.metadata(&format!("{}.attention.value_length", arch)) {
                 v.to_u64().unwrap_or(n_embd_head as u64) as usize
             } else {
                 n_embd_head
@@ -1025,99 +1035,91 @@ async fn main() {
         let n_ctx = config.n_ctx.min(4096);
         let is_qwen3 = arch == "qwen3";
 
-        let output_norm = get_f32_tensor_from_loader(&loader, "output_norm.weight", n_embd);
-        let embd_weight = unsafe {
-            std::mem::transmute::<&[u8], &'static [u8]>(
-                loader.tensor_slice("token_embd.weight").expect("no embd"),
-            )
-        };
-        let output_weight = unsafe {
-            std::mem::transmute::<&[u8], &'static [u8]>(
-                loader
-                    .tensor_slice("output.weight")
-                    .unwrap_or(loader.tensor_slice("token_embd.weight").unwrap()),
+        let output_norm = get_f32_tensor_from_source(source.as_ref(), "output_norm.weight", n_embd);
+        let (embd_weight, output_weight) = unsafe {
+            // SAFETY: every slice comes from the immutable `source` Arc stored in the
+            // same state, and this task does not expose source/segment unloading.
+            (
+                std::mem::transmute::<&[u8], &'static [u8]>(
+                    source.tensor_slice("token_embd.weight").expect("no embd"),
+                ),
+                std::mem::transmute::<&[u8], &'static [u8]>(
+                    source
+                        .tensor_slice("output.weight")
+                        .unwrap_or(source.tensor_slice("token_embd.weight").unwrap()),
+                ),
             )
         };
 
         let layers: Vec<LayerWeightsOwned> = (0..n_layer)
-            .map(|l| LayerWeightsOwned {
-                attn_norm: get_f32_tensor_from_loader(
-                    &loader,
-                    &format!("blk.{}.attn_norm.weight", l),
-                    n_embd,
-                ),
-                ffn_norm: get_f32_tensor_from_loader(
-                    &loader,
-                    &format!("blk.{}.ffn_norm.weight", l),
-                    n_embd,
-                ),
-                q_norm: if is_qwen3 {
-                    Some(get_f32_tensor_from_loader(
-                        &loader,
-                        &format!("blk.{}.attn_q_norm.weight", l),
-                        n_embd_head_k,
-                    ))
-                } else {
-                    None
-                },
-                k_norm: if is_qwen3 {
-                    Some(get_f32_tensor_from_loader(
-                        &loader,
-                        &format!("blk.{}.attn_k_norm.weight", l),
-                        n_embd_head_k,
-                    ))
-                } else {
-                    None
-                },
-                wq: unsafe {
-                    std::mem::transmute::<&[u8], &'static [u8]>(
-                        loader
+            .map(|l| unsafe {
+                // SAFETY: every slice comes from the immutable `source` Arc stored in the
+                // same state, and this task does not expose source/segment unloading.
+                LayerWeightsOwned {
+                    attn_norm: get_f32_tensor_from_source(
+                        source.as_ref(),
+                        &format!("blk.{}.attn_norm.weight", l),
+                        n_embd,
+                    ),
+                    ffn_norm: get_f32_tensor_from_source(
+                        source.as_ref(),
+                        &format!("blk.{}.ffn_norm.weight", l),
+                        n_embd,
+                    ),
+                    q_norm: if is_qwen3 {
+                        Some(get_f32_tensor_from_source(
+                            source.as_ref(),
+                            &format!("blk.{}.attn_q_norm.weight", l),
+                            n_embd_head_k,
+                        ))
+                    } else {
+                        None
+                    },
+                    k_norm: if is_qwen3 {
+                        Some(get_f32_tensor_from_source(
+                            source.as_ref(),
+                            &format!("blk.{}.attn_k_norm.weight", l),
+                            n_embd_head_k,
+                        ))
+                    } else {
+                        None
+                    },
+                    wq: std::mem::transmute::<&[u8], &'static [u8]>(
+                        source
                             .tensor_slice(&format!("blk.{}.attn_q.weight", l))
                             .unwrap(),
-                    )
-                },
-                wk: unsafe {
-                    std::mem::transmute::<&[u8], &'static [u8]>(
-                        loader
+                    ),
+                    wk: std::mem::transmute::<&[u8], &'static [u8]>(
+                        source
                             .tensor_slice(&format!("blk.{}.attn_k.weight", l))
                             .unwrap(),
-                    )
-                },
-                wv: unsafe {
-                    std::mem::transmute::<&[u8], &'static [u8]>(
-                        loader
+                    ),
+                    wv: std::mem::transmute::<&[u8], &'static [u8]>(
+                        source
                             .tensor_slice(&format!("blk.{}.attn_v.weight", l))
                             .unwrap(),
-                    )
-                },
-                wo: unsafe {
-                    std::mem::transmute::<&[u8], &'static [u8]>(
-                        loader
+                    ),
+                    wo: std::mem::transmute::<&[u8], &'static [u8]>(
+                        source
                             .tensor_slice(&format!("blk.{}.attn_output.weight", l))
                             .unwrap(),
-                    )
-                },
-                w_gate: unsafe {
-                    std::mem::transmute::<&[u8], &'static [u8]>(
-                        loader
+                    ),
+                    w_gate: std::mem::transmute::<&[u8], &'static [u8]>(
+                        source
                             .tensor_slice(&format!("blk.{}.ffn_gate.weight", l))
                             .unwrap(),
-                    )
-                },
-                w_up: unsafe {
-                    std::mem::transmute::<&[u8], &'static [u8]>(
-                        loader
+                    ),
+                    w_up: std::mem::transmute::<&[u8], &'static [u8]>(
+                        source
                             .tensor_slice(&format!("blk.{}.ffn_up.weight", l))
                             .unwrap(),
-                    )
-                },
-                w_down: unsafe {
-                    std::mem::transmute::<&[u8], &'static [u8]>(
-                        loader
+                    ),
+                    w_down: std::mem::transmute::<&[u8], &'static [u8]>(
+                        source
                             .tensor_slice(&format!("blk.{}.ffn_down.weight", l))
                             .unwrap(),
-                    )
-                },
+                    ),
+                }
             })
             .collect();
 
@@ -1138,6 +1140,7 @@ async fn main() {
         };
 
         ModelBackend::Qwen3(Qwen3State {
+            source: Arc::clone(&source),
             layers,
             output_norm,
             embd_weight,

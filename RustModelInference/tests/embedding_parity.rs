@@ -33,10 +33,16 @@ fn run(command: &mut Command) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
+fn rust_embedding_model(reference_model: &str, override_model: Option<&str>) -> String {
+    override_model.unwrap_or(reference_model).to_string()
+}
+
 #[test]
 #[ignore = "requires QWEN3_EMBEDDING_MODEL and LLAMA_EMBEDDING_BIN"]
 fn qwen3_embedding_vectors_match_pinned_llama_cpp() {
     let model = std::env::var("QWEN3_EMBEDDING_MODEL").unwrap();
+    let rust_model_override = std::env::var("RMI_RUST_EMBEDDING_MODEL").ok();
+    let rust_model = rust_embedding_model(&model, rust_model_override.as_deref());
     let llama = std::env::var("LLAMA_EMBEDDING_BIN").unwrap();
     let rust = env!("CARGO_BIN_EXE_rust-model-inference");
     let mut rust_vectors = Vec::new();
@@ -45,7 +51,7 @@ fn qwen3_embedding_vectors_match_pinned_llama_cpp() {
     for &prompt in FIXTURES {
         let rust_stdout = run(Command::new(rust).args([
             "--model",
-            &model,
+            &rust_model,
             "--prompt",
             prompt,
             "--embedding",
@@ -126,4 +132,13 @@ fn qwen3_embedding_vectors_match_pinned_llama_cpp() {
         max_matrix_diff <= 1e-3,
         "cosine matrix max diff={max_matrix_diff}"
     );
+}
+
+#[test]
+fn rust_embedding_model_resolves_override_and_fallback() {
+    assert_eq!(
+        rust_embedding_model("model.gguf", Some("/tmp/model.ggufrs")),
+        "/tmp/model.ggufrs"
+    );
+    assert_eq!(rust_embedding_model("model.gguf", None), "model.gguf");
 }
