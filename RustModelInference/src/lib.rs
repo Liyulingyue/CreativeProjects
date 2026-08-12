@@ -1,4 +1,5 @@
 pub mod clip_config;
+pub mod ggufrs;
 pub mod memory;
 pub mod model;
 pub mod ops;
@@ -15,6 +16,10 @@ pub mod traits;
 pub mod vision;
 
 pub use clip_config::{ClipVisionConfig, Qwen35Config};
+pub use ggufrs::{
+    open_model_source, ComponentInfo, ComponentRole, GgufrsError, GgufrsFile, LoadedComponent,
+    SegmentKind, GGUFRS_SEGMENT_ALIGNMENT, GGUFRS_VERSION,
+};
 pub use memory::{BlockAllocator, KVCacheView, MemoryArena, PagedKVBlock};
 pub use model::{
     model_config_from_source, GGMLType, GGUFLoader, MetaValue, MetaValueType, ModelGraph,
