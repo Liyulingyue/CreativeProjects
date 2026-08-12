@@ -1287,6 +1287,8 @@ fn run_embedding(
     }
 
     let prompt_tokens = encode_embedding_input(&tokenizer, prompt);
+    #[cfg(feature = "parity-trace")]
+    parity_trace::report(parity_trace::token_ids("embedding.tokens", &prompt_tokens));
     if prompt_tokens.is_empty() {
         eprintln!("Embedding input produced no tokens");
         std::process::exit(1);

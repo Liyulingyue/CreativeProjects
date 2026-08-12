@@ -45,6 +45,39 @@ fn f32_bits(bytes: &[u8]) -> Vec<u32> {
         .collect()
 }
 
+fn llama_token_ids(bytes: &[u8]) -> Vec<u32> {
+    assert_eq!(bytes.len() % 4, 0);
+    bytes
+        .chunks_exact(4)
+        .map(|bytes| {
+            let token = i32::from_le_bytes(bytes.try_into().unwrap());
+            u32::try_from(token).expect("llama token IDs must be nonnegative")
+        })
+        .collect()
+}
+
+fn rust_trace_token_ids(trace: &std::path::Path) -> Vec<u32> {
+    let record = std::fs::read_to_string(trace)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|record| record["name"] == "embedding.tokens")
+        .expect("missing Rust embedding.tokens parity checkpoint");
+    record["token_ids"]
+        .as_array()
+        .expect("embedding.tokens checkpoint must contain token_ids")
+        .iter()
+        .map(|token| {
+            u32::try_from(
+                token
+                    .as_u64()
+                    .expect("embedding.tokens token ID must be an unsigned integer"),
+            )
+            .expect("embedding.tokens token ID must fit u32")
+        })
+        .collect()
+}
+
 fn first_bit_mismatch(left: &[u32], right: &[u32]) -> Option<(usize, u32, u32)> {
     assert_eq!(left.len(), right.len());
     left.iter()
@@ -66,7 +99,7 @@ fn reference_embedding_bits(
     prompt: &str,
     fixture: usize,
     normalize: i32,
-) -> Vec<u32> {
+) -> (Vec<u32>, Vec<u32>) {
     let directory = fixture_dir(&format!("llama-{normalize}"), fixture);
     let _ = std::fs::remove_dir_all(&directory);
     std::fs::create_dir_all(&directory).unwrap();
@@ -115,7 +148,15 @@ fn reference_embedding_bits(
         .unwrap()
         .to_str()
         .unwrap();
-    f32_bits(&std::fs::read(directory.join(format!("llamacpp-{stem}-embeddings.bin"))).unwrap())
+    (
+        f32_bits(
+            &std::fs::read(directory.join(format!("llamacpp-{stem}-embeddings.bin"))).unwrap(),
+        ),
+        llama_token_ids(
+            &std::fs::read(directory.join(format!("llamacpp-{stem}-embeddings-tokens.bin")))
+                .expect("reference llama-debug must write embedding token IDs"),
+        ),
+    )
 }
 
 fn rust_embedding_checkpoints(
@@ -123,14 +164,17 @@ fn rust_embedding_checkpoints(
     model: &str,
     prompt: &str,
     fixture: usize,
-) -> (Vec<u32>, Vec<u32>) {
+) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
     let directory = fixture_dir("rust", fixture);
     let _ = std::fs::remove_dir_all(&directory);
     std::fs::create_dir_all(&directory).unwrap();
     let trace = directory.join("trace.jsonl");
     let output = std::process::Command::new(rust)
         .env("RMI_PARITY_TRACE", &trace)
-        .env("RMI_PARITY_FILTER", "embedding.pooled,embedding.final")
+        .env(
+            "RMI_PARITY_FILTER",
+            "embedding.tokens,embedding.pooled,embedding.final",
+        )
         .args([
             "--model",
             model,
@@ -150,6 +194,7 @@ fn rust_embedding_checkpoints(
         String::from_utf8_lossy(&output.stderr)
     );
     (
+        rust_trace_token_ids(&trace),
         f32_bits(&std::fs::read(format!("{}.embedding.pooled.f32", trace.display())).unwrap()),
         f32_bits(&std::fs::read(format!("{}.embedding.final.f32", trace.display())).unwrap()),
     )
@@ -253,7 +298,7 @@ fn qwen3_embedding_vectors_match_pinned_llama_cpp() {
 }
 
 #[test]
-#[ignore = "requires QWEN3_EMBEDDING_MODEL and LLAMA_DEBUG_BIN"]
+#[ignore = "requires QWEN3_EMBEDDING_MODEL and patched/token-compatible LLAMA_DEBUG_BIN"]
 fn qwen3_embedding_bits_match_pinned_llama_cpp() {
     let model = std::env::var("QWEN3_EMBEDDING_MODEL").unwrap();
     let rust_model_override = std::env::var("RMI_RUST_EMBEDDING_MODEL").ok();
@@ -263,10 +308,20 @@ fn qwen3_embedding_bits_match_pinned_llama_cpp() {
     let mut failures = Vec::new();
 
     for (fixture, &prompt) in FIXTURES.iter().enumerate() {
-        let reference_pooled = reference_embedding_bits(&llama_debug, &model, prompt, fixture, -1);
-        let reference_final = reference_embedding_bits(&llama_debug, &model, prompt, fixture, 2);
-        let (rust_pooled, rust_final) =
+        let (reference_pooled, reference_pooled_tokens) =
+            reference_embedding_bits(&llama_debug, &model, prompt, fixture, -1);
+        let (reference_final, reference_final_tokens) =
+            reference_embedding_bits(&llama_debug, &model, prompt, fixture, 2);
+        assert_eq!(
+            reference_pooled_tokens, reference_final_tokens,
+            "{prompt:?}: reference harness must match embedding tokenization"
+        );
+        let (rust_tokens, rust_pooled, rust_final) =
             rust_embedding_checkpoints(rust, &rust_model, prompt, fixture);
+        assert_eq!(
+            rust_tokens, reference_pooled_tokens,
+            "{prompt:?}: reference harness must match embedding tokenization"
+        );
         assert_eq!(rust_pooled.len(), 1024, "{prompt:?}");
         assert_eq!(rust_final.len(), 1024, "{prompt:?}");
         assert_eq!(reference_pooled.len(), 1024, "{prompt:?} reference pooled");
