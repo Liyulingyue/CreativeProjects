@@ -576,10 +576,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let tray_menu = Menu::new();
     let show_item = MenuItem::new("Show", true, None);
+    let mini_item = MenuItem::new("Mini Mode", true, None);
+    let hide_item = MenuItem::new("Hide", true, None);
     let quit_item = MenuItem::new("Quit", true, None);
     let show_id = show_item.id();
+    let mini_id = mini_item.id();
+    let hide_id = hide_item.id();
     let quit_id = quit_item.id();
-    tray_menu.append_items(&[&show_item, &quit_item]);
+    tray_menu.append_items(&[&show_item, &mini_item, &hide_item, &quit_item]);
 
     let mut tray_builder = TrayIconBuilder::new().with_menu(Box::new(tray_menu));
     if let Ok(icon) = load_tray_icon() {
@@ -792,9 +796,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         while let Ok(menu_event) = tray_icon::menu::menu_event_receiver().try_recv() {
             if menu_event.id == show_id {
-                webview.window().set_visible(true);
-                let _ = webview.window().set_minimized(false);
+                let full_size = tao::dpi::LogicalSize::new(1024.0, 720.0);
+                let _ = webview.window().set_decorations(false);
+                let _ = webview.window().set_always_on_top(false);
+                let _ = webview.window().set_skip_taskbar(false);
+                let _ = webview.window().set_resizable(true);
+                let _ = webview.window().set_min_inner_size(None::<tao::dpi::LogicalSize<f64>>);
+                let _ = webview.window().set_max_inner_size(None::<tao::dpi::LogicalSize<f64>>);
+                let _ = webview.window().set_inner_size(full_size);
+                let _ = webview.window().set_visible(true);
                 let _ = webview.window().set_focus();
+                let js = "window.dispatchEvent(new CustomEvent('view-change', {detail: 'expanded'}))";
+                let _ = webview.evaluate_script(js);
+            } else if menu_event.id == mini_id {
+                let compact_size = tao::dpi::LogicalSize::new(220.0, 148.0);
+                let _ = webview.window().set_decorations(false);
+                let _ = webview.window().set_always_on_top(true);
+                let _ = webview.window().set_skip_taskbar(true);
+                let _ = webview.window().set_resizable(false);
+                let _ = webview.window().set_min_inner_size(Some(compact_size));
+                let _ = webview.window().set_max_inner_size(Some(compact_size));
+                let _ = webview.window().set_inner_size(compact_size);
+                let _ = webview.window().set_visible(true);
+                let _ = webview.window().set_focus();
+                let js = "window.dispatchEvent(new CustomEvent('view-change', {detail: 'compact'}))";
+                let _ = webview.evaluate_script(js);
+            } else if menu_event.id == hide_id {
+                let _ = webview.window().set_visible(false);
             } else if menu_event.id == quit_id {
                 *control_flow = tao::event_loop::ControlFlow::Exit;
             }

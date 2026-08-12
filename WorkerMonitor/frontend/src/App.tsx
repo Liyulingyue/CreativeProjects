@@ -10,6 +10,7 @@ import MonitorView from "./components/MonitorView";
 import CompactView from "./components/CompactView";
 import Settings from "./components/Settings";
 import BreakAlert from "./components/BreakAlert";
+import MiniBreakAlert from "./components/MiniBreakAlert";
 import "./App.css";
 
 export default function App() {
@@ -109,6 +110,19 @@ export default function App() {
       stopCamera();
     }
   }, [isMonitoring]);
+
+  useEffect(() => {
+    const handleViewChange = (e: Event) => {
+      const customEvent = e as CustomEvent<string>;
+      if (customEvent.detail === "compact") {
+        setView("compact");
+      } else if (customEvent.detail === "expanded") {
+        setView("monitor");
+      }
+    };
+    window.addEventListener("view-change", handleViewChange);
+    return () => window.removeEventListener("view-change", handleViewChange);
+  }, []);
 
   const handleToggleMonitoring = useCallback(async () => {
     const current = isMonitoringRef.current;
@@ -242,7 +256,10 @@ export default function App() {
         </div>
       )}
 
-      {breakAlertInfo && (
+      {breakAlertInfo && view === "compact" && (
+        <MiniBreakAlert workSecs={breakAlertInfo.workSecs} onDismiss={handleDismissAlert} />
+      )}
+      {breakAlertInfo && view !== "compact" && (
         <BreakAlert workSecs={breakAlertInfo.workSecs} onDismiss={handleDismissAlert} />
       )}
 

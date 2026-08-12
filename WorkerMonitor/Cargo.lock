@@ -2340,9 +2340,9 @@ dependencies = [
 
 [[package]]
 name = "mixpipe"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da6392bdacf7a5ed8359e828a7d69fa9457910bc2e71b466d0179dcad0a22d08"
+checksum = "236a973560f7a69a1415c91f0df679b9bc04376fc3f570d6615851efcad82378"
 dependencies = [
  "anyhow",
  "dirs",
