@@ -1,5 +1,7 @@
 use crate::model::{GGMLType, MetaValue, TensorSource};
+use crate::ops::f16_to_f32;
 use rustfft::{num_complex::Complex, FftPlanner};
+use std::sync::Arc;
 
 const SAMPLE_RATE: usize = 16_000;
 const FFT_SIZE: usize = 400;
@@ -430,6 +432,535 @@ impl Qwen3AudioConfig {
     }
 }
 
+struct F16Tensor {
+    bytes: &'static [u8],
+    dims: Vec<u64>,
+}
+
+struct AudioLinear {
+    weight: &'static [u8],
+    kind: GGMLType,
+    input: usize,
+    output: usize,
+    bias: Vec<f32>,
+}
+
+struct Conv2dWeights {
+    weight: F16Tensor,
+    bias: Vec<f32>,
+    input_channels: usize,
+    output_channels: usize,
+}
+
+struct AudioHidden {
+    values: Vec<f32>,
+    tokens: usize,
+}
+
+struct Qwen3AudioModel {
+    source: Arc<dyn TensorSource>,
+    config: Qwen3AudioConfig,
+    conv: [Conv2dWeights; 3],
+    conv_out: AudioLinear,
+}
+
+impl Qwen3AudioModel {
+    fn from_source(source: Arc<dyn TensorSource>) -> Result<Self, String> {
+        let config = Qwen3AudioConfig::from_source(source.as_ref())?;
+        let conv = [
+            load_conv2d(&source, "a.conv2d.1", 1, 480)?,
+            load_conv2d(&source, "a.conv2d.2", 480, 480)?,
+            load_conv2d(&source, "a.conv2d.3", 480, 480)?,
+        ];
+        let conv_out = AudioLinear::load(
+            &source,
+            "a.conv_out.weight",
+            None,
+            7680,
+            config.hidden,
+            GGMLType::F16,
+        )?;
+        Ok(Self {
+            source,
+            config,
+            conv,
+            conv_out,
+        })
+    }
+
+    fn encode_convolution(&self, window: &MelWindow) -> Result<AudioHidden, String> {
+        if window.frames == 0
+            || window.frames > WINDOW_FRAMES
+            || window.frames % CHUNK_FRAMES != 0
+            || window.valid_frames == 0
+            || window.valid_frames > window.frames
+        {
+            return Err("Invalid Mel window frame count".into());
+        }
+        let expected = checked_product("Mel window values", MEL_BINS, window.frames)?;
+        if window.values.len() != expected || window.values.iter().any(|value| !value.is_finite()) {
+            return Err("Invalid Mel window values".into());
+        }
+
+        let chunks = window.frames / CHUNK_FRAMES;
+        let tokens = checked_product("convolution tokens", chunks, 13)?;
+        let hidden_len = checked_product("convolution hidden values", tokens, self.config.hidden)?;
+        let mut hidden = Vec::new();
+        hidden
+            .try_reserve_exact(hidden_len)
+            .map_err(|_| "Failed to allocate convolution hidden values".to_string())?;
+        let mut chunk = reserved_f32(
+            "Mel convolution chunk",
+            checked_product("Mel convolution chunk", MEL_BINS, CHUNK_FRAMES)?,
+        )?;
+        let mut stage_a = Vec::new();
+        let mut stage_b = Vec::new();
+        let mut flattened = Vec::new();
+        let mut projected = Vec::new();
+
+        for chunk_index in 0..chunks {
+            for mel in 0..MEL_BINS {
+                let source_start = checked_product("Mel chunk source", mel, window.frames)?
+                    .checked_add(checked_product(
+                        "Mel chunk offset",
+                        chunk_index,
+                        CHUNK_FRAMES,
+                    )?)
+                    .ok_or_else(|| "Mel chunk source range overflow".to_string())?;
+                let source_end = source_start
+                    .checked_add(CHUNK_FRAMES)
+                    .ok_or_else(|| "Mel chunk source range overflow".to_string())?;
+                let destination_start =
+                    checked_product("Mel chunk destination", mel, CHUNK_FRAMES)?;
+                chunk[destination_start..destination_start + CHUNK_FRAMES]
+                    .copy_from_slice(&window.values[source_start..source_end]);
+            }
+
+            let (height, width) = conv2d_stride2_padding1(
+                &chunk,
+                1,
+                MEL_BINS,
+                CHUNK_FRAMES,
+                &self.conv[0],
+                &mut stage_a,
+            )?;
+            apply_gelu(&mut stage_a)?;
+            let (height, width) =
+                conv2d_stride2_padding1(&stage_a, 480, height, width, &self.conv[1], &mut stage_b)?;
+            apply_gelu(&mut stage_b)?;
+            let (height, width) =
+                conv2d_stride2_padding1(&stage_b, 480, height, width, &self.conv[2], &mut stage_a)?;
+            apply_gelu(&mut stage_a)?;
+            if (height, width) != (16, 13) {
+                return Err(format!(
+                    "Invalid final convolution shape: [1,480,{height},{width}]"
+                ));
+            }
+
+            #[cfg(feature = "parity-trace")]
+            crate::parity_trace::report(crate::parity_trace::checkpoint(
+                "asr.after_conv_blocks",
+                None,
+                &[1, 480, height, width],
+                &stage_a,
+            ));
+
+            flatten_conv_output(&stage_a, 480, height, width, &mut flattened)?;
+            self.conv_out
+                .project_f16(&flattened, width, &mut projected)?;
+            #[cfg(feature = "parity-trace")]
+            crate::parity_trace::report(crate::parity_trace::checkpoint(
+                "asr.after_conv_out",
+                None,
+                &[width, self.config.hidden],
+                &projected,
+            ));
+            hidden.extend_from_slice(&projected);
+        }
+        if hidden.len() != hidden_len || hidden.iter().any(|value| !value.is_finite()) {
+            return Err("Invalid convolution hidden output".into());
+        }
+        Ok(AudioHidden {
+            values: hidden,
+            tokens,
+        })
+    }
+}
+
+impl AudioLinear {
+    fn load(
+        source: &Arc<dyn TensorSource>,
+        weight_name: &str,
+        bias_name: Option<&str>,
+        input: usize,
+        output: usize,
+        kind: GGMLType,
+    ) -> Result<Self, String> {
+        let allowed = (weight_name == "a.conv_out.weight" && kind == GGMLType::F16)
+            || (kind == GGMLType::Q8_0 && is_q8_audio_linear(weight_name));
+        if !allowed {
+            return Err(format!(
+                "Unsupported audio linear tensor {weight_name} type {kind:?}"
+            ));
+        }
+        let dims = [
+            to_u64(input, "audio linear input")?,
+            to_u64(output, "audio linear output")?,
+        ];
+        let weight = static_tensor(source, weight_name, &dims, kind)?;
+        let bias = match bias_name {
+            Some(name) => load_f32_tensor(source.as_ref(), name, &[dims[1]])?,
+            None => Vec::new(),
+        };
+        Ok(Self {
+            weight,
+            kind,
+            input,
+            output,
+            bias,
+        })
+    }
+
+    fn project_f16(&self, input: &[f32], rows: usize, result: &mut Vec<f32>) -> Result<(), String> {
+        if self.kind != GGMLType::F16 || !self.bias.is_empty() {
+            return Err("Convolution projection must be bias-free F16".into());
+        }
+        let input_len = checked_product("audio projection input", rows, self.input)?;
+        if input.len() != input_len || input.iter().any(|value| !value.is_finite()) {
+            return Err("Invalid audio projection input".into());
+        }
+        let output_len = checked_product("audio projection output", rows, self.output)?;
+        resize_f32(result, "audio projection output", output_len)?;
+        if input.iter().all(|value| *value == 0.0) {
+            return Ok(());
+        }
+        for row in 0..rows {
+            let input_row = &input[row * self.input..(row + 1) * self.input];
+            for output in 0..self.output {
+                let weight_start = checked_product("audio projection weight", output, self.input)?;
+                let mut sum = 0.0;
+                for (column, value) in input_row.iter().enumerate() {
+                    let byte =
+                        checked_product("audio projection weight byte", weight_start + column, 2)?;
+                    let bits = u16::from_le_bytes([self.weight[byte], self.weight[byte + 1]]);
+                    sum += *value * f16_to_f32(bits);
+                }
+                if !sum.is_finite() {
+                    return Err("Non-finite audio projection output".into());
+                }
+                result[row * self.output + output] = sum;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn is_q8_audio_linear(name: &str) -> bool {
+    if matches!(name, "mm.a.mlp.1.weight" | "mm.a.mlp.2.weight") {
+        return true;
+    }
+    let Some((layer, suffix)) = name
+        .strip_prefix("a.blk.")
+        .and_then(|name| name.split_once('.'))
+    else {
+        return false;
+    };
+    layer.parse::<usize>().is_ok_and(|layer| layer < 18)
+        && matches!(
+            suffix,
+            "attn_q.weight"
+                | "attn_k.weight"
+                | "attn_v.weight"
+                | "attn_out.weight"
+                | "ffn_up.weight"
+                | "ffn_down.weight"
+        )
+}
+
+fn load_conv2d(
+    source: &Arc<dyn TensorSource>,
+    prefix: &str,
+    input_channels: usize,
+    output_channels: usize,
+) -> Result<Conv2dWeights, String> {
+    let dims = vec![
+        3,
+        3,
+        to_u64(input_channels, "convolution input channels")?,
+        to_u64(output_channels, "convolution output channels")?,
+    ];
+    let weight = F16Tensor {
+        bytes: static_tensor(source, &format!("{prefix}.weight"), &dims, GGMLType::F16)?,
+        dims,
+    };
+    let bias = load_f32_tensor(
+        source.as_ref(),
+        &format!("{prefix}.bias"),
+        &[1, 1, to_u64(output_channels, "convolution bias channels")?],
+    )?;
+    Ok(Conv2dWeights {
+        weight,
+        bias,
+        input_channels,
+        output_channels,
+    })
+}
+
+fn conv2d_stride2_padding1(
+    input: &[f32],
+    input_channels: usize,
+    input_height: usize,
+    input_width: usize,
+    weights: &Conv2dWeights,
+    output: &mut Vec<f32>,
+) -> Result<(usize, usize), String> {
+    if input_channels == 0 || input_height == 0 || input_width == 0 {
+        return Err("Convolution input dimensions must be non-zero".into());
+    }
+    let input_len = checked_product(
+        "convolution input",
+        checked_product("convolution input plane", input_channels, input_height)?,
+        input_width,
+    )?;
+    let expected_dims = [
+        3,
+        3,
+        to_u64(input_channels, "convolution input channels")?,
+        to_u64(weights.output_channels, "convolution output channels")?,
+    ];
+    let weight_elements = checked_product(
+        "convolution weights",
+        checked_product("convolution kernel channels", 9, input_channels)?,
+        weights.output_channels,
+    )?;
+    if input.len() != input_len
+        || input.iter().any(|value| !value.is_finite())
+        || weights.input_channels != input_channels
+        || weights.weight.dims != expected_dims
+        || weights.weight.bytes.len()
+            != checked_product("convolution weight bytes", weight_elements, 2)?
+        || weights.bias.len() != weights.output_channels
+        || weights.bias.iter().any(|value| !value.is_finite())
+    {
+        return Err("Invalid convolution tensor layout".into());
+    }
+    let output_height = input_height
+        .checked_add(1)
+        .ok_or_else(|| "convolution output height overflow".to_string())?
+        / 2;
+    let output_width = input_width
+        .checked_add(1)
+        .ok_or_else(|| "convolution output width overflow".to_string())?
+        / 2;
+    let output_len = checked_product(
+        "convolution output",
+        checked_product(
+            "convolution output plane",
+            weights.output_channels,
+            output_height,
+        )?,
+        output_width,
+    )?;
+    resize_f32(output, "convolution output", output_len)?;
+
+    for output_channel in 0..weights.output_channels {
+        let plane_start = checked_product(
+            "convolution output channel",
+            output_channel,
+            checked_product("convolution output spatial", output_height, output_width)?,
+        )?;
+        output[plane_start..plane_start + output_height * output_width]
+            .fill(weights.bias[output_channel]);
+    }
+    if input.iter().all(|value| *value == 0.0) {
+        return Ok((output_height, output_width));
+    }
+
+    for output_channel in 0..weights.output_channels {
+        for output_y in 0..output_height {
+            for output_x in 0..output_width {
+                let mut sum = weights.bias[output_channel];
+                for input_channel in 0..input_channels {
+                    for kernel_y in 0..3 {
+                        let padded_y = output_y * 2 + kernel_y;
+                        if padded_y == 0 || padded_y > input_height {
+                            continue;
+                        }
+                        let input_y = padded_y - 1;
+                        for kernel_x in 0..3 {
+                            let padded_x = output_x * 2 + kernel_x;
+                            if padded_x == 0 || padded_x > input_width {
+                                continue;
+                            }
+                            let input_x = padded_x - 1;
+                            let input_index =
+                                (input_channel * input_height + input_y) * input_width + input_x;
+                            let weight_index =
+                                (((output_channel * input_channels + input_channel) * 3
+                                    + kernel_y)
+                                    * 3)
+                                    + kernel_x;
+                            let byte = weight_index * 2;
+                            let bits = u16::from_le_bytes([
+                                weights.weight.bytes[byte],
+                                weights.weight.bytes[byte + 1],
+                            ]);
+                            sum += input[input_index] * f16_to_f32(bits);
+                        }
+                    }
+                }
+                if !sum.is_finite() {
+                    return Err("Non-finite convolution output".into());
+                }
+                output[(output_channel * output_height + output_y) * output_width + output_x] = sum;
+            }
+        }
+    }
+    Ok((output_height, output_width))
+}
+
+fn flatten_conv_output(
+    input: &[f32],
+    channels: usize,
+    mel_bins: usize,
+    time: usize,
+    output: &mut Vec<f32>,
+) -> Result<(), String> {
+    if channels == 0 || mel_bins == 0 || time == 0 {
+        return Err("Convolution flatten dimensions must be non-zero".into());
+    }
+    let features = checked_product("convolution flattened features", channels, mel_bins)?;
+    let len = checked_product("convolution flattened output", time, features)?;
+    if input.len() != len || input.iter().any(|value| !value.is_finite()) {
+        return Err("Invalid final convolution tensor".into());
+    }
+    resize_f32(output, "convolution flattened output", len)?;
+    for time_index in 0..time {
+        for channel in 0..channels {
+            for mel in 0..mel_bins {
+                let feature = channel * mel_bins + mel;
+                output[time_index * features + feature] =
+                    input[(channel * mel_bins + mel) * time + time_index];
+            }
+        }
+    }
+    Ok(())
+}
+
+fn apply_gelu(values: &mut [f32]) -> Result<(), String> {
+    for value in values {
+        let x = *value;
+        let sign = if x < 0.0 { -1.0 } else { 1.0 };
+        let t = 1.0 / (1.0 + 0.3275911 * (x / std::f32::consts::SQRT_2).abs());
+        let erf = sign
+            * (1.0
+                - (((((1.0614054 * t - 1.4531521) * t) + 1.4214138) * t - 0.28449672) * t
+                    + 0.2548296)
+                    * t
+                    * (-(x * x) / 2.0).exp());
+        *value = 0.5 * x * (1.0 + erf);
+        if !value.is_finite() {
+            return Err("Non-finite convolution GELU output".into());
+        }
+    }
+    Ok(())
+}
+
+fn checked_product(name: &str, left: usize, right: usize) -> Result<usize, String> {
+    left.checked_mul(right)
+        .ok_or_else(|| format!("{name} overflows usize"))
+}
+
+fn reserved_f32(name: &str, len: usize) -> Result<Vec<f32>, String> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(len)
+        .map_err(|_| format!("Failed to allocate {name}"))?;
+    values.resize(len, 0.0);
+    Ok(values)
+}
+
+fn resize_f32(values: &mut Vec<f32>, name: &str, len: usize) -> Result<(), String> {
+    if len > values.len() {
+        values
+            .try_reserve_exact(len - values.len())
+            .map_err(|_| format!("Failed to allocate {name}"))?;
+    }
+    values.resize(len, 0.0);
+    Ok(())
+}
+
+fn static_tensor(
+    source: &Arc<dyn TensorSource>,
+    name: &str,
+    dims: &[u64],
+    kind: GGMLType,
+) -> Result<&'static [u8], String> {
+    let bytes = checked_tensor(source.as_ref(), name, dims, kind)?;
+    if kind == GGMLType::F16
+        && bytes
+            .chunks_exact(2)
+            .any(|bytes| !f16_to_f32(u16::from_le_bytes([bytes[0], bytes[1]])).is_finite())
+    {
+        return Err(format!("Non-finite tensor values: {name}"));
+    }
+    // SAFETY: Qwen3AudioModel stores a strong Arc to this immutable TensorSource before every
+    // lifetime-extended slice and never exposes unloading, so the bytes live until model drop.
+    Ok(unsafe { std::mem::transmute::<&[u8], &'static [u8]>(bytes) })
+}
+
+fn load_f32_tensor(
+    source: &dyn TensorSource,
+    name: &str,
+    dims: &[u64],
+) -> Result<Vec<f32>, String> {
+    let bytes = checked_tensor(source, name, dims, GGMLType::F32)?;
+    let values: Vec<f32> = bytes
+        .chunks_exact(4)
+        .map(|bytes| f32::from_le_bytes(bytes.try_into().expect("four-byte chunk")))
+        .collect();
+    if values.is_empty() || values.iter().any(|value| !value.is_finite()) {
+        return Err(format!("Invalid finite F32 tensor: {name}"));
+    }
+    Ok(values)
+}
+
+fn checked_tensor<'a>(
+    source: &'a dyn TensorSource,
+    name: &str,
+    dims: &[u64],
+    kind: GGMLType,
+) -> Result<&'a [u8], String> {
+    let info = source
+        .tensor_info(name)
+        .ok_or_else(|| format!("Missing tensor: {name}"))?;
+    if dims.is_empty() || dims.contains(&0) || info.dims != dims || info.ggml_type != kind {
+        return Err(format!(
+            "Invalid tensor {name}: shape {:?} type {:?}; expected {:?} {:?}",
+            info.dims, info.ggml_type, dims, kind
+        ));
+    }
+    let expected = usize::try_from(
+        info.checked_nbytes()
+            .ok_or_else(|| format!("Invalid tensor byte size: {name}"))?,
+    )
+    .map_err(|_| format!("Tensor byte size does not fit usize: {name}"))?;
+    let bytes = source
+        .tensor_slice(name)
+        .ok_or_else(|| format!("Missing tensor data: {name}"))?;
+    if bytes.is_empty() || bytes.len() != expected {
+        return Err(format!(
+            "Invalid tensor data length for {name}: {}; expected {expected}",
+            bytes.len()
+        ));
+    }
+    Ok(bytes)
+}
+
+fn to_u64(value: usize, name: &str) -> Result<u64, String> {
+    u64::try_from(value).map_err(|_| format!("{name} does not fit u64"))
+}
+
 fn require_string(source: &dyn TensorSource, key: &str, expected: &str) -> Result<(), String> {
     match source.metadata(key) {
         Some(MetaValue::String(value)) if value == expected => Ok(()),
@@ -694,6 +1225,103 @@ mod tests {
     }
 
     #[test]
+    fn conv2d_stride2_padding_and_layout_are_exact() {
+        let weight_bytes: &'static [u8] = Box::leak(
+            (0..9)
+                .flat_map(|_| half::f16::from_f32(1.0).to_bits().to_le_bytes())
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        );
+        let weights = Conv2dWeights {
+            weight: F16Tensor {
+                bytes: weight_bytes,
+                dims: vec![3, 3, 1, 1],
+            },
+            bias: vec![0.5],
+            input_channels: 1,
+            output_channels: 1,
+        };
+        let mut output = Vec::new();
+
+        let (height, width) = conv2d_stride2_padding1(
+            &(1..=9).map(|value| value as f32).collect::<Vec<_>>(),
+            1,
+            3,
+            3,
+            &weights,
+            &mut output,
+        )
+        .unwrap();
+
+        assert_eq!((height, width), (2, 2));
+        assert_eq!(output, vec![12.5, 16.5, 24.5, 28.5]);
+    }
+
+    #[test]
+    fn conv_output_flattens_channel_then_mel_per_time() {
+        let channels = 480;
+        let mel_bins = 16;
+        let time = 13;
+        let nchw_index = |batch: usize, channel: usize, mel: usize, time_index: usize| {
+            (((batch * channels + channel) * mel_bins + mel) * time) + time_index
+        };
+        let source: Vec<f32> = (0..channels * mel_bins * time)
+            .map(|index| index as f32)
+            .collect();
+        let mut flattened = Vec::new();
+
+        flatten_conv_output(&source, channels, mel_bins, time, &mut flattened).unwrap();
+
+        for time_index in 0..time {
+            for channel in 0..channels {
+                for mel in 0..mel_bins {
+                    let feature = channel * 16 + mel;
+                    assert_eq!(
+                        flattened[time_index * 7680 + feature],
+                        source[nchw_index(0, channel, mel, time_index)]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn conv2d_rejects_malformed_shapes_and_overflow() {
+        let weights = Conv2dWeights {
+            weight: F16Tensor {
+                bytes: &[0; 18],
+                dims: vec![3, 3, 1, 1],
+            },
+            bias: vec![0.0],
+            input_channels: 1,
+            output_channels: 1,
+        };
+        let mut output = Vec::new();
+
+        assert!(conv2d_stride2_padding1(&[], 1, 3, 3, &weights, &mut output).is_err());
+        assert!(flatten_conv_output(&[], usize::MAX, 2, 2, &mut output).is_err());
+    }
+
+    #[test]
+    fn audio_linear_loader_accepts_only_fixed_q8_names() {
+        assert!(is_q8_audio_linear("a.blk.0.attn_q.weight"));
+        assert!(is_q8_audio_linear("a.blk.17.ffn_down.weight"));
+        assert!(is_q8_audio_linear("mm.a.mlp.2.weight"));
+        assert!(!is_q8_audio_linear("a.blk.18.attn_q.weight"));
+        assert!(!is_q8_audio_linear("a.blk.x.attn_q.weight"));
+        assert!(!is_q8_audio_linear("a.blk.0.other.weight"));
+    }
+
+    #[test]
+    fn convolution_uses_erf_gelu() {
+        let mut values = vec![-1.0, 0.0, 1.0, 2.0];
+        apply_gelu(&mut values).unwrap();
+        for (actual, expected) in values.iter().zip([-0.15865526, 0.0, 0.8413448, 1.9544997]) {
+            assert!((actual - expected).abs() <= 3e-7, "{actual} != {expected}");
+        }
+    }
+
+    #[test]
     fn wav_valid_pcm_and_unknown_chunks_decode() {
         let bytes = pcm16_wav(&[-32768, 0, 32767], &[(b"JUNK", vec![7])]);
         let samples = decode_pcm16_wav(&bytes).unwrap();
@@ -932,6 +1560,7 @@ mod tests {
     struct MapTensorSource {
         metadata: HashMap<String, MetaValue>,
         tensors: HashMap<String, TensorInfo>,
+        data: HashMap<String, Vec<u8>>,
     }
 
     impl TensorSource for MapTensorSource {
@@ -943,8 +1572,8 @@ mod tests {
             self.tensors.get(name)
         }
 
-        fn tensor_slice(&self, _name: &str) -> Option<&[u8]> {
-            None
+        fn tensor_slice(&self, name: &str) -> Option<&[u8]> {
+            self.data.get(name).map(Vec::as_slice)
         }
     }
 
@@ -997,6 +1626,7 @@ mod tests {
                 ),
             ]),
             tensors: HashMap::new(),
+            data: HashMap::new(),
         };
         for i in 0..18 {
             let prefix = format!("a.blk.{i}");
@@ -1072,6 +1702,47 @@ mod tests {
             add_tensor(&mut source, name, dims, ggml_type);
         }
         source
+    }
+
+    fn filled_f16(elements: usize, value: f32) -> Vec<u8> {
+        let bytes = half::f16::from_f32(value).to_bits().to_le_bytes();
+        (0..elements).flat_map(|_| bytes).collect()
+    }
+
+    fn filled_f32(elements: usize, value: f32) -> Vec<u8> {
+        (0..elements).flat_map(|_| value.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn one_mel_chunk_produces_thirteen_hidden_rows() {
+        let mut source = valid_qwen3a_source();
+        for (name, input, output) in [
+            ("a.conv2d.1.weight", 1, 480),
+            ("a.conv2d.2.weight", 480, 480),
+            ("a.conv2d.3.weight", 480, 480),
+        ] {
+            source
+                .data
+                .insert(name.into(), filled_f16(3 * 3 * input * output, 0.001));
+        }
+        for name in ["a.conv2d.1.bias", "a.conv2d.2.bias", "a.conv2d.3.bias"] {
+            source.data.insert(name.into(), filled_f32(480, 0.0));
+        }
+        source
+            .data
+            .insert("a.conv_out.weight".into(), filled_f16(7680 * 896, 0.001));
+        let model = Qwen3AudioModel::from_source(std::sync::Arc::new(source)).unwrap();
+        let window = MelWindow {
+            values: vec![0.0; 128 * 100],
+            frames: 100,
+            valid_frames: 100,
+        };
+
+        let hidden = model.encode_convolution(&window).unwrap();
+
+        assert_eq!(hidden.tokens, 13);
+        assert_eq!(hidden.values.len(), 13 * 896);
+        assert!(hidden.values.iter().all(|value| value.is_finite()));
     }
 
     #[test]
