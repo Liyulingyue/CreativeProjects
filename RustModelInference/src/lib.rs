@@ -10,6 +10,7 @@ pub mod parity_trace;
 pub mod prompt;
 pub mod quant;
 pub mod qwen35;
+pub mod qwen3a;
 pub mod scratchpad;
 pub mod thread_pool;
 pub mod tokenizer;

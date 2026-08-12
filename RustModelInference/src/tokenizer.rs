@@ -68,6 +68,10 @@ const QWEN_SEMANTIC_TOKENS: &[(&str, &str)] = &[
     ("<|vision_pad|>", "vision_pad"),
     ("<|vision_start|>", "vision_start"),
     ("<|vision_end|>", "vision_end"),
+    ("<|audio_start|>", "audio_start"),
+    ("<|audio_pad|>", "audio_pad"),
+    ("<|audio_end|>", "audio_end"),
+    ("<asr_text>", "asr_text"),
     ("<|endoftext|>", "endoftext"),
 ];
 
@@ -882,11 +886,15 @@ mod tests {
                 "<|image_pad|>",
                 "<|vision_start|>",
                 "<|vision_end|>",
+                "<|audio_start|>",
+                "<|audio_pad|>",
+                "<|audio_end|>",
+                "<asr_text>",
                 "<|endoftext|>",
             ],
-            &[1, 1, 1, 3, 4, 3, 3, 3, 3, 3],
+            &[1, 1, 1, 3, 4, 3, 3, 3, 3, 3, 3, 3, 3, 3],
             None,
-            Some(9),
+            Some(13),
             false,
             false,
         )
@@ -1017,14 +1025,31 @@ mod tests {
         };
         assert_eq!(tokenizer.encode("<|im_start|>", special), vec![3]);
         assert_ne!(tokenizer.encode("im_start", plain), vec![3]);
-        assert_eq!(tokenizer.encode("<|endoftext|>", special), vec![9]);
+        assert_eq!(tokenizer.encode("<|endoftext|>", special), vec![13]);
         assert_eq!(tokenizer.encode("<tool_call>", plain), vec![4]);
         assert_eq!(tokenizer.special_token_id("im_start"), Some(3));
         assert_eq!(tokenizer.special_token_id("im_end"), Some(5));
         assert_eq!(tokenizer.special_token_id("image_pad"), Some(6));
         assert_eq!(tokenizer.special_token_id("vision_start"), Some(7));
         assert_eq!(tokenizer.special_token_id("vision_end"), Some(8));
-        assert_eq!(tokenizer.special_token_id("endoftext"), Some(9));
+        assert_eq!(tokenizer.special_token_id("endoftext"), Some(13));
+    }
+
+    #[test]
+    fn asr_semantic_literals_resolve_to_token_ids() {
+        let tokenizer = special_test_tokenizer();
+        let audio_start_id = tokenizer.token_id("<|audio_start|>").unwrap();
+        let audio_pad_id = tokenizer.token_id("<|audio_pad|>").unwrap();
+        let audio_end_id = tokenizer.token_id("<|audio_end|>").unwrap();
+        let asr_text_id = tokenizer.token_id("<asr_text>").unwrap();
+
+        assert_eq!(
+            tokenizer.special_token_id("audio_start"),
+            Some(audio_start_id)
+        );
+        assert_eq!(tokenizer.special_token_id("audio_pad"), Some(audio_pad_id));
+        assert_eq!(tokenizer.special_token_id("audio_end"), Some(audio_end_id));
+        assert_eq!(tokenizer.special_token_id("asr_text"), Some(asr_text_id));
     }
 
     #[test]

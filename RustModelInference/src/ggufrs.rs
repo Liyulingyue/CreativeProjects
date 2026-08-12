@@ -1,6 +1,7 @@
 use crate::model::{
     ByteReader, GGMLType, GGUFLoader, MetaValue, MetaValueType, TensorInfo, TensorSource,
 };
+use crate::qwen3a::validate_qwen3a_source;
 use memmap2::{Mmap, MmapOptions};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -425,7 +426,10 @@ fn load_export_source(role: ComponentRole, path: &Path) -> Result<ExportSource, 
                 .metadata("general.architecture")
                 .and_then(MetaValue::to_string_val)
                 .ok_or_else(|| source_error(&source, "missing or invalid general.architecture"))?;
-            if !matches!(architecture, "qwen2" | "qwen3" | "qwen35" | "llama") {
+            if !matches!(
+                architecture,
+                "qwen2" | "qwen3" | "qwen3vl" | "qwen35" | "llama"
+            ) {
                 return Err(source_error(
                     &source,
                     format!("unsupported general.architecture {architecture}"),
@@ -454,42 +458,62 @@ fn load_export_source(role: ComponentRole, path: &Path) -> Result<ExportSource, 
             }
         }
         ComponentRole::Mmproj => {
-            for key in [
-                "clip.vision.projection_dim",
-                "clip.vision.image_size",
-                "clip.vision.patch_size",
-                "clip.vision.embedding_length",
-                "clip.vision.feed_forward_length",
-                "clip.vision.block_count",
-                "clip.vision.attention.head_count",
-            ] {
-                if source
-                    .loader
-                    .metadata(key)
-                    .and_then(MetaValue::to_u64)
-                    .is_none()
-                {
-                    return Err(source_error(&source, format!("missing or invalid {key}")));
-                }
-            }
-            let epsilon = "clip.vision.attention.layer_norm_epsilon";
             if source
                 .loader
-                .metadata(epsilon)
-                .and_then(MetaValue::to_f64)
-                .is_none()
+                .metadata("clip.has_audio_encoder")
+                .is_some_and(|value| matches!(value, MetaValue::Bool(true)))
             {
-                return Err(source_error(
-                    &source,
-                    format!("missing or invalid {epsilon}"),
-                ));
-            }
-            for tensor in ["v.patch_embd.weight", "mm.0.weight", "mm.2.weight"] {
-                if source.loader.tensor_info(tensor).is_none() {
+                if source
+                    .loader
+                    .metadata("clip.audio.projector_type")
+                    .and_then(MetaValue::to_string_val)
+                    != Some("qwen3a")
+                {
                     return Err(source_error(
                         &source,
-                        format!("missing required tensor {tensor}"),
+                        "missing or invalid clip.audio.projector_type; expected qwen3a",
                     ));
+                }
+                validate_qwen3a_source(&source.loader)
+                    .map_err(|message| source_error(&source, message))?;
+            } else {
+                for key in [
+                    "clip.vision.projection_dim",
+                    "clip.vision.image_size",
+                    "clip.vision.patch_size",
+                    "clip.vision.embedding_length",
+                    "clip.vision.feed_forward_length",
+                    "clip.vision.block_count",
+                    "clip.vision.attention.head_count",
+                ] {
+                    if source
+                        .loader
+                        .metadata(key)
+                        .and_then(MetaValue::to_u64)
+                        .is_none()
+                    {
+                        return Err(source_error(&source, format!("missing or invalid {key}")));
+                    }
+                }
+                let epsilon = "clip.vision.attention.layer_norm_epsilon";
+                if source
+                    .loader
+                    .metadata(epsilon)
+                    .and_then(MetaValue::to_f64)
+                    .is_none()
+                {
+                    return Err(source_error(
+                        &source,
+                        format!("missing or invalid {epsilon}"),
+                    ));
+                }
+                for tensor in ["v.patch_embd.weight", "mm.0.weight", "mm.2.weight"] {
+                    if source.loader.tensor_info(tensor).is_none() {
+                        return Err(source_error(
+                            &source,
+                            format!("missing required tensor {tensor}"),
+                        ));
+                    }
                 }
             }
         }
@@ -3055,7 +3079,7 @@ pub(crate) mod test_support {
         }
     }
 
-    pub(crate) fn test_gguf_pair() -> TestInputs {
+    pub(crate) fn test_gguf_pair_with_arch(architecture: &str) -> TestInputs {
         let id = TEST_FILE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir =
             std::env::temp_dir().join(format!("rmi-ggufrs-export-{}-{id}", std::process::id()));
@@ -3075,10 +3099,10 @@ pub(crate) mod test_support {
                 ("general.alignment".into(), MetaValue::Uint32(32)),
                 (
                     "general.architecture".into(),
-                    MetaValue::String("qwen3".into()),
+                    MetaValue::String(architecture.into()),
                 ),
                 ("general.name".into(), MetaValue::String("test-llm".into())),
-                ("qwen3.block_count".into(), MetaValue::Uint32(2)),
+                (format!("{architecture}.block_count"), MetaValue::Uint32(2)),
             ],
             &[
                 SourceTensor {
@@ -3159,6 +3183,10 @@ pub(crate) mod test_support {
         }
     }
 
+    pub(crate) fn test_gguf_pair() -> TestInputs {
+        test_gguf_pair_with_arch("qwen3")
+    }
+
     pub(crate) fn test_q8_row_package(rows: u64, row_elements: u64) -> LoadFixture {
         let inputs = test_gguf_pair();
         let row_bytes = (row_elements / 32) * 34;
@@ -3202,6 +3230,207 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn qwen3a_tensor(
+        name: String,
+        dims: &[u64],
+        ggml_type: GGMLType,
+    ) -> test_support::SourceTensor {
+        use test_support::SourceTensor;
+
+        let bytes = vec![
+            0;
+            usize::try_from(
+                TensorInfo {
+                    name: name.clone(),
+                    dims: dims.to_vec(),
+                    ggml_type,
+                    offset: 0,
+                }
+                .checked_nbytes()
+                .unwrap(),
+            )
+            .unwrap()
+        ];
+        SourceTensor {
+            name: Box::leak(name.into_boxed_str()),
+            ggml_type,
+            dims: dims.to_vec(),
+            bytes,
+        }
+    }
+
+    fn write_qwen3a_mmproj(path: &Path, projector_type: &str) {
+        use test_support::write_test_gguf;
+
+        let mut tensors = Vec::new();
+        for i in 0..18 {
+            let prefix = format!("a.blk.{i}");
+            for name in ["attn_q", "attn_k", "attn_v", "attn_out"] {
+                tensors.push(qwen3a_tensor(
+                    format!("{prefix}.{name}.weight"),
+                    &[896, 896],
+                    GGMLType::Q8_0,
+                ));
+                tensors.push(qwen3a_tensor(
+                    format!("{prefix}.{name}.bias"),
+                    &[896],
+                    GGMLType::F32,
+                ));
+            }
+            for name in ["ln1", "ln2"] {
+                tensors.push(qwen3a_tensor(
+                    format!("{prefix}.{name}.weight"),
+                    &[896],
+                    GGMLType::F32,
+                ));
+                tensors.push(qwen3a_tensor(
+                    format!("{prefix}.{name}.bias"),
+                    &[896],
+                    GGMLType::F32,
+                ));
+            }
+            tensors.push(qwen3a_tensor(
+                format!("{prefix}.ffn_up.weight"),
+                &[896, 3584],
+                GGMLType::Q8_0,
+            ));
+            tensors.push(qwen3a_tensor(
+                format!("{prefix}.ffn_up.bias"),
+                &[3584],
+                GGMLType::F32,
+            ));
+            tensors.push(qwen3a_tensor(
+                format!("{prefix}.ffn_down.weight"),
+                &[3584, 896],
+                GGMLType::Q8_0,
+            ));
+            tensors.push(qwen3a_tensor(
+                format!("{prefix}.ffn_down.bias"),
+                &[896],
+                GGMLType::F32,
+            ));
+        }
+        for (name, dims, ggml_type) in [
+            ("a.position_embd.weight", &[896, 1500][..], GGMLType::F32),
+            ("a.conv2d.1.weight", &[3, 3, 1, 480][..], GGMLType::F16),
+            ("a.conv2d.1.bias", &[1, 1, 480][..], GGMLType::F32),
+            ("a.conv2d.2.weight", &[3, 3, 480, 480][..], GGMLType::F16),
+            ("a.conv2d.2.bias", &[1, 1, 480][..], GGMLType::F32),
+            ("a.conv2d.3.weight", &[3, 3, 480, 480][..], GGMLType::F16),
+            ("a.conv2d.3.bias", &[1, 1, 480][..], GGMLType::F32),
+            ("a.conv_out.weight", &[7680, 896][..], GGMLType::F16),
+            ("a.post_ln.weight", &[896][..], GGMLType::F32),
+            ("a.post_ln.bias", &[896][..], GGMLType::F32),
+            ("mm.a.mlp.1.weight", &[896, 896][..], GGMLType::Q8_0),
+            ("mm.a.mlp.1.bias", &[896][..], GGMLType::F32),
+            ("mm.a.mlp.2.weight", &[896, 1024][..], GGMLType::Q8_0),
+            ("mm.a.mlp.2.bias", &[1024][..], GGMLType::F32),
+        ] {
+            tensors.push(qwen3a_tensor(name.into(), dims, ggml_type));
+        }
+        write_test_gguf(
+            path,
+            &[
+                (
+                    "general.architecture".into(),
+                    MetaValue::String("clip".into()),
+                ),
+                ("general.type".into(), MetaValue::String("mmproj".into())),
+                ("clip.has_audio_encoder".into(), MetaValue::Bool(true)),
+                (
+                    "clip.audio.projector_type".into(),
+                    MetaValue::String(projector_type.into()),
+                ),
+                ("clip.audio.embedding_length".into(), MetaValue::Uint32(896)),
+                (
+                    "clip.audio.feed_forward_length".into(),
+                    MetaValue::Uint32(3584),
+                ),
+                ("clip.audio.block_count".into(), MetaValue::Uint32(18)),
+                (
+                    "clip.audio.attention.head_count".into(),
+                    MetaValue::Uint32(14),
+                ),
+                ("clip.audio.num_mel_bins".into(), MetaValue::Uint32(128)),
+                ("clip.audio.projection_dim".into(), MetaValue::Uint32(1024)),
+                (
+                    "clip.audio.attention.layer_norm_epsilon".into(),
+                    MetaValue::Float32(1e-5),
+                ),
+            ],
+            &tensors,
+        );
+    }
+
+    #[test]
+    fn qwen3vl_llm_uses_existing_shared_and_layer_segments() {
+        let inputs = test_support::test_gguf_pair_with_arch("qwen3vl");
+        let output = inputs.dir.join("qwen3vl.ggufrs");
+        export_ggufrs(
+            &output,
+            &inputs.llm,
+            Some(&inputs.mmproj),
+            ExportOptions::default(),
+        )
+        .unwrap();
+        let package = GgufrsFile::open(output).unwrap();
+        let component = package.component_id(ComponentRole::Llm).unwrap();
+        let segments = package
+            .index
+            .segments
+            .iter()
+            .filter(|segment| segment.component_id == component)
+            .map(|segment| (segment.kind, segment.layer))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            segments,
+            vec![
+                (SegmentKind::Shared, None),
+                (SegmentKind::Layer, Some(0)),
+                (SegmentKind::Layer, Some(1)),
+            ]
+        );
+    }
+
+    #[test]
+    fn vision_mmproj_validation_is_unchanged() {
+        let inputs = test_support::test_gguf_pair();
+        let output = inputs.dir.join("vision.ggufrs");
+        export_ggufrs(
+            &output,
+            &inputs.llm,
+            Some(&inputs.mmproj),
+            ExportOptions::default(),
+        )
+        .unwrap();
+        GgufrsFile::open(output).unwrap().verify_all().unwrap();
+    }
+
+    #[test]
+    fn qwen3a_mmproj_uses_the_audio_validation_branch() {
+        let inputs = test_support::test_gguf_pair_with_arch("qwen3vl");
+        let audio = inputs.dir.join("audio.gguf");
+        write_qwen3a_mmproj(&audio, "qwen3a");
+        let output = inputs.dir.join("audio.ggufrs");
+        export_ggufrs(&output, &inputs.llm, Some(&audio), ExportOptions::default()).unwrap();
+        GgufrsFile::open(output).unwrap().verify_all().unwrap();
+
+        let other = inputs.dir.join("other.gguf");
+        write_qwen3a_mmproj(&other, "other");
+        let other_output = inputs.dir.join("other.ggufrs");
+        let error = export_ggufrs(
+            &other_output,
+            &inputs.llm,
+            Some(&other),
+            ExportOptions::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            GgufrsError::SourceGguf { message, .. } if message.contains("clip.audio.projector_type")
+        ));
+    }
 
     #[test]
     fn export_is_deterministic_scoped_and_byte_exact() {
