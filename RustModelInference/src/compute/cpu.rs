@@ -46,7 +46,11 @@ impl CpuProvider {
             capabilities: DeviceCapabilities {
                 components: BTreeSet::from([ComponentId::Llm, ComponentId::Vision]),
                 modes: BTreeSet::from([PlacementMode::Layer, PlacementMode::Row]),
-                layer_families: BTreeSet::from([LayerFamily::Qwen3, LayerFamily::Qwen35Dense]),
+                layer_families: BTreeSet::from([
+                    LayerFamily::Qwen3,
+                    LayerFamily::Qwen35Dense,
+                    LayerFamily::Qwen35Recurrent,
+                ]),
                 tensor_types: BTreeSet::from([
                     GGMLType::F32,
                     GGMLType::F16,
@@ -185,6 +189,32 @@ impl DeviceProvider for CpuProvider {
                 ProgramKind::LayerSegment { .. } => {}
             }
             for op in &program.layer_ops {
+                for weight in op.referenced_tensors() {
+                    if auxiliary.contains_key(&weight) {
+                        continue;
+                    }
+                    let entry = catalog.entry(weight).ok_or(BackendError::InvalidHandle)?;
+                    let bytes = catalog
+                        .bytes(weight)
+                        .map_err(|_| BackendError::InvalidHandle)?;
+                    let values = match entry.ggml_type {
+                        GGMLType::Q8_0 => continue,
+                        GGMLType::F32 => bytes
+                            .chunks_exact(4)
+                            .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+                            .collect(),
+                        GGMLType::F16 => bytes
+                            .chunks_exact(2)
+                            .map(|bytes| {
+                                crate::ops::f16_to_f32(u16::from_le_bytes(
+                                    bytes.try_into().unwrap(),
+                                ))
+                            })
+                            .collect(),
+                        _ => return Err(BackendError::InvalidHandle),
+                    };
+                    auxiliary.insert(weight, values);
+                }
                 match op {
                     LayerOp::Q8Matmul { weight, .. } => {
                         let entry = catalog.entry(*weight).ok_or(BackendError::InvalidHandle)?;
@@ -195,31 +225,6 @@ impl DeviceProvider for CpuProvider {
                             usize::try_from(entry.shape[0])
                                 .map_err(|_| BackendError::InvalidHandle)?,
                         );
-                    }
-                    LayerOp::RmsNorm { weight, .. } => {
-                        if !auxiliary.contains_key(weight) {
-                            let entry =
-                                catalog.entry(*weight).ok_or(BackendError::InvalidHandle)?;
-                            let bytes = catalog
-                                .bytes(*weight)
-                                .map_err(|_| BackendError::InvalidHandle)?;
-                            let values = match entry.ggml_type {
-                                GGMLType::F32 => bytes
-                                    .chunks_exact(4)
-                                    .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
-                                    .collect(),
-                                GGMLType::F16 => bytes
-                                    .chunks_exact(2)
-                                    .map(|bytes| {
-                                        crate::ops::f16_to_f32(u16::from_le_bytes(
-                                            bytes.try_into().unwrap(),
-                                        ))
-                                    })
-                                    .collect(),
-                                _ => return Err(BackendError::InvalidHandle),
-                            };
-                            auxiliary.insert(*weight, values);
-                        }
                     }
                     LayerOp::Attention {
                         context_capacity, ..
@@ -934,6 +939,86 @@ impl WorkerState {
                         *value *= 1.0 / (1.0 + (-gate).exp());
                     }
                 }
+                LayerOp::Sigmoid { values } => {
+                    let len = self.active_slot_len(values, batch)?;
+                    for value in &mut self.slot_mut(values)?[..len] {
+                        *value = 1.0 / (1.0 + (-*value).exp());
+                    }
+                }
+                LayerOp::Silu { values } => {
+                    let len = self.active_slot_len(values, batch)?;
+                    for value in &mut self.slot_mut(values)?[..len] {
+                        *value = crate::ops::silu(*value);
+                    }
+                }
+                LayerOp::DepthwiseCausalConv {
+                    input,
+                    weight,
+                    state,
+                    width,
+                    output,
+                } => self.execute_depthwise_conv(input, weight, state, width, output, batch)?,
+                LayerOp::L2Norm {
+                    values,
+                    epsilon_bits,
+                } => {
+                    let row_width = self.active_slot_width(values)?;
+                    let group_width = ops
+                        .iter()
+                        .find_map(|op| match *op {
+                            LayerOp::SsmUpdate {
+                                q, k, state_size, ..
+                            } if values == q || values == k => Some(state_size as usize),
+                            _ => None,
+                        })
+                        .unwrap_or(row_width);
+                    if group_width == 0 || row_width % group_width != 0 {
+                        return Err(BackendError::InvalidHandle);
+                    }
+                    let len = self.active_slot_len(values, batch)?;
+                    for group in self.slot_mut(values)?[..len].chunks_exact_mut(group_width) {
+                        let magnitude = group
+                            .iter()
+                            .map(|value| f64::from(*value * *value))
+                            .sum::<f64>();
+                        let scale =
+                            1.0 / (magnitude as f32).sqrt().max(f32::from_bits(epsilon_bits));
+                        for value in group {
+                            *value *= scale;
+                        }
+                    }
+                }
+                LayerOp::SoftplusAffine {
+                    values,
+                    bias,
+                    scale,
+                } => self.execute_softplus_affine(values, bias, scale, batch)?,
+                LayerOp::SsmUpdate {
+                    q,
+                    k,
+                    v,
+                    alpha,
+                    beta,
+                    state,
+                    output,
+                    state_size,
+                    group_count,
+                    dt_rank,
+                    inner_size,
+                } => self.execute_ssm_update(
+                    q,
+                    k,
+                    v,
+                    alpha,
+                    beta,
+                    state,
+                    output,
+                    state_size,
+                    group_count,
+                    dt_rank,
+                    inner_size,
+                    batch,
+                )?,
                 LayerOp::Add {
                     left,
                     right,
@@ -997,6 +1082,163 @@ impl WorkerState {
                 .zip(output_values[..active_len].chunks_exact_mut(width))
             {
                 crate::ops::rms_norm(input, weights, output, epsilon);
+            }
+        }
+        Ok(())
+    }
+
+    fn execute_depthwise_conv(
+        &self,
+        input: SlotId,
+        weight: crate::TensorId,
+        state: SlotId,
+        width: u32,
+        output: SlotId,
+        batch: usize,
+    ) -> Result<(), BackendError> {
+        let channels = self.active_slot_width(input)?;
+        let width = width as usize;
+        let weights = self
+            .auxiliary
+            .get(&weight)
+            .ok_or(BackendError::InvalidHandle)?;
+        let input = self.slot(input)?;
+        let state = self.slot_mut(state)?;
+        let output = self.slot_mut(output)?;
+        if width == 0
+            || weights.len() != channels * width
+            || state.len() != channels * width
+            || batch * channels > input.len()
+            || batch * channels > output.len()
+        {
+            return Err(BackendError::InvalidHandle);
+        }
+        for item in 0..batch {
+            for channel in 0..channels {
+                let current = input[item * channels + channel];
+                for tap in 0..width - 1 {
+                    state[tap * channels + channel] = state[(tap + 1) * channels + channel];
+                }
+                state[(width - 1) * channels + channel] = current;
+                output[item * channels + channel] = (0..width)
+                    .map(|tap| weights[channel * width + tap] * state[tap * channels + channel])
+                    .sum();
+            }
+        }
+        Ok(())
+    }
+
+    fn execute_softplus_affine(
+        &self,
+        values: SlotId,
+        bias: crate::TensorId,
+        scale: crate::TensorId,
+        batch: usize,
+    ) -> Result<(), BackendError> {
+        let width = self.active_slot_width(values)?;
+        let bias = self
+            .auxiliary
+            .get(&bias)
+            .ok_or(BackendError::InvalidHandle)?;
+        let scale = self
+            .auxiliary
+            .get(&scale)
+            .ok_or(BackendError::InvalidHandle)?;
+        if bias.len() != width || scale.len() != width {
+            return Err(BackendError::InvalidHandle);
+        }
+        let values = self.slot_mut(values)?;
+        for item in 0..batch {
+            for lane in 0..width {
+                let value = values[item * width + lane] + bias[lane];
+                values[item * width + lane] = if value > 20.0 {
+                    value
+                } else {
+                    (1.0 + value.exp()).ln()
+                } * scale[lane];
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_ssm_update(
+        &self,
+        q: SlotId,
+        k: SlotId,
+        v: SlotId,
+        alpha: SlotId,
+        beta: SlotId,
+        state: SlotId,
+        output: SlotId,
+        state_size: u32,
+        group_count: u32,
+        dt_rank: u32,
+        inner_size: u32,
+        batch: usize,
+    ) -> Result<(), BackendError> {
+        let state_size = state_size as usize;
+        let group_count = group_count as usize;
+        let dt_rank = dt_rank as usize;
+        let inner_size = inner_size as usize;
+        let head_width = inner_size
+            .checked_div(dt_rank)
+            .filter(|_| dt_rank != 0 && inner_size % dt_rank == 0)
+            .ok_or(BackendError::InvalidHandle)?;
+        if group_count == 0 || state_size < head_width {
+            return Err(BackendError::InvalidHandle);
+        }
+        let q_width = state_size * group_count;
+        let q = self.slot(q)?;
+        let k = self.slot(k)?;
+        let v = self.slot(v)?;
+        let alpha = self.slot(alpha)?;
+        let beta = self.slot(beta)?;
+        let state = self.slot_mut(state)?;
+        let output = self.slot_mut(output)?;
+        if batch * q_width > q.len()
+            || batch * q_width > k.len()
+            || batch * inner_size > v.len()
+            || batch * dt_rank > alpha.len()
+            || batch * dt_rank > beta.len()
+            || state.len() != dt_rank * head_width * head_width
+            || batch * inner_size > output.len()
+        {
+            return Err(BackendError::InvalidHandle);
+        }
+        for item in 0..batch {
+            for head in 0..dt_rank {
+                let key_head = head % group_count;
+                let q_base = item * q_width + key_head * state_size;
+                let v_base = item * inner_size + head * head_width;
+                let state_base = head * head_width * head_width;
+                let decay = alpha[item * dt_rank + head].exp();
+                for value in &mut state[state_base..state_base + head_width * head_width] {
+                    *value *= decay;
+                }
+                for row in 0..head_width {
+                    let row_base = state_base + row * head_width;
+                    let prior = (0..head_width)
+                        .map(|column| state[row_base + column] * k[q_base + column])
+                        .sum::<f32>();
+                    output[v_base + row] = prior;
+                }
+                for row in 0..head_width {
+                    let delta =
+                        (v[v_base + row] - output[v_base + row]) * beta[item * dt_rank + head];
+                    let row_base = state_base + row * head_width;
+                    for column in 0..head_width {
+                        state[row_base + column] += k[q_base + column] * delta;
+                    }
+                }
+                let norm = 1.0 / (state_size as f32).sqrt();
+                for row in 0..head_width {
+                    let row_base = state_base + row * head_width;
+                    output[v_base + row] = (0..head_width)
+                        .map(|column| state[row_base + column] * q[q_base + column])
+                        .sum::<f32>()
+                        * norm;
+                }
             }
         }
         Ok(())
@@ -1927,7 +2169,11 @@ mod tests {
         );
         assert_eq!(
             descriptor.capabilities.layer_families,
-            BTreeSet::from([LayerFamily::Qwen3, LayerFamily::Qwen35Dense])
+            BTreeSet::from([
+                LayerFamily::Qwen3,
+                LayerFamily::Qwen35Dense,
+                LayerFamily::Qwen35Recurrent,
+            ])
         );
     }
 

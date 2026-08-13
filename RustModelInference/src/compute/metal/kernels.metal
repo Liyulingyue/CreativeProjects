@@ -274,6 +274,103 @@ kernel void sigmoid_mul(device const float *gate [[buffer(0)]], device float *va
     if (index < params.batch * params.width) values[index] *= 1.0f / (1.0f + exp(-gate[index]));
 }
 
+kernel void sigmoid(device float *values [[buffer(0)]],
+                    constant LayerParams &params [[buffer(1)]],
+                    uint index [[thread_position_in_grid]]) {
+    if (index < params.batch * params.width) values[index] = 1.0f / (1.0f + exp(-values[index]));
+}
+
+kernel void silu(device float *values [[buffer(0)]],
+                 constant LayerParams &params [[buffer(1)]],
+                 uint index [[thread_position_in_grid]]) {
+    if (index < params.batch * params.width) values[index] *= 1.0f / (1.0f + exp(-values[index]));
+}
+
+kernel void depthwise_causal_conv(device const float *weights [[buffer(0)]],
+                                  device const float *input [[buffer(1)]],
+                                  device float *state [[buffer(2)]],
+                                  device float *output [[buffer(3)]],
+                                  constant LayerParams &params [[buffer(4)]],
+                                  uint channel [[thread_position_in_grid]]) {
+    if (channel >= params.width) return;
+    for (uint item = 0; item < params.batch; ++item) {
+        float current = input[item * params.width + channel];
+        for (uint tap = 0; tap + 1 < params.groups; ++tap) {
+            state[tap * params.width + channel] = state[(tap + 1) * params.width + channel];
+        }
+        state[(params.groups - 1) * params.width + channel] = current;
+        float value = 0.0f;
+        for (uint tap = 0; tap < params.groups; ++tap) {
+            value += weights[channel * params.groups + tap] * state[tap * params.width + channel];
+        }
+        output[item * params.width + channel] = value;
+    }
+}
+
+kernel void l2_norm(device float *values [[buffer(0)]],
+                    constant LayerParams &params [[buffer(1)]],
+                    uint group [[thread_position_in_grid]]) {
+    if (group >= params.batch * params.groups) return;
+    uint base = group * params.width;
+    float magnitude = 0.0f;
+    for (uint lane = 0; lane < params.width; ++lane) magnitude += values[base + lane] * values[base + lane];
+    float scale = 1.0f / max(sqrt(magnitude), as_type<float>(params.aux0));
+    for (uint lane = 0; lane < params.width; ++lane) values[base + lane] *= scale;
+}
+
+kernel void softplus_affine(device const float *bias [[buffer(0)]],
+                            device const float *scale [[buffer(1)]],
+                            device float *values [[buffer(2)]],
+                            constant LayerParams &params [[buffer(3)]],
+                            uint index [[thread_position_in_grid]]) {
+    if (index >= params.batch * params.width) return;
+    uint lane = index % params.width;
+    float value = values[index] + bias[lane];
+    values[index] = (value > 20.0f ? value : log(1.0f + exp(value))) * scale[lane];
+}
+
+struct SsmParams { uint batch, state_size, group_count, dt_rank, inner_size; };
+
+kernel void ssm_update(device const float *q [[buffer(0)]],
+                       device const float *k [[buffer(1)]],
+                       device const float *v [[buffer(2)]],
+                       device const float *alpha [[buffer(3)]],
+                       device const float *beta [[buffer(4)]],
+                       device float *state [[buffer(5)]],
+                       device float *output [[buffer(6)]],
+                       constant SsmParams &params [[buffer(7)]],
+                       uint head [[thread_position_in_grid]]) {
+    if (head >= params.dt_rank) return;
+    uint head_width = params.inner_size / params.dt_rank;
+    uint q_width = params.state_size * params.group_count;
+    uint key_head = head % params.group_count;
+    uint state_base = head * head_width * head_width;
+    for (uint item = 0; item < params.batch; ++item) {
+        uint q_base = item * q_width + key_head * params.state_size;
+        uint v_base = item * params.inner_size + head * head_width;
+        float decay = exp(alpha[item * params.dt_rank + head]);
+        for (uint index = 0; index < head_width * head_width; ++index) state[state_base + index] *= decay;
+        for (uint row = 0; row < head_width; ++row) {
+            float prior = 0.0f;
+            uint row_base = state_base + row * head_width;
+            for (uint column = 0; column < head_width; ++column) prior += state[row_base + column] * k[q_base + column];
+            output[v_base + row] = prior;
+        }
+        for (uint row = 0; row < head_width; ++row) {
+            float delta = (v[v_base + row] - output[v_base + row]) * beta[item * params.dt_rank + head];
+            uint row_base = state_base + row * head_width;
+            for (uint column = 0; column < head_width; ++column) state[row_base + column] += k[q_base + column] * delta;
+        }
+        float norm = rsqrt(float(params.state_size));
+        for (uint row = 0; row < head_width; ++row) {
+            float value = 0.0f;
+            uint row_base = state_base + row * head_width;
+            for (uint column = 0; column < head_width; ++column) value += state[row_base + column] * q[q_base + column];
+            output[v_base + row] = value * norm;
+        }
+    }
+}
+
 kernel void add(device const float *left [[buffer(0)]],
                 device const float *right [[buffer(1)]],
                 device float *output [[buffer(2)]],

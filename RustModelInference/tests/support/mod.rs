@@ -114,6 +114,16 @@ pub struct Qwen3LayerRun {
     pub kv_transfer_bytes: u64,
 }
 
+pub struct Qwen35RecurrentRun {
+    pub first_token_logits: Vec<f32>,
+    pub second_token_logits: Vec<f32>,
+    pub first_after_reset_logits: Vec<f32>,
+    pub tokens: Vec<usize>,
+    pub recurrent_transfer_bytes: u64,
+    pub conv_state_bytes: u64,
+    pub ssm_state_bytes: u64,
+}
+
 enum PlacementModel {
     Qwen3(rust_model_inference::Qwen3Model),
     Qwen35(rust_model_inference::Qwen35Model),
@@ -288,6 +298,10 @@ impl PlacementFixture {
         self.run_layer_two_tokens(BackendKind::Cpu, "row", [1, 2])
     }
 
+    pub fn cpu_reference_recurrent_two_tokens(&self) -> Result<Qwen3LayerRun, String> {
+        self.run_layer_two_tokens(BackendKind::Cpu, "row", [1, 1])
+    }
+
     pub fn compiled_cpu_two_tokens(&self) -> Result<Qwen3LayerRun, String> {
         self.run_layer_two_tokens(BackendKind::Cpu, "layer", [1, 2])
     }
@@ -345,6 +359,88 @@ impl PlacementFixture {
             )
             .map_err(|error| format!("compiled batch forward: {error}"))?;
         Ok(logits)
+    }
+
+    pub fn compiled_backend_recurrent_two_tokens(
+        &self,
+        backend: BackendKind,
+    ) -> Result<Qwen35RecurrentRun, String> {
+        let PlacementModel::Qwen35(model) = &self.model else {
+            return Err("fixture is not Qwen3.5".into());
+        };
+        let mut registry = DeviceRegistry::new();
+        let requested = BTreeSet::from([backend]);
+        rust_model_inference::compute::register_requested_providers(&mut registry, &requested, 1)
+            .map_err(|error| error.to_string())?;
+        registry
+            .discover(&requested)
+            .map_err(|error| error.to_string())?;
+        let device = match backend {
+            BackendKind::Cpu => "cpu0",
+            BackendKind::Vulkan => "vulkan0",
+            BackendKind::Metal => "metal0",
+            BackendKind::Npu => return Err("NPU backend is not implemented".into()),
+        };
+        let registry = Arc::new(registry);
+        let plan = PlacementCompiler {
+            catalog: &self.catalog,
+            registry: &registry,
+            requirements: std::slice::from_ref(&self.requirements()),
+        }
+        .compile(&BTreeMap::from([(
+            ComponentId::Llm,
+            parse_placement(&format!("llm:layer={device}@1")).map_err(|error| error.to_string())?,
+        )]))
+        .map_err(|error| error.to_string())?;
+        let recurrent_transfer_bytes = plan.components[&ComponentId::Llm]
+            .activation_transfers
+            .iter()
+            .map(|transfer| u64::from(transfer.f32_values_per_token) * 4)
+            .sum();
+        let (conv_state_bytes, ssm_state_bytes) = plan
+            .devices
+            .values()
+            .flat_map(|plan| &plan.slots)
+            .fold((0, 0), |(conv, ssm), slot| match slot.kind {
+                rust_model_inference::SlotKind::ConvState => (conv + slot.byte_len, ssm),
+                rust_model_inference::SlotKind::SsmState => (conv, ssm + slot.byte_len),
+                _ => (conv, ssm),
+            });
+        let compiled = CompiledModel::compile(Arc::clone(&self.catalog), plan, registry)
+            .map_err(|error| error.to_string())?;
+        let mut run = compiled.start_run().map_err(|error| error.to_string())?;
+        let mut first_token_logits = vec![0.0; 64];
+        model.forward_compiled(&mut run, &[1], &[[0, 0, 0, 0]], &mut first_token_logits)?;
+        let mut second_token_logits = vec![0.0; 64];
+        model.forward_compiled(&mut run, &[1], &[[1, 2, 3, 4]], &mut second_token_logits)?;
+        run.reset_state().map_err(|error| error.to_string())?;
+        let mut first_after_reset_logits = vec![0.0; 64];
+        model.forward_compiled(
+            &mut run,
+            &[1],
+            &[[0, 0, 0, 0]],
+            &mut first_after_reset_logits,
+        )?;
+        let tokens = [&first_token_logits, &second_token_logits]
+            .into_iter()
+            .map(|logits| {
+                logits
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, left), (_, right)| left.total_cmp(right))
+                    .map(|(index, _)| index)
+                    .unwrap()
+            })
+            .collect();
+        Ok(Qwen35RecurrentRun {
+            first_token_logits,
+            second_token_logits,
+            first_after_reset_logits,
+            tokens,
+            recurrent_transfer_bytes,
+            conv_state_bytes,
+            ssm_state_bytes,
+        })
     }
 
     fn run_layer_two_tokens(
@@ -637,7 +733,107 @@ pub fn tiny_qwen35_hybrid() -> PlacementFixture {
             ),
         ),
     ]));
-    let catalog = fixture_catalog(qwen35_tensors(), metadata);
+    let catalog = fixture_catalog_with_overrides(
+        qwen35_tensors(),
+        metadata,
+        BTreeMap::from([
+            (
+                "token_embd.weight".into(),
+                q8_0_matrix_bytes(64, 64, |row, column| {
+                    i8::from(matches!((row, column), (1, 0) | (2, 1)))
+                }),
+            ),
+            (
+                "output.weight".into(),
+                q8_0_matrix_bytes(64, 64, |row, column| i8::from(row == column)),
+            ),
+            (
+                "blk.0.attn_q.weight".into(),
+                q8_0_matrix_bytes(128, 64, |_, _| 0),
+            ),
+            (
+                "blk.0.attn_k.weight".into(),
+                q8_0_matrix_bytes(32, 64, |_, _| 0),
+            ),
+            (
+                "blk.0.attn_v.weight".into(),
+                q8_0_matrix_bytes(32, 64, |_, _| 0),
+            ),
+            (
+                "blk.0.attn_output.weight".into(),
+                q8_0_matrix_bytes(64, 64, |_, _| 0),
+            ),
+            (
+                "blk.0.ffn_gate.weight".into(),
+                q8_0_matrix_bytes(96, 64, |_, _| 0),
+            ),
+            (
+                "blk.0.ffn_up.weight".into(),
+                q8_0_matrix_bytes(96, 64, |_, _| 0),
+            ),
+            (
+                "blk.0.ffn_down.weight".into(),
+                q8_0_matrix_bytes(64, 96, |_, _| 0),
+            ),
+            (
+                "blk.1.attn_qkv.weight".into(),
+                q8_0_matrix_bytes(96, 64, |row, column| {
+                    i8::from(column == 0 && matches!(row, 0 | 1 | 32 | 33 | 64 | 65))
+                }),
+            ),
+            (
+                "blk.1.attn_gate.weight".into(),
+                q8_0_matrix_bytes(32, 64, |row, column| i8::from(column == 0 && row < 2)),
+            ),
+            (
+                "blk.1.ssm_beta.weight".into(),
+                q8_0_matrix_bytes(1, 64, |_, _| 0),
+            ),
+            (
+                "blk.1.ssm_alpha.weight".into(),
+                q8_0_matrix_bytes(1, 64, |_, _| 0),
+            ),
+            (
+                "blk.1.ssm_conv1d.weight".into(),
+                f32_matrix_bytes(1, 384, |_, index| {
+                    let channel = index / 4;
+                    let tap = index % 4;
+                    if matches!(channel, 0 | 1 | 32 | 33 | 64 | 65) && tap == 3 {
+                        1.0
+                    } else if channel == 64 && tap == 2 {
+                        0.5
+                    } else if channel == 65 && tap == 2 {
+                        -0.25
+                    } else {
+                        0.0
+                    }
+                }),
+            ),
+            (
+                "blk.1.ssm_dt.bias".into(),
+                f32_matrix_bytes(1, 1, |_, _| 0.0),
+            ),
+            ("blk.1.ssm_a".into(), f32_matrix_bytes(1, 1, |_, _| -0.5)),
+            (
+                "blk.1.ssm_out.weight".into(),
+                q8_0_matrix_bytes(64, 32, |row, column| {
+                    i8::from((row, column) == (1, 0) || (row, column) == (2, 1))
+                }),
+            ),
+            (
+                "blk.1.ffn_gate.weight".into(),
+                q8_0_matrix_bytes(96, 64, |_, _| 0),
+            ),
+            (
+                "blk.1.ffn_up.weight".into(),
+                q8_0_matrix_bytes(96, 64, |_, _| 0),
+            ),
+            (
+                "blk.1.ffn_down.weight".into(),
+                q8_0_matrix_bytes(64, 96, |_, _| 0),
+            ),
+        ]),
+    );
     let model = rust_model_inference::Qwen35Model::from_catalog(&catalog).unwrap();
     PlacementFixture {
         token_embedding: catalog.find(ComponentId::Llm, "token_embd.weight").unwrap(),
@@ -1356,12 +1552,12 @@ fn qwen35_recurrent_tensors(layer: usize) -> Vec<(String, Vec<u64>, GGMLType)> {
         ),
         (
             format!("{prefix}.ssm_beta.weight"),
-            vec![64, 32],
+            vec![64, 1],
             GGMLType::Q8_0,
         ),
         (
             format!("{prefix}.ssm_alpha.weight"),
-            vec![64, 32],
+            vec![64, 1],
             GGMLType::Q8_0,
         ),
         (

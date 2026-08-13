@@ -1315,8 +1315,8 @@ fn append_layer_ops(
             let q = f32_slot(builder, key_elements)?;
             let k = f32_slot(builder, key_elements)?;
             let v = f32_slot(builder, u64::from(spec.inner_size))?;
-            let alpha = f32_slot(builder, u64::from(spec.inner_size))?;
-            let beta = f32_slot(builder, u64::from(spec.inner_size))?;
+            let alpha = f32_slot(builder, u64::from(spec.dt_rank))?;
+            let beta = f32_slot(builder, u64::from(spec.dt_rank))?;
             let gate = f32_slot(builder, u64::from(spec.inner_size))?;
             let ffn_gate = f32_slot(builder, tensor_rows(spec.ffn_gate)?)?;
             let ffn_up = f32_slot(builder, tensor_rows(spec.ffn_up)?)?;
@@ -1325,11 +1325,17 @@ fn append_layer_ops(
                 SlotStorage::F32,
                 checked_mul(checked_mul(u64::from(spec.conv_width), qkv_elements)?, 4)?,
             )?;
+            let inner_size = u64::from(spec.inner_size);
+            let dt_rank = u64::from(spec.dt_rank);
+            let head_width = inner_size
+                .checked_div(dt_rank)
+                .filter(|_| inner_size % dt_rank == 0)
+                .ok_or(PlanError::SizeOverflow)?;
             let ssm_state = builder.slot(
                 SlotKind::SsmState,
                 SlotStorage::F32,
                 checked_mul(
-                    checked_mul(u64::from(spec.state_size), u64::from(spec.inner_size))?,
+                    checked_mul(checked_mul(dt_rank, head_width)?, head_width)?,
                     4,
                 )?,
             )?;
@@ -1422,30 +1428,30 @@ fn append_layer_ops(
                     output: norm,
                     epsilon_bits: spec.norm_epsilon_bits,
                 },
-                LayerOp::SigmoidMul { gate, values: norm },
+                LayerOp::SiluMul { gate, up: norm },
                 LayerOp::Q8Matmul {
                     input: norm,
                     weight: spec.ssm_output,
                     output,
-                },
-                LayerOp::RmsNorm {
-                    input: output,
-                    weight: spec.post_attn_norm,
-                    output,
-                    epsilon_bits: spec.norm_epsilon_bits,
                 },
                 LayerOp::Add {
                     left: input,
                     right: output,
                     output,
                 },
-                LayerOp::Q8Matmul {
+                LayerOp::RmsNorm {
                     input: output,
+                    weight: spec.post_attn_norm,
+                    output: norm,
+                    epsilon_bits: spec.norm_epsilon_bits,
+                },
+                LayerOp::Q8Matmul {
+                    input: norm,
                     weight: spec.ffn_gate,
                     output: ffn_gate,
                 },
                 LayerOp::Q8Matmul {
-                    input: output,
+                    input: norm,
                     weight: spec.ffn_up,
                     output: ffn_up,
                 },
@@ -1741,6 +1747,75 @@ mod tests {
             requirements: std::slice::from_ref(requirement),
         }
         .compile(&BTreeMap::from([(rule.component, rule)]))
+    }
+
+    #[test]
+    fn recurrent_ssm_state_matches_head_matrix_layout() {
+        let catalog = catalog_from_tensors(vec![(
+            "weight".into(),
+            vec![32, 64],
+            GGMLType::Q8_0,
+            Some(0),
+        )]);
+        let weight = catalog.find(ComponentId::Llm, "weight").unwrap();
+        let layer = LlmLayerSpec::Qwen35Recurrent(Qwen35RecurrentLayerSpec {
+            layer: 0,
+            attn_norm: weight,
+            post_attn_norm: weight,
+            qkv: weight,
+            gate: weight,
+            beta: weight,
+            alpha: weight,
+            conv_weight: weight,
+            dt_bias: weight,
+            ssm_a: weight,
+            ssm_norm: weight,
+            ssm_output: weight,
+            ffn_gate: weight,
+            ffn_up: weight,
+            ffn_down: weight,
+            conv_width: 4,
+            state_size: 32,
+            group_count: 1,
+            dt_rank: 4,
+            inner_size: 64,
+            norm_epsilon_bits: 1e-6_f32.to_bits(),
+        });
+        let llm = LlmRequirements {
+            layers: vec![layer.clone()],
+            hidden_size: 32,
+            context_length: 16,
+            max_batch_tokens: 1,
+            kv_cache: KvCacheType::F16,
+            final_norm: weight,
+            output: weight,
+            norm_epsilon_bits: 1e-6_f32.to_bits(),
+        };
+        let mut builder = DeviceBuilder::new(descriptor("cpu0", BackendKind::Cpu, "cpu"));
+        let input = builder
+            .slot(SlotKind::Activation, SlotStorage::F32, 32 * 4)
+            .unwrap();
+        let output = builder
+            .slot(SlotKind::Result, SlotStorage::F32, 32 * 4)
+            .unwrap();
+        append_layer_ops(
+            &mut builder,
+            &catalog,
+            &layer,
+            &llm,
+            input,
+            output,
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        let state = builder
+            .plan
+            .slots
+            .iter()
+            .find(|slot| slot.kind == SlotKind::SsmState)
+            .unwrap();
+        assert_eq!(state.byte_len, 4 * 16 * 16 * 4);
     }
 
     #[test]

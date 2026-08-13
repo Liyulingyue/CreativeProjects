@@ -207,6 +207,116 @@ void sigmoid_mul(uint index) {
     }
 }
 
+void sigmoid(uint index) {
+    if (index < params.batch * params.p1) {
+        float value = arena_f32(params.p0, index);
+        set_arena_f32(params.p0, index, 1.0 / (1.0 + exp(-value)));
+    }
+}
+
+void silu(uint index) {
+    if (index < params.batch * params.p1) {
+        float value = arena_f32(params.p0, index);
+        set_arena_f32(params.p0, index, value / (1.0 + exp(-value)));
+    }
+}
+
+void depthwise_causal_conv(uint channel) {
+    uint elements = params.p4;
+    uint width = params.p5;
+    if (channel >= elements) return;
+    for (uint item = 0; item < params.batch; ++item) {
+        float current = arena_f32(params.p0, item * elements + channel);
+        for (uint tap = 0; tap + 1 < width; ++tap) {
+            set_arena_f32(params.p2, tap * elements + channel,
+                arena_f32(params.p2, (tap + 1) * elements + channel));
+        }
+        set_arena_f32(params.p2, (width - 1) * elements + channel, current);
+        float value = 0.0;
+        for (uint tap = 0; tap < width; ++tap) {
+            value += resident_weight(params.p1, channel * width + tap, false)
+                * arena_f32(params.p2, tap * elements + channel);
+        }
+        set_arena_f32(params.p3, item * elements + channel, value);
+    }
+}
+
+void l2_norm(uint group) {
+    uint elements = params.p1;
+    uint groups = params.p2;
+    if (group >= params.batch * groups) return;
+    uint base = group * elements;
+    float magnitude = 0.0;
+    for (uint lane = 0; lane < elements; ++lane) {
+        float value = arena_f32(params.p0, base + lane);
+        magnitude += value * value;
+    }
+    float scale = 1.0 / max(sqrt(magnitude), uintBitsToFloat(params.p3));
+    for (uint lane = 0; lane < elements; ++lane) {
+        set_arena_f32(params.p0, base + lane, arena_f32(params.p0, base + lane) * scale);
+    }
+}
+
+void softplus_affine(uint index) {
+    uint elements = params.p3;
+    if (index >= params.batch * elements) return;
+    uint lane = index % elements;
+    float value = arena_f32(params.p0, index) + resident_weight(params.p1, lane, false);
+    value = value > 20.0 ? value : log(1.0 + exp(value));
+    set_arena_f32(params.p0, index, value * resident_weight(params.p2, lane, false));
+}
+
+void ssm_update(uint head) {
+    uint state_size = params.p7;
+    uint group_count = params.p8;
+    uint dt_rank = params.p9;
+    uint inner_size = params.p10;
+    if (head >= dt_rank) return;
+    uint head_width = inner_size / dt_rank;
+    uint q_width = state_size * group_count;
+    uint key_head = head % group_count;
+    uint state_base = head * head_width * head_width;
+    for (uint item = 0; item < params.batch; ++item) {
+        uint q_base = item * q_width + key_head * state_size;
+        uint v_base = item * inner_size + head * head_width;
+        float decay = exp(arena_f32(params.p3, item * dt_rank + head));
+        for (uint state_index = 0; state_index < head_width * head_width; ++state_index) {
+            set_arena_f32(params.p5, state_base + state_index,
+                arena_f32(params.p5, state_base + state_index) * decay);
+        }
+        for (uint row = 0; row < head_width; ++row) {
+            float prior = 0.0;
+            uint row_base = state_base + row * head_width;
+            for (uint column = 0; column < head_width; ++column) {
+                prior += arena_f32(params.p5, row_base + column)
+                    * arena_f32(params.p1, q_base + column);
+            }
+            set_arena_f32(params.p6, v_base + row, prior);
+        }
+        for (uint row = 0; row < head_width; ++row) {
+            float delta = (arena_f32(params.p2, v_base + row)
+                - arena_f32(params.p6, v_base + row))
+                * arena_f32(params.p4, item * dt_rank + head);
+            uint row_base = state_base + row * head_width;
+            for (uint column = 0; column < head_width; ++column) {
+                set_arena_f32(params.p5, row_base + column,
+                    arena_f32(params.p5, row_base + column)
+                    + arena_f32(params.p1, q_base + column) * delta);
+            }
+        }
+        float norm = inversesqrt(float(state_size));
+        for (uint row = 0; row < head_width; ++row) {
+            float value = 0.0;
+            uint row_base = state_base + row * head_width;
+            for (uint column = 0; column < head_width; ++column) {
+                value += arena_f32(params.p5, row_base + column)
+                    * arena_f32(params.p0, q_base + column);
+            }
+            set_arena_f32(params.p6, v_base + row, value * norm);
+        }
+    }
+}
+
 void add(uint index) {
     if (index >= params.batch * params.p3) return;
     set_arena_f32(params.p2, index,
@@ -224,4 +334,10 @@ void main() {
     else if (params.op == 6) mrope(index);
     else if (params.op == 7) slice(index);
     else if (params.op == 8) sigmoid_mul(index);
+    else if (params.op == 9) sigmoid(index);
+    else if (params.op == 10) silu(index);
+    else if (params.op == 11) depthwise_causal_conv(index);
+    else if (params.op == 12) l2_norm(index);
+    else if (params.op == 13) softplus_affine(index);
+    else if (params.op == 14) ssm_update(index);
 }

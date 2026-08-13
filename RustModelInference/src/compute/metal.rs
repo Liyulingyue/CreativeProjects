@@ -110,6 +110,7 @@ fn enumerate_adapters() -> Vec<AdapterInfo> {
                         layer_families: BTreeSet::from([
                             LayerFamily::Qwen3,
                             LayerFamily::Qwen35Dense,
+                            LayerFamily::Qwen35Recurrent,
                         ]),
                         tensor_types: BTreeSet::from([
                             GGMLType::F32,
@@ -275,6 +276,47 @@ enum BoundLayerOp {
         values: SlotId,
         elements: u32,
     },
+    Sigmoid {
+        values: SlotId,
+        elements: u32,
+    },
+    Silu {
+        values: SlotId,
+        elements: u32,
+    },
+    DepthwiseCausalConv {
+        input: SlotId,
+        weight: usize,
+        state: SlotId,
+        output: SlotId,
+        elements: u32,
+        width: u32,
+    },
+    L2Norm {
+        values: SlotId,
+        elements: u32,
+        groups: u32,
+        epsilon_bits: u32,
+    },
+    SoftplusAffine {
+        values: SlotId,
+        bias: usize,
+        scale: usize,
+        elements: u32,
+    },
+    SsmUpdate {
+        q: SlotId,
+        k: SlotId,
+        v: SlotId,
+        alpha: SlotId,
+        beta: SlotId,
+        state: SlotId,
+        output: SlotId,
+        state_size: u32,
+        group_count: u32,
+        dt_rank: u32,
+        inner_size: u32,
+    },
     Add {
         left: SlotId,
         right: SlotId,
@@ -354,6 +396,12 @@ impl MetalSession {
                 "attention",
                 "silu_mul",
                 "sigmoid_mul",
+                "sigmoid",
+                "silu",
+                "depthwise_causal_conv",
+                "l2_norm",
+                "softplus_affine",
+                "ssm_update",
                 "add",
             ]
             .into_iter()
@@ -907,6 +955,139 @@ impl MetalSession {
                     &[batch, *elements, 0, 0, 0, 0, 0, 0],
                 );
             }
+            BoundLayerOp::Sigmoid { values, elements }
+            | BoundLayerOp::Silu { values, elements } => {
+                if !fits_f32(*values, *elements) {
+                    return Err(BackendError::InvalidHandle);
+                }
+                dispatch(
+                    if matches!(op, BoundLayerOp::Sigmoid { .. }) {
+                        "sigmoid"
+                    } else {
+                        "silu"
+                    },
+                    batch
+                        .checked_mul(*elements)
+                        .ok_or(BackendError::InvalidHandle)?,
+                    &[(&self.slots[values].buffer, 0)],
+                    &[batch, *elements, 0, 0, 0, 0, 0, 0],
+                );
+            }
+            BoundLayerOp::DepthwiseCausalConv {
+                input,
+                weight,
+                state,
+                output,
+                elements,
+                width,
+            } => {
+                if !fits_f32(*input, *elements) || !fits_f32(*output, *elements) {
+                    return Err(BackendError::InvalidHandle);
+                }
+                dispatch(
+                    "depthwise_causal_conv",
+                    *elements,
+                    &[
+                        (&self.resident[*weight].buffer, 0),
+                        (&self.slots[input].buffer, 0),
+                        (&self.slots[state].buffer, 0),
+                        (&self.slots[output].buffer, 0),
+                    ],
+                    &[batch, *elements, *width, 0, 0, 0, 0, 0],
+                );
+            }
+            BoundLayerOp::L2Norm {
+                values,
+                elements,
+                groups,
+                epsilon_bits,
+            } => {
+                let width = elements
+                    .checked_mul(*groups)
+                    .ok_or(BackendError::InvalidHandle)?;
+                if !fits_f32(*values, width) {
+                    return Err(BackendError::InvalidHandle);
+                }
+                dispatch(
+                    "l2_norm",
+                    batch
+                        .checked_mul(*groups)
+                        .ok_or(BackendError::InvalidHandle)?,
+                    &[(&self.slots[values].buffer, 0)],
+                    &[batch, *elements, *groups, *epsilon_bits, 0, 0, 0, 0],
+                );
+            }
+            BoundLayerOp::SoftplusAffine {
+                values,
+                bias,
+                scale,
+                elements,
+            } => {
+                if !fits_f32(*values, *elements) {
+                    return Err(BackendError::InvalidHandle);
+                }
+                dispatch(
+                    "softplus_affine",
+                    batch
+                        .checked_mul(*elements)
+                        .ok_or(BackendError::InvalidHandle)?,
+                    &[
+                        (&self.resident[*bias].buffer, 0),
+                        (&self.resident[*scale].buffer, 0),
+                        (&self.slots[values].buffer, 0),
+                    ],
+                    &[batch, *elements, 0, 0, 0, 0, 0, 0],
+                );
+            }
+            BoundLayerOp::SsmUpdate {
+                q,
+                k,
+                v,
+                alpha,
+                beta,
+                state,
+                output,
+                state_size,
+                group_count,
+                dt_rank,
+                inner_size,
+            } => {
+                let q_width = state_size
+                    .checked_mul(*group_count)
+                    .ok_or(BackendError::InvalidHandle)?;
+                if !fits_f32(*q, q_width)
+                    || !fits_f32(*k, q_width)
+                    || !fits_f32(*v, *inner_size)
+                    || !fits_f32(*alpha, *dt_rank)
+                    || !fits_f32(*beta, *dt_rank)
+                    || !fits_f32(*output, *inner_size)
+                {
+                    return Err(BackendError::InvalidHandle);
+                }
+                dispatch(
+                    "ssm_update",
+                    *dt_rank,
+                    &[
+                        (&self.slots[q].buffer, 0),
+                        (&self.slots[k].buffer, 0),
+                        (&self.slots[v].buffer, 0),
+                        (&self.slots[alpha].buffer, 0),
+                        (&self.slots[beta].buffer, 0),
+                        (&self.slots[state].buffer, 0),
+                        (&self.slots[output].buffer, 0),
+                    ],
+                    &[
+                        batch,
+                        *state_size,
+                        *group_count,
+                        *dt_rank,
+                        *inner_size,
+                        0,
+                        0,
+                        0,
+                    ],
+                );
+            }
             BoundLayerOp::Add {
                 left,
                 right,
@@ -1455,10 +1636,12 @@ fn bind_layer_ops(
     chunk_ranges: &BTreeMap<(TensorId, u32, u32), Range<usize>>,
 ) -> Result<Vec<BoundLayerOp>, BackendError> {
     if let ProgramKind::LayerSegment { families, .. } = &program.kind {
-        if families
-            .iter()
-            .any(|family| !matches!(family, LayerFamily::Qwen3 | LayerFamily::Qwen35Dense))
-        {
+        if families.iter().any(|family| {
+            !matches!(
+                family,
+                LayerFamily::Qwen3 | LayerFamily::Qwen35Dense | LayerFamily::Qwen35Recurrent
+            )
+        }) {
             return Err(BackendError::InvalidHandle);
         }
     }
@@ -1684,6 +1867,151 @@ fn bind_layer_ops(
                     gate,
                     values,
                     elements,
+                });
+            }
+            LayerOp::Sigmoid { values } | LayerOp::Silu { values } if f32_slot(values) => {
+                let elements = *widths.get(&values).ok_or(BackendError::InvalidHandle)?;
+                bound.push(if matches!(op, LayerOp::Sigmoid { .. }) {
+                    BoundLayerOp::Sigmoid { values, elements }
+                } else {
+                    BoundLayerOp::Silu { values, elements }
+                });
+            }
+            LayerOp::DepthwiseCausalConv {
+                input,
+                weight,
+                state,
+                width,
+                output,
+            } if f32_slot(input)
+                && f32_slot(output)
+                && matches!(slots.get(&state), Some(slot) if slot.storage == SlotStorage::F32 && slot.kind == SlotKind::ConvState) =>
+            {
+                let elements = *widths.get(&input).ok_or(BackendError::InvalidHandle)?;
+                let entry = catalog.entry(weight).ok_or(BackendError::InvalidHandle)?;
+                let chunks = tensor_chunks(weight)?;
+                if width == 0
+                    || entry.ggml_type != GGMLType::F32
+                    || entry.shape.iter().product::<u64>() != u64::from(elements) * u64::from(width)
+                    || chunks.len() != 1
+                    || slots[&state].byte_len != u64::from(elements) * u64::from(width) * 4
+                {
+                    return Err(BackendError::InvalidHandle);
+                }
+                widths.insert(output, elements);
+                bound.push(BoundLayerOp::DepthwiseCausalConv {
+                    input,
+                    weight: chunks[0],
+                    state,
+                    output,
+                    elements,
+                    width,
+                });
+            }
+            LayerOp::L2Norm {
+                values,
+                epsilon_bits,
+            } if f32_slot(values) => {
+                let width = *widths.get(&values).ok_or(BackendError::InvalidHandle)?;
+                let elements = program
+                    .layer_ops
+                    .iter()
+                    .find_map(|op| match *op {
+                        LayerOp::SsmUpdate {
+                            q, k, state_size, ..
+                        } if values == q || values == k => Some(state_size),
+                        _ => None,
+                    })
+                    .unwrap_or(width);
+                let groups = width
+                    .checked_div(elements)
+                    .filter(|_| elements != 0 && width % elements == 0)
+                    .ok_or(BackendError::InvalidHandle)?;
+                bound.push(BoundLayerOp::L2Norm {
+                    values,
+                    elements,
+                    groups,
+                    epsilon_bits,
+                });
+            }
+            LayerOp::SoftplusAffine {
+                values,
+                bias,
+                scale,
+            } if f32_slot(values) => {
+                let elements = *widths.get(&values).ok_or(BackendError::InvalidHandle)?;
+                let bias_entry = catalog.entry(bias).ok_or(BackendError::InvalidHandle)?;
+                let scale_entry = catalog.entry(scale).ok_or(BackendError::InvalidHandle)?;
+                let bias_chunks = tensor_chunks(bias)?;
+                let scale_chunks = tensor_chunks(scale)?;
+                if bias_entry.ggml_type != GGMLType::F32
+                    || scale_entry.ggml_type != GGMLType::F32
+                    || bias_entry.shape.iter().product::<u64>() != u64::from(elements)
+                    || scale_entry.shape.iter().product::<u64>() != u64::from(elements)
+                    || bias_chunks.len() != 1
+                    || scale_chunks.len() != 1
+                {
+                    return Err(BackendError::InvalidHandle);
+                }
+                bound.push(BoundLayerOp::SoftplusAffine {
+                    values,
+                    bias: bias_chunks[0],
+                    scale: scale_chunks[0],
+                    elements,
+                });
+            }
+            LayerOp::SsmUpdate {
+                q,
+                k,
+                v,
+                alpha,
+                beta,
+                state,
+                output,
+                state_size,
+                group_count,
+                dt_rank,
+                inner_size,
+            } if f32_slot(q)
+                && f32_slot(k)
+                && f32_slot(v)
+                && f32_slot(alpha)
+                && f32_slot(beta)
+                && f32_slot(output)
+                && matches!(slots.get(&state), Some(slot) if slot.storage == SlotStorage::F32 && slot.kind == SlotKind::SsmState) =>
+            {
+                let q_width = state_size
+                    .checked_mul(group_count)
+                    .ok_or(BackendError::InvalidHandle)?;
+                let head_width = inner_size
+                    .checked_div(dt_rank)
+                    .filter(|_| dt_rank != 0 && inner_size % dt_rank == 0)
+                    .ok_or(BackendError::InvalidHandle)?;
+                if group_count == 0
+                    || state_size < head_width
+                    || widths.get(&q) != Some(&q_width)
+                    || widths.get(&k) != Some(&q_width)
+                    || widths.get(&v) != Some(&inner_size)
+                    || widths.get(&alpha) != Some(&dt_rank)
+                    || widths.get(&beta) != Some(&dt_rank)
+                    || slots[&state].byte_len
+                        != u64::from(dt_rank) * u64::from(head_width) * u64::from(head_width) * 4
+                {
+                    return Err(BackendError::InvalidHandle);
+                }
+                widths.insert(output, inner_size);
+                bound.push(BoundLayerOp::SsmUpdate {
+                    q,
+                    k,
+                    v,
+                    alpha,
+                    beta,
+                    state,
+                    output,
+                    state_size,
+                    group_count,
+                    dt_rank,
+                    inner_size,
                 });
             }
             LayerOp::Add {
