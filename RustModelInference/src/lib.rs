@@ -49,8 +49,8 @@ pub use model::{
 };
 pub use ops::*;
 pub use placement::{
-    parse_placement, parse_placements, parse_requested_placements, ComponentId, DeviceId,
-    NormalizedTarget, PlacementError, PlacementMode, PlacementRule,
+    parse_placement, parse_placements, ComponentId, DeviceId, NormalizedTarget, PlacementError,
+    PlacementMode, PlacementRule,
 };
 pub use prompt::{
     append_qwen_assistant_prefix, append_qwen_message_tokens, build_qwen_chat_prompt, QwenMessage,

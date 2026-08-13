@@ -221,7 +221,7 @@ impl Qwen35Model {
             let attn_norm = find(&format!("{prefix}.attn_norm.weight"))?;
             let post_attn_norm = find(&format!("{prefix}.post_attention_norm.weight"))?;
             if config.is_recurrent[layer as usize] {
-                layers.push(Qwen35LayerTensorIds::Recurrent {
+                let tensors = Qwen35LayerTensorIds::Recurrent {
                     attn_norm,
                     post_attn_norm,
                     qkv: find(&format!("{prefix}.attn_qkv.weight"))?,
@@ -236,7 +236,9 @@ impl Qwen35Model {
                     ffn_gate: find(&format!("{prefix}.ffn_gate.weight"))?,
                     ffn_up: find(&format!("{prefix}.ffn_up.weight"))?,
                     ffn_down: find(&format!("{prefix}.ffn_down.weight"))?,
-                });
+                };
+                validate_recurrent_layer(catalog, &prefix, &config, &tensors)?;
+                layers.push(tensors);
             } else {
                 layers.push(Qwen35LayerTensorIds::Dense {
                     attn_norm,
@@ -369,11 +371,11 @@ impl Qwen35Model {
                             *conv_weight,
                             config
                                 .conv_dim()
-                                .checked_mul(config.ssm_d_conv)
+                                .checked_mul(config.recurrent.conv_width)
                                 .ok_or("Qwen3.5 convolution shape overflow")?,
                         )?,
-                        dt_bias: load_row_f32(catalog, *dt_bias, config.ssm_dt_rank)?,
-                        ssm_a: load_row_f32(catalog, *ssm_a, config.ssm_dt_rank)?,
+                        dt_bias: load_row_f32(catalog, *dt_bias, config.recurrent.dt_rank)?,
+                        ssm_a: load_row_f32(catalog, *ssm_a, config.recurrent.dt_rank)?,
                         ssm_norm: load_row_f32(catalog, *ssm_norm, config.head_v_dim())?,
                     }),
                 })
@@ -476,16 +478,20 @@ impl Qwen35Model {
                             ffn_gate: *ffn_gate,
                             ffn_up: *ffn_up,
                             ffn_down: *ffn_down,
-                            conv_width: u32::try_from(self.config.ssm_d_conv)
+                            conv_width: u32::try_from(self.config.recurrent.conv_width)
                                 .expect("Qwen3.5 convolution width was validated"),
-                            state_size: u32::try_from(self.config.ssm_d_state)
+                            state_size: u32::try_from(self.config.recurrent.state_size)
                                 .expect("Qwen3.5 state size was validated"),
-                            group_count: u32::try_from(self.config.ssm_n_group)
+                            group_count: u32::try_from(self.config.recurrent.group_count)
                                 .expect("Qwen3.5 group count was validated"),
-                            dt_rank: u32::try_from(self.config.ssm_dt_rank)
+                            dt_rank: u32::try_from(self.config.recurrent.dt_rank)
                                 .expect("Qwen3.5 dt rank was validated"),
-                            inner_size: u32::try_from(self.config.ssm_d_inner)
+                            inner_size: u32::try_from(self.config.recurrent.inner_size)
                                 .expect("Qwen3.5 inner size was validated"),
+                            value_dim: u32::try_from(self.config.recurrent.value_dim)
+                                .expect("Qwen3.5 value width was validated"),
+                            conv_dim: u32::try_from(self.config.recurrent.conv_dim)
+                                .expect("Qwen3.5 convolution channels were validated"),
                             norm_epsilon_bits: self.config.norm_eps.to_bits(),
                         }),
                     })
@@ -857,10 +863,11 @@ impl Qwen35Model {
         ssm_a: &[f32],
         ssm_norm: &[f32],
     ) -> Result<Vec<f32>, String> {
-        let key_dim = self.config.key_dim();
-        let value_dim = self.config.value_dim();
-        let conv_dim = self.config.conv_dim();
-        let head_v_dim = self.config.head_v_dim();
+        let dimensions = self.config.recurrent;
+        let key_dim = dimensions.key_dim;
+        let value_dim = dimensions.value_dim;
+        let conv_dim = dimensions.conv_dim;
+        let head_v_dim = dimensions.head_width;
         let mut qkv = self.execute_matrix_row(run, qkv_tensor, input)?;
         let z = self.execute_matrix_row(run, gate_tensor, input)?;
         let beta = self.execute_matrix_row(run, beta_tensor, input)?;
@@ -873,13 +880,13 @@ impl Qwen35Model {
             .get_mut(layer)
             .ok_or("Missing Qwen3.5 convolution state")?;
         for channel in 0..conv_dim {
-            for tap in 0..self.config.ssm_d_conv.saturating_sub(1) {
+            for tap in 0..dimensions.conv_width - 1 {
                 conv[tap * conv_dim + channel] = conv[(tap + 1) * conv_dim + channel];
             }
-            conv[(self.config.ssm_d_conv - 1) * conv_dim + channel] = qkv[channel];
+            conv[(dimensions.conv_width - 1) * conv_dim + channel] = qkv[channel];
             let mut value = 0.0;
-            for tap in 0..self.config.ssm_d_conv {
-                value += conv_weight[channel * self.config.ssm_d_conv + tap]
+            for tap in 0..dimensions.conv_width {
+                value += conv_weight[channel * dimensions.conv_width + tap]
                     * conv[tap * conv_dim + channel];
             }
             qkv[channel] = crate::silu(value);
@@ -889,12 +896,11 @@ impl Qwen35Model {
             .ssm
             .get_mut(layer)
             .ok_or("Missing Qwen3.5 SSM state")?;
-        for value_head in 0..self.config.ssm_dt_rank {
-            let key_head = value_head % self.config.ssm_n_group;
-            let q =
-                &qkv[key_head * self.config.ssm_d_state..(key_head + 1) * self.config.ssm_d_state];
-            let k = &qkv[key_dim + key_head * self.config.ssm_d_state
-                ..key_dim + (key_head + 1) * self.config.ssm_d_state];
+        for value_head in 0..dimensions.dt_rank {
+            let key_head = value_head % dimensions.group_count;
+            let q = &qkv[key_head * dimensions.state_size..(key_head + 1) * dimensions.state_size];
+            let k = &qkv[key_dim + key_head * dimensions.state_size
+                ..key_dim + (key_head + 1) * dimensions.state_size];
             let v = &qkv[2 * key_dim + value_head * head_v_dim
                 ..2 * key_dim + (value_head + 1) * head_v_dim];
             let mut q = q.to_vec();
@@ -929,7 +935,7 @@ impl Qwen35Model {
                 head_v_dim,
                 head_v_dim,
                 output,
-                1.0 / (self.config.ssm_d_state as f32).sqrt(),
+                1.0 / (dimensions.state_size as f32).sqrt(),
             );
             crate::rms_norm_inplace(output, ssm_norm, self.config.norm_eps);
         }
@@ -1040,6 +1046,103 @@ impl CpuRowMatrix {
     }
 }
 
+fn validate_recurrent_layer(
+    catalog: &TensorCatalog,
+    prefix: &str,
+    config: &Qwen35Config,
+    tensors: &Qwen35LayerTensorIds,
+) -> Result<(), String> {
+    let Qwen35LayerTensorIds::Recurrent {
+        qkv,
+        gate,
+        beta,
+        alpha,
+        conv_weight,
+        dt_bias,
+        ssm_a,
+        ssm_norm,
+        ssm_output,
+        ..
+    } = tensors
+    else {
+        return Err("Invalid Qwen3.5 recurrent layer tensor set".into());
+    };
+    let dimensions = config.recurrent;
+    let n_embd = config.n_embd as u64;
+    let check = |name: &str,
+                 tensor: TensorId,
+                 shape: &[u64],
+                 formats: &[GGMLType]|
+     -> Result<(), String> {
+        let entry = catalog
+            .entry(tensor)
+            .ok_or_else(|| format!("Missing Qwen3.5 recurrent tensor {name}"))?;
+        if entry.shape != shape || !formats.contains(&entry.ggml_type) {
+            return Err(format!(
+                "Invalid Qwen3.5 recurrent tensor {name}: expected {formats:?} {shape:?}, got {:?} {:?}",
+                entry.ggml_type, entry.shape
+            ));
+        }
+        Ok(())
+    };
+    let q8 = &[GGMLType::Q8_0];
+    let float = &[GGMLType::F32, GGMLType::F16];
+    check(
+        &format!("{prefix}.attn_qkv.weight"),
+        *qkv,
+        &[n_embd, dimensions.conv_dim as u64],
+        q8,
+    )?;
+    check(
+        &format!("{prefix}.attn_gate.weight"),
+        *gate,
+        &[n_embd, dimensions.value_dim as u64],
+        q8,
+    )?;
+    check(
+        &format!("{prefix}.ssm_beta.weight"),
+        *beta,
+        &[n_embd, dimensions.dt_rank as u64],
+        q8,
+    )?;
+    check(
+        &format!("{prefix}.ssm_alpha.weight"),
+        *alpha,
+        &[n_embd, dimensions.dt_rank as u64],
+        q8,
+    )?;
+    check(
+        &format!("{prefix}.ssm_conv1d.weight"),
+        *conv_weight,
+        &[dimensions.conv_width as u64, dimensions.conv_dim as u64],
+        float,
+    )?;
+    check(
+        &format!("{prefix}.ssm_dt.bias"),
+        *dt_bias,
+        &[dimensions.dt_rank as u64],
+        float,
+    )?;
+    check(
+        &format!("{prefix}.ssm_a"),
+        *ssm_a,
+        &[dimensions.dt_rank as u64],
+        float,
+    )?;
+    check(
+        &format!("{prefix}.ssm_norm.weight"),
+        *ssm_norm,
+        &[dimensions.head_width as u64],
+        float,
+    )?;
+    check(
+        &format!("{prefix}.ssm_out.weight"),
+        *ssm_output,
+        &[dimensions.value_dim as u64, n_embd],
+        q8,
+    )
+}
+
 fn load_row_f32(
     catalog: &TensorCatalog,
     tensor: TensorId,
@@ -1080,8 +1183,9 @@ fn load_row_f32(
 fn reset_row_state(state: &mut Qwen35RowState, config: &Qwen35Config) {
     let key_width = config.n_head_kv * config.key_length;
     let value_width = config.n_head_kv * config.value_length;
-    let conv_len = config.ssm_d_conv * config.conv_dim();
-    let ssm_len = config.ssm_dt_rank * config.head_v_dim() * config.head_v_dim();
+    let dimensions = config.recurrent;
+    let conv_len = dimensions.conv_width * dimensions.conv_dim;
+    let ssm_len = dimensions.dt_rank * dimensions.head_width * dimensions.head_width;
     state.next_position = 0;
     state.dense_keys = (0..config.n_layer)
         .map(|_| vec![0.0; config.n_ctx * key_width])

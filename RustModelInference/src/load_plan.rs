@@ -135,6 +135,8 @@ pub struct Qwen35RecurrentLayerSpec {
     pub group_count: u32,
     pub dt_rank: u32,
     pub inner_size: u32,
+    pub value_dim: u32,
+    pub conv_dim: u32,
     pub norm_epsilon_bits: u32,
 }
 
@@ -1307,17 +1309,14 @@ fn append_layer_ops(
         LlmLayerSpec::Qwen35Recurrent(spec) => {
             let norm = f32_slot(builder, u64::from(llm.hidden_size))?;
             let key_elements = u64::from(spec.state_size) * u64::from(spec.group_count);
-            let qkv_elements = key_elements
-                .checked_mul(2)
-                .and_then(|value| value.checked_add(u64::from(spec.inner_size)))
-                .ok_or(PlanError::SizeOverflow)?;
+            let qkv_elements = u64::from(spec.conv_dim);
             let qkv = f32_slot(builder, qkv_elements)?;
             let q = f32_slot(builder, key_elements)?;
             let k = f32_slot(builder, key_elements)?;
-            let v = f32_slot(builder, u64::from(spec.inner_size))?;
+            let v = f32_slot(builder, u64::from(spec.value_dim))?;
             let alpha = f32_slot(builder, u64::from(spec.dt_rank))?;
             let beta = f32_slot(builder, u64::from(spec.dt_rank))?;
-            let gate = f32_slot(builder, u64::from(spec.inner_size))?;
+            let gate = f32_slot(builder, u64::from(spec.value_dim))?;
             let ffn_gate = f32_slot(builder, tensor_rows(spec.ffn_gate)?)?;
             let ffn_up = f32_slot(builder, tensor_rows(spec.ffn_up)?)?;
             let conv_state = builder.slot(
@@ -1392,7 +1391,7 @@ fn append_layer_ops(
                         key_elements.checked_mul(2).ok_or(PlanError::SizeOverflow)?,
                     )
                     .map_err(|_| PlanError::SizeOverflow)?,
-                    elements: spec.inner_size,
+                    elements: spec.value_dim,
                     output: v,
                 },
                 LayerOp::Sigmoid { values: beta },
@@ -1775,10 +1774,12 @@ mod tests {
             ffn_up: weight,
             ffn_down: weight,
             conv_width: 4,
-            state_size: 32,
-            group_count: 1,
+            state_size: 16,
+            group_count: 2,
             dt_rank: 4,
             inner_size: 64,
+            value_dim: 64,
+            conv_dim: 128,
             norm_epsilon_bits: 1e-6_f32.to_bits(),
         });
         let llm = LlmRequirements {

@@ -384,6 +384,27 @@ fn model_requirements_use_catalog_metadata() {
 }
 
 #[test]
+fn qwen35_recurrent_contract_is_rejected_during_catalog_model_construction() {
+    for (case, expected) in [
+        ("metadata", "Qwen3.5 recurrent dimensions"),
+        ("qkv-shape", "blk.1.attn_qkv.weight"),
+        ("gate-shape", "blk.1.attn_gate.weight"),
+        ("beta-shape", "blk.1.ssm_beta.weight"),
+        ("alpha-shape", "blk.1.ssm_alpha.weight"),
+        ("conv-shape", "blk.1.ssm_conv1d.weight"),
+        ("dt-bias-shape", "blk.1.ssm_dt.bias"),
+        ("ssm-a-shape", "blk.1.ssm_a"),
+        ("ssm-norm-shape", "blk.1.ssm_norm.weight"),
+        ("ssm-output-shape", "blk.1.ssm_out.weight"),
+        ("qkv-format", "blk.1.attn_qkv.weight"),
+    ] {
+        let error = support::qwen35_recurrent_contract_error(case)
+            .unwrap_or_else(|| panic!("{case} was accepted"));
+        assert!(error.contains(expected), "{case}: {error}");
+    }
+}
+
+#[test]
 fn qwen3_row_logits_are_derived_from_embeddings() {
     let logits = support::tiny_qwen3().run_cpu_forward_two_tokens().unwrap();
     assert!(logits.iter().any(|logit| *logit != 0.0));

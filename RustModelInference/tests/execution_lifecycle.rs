@@ -925,6 +925,40 @@ fn weights_upload_once_and_row_submits_all_before_any_wait() {
 }
 
 #[test]
+fn q8_argument_validation_is_side_effect_free_and_run_remains_healthy() {
+    let state = Arc::new(MockState::default());
+    let compiled = compile(row_plan(), Arc::clone(&state));
+    let mut run = compiled.start_run().unwrap();
+
+    for (input, batch, mut output) in [
+        (vec![1.0; 63], 1, vec![0.0; 12]),
+        (vec![1.0; 65], 1, vec![0.0; 12]),
+        (vec![1.0; 128], 2, vec![0.0; 24]),
+    ] {
+        state.trace.lock().unwrap().clear();
+        assert!(matches!(
+            run.execute_q8(ComponentId::Llm, ROW_WEIGHT, &input, batch, &mut output),
+            Err(BackendError::InvalidHandle)
+        ));
+        assert!(
+            state.trace.lock().unwrap().iter().all(|event| !matches!(
+                event.split(':').next(),
+                Some("write" | "submit" | "wait" | "read")
+            )),
+            "invalid Q8 arguments reached a backend"
+        );
+    }
+
+    let mut output = vec![0.0; 12];
+    run.execute_q8(ComponentId::Llm, ROW_WEIGHT, &[1.0; 64], 1, &mut output)
+        .unwrap();
+    assert_eq!(
+        output,
+        (0..12).map(|value| value as f32).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn q8_and_embedding_failures_poison_the_stateful_run() {
     for failure in [
         ("q8 submit", false, true, false),

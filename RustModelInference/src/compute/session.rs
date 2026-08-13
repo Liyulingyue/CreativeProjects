@@ -1,6 +1,6 @@
 use super::{
     ActivationTransfer, BackendError, DeviceRegistry, DeviceSession, ExecutionPlan, FenceId,
-    ProgramKind, RunParams, SessionStats, SlotId, TransferTarget,
+    ProgramKind, RunParams, SessionStats, SlotId, SlotStorage, TransferTarget,
 };
 use crate::{ComponentId, DeviceId, TensorCatalog, TensorId};
 use std::collections::{BTreeMap, BTreeSet};
@@ -132,8 +132,21 @@ impl<'a> ExecutionRun<'a> {
             .row_shards
             .get(&tensor)
             .ok_or(BackendError::ProgramMissing { tensor })?;
-        let total_rows = shards.iter().map(|shard| shard.rows.end).max().unwrap_or(0) as usize;
-        let output_len = (batch as usize)
+        let (n_in, batch_capacity) = q8_contract(&self.plan, tensor, shards)?;
+        if batch == 0 || batch > batch_capacity {
+            return Err(BackendError::InvalidHandle);
+        }
+        let batch_len = usize::try_from(batch).map_err(|_| BackendError::InvalidHandle)?;
+        let input_len = batch_len
+            .checked_mul(n_in)
+            .ok_or(BackendError::InvalidHandle)?;
+        if input.len() != input_len {
+            return Err(BackendError::InvalidHandle);
+        }
+        let total_rows =
+            usize::try_from(shards.iter().map(|shard| shard.rows.end).max().unwrap_or(0))
+                .map_err(|_| BackendError::InvalidHandle)?;
+        let output_len = batch_len
             .checked_mul(total_rows)
             .ok_or(BackendError::InvalidHandle)?;
         if output.len() != output_len {
@@ -169,7 +182,7 @@ impl<'a> ExecutionRun<'a> {
                 let shard = &shards[index];
                 let rows = (shard.rows.end - shard.rows.start) as usize;
                 let local = host_result_mut(host_results, &shard.device, shard.output)?;
-                let local_len = (batch as usize)
+                let local_len = batch_len
                     .checked_mul(rows)
                     .ok_or(BackendError::InvalidHandle)?;
                 if local_len > local.len() {
@@ -177,7 +190,7 @@ impl<'a> ExecutionRun<'a> {
                 }
                 session_mut(sessions, &shard.device)?
                     .read_f32(shard.output, &mut local[..local_len])?;
-                for item in 0..batch as usize {
+                for item in 0..batch_len {
                     let src = &local[item * rows..(item + 1) * rows];
                     let dst = &mut output[item * total_rows + shard.rows.start as usize
                         ..item * total_rows + shard.rows.end as usize];
@@ -409,6 +422,60 @@ fn session_mut<'a>(
         .get_mut(device)
         .map(Box::as_mut)
         .ok_or(BackendError::InvalidHandle)
+}
+
+fn q8_contract(
+    plan: &ExecutionPlan,
+    tensor: TensorId,
+    shards: &[super::RowShard],
+) -> Result<(usize, u32), BackendError> {
+    let mut contract = None;
+    for shard in shards {
+        let device = plan
+            .devices
+            .get(&shard.device)
+            .ok_or(BackendError::InvalidHandle)?;
+        let program = device
+            .programs
+            .iter()
+            .find(|program| program.id == shard.program)
+            .ok_or(BackendError::InvalidHandle)?;
+        let ProgramKind::Q8Rows {
+            tensor: program_tensor,
+            rows,
+            batch_capacity,
+        } = &program.kind
+        else {
+            return Err(BackendError::InvalidHandle);
+        };
+        let input = device
+            .slots
+            .iter()
+            .find(|slot| slot.id == shard.input)
+            .filter(|slot| slot.storage == SlotStorage::F32)
+            .ok_or(BackendError::InvalidHandle)?;
+        let capacity = usize::try_from(*batch_capacity).map_err(|_| BackendError::InvalidHandle)?;
+        let values =
+            usize::try_from(input.byte_len / 4).map_err(|_| BackendError::InvalidHandle)?;
+        let n_in = values
+            .checked_div(capacity)
+            .filter(|n_in| {
+                *n_in != 0
+                    && input.byte_len % 4 == 0
+                    && values % capacity == 0
+                    && *program_tensor == tensor
+                    && rows == &shard.rows
+                    && program.input == shard.input
+                    && program.output == shard.output
+            })
+            .ok_or(BackendError::InvalidHandle)?;
+        let current = (n_in, *batch_capacity);
+        if contract.is_some_and(|expected| expected != current) {
+            return Err(BackendError::InvalidHandle);
+        }
+        contract = Some(current);
+    }
+    contract.ok_or(BackendError::InvalidHandle)
 }
 
 fn slot_values(

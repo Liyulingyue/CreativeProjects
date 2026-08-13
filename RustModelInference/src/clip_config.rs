@@ -179,15 +179,67 @@ pub struct Qwen35Config {
     pub norm_eps: f32,
     pub rope_dimension_count: usize,
     pub rope_dimension_sections: [i32; 4],
-    pub ssm_d_conv: usize,
-    pub ssm_d_state: usize,
-    pub ssm_n_group: usize,
-    pub ssm_dt_rank: usize,
-    pub ssm_d_inner: usize,
+    pub recurrent: Qwen35RecurrentDimensions,
     pub full_attention_interval: usize,
     pub is_recurrent: Vec<bool>,
     pub key_length: usize,
     pub value_length: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Qwen35RecurrentDimensions {
+    pub conv_width: usize,
+    pub state_size: usize,
+    pub group_count: usize,
+    pub dt_rank: usize,
+    pub inner_size: usize,
+    pub key_dim: usize,
+    pub value_dim: usize,
+    pub conv_dim: usize,
+    pub head_width: usize,
+}
+
+impl Qwen35RecurrentDimensions {
+    fn new(
+        conv_width: usize,
+        state_size: usize,
+        group_count: usize,
+        dt_rank: usize,
+        inner_size: usize,
+    ) -> Result<Self, String> {
+        if [conv_width, state_size, group_count, dt_rank, inner_size].contains(&0) {
+            return Err("Invalid Qwen3.5 recurrent dimensions: values must be nonzero".into());
+        }
+        let key_dim = state_size
+            .checked_mul(group_count)
+            .ok_or("Invalid Qwen3.5 recurrent dimensions: key width overflow")?;
+        let value_dim = state_size
+            .checked_mul(dt_rank)
+            .ok_or("Invalid Qwen3.5 recurrent dimensions: value width overflow")?;
+        if inner_size != value_dim {
+            return Err(format!(
+                "Invalid Qwen3.5 recurrent dimensions: inner_size {inner_size} does not equal state_size * time_step_rank {value_dim}"
+            ));
+        }
+        let head_width = inner_size.checked_div(dt_rank)
+            .filter(|_| inner_size % dt_rank == 0)
+            .ok_or("Invalid Qwen3.5 recurrent dimensions: inner_size is not divisible by time_step_rank")?;
+        let conv_dim = key_dim
+            .checked_mul(2)
+            .and_then(|width| width.checked_add(value_dim))
+            .ok_or("Invalid Qwen3.5 recurrent dimensions: convolution width overflow")?;
+        Ok(Self {
+            conv_width,
+            state_size,
+            group_count,
+            dt_rank,
+            inner_size,
+            key_dim,
+            value_dim,
+            conv_dim,
+            head_width,
+        })
+    }
 }
 
 fn unsigned_u64(value: &MetaValue) -> Option<u64> {
@@ -254,10 +306,11 @@ fn recurrent_layer_mask(
 impl Qwen35Config {
     pub fn from_source<S: TensorSource + ?Sized>(source: &S) -> Result<Self, String> {
         let get_u32 = |key: &str| -> Result<u32, String> {
-            source.metadata(key)
+            let value = source
+                .metadata(key)
                 .and_then(|v| v.to_u64())
-                .map(|v| v as u32)
-                .ok_or_else(|| format!("Missing qwen35 metadata: {}", key))
+                .ok_or_else(|| format!("Missing qwen35 metadata: {key}"))?;
+            u32::try_from(value).map_err(|_| format!("Qwen3.5 metadata does not fit u32: {key}"))
         };
 
         let get_f32 = |key: &str| -> Result<f32, String> {
@@ -307,11 +360,13 @@ impl Qwen35Config {
             }
         };
 
-        let ssm_d_conv = get_u32("qwen35.ssm.conv_kernel")? as usize;
-        let ssm_d_state = get_u32("qwen35.ssm.state_size")? as usize;
-        let ssm_n_group = get_u32("qwen35.ssm.group_count")? as usize;
-        let ssm_dt_rank = get_u32("qwen35.ssm.time_step_rank")? as usize;
-        let ssm_d_inner = get_u32("qwen35.ssm.inner_size")? as usize;
+        let recurrent = Qwen35RecurrentDimensions::new(
+            get_u32("qwen35.ssm.conv_kernel")? as usize,
+            get_u32("qwen35.ssm.state_size")? as usize,
+            get_u32("qwen35.ssm.group_count")? as usize,
+            get_u32("qwen35.ssm.time_step_rank")? as usize,
+            get_u32("qwen35.ssm.inner_size")? as usize,
+        )?;
         let full_attention_interval_raw =
             full_attention_interval(source.metadata("qwen35.full_attention_interval"))?;
         let is_recurrent = recurrent_layer_mask(
@@ -334,11 +389,7 @@ impl Qwen35Config {
             norm_eps,
             rope_dimension_count,
             rope_dimension_sections,
-            ssm_d_conv,
-            ssm_d_state,
-            ssm_n_group,
-            ssm_dt_rank,
-            ssm_d_inner,
+            recurrent,
             full_attention_interval,
             is_recurrent,
             key_length,
@@ -355,19 +406,19 @@ impl Qwen35Config {
     }
 
     pub fn key_dim(&self) -> usize {
-        self.ssm_d_state * self.ssm_n_group
+        self.recurrent.key_dim
     }
 
     pub fn value_dim(&self) -> usize {
-        self.ssm_d_state * self.ssm_dt_rank
+        self.recurrent.value_dim
     }
 
     pub fn conv_dim(&self) -> usize {
-        self.key_dim() * 2 + self.value_dim()
+        self.recurrent.conv_dim
     }
 
     pub fn head_v_dim(&self) -> usize {
-        self.ssm_d_inner / self.ssm_dt_rank
+        self.recurrent.head_width
     }
 }
 

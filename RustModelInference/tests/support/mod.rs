@@ -1412,6 +1412,61 @@ pub fn qwen35_metadata_layer_selection_mismatch() -> String {
         .expect("Qwen3.5 recurrent metadata must reject dense tensors")
 }
 
+pub fn qwen35_recurrent_contract_error(case: &str) -> Option<String> {
+    let fixture = tiny_qwen35_hybrid();
+    let source = fixture.llm_source();
+    let mut records = source.tensor_records();
+    let mut bytes = BTreeMap::new();
+    let mut metadata = BTreeMap::new();
+    let mut replace = |name: &str, dims: Vec<u64>, ggml_type: GGMLType| {
+        let record = records
+            .iter_mut()
+            .find(|record| record.info.name == name)
+            .expect("fixture recurrent tensor exists");
+        let data = fixture_bytes(&dims, ggml_type);
+        record.info.dims = dims;
+        record.info.ggml_type = ggml_type;
+        record.segment_byte_range.end = record.segment_byte_range.start + data.len() as u64;
+        bytes.insert(name.to_owned(), data);
+    };
+
+    match case {
+        "metadata" => {
+            metadata.insert(
+                "qwen35.ssm.inner_size".into(),
+                rust_model_inference::MetaValue::Uint32(64),
+            );
+            replace("blk.1.attn_qkv.weight", vec![64, 128], GGMLType::Q8_0);
+            replace("blk.1.attn_gate.weight", vec![64, 64], GGMLType::Q8_0);
+            replace("blk.1.ssm_norm.weight", vec![64], GGMLType::F32);
+            replace("blk.1.ssm_out.weight", vec![64, 64], GGMLType::Q8_0);
+        }
+        "qkv-shape" => replace("blk.1.attn_qkv.weight", vec![64, 64], GGMLType::Q8_0),
+        "gate-shape" => replace("blk.1.attn_gate.weight", vec![64, 64], GGMLType::Q8_0),
+        "beta-shape" => replace("blk.1.ssm_beta.weight", vec![64, 2], GGMLType::Q8_0),
+        "alpha-shape" => replace("blk.1.ssm_alpha.weight", vec![64, 2], GGMLType::Q8_0),
+        "conv-shape" => replace("blk.1.ssm_conv1d.weight", vec![380], GGMLType::F32),
+        "dt-bias-shape" => replace("blk.1.ssm_dt.bias", vec![2], GGMLType::F32),
+        "ssm-a-shape" => replace("blk.1.ssm_a", vec![2], GGMLType::F32),
+        "ssm-norm-shape" => replace("blk.1.ssm_norm.weight", vec![64], GGMLType::F32),
+        "ssm-output-shape" => replace("blk.1.ssm_out.weight", vec![64, 64], GGMLType::Q8_0),
+        "qkv-format" => replace("blk.1.attn_qkv.weight", vec![64, 96], GGMLType::F32),
+        _ => panic!("unknown recurrent contract case: {case}"),
+    }
+
+    let catalog = TensorCatalog::from_sources(vec![(
+        ComponentId::Llm,
+        Arc::new(OverrideSource {
+            source,
+            metadata,
+            records,
+            bytes,
+        }) as Arc<dyn TensorSource>,
+    )])
+    .unwrap();
+    rust_model_inference::Qwen35Model::from_catalog(&catalog).err()
+}
+
 fn tiny_qwen35_dense(
     matrix_type: GGMLType,
     tensor_overrides: BTreeMap<String, Vec<u8>>,
@@ -1654,6 +1709,41 @@ struct FixtureSource {
     metadata: BTreeMap<String, rust_model_inference::MetaValue>,
     records: Vec<SourceTensorRecord>,
     bytes: BTreeMap<String, Vec<u8>>,
+}
+
+struct OverrideSource {
+    source: Arc<dyn TensorSource>,
+    metadata: BTreeMap<String, rust_model_inference::MetaValue>,
+    records: Vec<SourceTensorRecord>,
+    bytes: BTreeMap<String, Vec<u8>>,
+}
+
+impl TensorSource for OverrideSource {
+    fn metadata(&self, key: &str) -> Option<&rust_model_inference::MetaValue> {
+        self.metadata.get(key).or_else(|| self.source.metadata(key))
+    }
+
+    fn tensor_info(&self, name: &str) -> Option<&TensorInfo> {
+        self.records
+            .iter()
+            .find(|record| record.info.name == name)
+            .map(|record| &record.info)
+    }
+
+    fn tensor_slice(&self, name: &str) -> Option<&[u8]> {
+        self.bytes
+            .get(name)
+            .map(Vec::as_slice)
+            .or_else(|| self.source.tensor_slice(name))
+    }
+
+    fn source_format(&self) -> SourceFormat {
+        self.source.source_format()
+    }
+
+    fn tensor_records(&self) -> Vec<SourceTensorRecord> {
+        self.records.clone()
+    }
 }
 
 impl TensorSource for FixtureSource {
@@ -1977,7 +2067,7 @@ fn qwen35_recurrent_tensors(layer: usize) -> Vec<(String, Vec<u64>, GGMLType)> {
         ),
         (
             format!("{prefix}.ssm_conv1d.weight"),
-            vec![384],
+            vec![4, 96],
             GGMLType::F32,
         ),
         (format!("{prefix}.ssm_dt.bias"), vec![1], GGMLType::F32),
