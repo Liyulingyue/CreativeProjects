@@ -382,6 +382,33 @@ impl DeviceBuilder {
 }
 
 impl PlacementCompiler<'_> {
+    fn ensure_tensor(
+        &self,
+        tensor: TensorId,
+        device: &DeviceId,
+    ) -> Result<&crate::TensorCatalogEntry, PlanError> {
+        let entry = self
+            .catalog
+            .entry(tensor)
+            .ok_or(PlanError::UnsupportedTensor {
+                tensor,
+                device: device.clone(),
+            })?;
+        if !self
+            .registry
+            .require(device)?
+            .capabilities
+            .tensor_types
+            .contains(&entry.ggml_type)
+        {
+            return Err(PlanError::UnsupportedTensor {
+                tensor,
+                device: device.clone(),
+            });
+        }
+        Ok(entry)
+    }
+
     pub fn compile(
         &self,
         rules: &BTreeMap<ComponentId, PlacementRule>,
@@ -523,6 +550,14 @@ impl PlacementCompiler<'_> {
         for target in &rule.targets {
             self.ensure_device(component, &target.device, PlacementMode::Row, None)?;
         }
+        self.ensure_tensor(llm.final_norm, &primary)?;
+        let logits = self.ensure_tensor(llm.output, &primary)?;
+        if logits.ggml_type != GGMLType::Q8_0 {
+            return Err(PlanError::UnsupportedTensor {
+                tensor: llm.output,
+                device: primary,
+            });
+        }
         let mut row_shards = BTreeMap::new();
         let activation_bytes = checked_mul(
             u64::from(llm.hidden_size),
@@ -537,6 +572,7 @@ impl PlacementCompiler<'_> {
         {
             let row_count = u32::try_from(entry.row_count).map_err(|_| PlanError::SizeOverflow)?;
             if entry.name == "token_embd.weight" {
+                self.ensure_tensor(entry.id, &primary)?;
                 let builder = builders.get_mut(&primary).unwrap();
                 builder.tensor(entry.id, 0..row_count, entry.segment_byte_range.clone())?;
                 let input = builder.slot(
@@ -563,14 +599,7 @@ impl PlacementCompiler<'_> {
                 });
             } else if entry.shape.len() >= 2 {
                 if entry.ggml_type != GGMLType::Q8_0 {
-                    if let Some(target) = rule.targets.iter().find(|target| {
-                        self.registry.require(&target.device).unwrap().backend != BackendKind::Cpu
-                    }) {
-                        return Err(PlanError::UnsupportedTensor {
-                            tensor: entry.id,
-                            device: target.device.clone(),
-                        });
-                    }
+                    self.ensure_tensor(entry.id, &primary)?;
                     builders.get_mut(&primary).unwrap().tensor(
                         entry.id,
                         0..row_count,
@@ -603,15 +632,20 @@ impl PlacementCompiler<'_> {
                         .ok_or(PlanError::SizeOverflow)?;
                     let builder = builders.get_mut(&device).unwrap();
                     builder.tensor(entry.id, rows.clone(), start..end)?;
+                    let input_elements = *entry.shape.first().ok_or(PlanError::SizeOverflow)?;
+                    let blocks = input_elements
+                        .checked_add(31)
+                        .ok_or(PlanError::SizeOverflow)?
+                        / 32;
                     let input = builder.slot(
                         SlotKind::Scratch,
                         SlotStorage::I8,
-                        checked_mul(u64::from(llm.hidden_size), u64::from(llm.max_batch_tokens))?,
+                        checked_mul(input_elements, u64::from(llm.max_batch_tokens))?,
                     )?;
                     let _scales = builder.slot(
                         SlotKind::Scratch,
                         SlotStorage::F32,
-                        checked_mul(u64::from(llm.max_batch_tokens), 4)?,
+                        checked_mul(checked_mul(blocks, u64::from(llm.max_batch_tokens))?, 4)?,
                     )?;
                     let output = builder.slot(
                         SlotKind::Result,
@@ -707,7 +741,7 @@ impl PlacementCompiler<'_> {
         )?;
         let embedding_id = self.catalog.find(component, "token_embd.weight");
         let embedding = if let Some(tensor) = embedding_id {
-            let entry = self.catalog.entry(tensor).unwrap();
+            let entry = self.ensure_tensor(tensor, &primary)?;
             let builder = builders.get_mut(&primary).unwrap();
             builder.tensor(
                 tensor,
@@ -739,7 +773,7 @@ impl PlacementCompiler<'_> {
             None
         };
         let mut spans = Vec::new();
-        for (device, layers) in ranges {
+        for (span_index, (device, layers)) in ranges.into_iter().enumerate() {
             let builder = builders.get_mut(&device).unwrap();
             for entry in self.catalog.entries().iter().filter(|entry| {
                 entry.component == component
@@ -763,12 +797,39 @@ impl PlacementCompiler<'_> {
                     entry.segment_byte_range.clone(),
                 )?;
             }
-            let input = builder.slot(SlotKind::Activation, SlotStorage::F32, activation_bytes)?;
-            let output = builder.slot(SlotKind::Activation, SlotStorage::F32, activation_bytes)?;
+            let input = if let Some(binding) = embedding
+                .as_ref()
+                .filter(|binding| span_index == 0 && binding.device == device)
+            {
+                binding.output
+            } else {
+                builder.slot(SlotKind::Activation, SlotStorage::F32, activation_bytes)?
+            };
+            let alternate =
+                builder.slot(SlotKind::Activation, SlotStorage::F32, activation_bytes)?;
             let mut ops = Vec::new();
-            for layer in &llm.layers[layers.start as usize..layers.end as usize] {
-                append_layer_ops(builder, layer, llm, input, output, &mut ops)?;
+            let mut layer_input = input;
+            for (layer_index, layer) in llm.layers[layers.start as usize..layers.end as usize]
+                .iter()
+                .enumerate()
+            {
+                let layer_output = if layer_index % 2 == 0 {
+                    alternate
+                } else {
+                    input
+                };
+                append_layer_ops(
+                    builder,
+                    self.catalog,
+                    layer,
+                    llm,
+                    layer_input,
+                    layer_output,
+                    &mut ops,
+                )?;
+                layer_input = layer_output;
             }
+            let output = layer_input;
             let families = llm.layers[layers.start as usize..layers.end as usize]
                 .iter()
                 .map(LlmLayerSpec::family)
@@ -792,13 +853,13 @@ impl PlacementCompiler<'_> {
         }
         let final_builder = builders.get_mut(&primary).unwrap();
         for tensor in [llm.final_norm, llm.output] {
-            let entry = self
-                .catalog
-                .entry(tensor)
-                .ok_or(PlanError::UnsupportedTensor {
+            let entry = self.ensure_tensor(tensor, &primary)?;
+            if tensor == llm.output && entry.ggml_type != GGMLType::Q8_0 {
+                return Err(PlanError::UnsupportedTensor {
                     tensor,
                     device: primary.clone(),
-                })?;
+                });
+            }
             final_builder.tensor(
                 tensor,
                 0..entry.row_count as u32,
@@ -907,6 +968,7 @@ impl PlacementCompiler<'_> {
 
 fn append_layer_ops(
     builder: &mut DeviceBuilder,
+    catalog: &TensorCatalog,
     layer: &LlmLayerSpec,
     llm: &LlmRequirements,
     input: SlotId,
@@ -928,6 +990,12 @@ fn append_layer_ops(
         KvCacheType::F16 => 2,
         KvCacheType::F32 => 4,
     };
+    let tensor_rows = |tensor: TensorId| {
+        catalog
+            .entry(tensor)
+            .map(|entry| entry.row_count)
+            .ok_or(PlanError::SizeOverflow)
+    };
     match layer {
         LlmLayerSpec::Qwen3(spec) => {
             let norm = f32_slot(builder, u64::from(llm.hidden_size))?;
@@ -943,6 +1011,8 @@ fn append_layer_ops(
                 builder,
                 u64::from(spec.kv_head_count) * u64::from(spec.value_head_dim),
             )?;
+            let ffn_gate = f32_slot(builder, tensor_rows(spec.ffn_gate)?)?;
+            let ffn_up = f32_slot(builder, tensor_rows(spec.ffn_up)?)?;
             let key_state = builder.slot(
                 SlotKind::KvState,
                 state_storage,
@@ -1050,16 +1120,19 @@ fn append_layer_ops(
                 LayerOp::Q8Matmul {
                     input: norm,
                     weight: spec.ffn_gate,
-                    output: q,
+                    output: ffn_gate,
                 },
                 LayerOp::Q8Matmul {
                     input: norm,
                     weight: spec.ffn_up,
-                    output: k,
+                    output: ffn_up,
                 },
-                LayerOp::SiluMul { gate: q, up: k },
+                LayerOp::SiluMul {
+                    gate: ffn_gate,
+                    up: ffn_up,
+                },
                 LayerOp::Q8Matmul {
-                    input: k,
+                    input: ffn_up,
                     weight: spec.ffn_down,
                     output: norm,
                 },
@@ -1084,6 +1157,8 @@ fn append_layer_ops(
                 builder,
                 u64::from(spec.kv_head_count) * u64::from(spec.value_head_dim),
             )?;
+            let ffn_gate = f32_slot(builder, tensor_rows(spec.ffn_gate)?)?;
+            let ffn_up = f32_slot(builder, tensor_rows(spec.ffn_up)?)?;
             let key_state = builder.slot(
                 SlotKind::KvState,
                 state_storage,
@@ -1202,16 +1277,19 @@ fn append_layer_ops(
                 LayerOp::Q8Matmul {
                     input: output,
                     weight: spec.ffn_gate,
-                    output: q,
+                    output: ffn_gate,
                 },
                 LayerOp::Q8Matmul {
                     input: output,
                     weight: spec.ffn_up,
-                    output: k,
+                    output: ffn_up,
                 },
-                LayerOp::SiluMul { gate: q, up: k },
+                LayerOp::SiluMul {
+                    gate: ffn_gate,
+                    up: ffn_up,
+                },
                 LayerOp::Q8Matmul {
-                    input: k,
+                    input: ffn_up,
                     weight: spec.ffn_down,
                     output: norm,
                 },
@@ -1238,6 +1316,8 @@ fn append_layer_ops(
             let alpha = f32_slot(builder, u64::from(spec.inner_size))?;
             let beta = f32_slot(builder, u64::from(spec.inner_size))?;
             let gate = f32_slot(builder, u64::from(spec.inner_size))?;
+            let ffn_gate = f32_slot(builder, tensor_rows(spec.ffn_gate)?)?;
+            let ffn_up = f32_slot(builder, tensor_rows(spec.ffn_up)?)?;
             let conv_state = builder.slot(
                 SlotKind::ConvState,
                 SlotStorage::F32,
@@ -1363,16 +1443,19 @@ fn append_layer_ops(
                 LayerOp::Q8Matmul {
                     input: output,
                     weight: spec.ffn_gate,
-                    output: q,
+                    output: ffn_gate,
                 },
                 LayerOp::Q8Matmul {
                     input: output,
                     weight: spec.ffn_up,
-                    output: k,
+                    output: ffn_up,
                 },
-                LayerOp::SiluMul { gate: q, up: k },
+                LayerOp::SiluMul {
+                    gate: ffn_gate,
+                    up: ffn_up,
+                },
                 LayerOp::Q8Matmul {
-                    input: k,
+                    input: ffn_up,
                     weight: spec.ffn_down,
                     output: norm,
                 },
@@ -1530,6 +1613,41 @@ mod tests {
     }
 
     fn test_catalog(layer_count: u32, weight_type: GGMLType) -> TensorCatalog {
+        let mut tensors = vec![(
+            "token_embd.weight".to_string(),
+            vec![32, 16],
+            GGMLType::F32,
+            None,
+        )];
+        let row_elements = weight_type.type_traits().0 as u64;
+        for layer in 0..layer_count {
+            tensors.push((
+                format!("blk.{layer}.weight"),
+                vec![row_elements, 10],
+                weight_type,
+                Some(layer),
+            ));
+        }
+        tensors.extend([
+            (
+                "output_norm.weight".to_string(),
+                vec![32],
+                GGMLType::F32,
+                None,
+            ),
+            (
+                "output.weight".to_string(),
+                vec![32, 12],
+                GGMLType::Q8_0,
+                None,
+            ),
+        ]);
+        catalog_from_tensors(tensors)
+    }
+
+    fn catalog_from_tensors(
+        tensors: Vec<(String, Vec<u64>, GGMLType, Option<u32>)>,
+    ) -> TensorCatalog {
         let mut offset = 0_u64;
         let mut records = Vec::new();
         let mut bytes = BTreeMap::new();
@@ -1550,23 +1668,9 @@ mod tests {
             bytes.insert(name, vec![0; len as usize]);
             offset += len;
         };
-        push(
-            "token_embd.weight".into(),
-            vec![32, 16],
-            GGMLType::F32,
-            None,
-        );
-        let row_elements = weight_type.type_traits().0 as u64;
-        for layer in 0..layer_count {
-            push(
-                format!("blk.{layer}.weight"),
-                vec![row_elements, 10],
-                weight_type,
-                Some(layer),
-            );
+        for (name, dims, ggml_type, layer) in tensors {
+            push(name, dims, ggml_type, layer);
         }
-        push("output_norm.weight".into(), vec![32], GGMLType::F32, None);
-        push("output.weight".into(), vec![32, 12], GGMLType::Q8_0, None);
         TensorCatalog::from_sources(vec![(
             ComponentId::Llm,
             Arc::new(TestSource { records, bytes }),
@@ -1765,6 +1869,300 @@ mod tests {
                     ..
                 }
             )));
+    }
+
+    #[test]
+    fn same_device_layer_span_chains_embedding_and_each_layer_output() {
+        let catalog = test_catalog(2, GGMLType::Q8_0);
+        let registry = registry(vec![descriptor("cpu0", BackendKind::Cpu, "cpu")]);
+        let requirement = llm_requirements(&catalog, 2);
+        let rule = PlacementRule {
+            component: ComponentId::Llm,
+            mode: PlacementMode::Layer,
+            targets: targets(&[("cpu0", 1.0)]),
+        };
+        let plan = compile(&catalog, &registry, &requirement, rule).unwrap();
+        let component = &plan.components[&ComponentId::Llm];
+        let embedding = component.embedding.as_ref().unwrap();
+        let span = &component.layer_spans[0];
+        assert_eq!(embedding.output, span.input);
+        assert!(component.activation_transfers.is_empty());
+
+        let program = &plan.devices[&id("cpu0")].programs[span.program.0 as usize];
+        let layers = match &requirement.workload {
+            ComponentWorkload::Llm(llm) => &llm.layers,
+            _ => unreachable!(),
+        };
+        let layer_inputs = layers
+            .iter()
+            .map(|layer| {
+                let weight = match layer {
+                    LlmLayerSpec::Qwen3(spec) => spec.attn_norm,
+                    _ => unreachable!(),
+                };
+                program
+                    .layer_ops
+                    .iter()
+                    .find_map(|op| match op {
+                        LayerOp::RmsNorm {
+                            input,
+                            weight: found,
+                            ..
+                        } if *found == weight => Some(*input),
+                        _ => None,
+                    })
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(layer_inputs[0], span.input);
+        assert_ne!(layer_inputs[1], span.input);
+        let second_weight = match &layers[1] {
+            LlmLayerSpec::Qwen3(spec) => spec.attn_norm,
+            _ => unreachable!(),
+        };
+        let second_layer_start = program
+            .layer_ops
+            .iter()
+            .position(|op| matches!(op, LayerOp::RmsNorm { input, weight, .. } if *input == layer_inputs[1] && *weight == second_weight))
+            .unwrap();
+        assert!(program.layer_ops[..second_layer_start]
+            .iter()
+            .rev()
+            .any(|op| matches!(op, LayerOp::Add { output, .. } if *output == layer_inputs[1])));
+        assert!(matches!(
+            program.layer_ops.last(),
+            Some(LayerOp::Add { output, .. }) if *output == span.output
+        ));
+    }
+
+    #[test]
+    fn row_q8_scratch_uses_each_matrix_input_width_and_block_count() {
+        let catalog = catalog_from_tensors(vec![
+            (
+                "token_embd.weight".into(),
+                vec![32, 16],
+                GGMLType::F32,
+                None,
+            ),
+            ("narrow.weight".into(), vec![32, 4], GGMLType::Q8_0, Some(0)),
+            ("wide.weight".into(), vec![64, 4], GGMLType::Q8_0, Some(0)),
+            ("output_norm.weight".into(), vec![32], GGMLType::F32, None),
+            ("output.weight".into(), vec![32, 12], GGMLType::Q8_0, None),
+        ]);
+        let requirement = llm_requirements(&catalog, 0);
+        let registry = registry(vec![descriptor("cpu0", BackendKind::Cpu, "cpu")]);
+        let plan = compile(
+            &catalog,
+            &registry,
+            &requirement,
+            PlacementRule {
+                component: ComponentId::Llm,
+                mode: PlacementMode::Row,
+                targets: targets(&[("cpu0", 1.0)]),
+            },
+        )
+        .unwrap();
+        let device = &plan.devices[&id("cpu0")];
+        for (name, input_bytes, scale_bytes) in [("narrow.weight", 64, 8), ("wide.weight", 128, 16)]
+        {
+            let tensor = catalog.find(ComponentId::Llm, name).unwrap();
+            let shard = &plan.components[&ComponentId::Llm].row_shards[&tensor][0];
+            assert_eq!(device.slots[shard.input.0 as usize].byte_len, input_bytes);
+            assert_eq!(
+                device.slots[shard.input.0 as usize + 1].byte_len,
+                scale_bytes
+            );
+        }
+    }
+
+    #[test]
+    fn layer_ffn_intermediates_follow_tensor_rows_not_attention_width() {
+        let tensors = vec![
+            (
+                "token_embd.weight".into(),
+                vec![32, 16],
+                GGMLType::F32,
+                None,
+            ),
+            ("attn_norm".into(), vec![32], GGMLType::F32, Some(0)),
+            ("q".into(), vec![32, 8], GGMLType::Q8_0, Some(0)),
+            ("k".into(), vec![32, 4], GGMLType::Q8_0, Some(0)),
+            ("v".into(), vec![32, 3], GGMLType::Q8_0, Some(0)),
+            ("o".into(), vec![32, 32], GGMLType::Q8_0, Some(0)),
+            ("ffn_norm".into(), vec![32], GGMLType::F32, Some(0)),
+            ("ffn_gate".into(), vec![32, 64], GGMLType::Q8_0, Some(0)),
+            ("ffn_up".into(), vec![32, 64], GGMLType::Q8_0, Some(0)),
+            ("ffn_down".into(), vec![64, 32], GGMLType::Q8_0, Some(0)),
+            ("output_norm.weight".into(), vec![32], GGMLType::F32, None),
+            ("output.weight".into(), vec![32, 12], GGMLType::Q8_0, None),
+        ];
+        let catalog = catalog_from_tensors(tensors);
+        let find = |name| catalog.find(ComponentId::Llm, name).unwrap();
+        let requirement = ComponentRequirements {
+            component: ComponentId::Llm,
+            workload: ComponentWorkload::Llm(LlmRequirements {
+                layers: vec![LlmLayerSpec::Qwen3(Qwen3LayerSpec {
+                    layer: 0,
+                    attn_norm: find("attn_norm"),
+                    q_norm: None,
+                    k_norm: None,
+                    q: find("q"),
+                    k: find("k"),
+                    v: find("v"),
+                    o: find("o"),
+                    ffn_norm: find("ffn_norm"),
+                    ffn_gate: find("ffn_gate"),
+                    ffn_up: find("ffn_up"),
+                    ffn_down: find("ffn_down"),
+                    head_count: 2,
+                    kv_head_count: 1,
+                    key_head_dim: 4,
+                    value_head_dim: 3,
+                    rope_dims: 4,
+                    rope_freq_base_bits: 10_000_f32.to_bits(),
+                    norm_epsilon_bits: 1e-6_f32.to_bits(),
+                })],
+                hidden_size: 32,
+                context_length: 16,
+                max_batch_tokens: 2,
+                kv_cache: KvCacheType::F16,
+                final_norm: find("output_norm.weight"),
+                output: find("output.weight"),
+                norm_epsilon_bits: 1e-6_f32.to_bits(),
+            }),
+        };
+        let registry = registry(vec![descriptor("cpu0", BackendKind::Cpu, "cpu")]);
+        let plan = compile(
+            &catalog,
+            &registry,
+            &requirement,
+            PlacementRule {
+                component: ComponentId::Llm,
+                mode: PlacementMode::Layer,
+                targets: targets(&[("cpu0", 1.0)]),
+            },
+        )
+        .unwrap();
+        let device = &plan.devices[&id("cpu0")];
+        let span = &plan.components[&ComponentId::Llm].layer_spans[0];
+        let program = &device.programs[span.program.0 as usize];
+        let output_slot = |weight| {
+            program
+                .layer_ops
+                .iter()
+                .find_map(|op| match op {
+                    LayerOp::Q8Matmul {
+                        weight: found,
+                        output,
+                        ..
+                    } if *found == weight => Some(*output),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let q = output_slot(find("q"));
+        for weight in [find("ffn_gate"), find("ffn_up")] {
+            let slot = output_slot(weight);
+            assert_ne!(slot, q);
+            assert_eq!(device.slots[slot.0 as usize].byte_len, 64 * 2 * 4);
+        }
+    }
+
+    #[test]
+    fn row_keeps_non_q8_matrix_on_capable_cpu_primary() {
+        let catalog = catalog_from_tensors(vec![
+            (
+                "token_embd.weight".into(),
+                vec![32, 16],
+                GGMLType::F32,
+                None,
+            ),
+            (
+                "cpu_only.weight".into(),
+                vec![32, 4],
+                GGMLType::F32,
+                Some(0),
+            ),
+            ("blk.0.weight".into(), vec![32, 4], GGMLType::Q8_0, Some(0)),
+            ("output_norm.weight".into(), vec![32], GGMLType::F32, None),
+            ("output.weight".into(), vec![32, 12], GGMLType::Q8_0, None),
+        ]);
+        let requirement = llm_requirements(&catalog, 1);
+        let registry = registry(vec![
+            descriptor("cpu0", BackendKind::Cpu, "cpu"),
+            descriptor("metal0", BackendKind::Metal, "metal"),
+        ]);
+        let plan = compile(
+            &catalog,
+            &registry,
+            &requirement,
+            PlacementRule {
+                component: ComponentId::Llm,
+                mode: PlacementMode::Row,
+                targets: targets(&[("cpu0", 1.0), ("metal0", 1.0)]),
+            },
+        )
+        .unwrap();
+        let tensor = catalog.find(ComponentId::Llm, "cpu_only.weight").unwrap();
+        assert!(plan.devices[&id("cpu0")]
+            .tensors
+            .iter()
+            .any(|item| item.tensor == tensor));
+        assert!(!plan.devices[&id("metal0")]
+            .tensors
+            .iter()
+            .any(|item| item.tensor == tensor));
+    }
+
+    #[test]
+    fn special_llm_tensors_require_primary_capability_and_q8_logits() {
+        let catalog = test_catalog(1, GGMLType::Q8_0);
+        let requirement = llm_requirements(&catalog, 1);
+        let mut cpu = descriptor("cpu0", BackendKind::Cpu, "cpu");
+        cpu.capabilities.tensor_types = BTreeSet::from([GGMLType::Q8_0]);
+        let limited = registry(vec![cpu]);
+        assert!(matches!(
+            compile(
+                &catalog,
+                &limited,
+                &requirement,
+                PlacementRule {
+                    component: ComponentId::Llm,
+                    mode: PlacementMode::Layer,
+                    targets: targets(&[("cpu0", 1.0)]),
+                },
+            ),
+            Err(PlanError::UnsupportedTensor { tensor, .. })
+                if tensor == catalog.find(ComponentId::Llm, "token_embd.weight").unwrap()
+        ));
+
+        let wrong_logits = catalog_from_tensors(vec![
+            (
+                "token_embd.weight".into(),
+                vec![32, 16],
+                GGMLType::F32,
+                None,
+            ),
+            ("blk.0.weight".into(), vec![32, 4], GGMLType::Q8_0, Some(0)),
+            ("output_norm.weight".into(), vec![32], GGMLType::F32, None),
+            ("output.weight".into(), vec![32, 12], GGMLType::F32, None),
+        ]);
+        let requirement = llm_requirements(&wrong_logits, 1);
+        let registry = registry(vec![descriptor("cpu0", BackendKind::Cpu, "cpu")]);
+        assert!(matches!(
+            compile(
+                &wrong_logits,
+                &registry,
+                &requirement,
+                PlacementRule {
+                    component: ComponentId::Llm,
+                    mode: PlacementMode::Layer,
+                    targets: targets(&[("cpu0", 1.0)]),
+                },
+            ),
+            Err(PlanError::UnsupportedTensor { tensor, .. })
+                if tensor == wrong_logits.find(ComponentId::Llm, "output.weight").unwrap()
+        ));
     }
 
     #[test]
