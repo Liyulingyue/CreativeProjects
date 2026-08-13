@@ -1,7 +1,7 @@
 use rayon::prelude::*;
 
 use crate::clip_config::Qwen35Config;
-use crate::model::{GGUFLoader, GGMLType};
+use crate::model::{GGMLType, TensorSource};
 use crate::ops::{attention_value_f32, dot_f32, softmax, rope_neox, rope_mrope};
 #[cfg(feature = "parity-trace")]
 use crate::parity_trace;
@@ -566,9 +566,9 @@ impl QWeight {
     }
 }
 
-fn load_weight(loader: &GGUFLoader, name: &str) -> Option<QWeight> {
-    let ti = loader.tensor_info(name)?;
-    let data = loader.tensor_slice(name)?;
+fn load_weight<S: TensorSource + ?Sized>(source: &S, name: &str) -> Option<QWeight> {
+    let ti = source.tensor_info(name)?;
+    let data = source.tensor_slice(name)?;
     let n_cols = ti.dims[0] as usize;
     let n_rows = if ti.dims.len() >= 2 { ti.dims[1] as usize } else { 1 };
 
@@ -601,9 +601,9 @@ fn load_weight(loader: &GGUFLoader, name: &str) -> Option<QWeight> {
     }
 }
 
-fn load_weight_f32(loader: &GGUFLoader, name: &str) -> Option<Vec<f32>> {
-    let ti = loader.tensor_info(name)?;
-    let data = loader.tensor_slice(name)?;
+fn load_weight_f32<S: TensorSource + ?Sized>(source: &S, name: &str) -> Option<Vec<f32>> {
+    let ti = source.tensor_info(name)?;
+    let data = source.tensor_slice(name)?;
     let n_el = ti.n_elements();
     match ti.ggml_type {
         GGMLType::F32 => {
@@ -650,66 +650,67 @@ pub struct Qwen35LayerWeights {
 }
 
 impl Qwen35Model {
-    pub fn from_gguf(loader: &GGUFLoader) -> Result<Self, String> {
-        let config = Qwen35Config::from_gguf(loader)?;
+    pub fn from_source<S: TensorSource + ?Sized>(source: &S) -> Result<Self, String> {
+        let config = Qwen35Config::from_source(source)?;
 
         let tok_embd = {
-            let ti = loader.tensor_info("token_embd.weight").ok_or("Missing token_embd.weight")?;
-            let data = loader.tensor_slice("token_embd.weight").unwrap();
+            let ti = source.tensor_info("token_embd.weight").ok_or("Missing token_embd.weight")?;
+            let data = source.tensor_slice("token_embd.weight").unwrap();
             let n_cols = ti.dims[0] as usize;
             let n_rows = ti.dims[1] as usize;
             match ti.ggml_type {
+                GGMLType::F16 => (0..n_cols * n_rows).map(|i| f16_at(data, i)).collect(),
                 GGMLType::Q8_0 => quant::dequant_q80_weight(data, n_cols, n_rows),
                 GGMLType::Q6K => quant::dequant_q6k_weight(data, n_cols, n_rows),
                 _ => return Err("Unsupported token_embd type".into()),
             }
         };
 
-        let output_norm = load_weight_f32(loader, "output_norm.weight").ok_or("Missing output_norm.weight")?;
+        let output_norm = load_weight_f32(source, "output_norm.weight").ok_or("Missing output_norm.weight")?;
 
         let output_weight = {
-            let name = if loader.tensor_info("output.weight").is_some() { "output.weight" } else { "token_embd.weight" };
-            load_weight(loader, name).ok_or("Missing output weight")?
+            let name = if source.tensor_info("output.weight").is_some() { "output.weight" } else { "token_embd.weight" };
+            load_weight(source, name).ok_or("Missing output weight")?
         };
 
         let mut layers = Vec::with_capacity(config.n_layer);
         for i in 0..config.n_layer {
-            let attn_norm = load_weight_f32(loader, &format!("blk.{}.attn_norm.weight", i))
+            let attn_norm = load_weight_f32(source, &format!("blk.{}.attn_norm.weight", i))
                 .ok_or_else(|| format!("Missing blk.{}.attn_norm.weight", i))?;
-            let attn_post_norm = load_weight_f32(loader, &format!("blk.{}.post_attention_norm.weight", i))
+            let attn_post_norm = load_weight_f32(source, &format!("blk.{}.post_attention_norm.weight", i))
                 .ok_or_else(|| format!("Missing blk.{}.post_attention_norm.weight", i))?;
             let is_recr = config.is_recurrent[i];
 
             let (wq, wk, wv, wo, attn_q_norm, attn_k_norm) = if !is_recr {
                 (
-                    load_weight(loader, &format!("blk.{}.attn_q.weight", i)),
-                    load_weight(loader, &format!("blk.{}.attn_k.weight", i)),
-                    load_weight(loader, &format!("blk.{}.attn_v.weight", i)),
-                    load_weight(loader, &format!("blk.{}.attn_output.weight", i)),
-                    load_weight_f32(loader, &format!("blk.{}.attn_q_norm.weight", i)),
-                    load_weight_f32(loader, &format!("blk.{}.attn_k_norm.weight", i)),
+                    load_weight(source, &format!("blk.{}.attn_q.weight", i)),
+                    load_weight(source, &format!("blk.{}.attn_k.weight", i)),
+                    load_weight(source, &format!("blk.{}.attn_v.weight", i)),
+                    load_weight(source, &format!("blk.{}.attn_output.weight", i)),
+                    load_weight_f32(source, &format!("blk.{}.attn_q_norm.weight", i)),
+                    load_weight_f32(source, &format!("blk.{}.attn_k_norm.weight", i)),
                 )
             } else { (None, None, None, None, None, None) };
 
             let (wqkv, wqkv_gate, ssm_conv1d, ssm_dt, ssm_a, ssm_beta, ssm_alpha, ssm_norm, ssm_out) = if is_recr {
                 (
-                    load_weight(loader, &format!("blk.{}.attn_qkv.weight", i)),
-                    load_weight(loader, &format!("blk.{}.attn_gate.weight", i)),
-                    load_weight_f32(loader, &format!("blk.{}.ssm_conv1d.weight", i)),
-                    load_weight_f32(loader, &format!("blk.{}.ssm_dt.bias", i)),
-                    load_weight_f32(loader, &format!("blk.{}.ssm_a", i)),
-                    load_weight(loader, &format!("blk.{}.ssm_beta.weight", i)),
-                    load_weight(loader, &format!("blk.{}.ssm_alpha.weight", i)),
-                    load_weight_f32(loader, &format!("blk.{}.ssm_norm.weight", i)),
-                    load_weight(loader, &format!("blk.{}.ssm_out.weight", i)),
+                    load_weight(source, &format!("blk.{}.attn_qkv.weight", i)),
+                    load_weight(source, &format!("blk.{}.attn_gate.weight", i)),
+                    load_weight_f32(source, &format!("blk.{}.ssm_conv1d.weight", i)),
+                    load_weight_f32(source, &format!("blk.{}.ssm_dt.bias", i)),
+                    load_weight_f32(source, &format!("blk.{}.ssm_a", i)),
+                    load_weight(source, &format!("blk.{}.ssm_beta.weight", i)),
+                    load_weight(source, &format!("blk.{}.ssm_alpha.weight", i)),
+                    load_weight_f32(source, &format!("blk.{}.ssm_norm.weight", i)),
+                    load_weight(source, &format!("blk.{}.ssm_out.weight", i)),
                 )
             } else { (None, None, None, None, None, None, None, None, None) };
 
-            let ffn_gate = load_weight(loader, &format!("blk.{}.ffn_gate.weight", i))
+            let ffn_gate = load_weight(source, &format!("blk.{}.ffn_gate.weight", i))
                 .ok_or_else(|| format!("Missing blk.{}.ffn_gate.weight", i))?;
-            let ffn_up = load_weight(loader, &format!("blk.{}.ffn_up.weight", i))
+            let ffn_up = load_weight(source, &format!("blk.{}.ffn_up.weight", i))
                 .ok_or_else(|| format!("Missing blk.{}.ffn_up.weight", i))?;
-            let ffn_down = load_weight(loader, &format!("blk.{}.ffn_down.weight", i))
+            let ffn_down = load_weight(source, &format!("blk.{}.ffn_down.weight", i))
                 .ok_or_else(|| format!("Missing blk.{}.ffn_down.weight", i))?;
             let ffn_gate_up = QWeight::fuse_vstack(&ffn_gate, &ffn_up);
 
@@ -1660,13 +1661,34 @@ mod tests {
     #[ignore = "requires RMI_QWEN35_MODEL"]
     fn qwen35_q8_0_model_loads() {
         let path = std::env::var("RMI_QWEN35_MODEL").expect("RMI_QWEN35_MODEL must be set");
-        let loader = GGUFLoader::from_file(&path).unwrap();
+        let source = crate::open_model_source(
+            std::path::Path::new(&path),
+            crate::ComponentRole::Llm,
+        )
+        .unwrap();
 
         assert_eq!(
-            loader.tensor_info("token_embd.weight").unwrap().ggml_type,
+            source.tensor_info("token_embd.weight").unwrap().ggml_type,
             GGMLType::Q8_0,
         );
-        Qwen35Model::from_gguf(&loader).unwrap();
+        Qwen35Model::from_source(source.as_ref()).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires an F16-token-embedding RMI_QWEN35_MODEL"]
+    fn qwen35_f16_token_embedding_model_loads() {
+        let path = std::env::var("RMI_QWEN35_MODEL").expect("RMI_QWEN35_MODEL must be set");
+        let source = crate::open_model_source(
+            std::path::Path::new(&path),
+            crate::ComponentRole::Llm,
+        )
+        .unwrap();
+
+        assert_eq!(
+            source.tensor_info("token_embd.weight").unwrap().ggml_type,
+            GGMLType::F16,
+        );
+        Qwen35Model::from_source(source.as_ref()).unwrap();
     }
 
     #[test]

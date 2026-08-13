@@ -1,4 +1,4 @@
-use crate::model::{GGUFLoader, MetaValue};
+use crate::model::{MetaValue, TensorSource};
 
 #[derive(Debug, Clone)]
 pub struct ClipVisionConfig {
@@ -20,23 +20,23 @@ pub struct ClipVisionConfig {
 }
 
 impl ClipVisionConfig {
-    pub fn from_gguf(loader: &GGUFLoader) -> Result<Self, String> {
+    pub fn from_source<S: TensorSource + ?Sized>(source: &S) -> Result<Self, String> {
         let get_u32 = |key: &str| -> Result<u32, String> {
-            loader.metadata(key)
+            source.metadata(key)
                 .and_then(|v| v.to_u64())
                 .map(|v| v as u32)
                 .ok_or_else(|| format!("Missing clip metadata: {}", key))
         };
 
         let get_f32 = |key: &str| -> Result<f32, String> {
-            loader.metadata(key)
+            source.metadata(key)
                 .and_then(|v| v.to_f64())
                 .map(|v| v as f32)
                 .ok_or_else(|| format!("Missing clip metadata: {}", key))
         };
 
         let get_bool = |key: &str| -> bool {
-            loader.metadata(key)
+            source.metadata(key)
                 .and_then(|v| match v { MetaValue::Bool(b) => Some(*b), _ => None })
                 .unwrap_or(false)
         };
@@ -48,7 +48,7 @@ impl ClipVisionConfig {
         let n_ff = get_u32("clip.vision.feed_forward_length")? as usize;
         let n_layer = get_u32("clip.vision.block_count")? as usize;
         let n_head = get_u32("clip.vision.attention.head_count")? as usize;
-        let spatial_merge_size = loader.metadata("clip.vision.spatial_merge_size")
+        let spatial_merge_size = source.metadata("clip.vision.spatial_merge_size")
             .and_then(|v| v.to_u64())
             .map(usize::try_from)
             .transpose()
@@ -66,14 +66,14 @@ impl ClipVisionConfig {
         let default_max = factor_pixels
             .checked_mul(4096)
             .ok_or("clip maximum pixel count overflow")?;
-        let image_min_pixels = loader
+        let image_min_pixels = source
             .metadata("clip.vision.image_min_pixels")
             .and_then(MetaValue::to_u64)
             .map(usize::try_from)
             .transpose()
             .map_err(|_| "clip.vision.image_min_pixels does not fit usize")?
             .unwrap_or(default_min);
-        let image_max_pixels = loader
+        let image_max_pixels = source
             .metadata("clip.vision.image_max_pixels")
             .and_then(MetaValue::to_u64)
             .map(usize::try_from)
@@ -86,7 +86,7 @@ impl ClipVisionConfig {
         let eps = get_f32("clip.vision.attention.layer_norm_epsilon")?;
         let use_gelu = get_bool("clip.use_gelu");
 
-        let image_mean = match loader.metadata("clip.vision.image_mean") {
+        let image_mean = match source.metadata("clip.vision.image_mean") {
             Some(MetaValue::Array(_, vals)) => {
                 let m: Vec<f32> = vals.iter()
                     .filter_map(|v| v.to_f64().map(|x| x as f32))
@@ -102,7 +102,7 @@ impl ClipVisionConfig {
             }
         };
 
-        let image_std = match loader.metadata("clip.vision.image_std") {
+        let image_std = match source.metadata("clip.vision.image_std") {
             Some(MetaValue::Array(_, vals)) => {
                 let s: Vec<f32> = vals.iter()
                     .filter_map(|v| v.to_f64().map(|x| x as f32))
@@ -118,7 +118,7 @@ impl ClipVisionConfig {
             }
         };
 
-        let has_deepstack_layers = match loader.metadata("clip.vision.is_deepstack_layers") {
+        let has_deepstack_layers = match source.metadata("clip.vision.is_deepstack_layers") {
             Some(MetaValue::Array(_, vals)) => {
                 vals.iter()
                     .filter_map(|v| match v { MetaValue::Bool(b) => Some(*b), _ => None })
@@ -252,16 +252,16 @@ fn recurrent_layer_mask(
 }
 
 impl Qwen35Config {
-    pub fn from_gguf(loader: &GGUFLoader) -> Result<Self, String> {
+    pub fn from_source<S: TensorSource + ?Sized>(source: &S) -> Result<Self, String> {
         let get_u32 = |key: &str| -> Result<u32, String> {
-            loader.metadata(key)
+            source.metadata(key)
                 .and_then(|v| v.to_u64())
                 .map(|v| v as u32)
                 .ok_or_else(|| format!("Missing qwen35 metadata: {}", key))
         };
 
         let get_f32 = |key: &str| -> Result<f32, String> {
-            loader.metadata(key)
+            source.metadata(key)
                 .and_then(|v| v.to_f64())
                 .map(|v| v as f32)
                 .ok_or_else(|| format!("Missing qwen35 metadata: {}", key))
@@ -274,24 +274,24 @@ impl Qwen35Config {
         let n_ff = get_u32("qwen35.feed_forward_length")? as usize;
         let n_ctx = get_u32("qwen35.context_length")? as usize;
 
-        let key_length = loader.metadata("qwen35.attention.key_length").and_then(|v| v.to_u64()).unwrap_or(n_embd as u64 / n_head as u64) as usize;
-        let value_length = loader.metadata("qwen35.attention.value_length").and_then(|v| v.to_u64()).unwrap_or(n_embd as u64 / n_head as u64) as usize;
+        let key_length = source.metadata("qwen35.attention.key_length").and_then(|v| v.to_u64()).unwrap_or(n_embd as u64 / n_head as u64) as usize;
+        let value_length = source.metadata("qwen35.attention.value_length").and_then(|v| v.to_u64()).unwrap_or(n_embd as u64 / n_head as u64) as usize;
 
-        let vocab_size = match loader.metadata("tokenizer.ggml.tokens") {
+        let vocab_size = match source.metadata("tokenizer.ggml.tokens") {
             Some(MetaValue::Array(_, vals)) => vals.len(),
             _ => 151936,
         };
 
-        let rope_freq_base = loader.metadata("qwen35.rope.freq_base")
+        let rope_freq_base = source.metadata("qwen35.rope.freq_base")
             .and_then(|v| v.to_f64())
             .unwrap_or(1_000_000.0) as f32;
         let norm_eps = get_f32("qwen35.attention.layer_norm_rms_epsilon")?;
 
-        let rope_dimension_count = loader.metadata("qwen35.rope.dimension_count")
+        let rope_dimension_count = source.metadata("qwen35.rope.dimension_count")
             .and_then(|v| v.to_u64())
             .unwrap_or(64) as usize;
 
-        let rope_dimension_sections = match loader.metadata("qwen35.rope.dimension_sections") {
+        let rope_dimension_sections = match source.metadata("qwen35.rope.dimension_sections") {
             Some(MetaValue::Array(_, vals)) => {
                 let s: Vec<i32> = vals.iter()
                     .filter_map(|v| v.to_u64().map(|x| x as i32))
@@ -313,10 +313,10 @@ impl Qwen35Config {
         let ssm_dt_rank = get_u32("qwen35.ssm.time_step_rank")? as usize;
         let ssm_d_inner = get_u32("qwen35.ssm.inner_size")? as usize;
         let full_attention_interval_raw =
-            full_attention_interval(loader.metadata("qwen35.full_attention_interval"))?;
+            full_attention_interval(source.metadata("qwen35.full_attention_interval"))?;
         let is_recurrent = recurrent_layer_mask(
             n_layer,
-            loader.metadata("qwen35.attention.recurrent_layers"),
+            source.metadata("qwen35.attention.recurrent_layers"),
             full_attention_interval_raw,
         )?;
         let full_attention_interval = usize::try_from(full_attention_interval_raw.unwrap_or(4))
@@ -444,12 +444,16 @@ mod tests {
     #[ignore = "requires RMI_QWEN35_MODEL"]
     fn qwen35_config_uses_real_layer_selection_metadata() {
         let path = std::env::var("RMI_QWEN35_MODEL").unwrap();
-        let loader = crate::model::GGUFLoader::from_file(&path).unwrap();
-        let config = Qwen35Config::from_gguf(&loader).unwrap();
+        let source = crate::open_model_source(
+            std::path::Path::new(&path),
+            crate::ComponentRole::Llm,
+        )
+        .unwrap();
+        let config = Qwen35Config::from_source(source.as_ref()).unwrap();
         let expected = recurrent_layer_mask(
             config.n_layer,
-            loader.metadata("qwen35.attention.recurrent_layers"),
-            full_attention_interval(loader.metadata("qwen35.full_attention_interval")).unwrap(),
+            source.metadata("qwen35.attention.recurrent_layers"),
+            full_attention_interval(source.metadata("qwen35.full_attention_interval")).unwrap(),
         )
         .unwrap();
         assert_eq!(config.is_recurrent, expected);
