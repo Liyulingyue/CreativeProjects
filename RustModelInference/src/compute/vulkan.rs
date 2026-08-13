@@ -43,6 +43,116 @@ struct AdapterInfo {
     portability_subset: bool,
 }
 
+struct HandleOwner<T, F: FnMut(T)> {
+    handles: Vec<T>,
+    release: F,
+}
+
+impl<T, F: FnMut(T)> HandleOwner<T, F> {
+    fn new(release: F) -> Self {
+        Self {
+            handles: Vec::new(),
+            release,
+        }
+    }
+
+    fn push(&mut self, handle: T) {
+        self.handles.push(handle);
+    }
+
+    fn disarm(mut self) -> Vec<T> {
+        std::mem::take(&mut self.handles)
+    }
+
+    fn release_last(&mut self) {
+        if let Some(handle) = self.handles.pop() {
+            (self.release)(handle);
+        }
+    }
+}
+
+fn take_created_handle<T, U, F, G>(
+    owner: &mut HandleOwner<U, F>,
+    result: Result<Vec<T>, (Vec<T>, vk::Result)>,
+    wrap: G,
+) -> Result<T, vk::Result>
+where
+    F: FnMut(U),
+    G: Fn(T) -> U,
+{
+    match result {
+        Ok(mut handles) if handles.len() == 1 => Ok(handles.pop().unwrap()),
+        Ok(handles) => {
+            for handle in handles {
+                owner.push(wrap(handle));
+            }
+            Err(vk::Result::ERROR_UNKNOWN)
+        }
+        Err((handles, error)) => {
+            for handle in handles {
+                owner.push(wrap(handle));
+            }
+            Err(error)
+        }
+    }
+}
+
+struct DeviceOwner(Option<ash::Device>);
+
+impl DeviceOwner {
+    fn device(&self) -> &ash::Device {
+        self.0.as_ref().expect("device owner is armed")
+    }
+
+    fn disarm(mut self) -> ash::Device {
+        self.0.take().expect("device owner is armed")
+    }
+}
+
+impl Drop for DeviceOwner {
+    fn drop(&mut self) {
+        if let Some(device) = self.0.take() {
+            unsafe { device.destroy_device(None) };
+        }
+    }
+}
+
+enum OpenHandle {
+    Buffer(BufferAllocation),
+    Mapped(vk::DeviceMemory),
+    CommandPool(vk::CommandPool),
+    DescriptorSetLayout(vk::DescriptorSetLayout),
+    PipelineLayout(vk::PipelineLayout),
+    Shader(vk::ShaderModule),
+    Pipeline(vk::Pipeline),
+    DescriptorPool(vk::DescriptorPool),
+    Fence(vk::Fence),
+}
+
+unsafe fn release_open_handle(device: &ash::Device, handle: OpenHandle) {
+    match handle {
+        OpenHandle::Buffer(buffer) => destroy_buffer(device, &buffer),
+        OpenHandle::Mapped(memory) => device.unmap_memory(memory),
+        OpenHandle::CommandPool(pool) => device.destroy_command_pool(pool, None),
+        OpenHandle::DescriptorSetLayout(layout) => {
+            device.destroy_descriptor_set_layout(layout, None)
+        }
+        OpenHandle::PipelineLayout(layout) => device.destroy_pipeline_layout(layout, None),
+        OpenHandle::Shader(shader) => device.destroy_shader_module(shader, None),
+        OpenHandle::Pipeline(pipeline) => device.destroy_pipeline(pipeline, None),
+        OpenHandle::DescriptorPool(pool) => device.destroy_descriptor_pool(pool, None),
+        OpenHandle::Fence(fence) => device.destroy_fence(fence, None),
+    }
+}
+
+impl<T, F: FnMut(T)> Drop for HandleOwner<T, F> {
+    fn drop(&mut self) {
+        while let Some(handle) = self.handles.pop() {
+            (self.release)(handle);
+        }
+    }
+}
+
 impl VulkanProvider {
     pub fn new() -> Result<Self, BackendError> {
         let entry = load_entry()?;
@@ -218,18 +328,35 @@ impl DeviceProvider for VulkanProvider {
         if descriptor.backend != BackendKind::Vulkan || descriptor != &plan.descriptor {
             return Err(BackendError::InvalidHandle);
         }
-        let adapter = self
-            .adapters()?
-            .into_iter()
-            .find(|adapter| adapter.descriptor.id == descriptor.id)
-            .ok_or_else(|| BackendError::DeviceUnavailable {
-                device: descriptor.id.clone(),
-            })?;
+        let adapter = select_adapter(self.adapters()?, descriptor)?;
         VulkanSession::open(Arc::clone(&self.context), adapter, plan, catalog)
             .map(|session| Box::new(session) as Box<dyn DeviceSession>)
     }
 }
 
+fn select_adapter(
+    adapters: Vec<AdapterInfo>,
+    descriptor: &DeviceDescriptor,
+) -> Result<AdapterInfo, BackendError> {
+    match adapters
+        .into_iter()
+        .find(|adapter| adapter.descriptor.id == descriptor.id)
+    {
+        Some(adapter)
+            if adapter.descriptor.backend == descriptor.backend
+                && adapter.descriptor.physical_key == descriptor.physical_key
+                && adapter.descriptor.name == descriptor.name =>
+        {
+            Ok(adapter)
+        }
+        Some(_) => Err(BackendError::InvalidHandle),
+        None => Err(BackendError::DeviceUnavailable {
+            device: descriptor.id.clone(),
+        }),
+    }
+}
+
+#[derive(Clone, Copy)]
 struct BufferAllocation {
     buffer: vk::Buffer,
     memory: vk::DeviceMemory,
@@ -261,6 +388,42 @@ struct Pending {
     program: ProgramId,
 }
 
+#[derive(Default)]
+struct SubmissionTracker {
+    pending: Option<Pending>,
+    poisoned: bool,
+}
+
+impl SubmissionTracker {
+    fn require_idle(&self) -> Result<(), &'static str> {
+        if self.poisoned {
+            Err("Vulkan session is poisoned")
+        } else if self.pending.is_some() {
+            Err("Vulkan work is pending")
+        } else {
+            Ok(())
+        }
+    }
+
+    fn finish_submit(
+        &mut self,
+        result: Result<(), vk::Result>,
+        pending: Pending,
+    ) -> Result<(), vk::Result> {
+        match result {
+            Ok(()) => {
+                self.pending = Some(pending);
+                Ok(())
+            }
+            Err(error) => {
+                self.poisoned = true;
+                self.pending = None;
+                Err(error)
+            }
+        }
+    }
+}
+
 struct VulkanSession {
     _context: Arc<VulkanContext>,
     descriptor: DeviceDescriptor,
@@ -280,7 +443,7 @@ struct VulkanSession {
     slots: BTreeMap<SlotId, SlotPlan>,
     programs: BTreeMap<ProgramId, ProgramResource>,
     next_fence: u64,
-    pending: Option<Pending>,
+    submission: SubmissionTracker,
     stats: SessionStats,
 }
 
@@ -291,6 +454,7 @@ impl VulkanSession {
         plan: &DevicePlan,
         catalog: Arc<TensorCatalog>,
     ) -> Result<Self, BackendError> {
+        let validated = validate_plan(plan, &catalog, &adapter)?;
         let priorities = [1.0];
         let queue_info = [vk::DeviceQueueCreateInfo::default()
             .queue_family_index(adapter.queue_family)
@@ -308,30 +472,14 @@ impl VulkanSession {
                 .create_device(adapter.physical, &device_info, None)
         }
         .map_err(|error| allocation(&adapter.descriptor, format!("create device: {error:?}")))?;
+        let device_owner = DeviceOwner(Some(device));
+        let device = device_owner.device();
         let queue = unsafe { device.get_device_queue(adapter.queue_family, 0) };
+        let mut handles = HandleOwner::new(|handle| unsafe { release_open_handle(device, handle) });
 
-        let resident_size = align_up(plan.memory.resident_bytes.max(4), 4);
-        let arena_size = plan
-            .slots
-            .iter()
-            .try_fold(0_u64, |end, slot| {
-                slot.arena_offset
-                    .checked_add(slot.byte_len)
-                    .map(|slot_end| end.max(slot_end))
-            })
-            .ok_or(BackendError::InvalidHandle)?
-            .max(4);
-        let staging_size = resident_size.max(arena_size).max(4);
-        if resident_size > adapter.descriptor.max_allocation_bytes
-            || arena_size > adapter.descriptor.max_allocation_bytes
-            || staging_size > adapter.descriptor.max_allocation_bytes
-        {
-            unsafe { device.destroy_device(None) };
-            return Err(allocation(
-                &adapter.descriptor,
-                "buffer exceeds adapter allocation limit",
-            ));
-        }
+        let resident_size = validated.resident_size;
+        let arena_size = validated.arena_size;
+        let staging_size = validated.staging_size;
 
         let resident = create_buffer(
             &device,
@@ -340,7 +488,8 @@ impl VulkanSession {
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         )?;
-        let arena = match create_buffer(
+        handles.push(OpenHandle::Buffer(resident));
+        let arena = create_buffer(
             &device,
             &adapter,
             arena_size,
@@ -348,33 +497,16 @@ impl VulkanSession {
                 | vk::BufferUsageFlags::TRANSFER_DST
                 | vk::BufferUsageFlags::TRANSFER_SRC,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        ) {
-            Ok(value) => value,
-            Err(error) => {
-                unsafe {
-                    destroy_buffer(&device, &resident);
-                    device.destroy_device(None);
-                }
-                return Err(error);
-            }
-        };
-        let staging = match create_buffer(
+        )?;
+        handles.push(OpenHandle::Buffer(arena));
+        let staging = create_buffer(
             &device,
             &adapter,
             staging_size,
             vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST,
             vk::MemoryPropertyFlags::HOST_VISIBLE,
-        ) {
-            Ok(value) => value,
-            Err(error) => {
-                unsafe {
-                    destroy_buffer(&device, &arena);
-                    destroy_buffer(&device, &resident);
-                    device.destroy_device(None);
-                }
-                return Err(error);
-            }
-        };
+        )?;
+        handles.push(OpenHandle::Buffer(staging));
         let staging_ptr = unsafe {
             device.map_memory(
                 staging.memory,
@@ -385,6 +517,7 @@ impl VulkanSession {
         }
         .map_err(|error| allocation(&adapter.descriptor, format!("map staging: {error:?}")))?
             as usize;
+        handles.push(OpenHandle::Mapped(staging.memory));
 
         let command_pool = unsafe {
             device.create_command_pool(
@@ -395,6 +528,7 @@ impl VulkanSession {
             )
         }
         .map_err(|error| allocation(&adapter.descriptor, format!("command pool: {error:?}")))?;
+        handles.push(OpenHandle::CommandPool(command_pool));
 
         upload_resident(
             &device,
@@ -425,6 +559,7 @@ impl VulkanSession {
         .map_err(|error| {
             pipeline_error(&adapter.descriptor, format!("descriptor layout: {error:?}"))
         })?;
+        handles.push(OpenHandle::DescriptorSetLayout(descriptor_set_layout));
         let push_range = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::COMPUTE)
             .offset(0)
@@ -441,6 +576,7 @@ impl VulkanSession {
         .map_err(|error| {
             pipeline_error(&adapter.descriptor, format!("pipeline layout: {error:?}"))
         })?;
+        handles.push(OpenHandle::PipelineLayout(pipeline_layout));
         let shader_bytes = include_bytes!("vulkan/shaders/q8_0_rows.spv");
         let shader_code = ash::util::read_spv(&mut Cursor::new(shader_bytes.as_slice()))
             .map_err(|error| pipeline_error(&adapter.descriptor, error.to_string()))?;
@@ -453,6 +589,7 @@ impl VulkanSession {
         .map_err(|error| {
             pipeline_error(&adapter.descriptor, format!("shader module: {error:?}"))
         })?;
+        handles.push(OpenHandle::Shader(shader));
         let main = CStr::from_bytes_with_nul(b"main\0").unwrap();
         let stage = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
@@ -461,27 +598,28 @@ impl VulkanSession {
         let pipeline_info = [vk::ComputePipelineCreateInfo::default()
             .stage(stage)
             .layout(pipeline_layout)];
-        let pipeline = unsafe {
-            device.create_compute_pipelines(vk::PipelineCache::null(), &pipeline_info, None)
-        }
-        .map_err(|(_, error)| {
+        let pipeline = take_created_handle(
+            &mut handles,
+            unsafe {
+                device.create_compute_pipelines(vk::PipelineCache::null(), &pipeline_info, None)
+            },
+            OpenHandle::Pipeline,
+        )
+        .map_err(|error| {
             pipeline_error(&adapter.descriptor, format!("compute pipeline: {error:?}"))
-        })?[0];
-        unsafe { device.destroy_shader_module(shader, None) };
+        })?;
+        handles.release_last();
+        handles.push(OpenHandle::Pipeline(pipeline));
 
-        let slots = validate_slots(plan, adapter.max_storage_buffer_range)?;
-        let specs = build_program_specs(plan, &catalog, &adapter)?;
-        let descriptor_count = specs.iter().map(|spec| spec.chunks.len()).sum::<usize>();
-        if specs.is_empty() || descriptor_count == 0 {
-            return Err(BackendError::InvalidHandle);
-        }
+        let slots = validated.slots;
+        let specs = validated.specs;
         let pool_sizes = [vk::DescriptorPoolSize::default()
             .ty(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count((descriptor_count * 3) as u32)];
+            .descriptor_count(validated.storage_descriptor_count)];
         let descriptor_pool = unsafe {
             device.create_descriptor_pool(
                 &vk::DescriptorPoolCreateInfo::default()
-                    .max_sets(descriptor_count as u32)
+                    .max_sets(validated.descriptor_set_count)
                     .pool_sizes(&pool_sizes),
                 None,
             )
@@ -489,7 +627,8 @@ impl VulkanSession {
         .map_err(|error| {
             pipeline_error(&adapter.descriptor, format!("descriptor pool: {error:?}"))
         })?;
-        let layouts = vec![descriptor_set_layout; descriptor_count];
+        handles.push(OpenHandle::DescriptorPool(descriptor_pool));
+        let layouts = vec![descriptor_set_layout; validated.descriptor_set_count as usize];
         let sets = unsafe {
             device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
@@ -505,7 +644,7 @@ impl VulkanSession {
                 &vk::CommandBufferAllocateInfo::default()
                     .command_pool(command_pool)
                     .level(vk::CommandBufferLevel::PRIMARY)
-                    .command_buffer_count(specs.len() as u32),
+                    .command_buffer_count(validated.command_buffer_count),
             )
         }
         .map_err(|error| {
@@ -558,6 +697,7 @@ impl VulkanSession {
                 )
             }
             .map_err(|error| pipeline_error(&adapter.descriptor, format!("fence: {error:?}")))?;
+            handles.push(OpenHandle::Fence(fence));
             let id = spec.plan.id;
             if programs
                 .insert(
@@ -578,6 +718,8 @@ impl VulkanSession {
             }
         }
 
+        handles.disarm();
+        let device = device_owner.disarm();
         Ok(Self {
             _context: context,
             descriptor: adapter.descriptor,
@@ -597,7 +739,7 @@ impl VulkanSession {
             slots,
             programs,
             next_fence: 1,
-            pending: None,
+            submission: SubmissionTracker::default(),
             stats: SessionStats {
                 resident_bytes: plan.memory.resident_bytes,
                 resident_allocations: 1,
@@ -613,14 +755,12 @@ impl VulkanSession {
     }
 
     fn require_idle(&self) -> Result<(), BackendError> {
-        if self.pending.is_some() {
-            Err(BackendError::Submission {
+        self.submission
+            .require_idle()
+            .map_err(|message| BackendError::Submission {
                 device: self.descriptor.id.clone(),
-                message: "Vulkan work is pending".into(),
+                message: message.into(),
             })
-        } else {
-            Ok(())
-        }
     }
 
     fn flush_staging(&self, offset: u64, size: u64) -> Result<(), BackendError> {
@@ -748,7 +888,6 @@ impl DeviceSession for VulkanSession {
         }
         let record_result = (|| -> Result<(), vk::Result> {
             unsafe {
-                self.device.reset_fences(&[fence])?;
                 self.device
                     .reset_command_buffer(command, vk::CommandBufferResetFlags::empty())?;
                 self.device.begin_command_buffer(
@@ -865,24 +1004,30 @@ impl DeviceSession for VulkanSession {
                         .size(output_bytes)],
                 );
                 self.device.end_command_buffer(command)?;
+                self.device.reset_fences(&[fence])?;
                 let commands = [command];
                 let submit = [vk::SubmitInfo::default().command_buffers(&commands)];
-                self.device.queue_submit(self.queue, &submit, fence)?;
-                Ok(())
+                self.device.queue_submit(self.queue, &submit, fence)
             }
         })();
-        record_result.map_err(|error| {
-            submission(&self.descriptor, format!("record or submit: {error:?}"))
-        })?;
         let id = FenceId(self.next_fence);
+        if let Err(error) = self
+            .submission
+            .finish_submit(record_result, Pending { id, program })
+        {
+            return Err(submission(
+                &self.descriptor,
+                format!("record or submit failed; session poisoned: {error:?}"),
+            ));
+        }
         self.next_fence += 1;
-        self.pending = Some(Pending { id, program });
         self.stats.submissions += 1;
         Ok(id)
     }
 
     fn wait(&mut self, fence: FenceId) -> Result<(), BackendError> {
         let pending = self
+            .submission
             .pending
             .as_ref()
             .filter(|pending| pending.id == fence)
@@ -890,7 +1035,7 @@ impl DeviceSession for VulkanSession {
         let vk_fence = self.programs[&pending.program].fence;
         unsafe { self.device.wait_for_fences(&[vk_fence], true, u64::MAX) }
             .map_err(|error| submission(&self.descriptor, format!("wait fence: {error:?}")))?;
-        self.pending = None;
+        self.submission.pending = None;
         self.stats.host_waits += 1;
         Ok(())
     }
@@ -940,7 +1085,7 @@ impl DeviceSession for VulkanSession {
 
 impl Drop for VulkanSession {
     fn drop(&mut self) {
-        if let Some(pending) = &self.pending {
+        if let Some(pending) = &self.submission.pending {
             let fence = self.programs[&pending.program].fence;
             let _ = unsafe { self.device.wait_for_fences(&[fence], true, u64::MAX) };
         }
@@ -983,6 +1128,200 @@ struct ProgramSpec {
     mode: u32,
 }
 
+struct ValidatedPlan {
+    slots: BTreeMap<SlotId, SlotPlan>,
+    specs: Vec<ProgramSpec>,
+    resident_size: u64,
+    arena_size: u64,
+    staging_size: u64,
+    descriptor_set_count: u32,
+    storage_descriptor_count: u32,
+    command_buffer_count: u32,
+}
+
+fn descriptor_counts(program_count: usize, set_count: usize) -> Option<(u32, u32, u32)> {
+    let command_buffer_count = u32::try_from(program_count).ok()?;
+    let descriptor_set_count = u32::try_from(set_count).ok()?;
+    let storage_descriptor_count = descriptor_set_count.checked_mul(3)?;
+    Some((
+        descriptor_set_count,
+        storage_descriptor_count,
+        command_buffer_count,
+    ))
+}
+
+fn validate_plan(
+    plan: &DevicePlan,
+    catalog: &TensorCatalog,
+    adapter: &AdapterInfo,
+) -> Result<ValidatedPlan, BackendError> {
+    if plan.descriptor.backend != adapter.descriptor.backend
+        || plan.descriptor.physical_key != adapter.descriptor.physical_key
+        || plan.descriptor.name != adapter.descriptor.name
+        || plan.descriptor.buffer_alignment == 0
+        || plan.descriptor.buffer_alignment != adapter.descriptor.buffer_alignment
+        || plan.memory.resident_bytes > plan.descriptor.max_allocation_bytes
+    {
+        return Err(BackendError::InvalidHandle);
+    }
+    let slots = validate_slots(plan, adapter.max_storage_buffer_range)?;
+    let arena_size = slots
+        .values()
+        .try_fold(0_u64, |end, slot| {
+            slot.arena_offset
+                .checked_add(slot.byte_len)
+                .map(|slot_end| end.max(slot_end))
+        })
+        .ok_or(BackendError::InvalidHandle)?;
+    for resident in &plan.tensors {
+        let entry = catalog
+            .entry(resident.tensor)
+            .ok_or(BackendError::InvalidHandle)?;
+        let expected_start = entry
+            .segment_byte_range
+            .start
+            .checked_add(
+                u64::from(resident.rows.start)
+                    .checked_mul(entry.row_bytes)
+                    .ok_or(BackendError::InvalidHandle)?,
+            )
+            .ok_or(BackendError::InvalidHandle)?;
+        let expected_end = entry
+            .segment_byte_range
+            .start
+            .checked_add(
+                u64::from(resident.rows.end)
+                    .checked_mul(entry.row_bytes)
+                    .ok_or(BackendError::InvalidHandle)?,
+            )
+            .ok_or(BackendError::InvalidHandle)?;
+        let resident_len = expected_end
+            .checked_sub(expected_start)
+            .ok_or(BackendError::InvalidHandle)?;
+        let arena_end = resident
+            .arena_offset
+            .checked_add(resident_len)
+            .ok_or(BackendError::InvalidHandle)?;
+        if resident.rows.start >= resident.rows.end
+            || u64::from(resident.rows.end) > entry.row_count
+            || resident.source_bytes != (expected_start..expected_end)
+            || arena_end > plan.memory.resident_bytes
+            || resident.arena_offset % plan.descriptor.buffer_alignment != 0
+        {
+            return Err(BackendError::InvalidHandle);
+        }
+    }
+    let mut resident_ranges = plan
+        .tensors
+        .iter()
+        .map(|resident| {
+            let len = resident
+                .source_bytes
+                .end
+                .checked_sub(resident.source_bytes.start)
+                .ok_or(BackendError::InvalidHandle)?;
+            Ok(resident.arena_offset
+                ..resident
+                    .arena_offset
+                    .checked_add(len)
+                    .ok_or(BackendError::InvalidHandle)?)
+        })
+        .collect::<Result<Vec<_>, BackendError>>()?;
+    resident_ranges.sort_by_key(|range| range.start);
+    if resident_ranges
+        .windows(2)
+        .any(|pair| pair[0].end > pair[1].start)
+    {
+        return Err(BackendError::InvalidHandle);
+    }
+    let resident_size = align_up_checked(plan.memory.resident_bytes.max(4), 4)
+        .ok_or(BackendError::InvalidHandle)?;
+    let arena_size = arena_size.max(4);
+    let staging_size = resident_size.max(arena_size);
+    let required_bytes = resident_size
+        .checked_add(arena_size)
+        .and_then(|bytes| bytes.checked_add(staging_size))
+        .ok_or(BackendError::InvalidHandle)?;
+    if [resident_size, arena_size, staging_size]
+        .into_iter()
+        .any(|size| {
+            size > plan.descriptor.max_allocation_bytes
+                || size > adapter.descriptor.max_allocation_bytes
+        })
+        || required_bytes > plan.descriptor.usable_bytes
+        || required_bytes > adapter.descriptor.usable_bytes
+    {
+        return Err(BackendError::InvalidHandle);
+    }
+    let specs = build_program_specs(plan, catalog, adapter)?;
+    let descriptor_count = specs
+        .iter()
+        .try_fold(0_usize, |count, spec| count.checked_add(spec.chunks.len()))
+        .ok_or(BackendError::InvalidHandle)?;
+    let (descriptor_set_count, storage_descriptor_count, command_buffer_count) =
+        descriptor_counts(specs.len(), descriptor_count).ok_or(BackendError::InvalidHandle)?;
+    let mut program_ids = BTreeSet::new();
+    if specs.is_empty()
+        || descriptor_set_count == 0
+        || specs.iter().any(|spec| {
+            let Some(input) = slots.get(&spec.plan.input) else {
+                return true;
+            };
+            let Some(output) = slots.get(&spec.plan.output) else {
+                return true;
+            };
+            let program_bytes_valid = match &spec.plan.kind {
+                ProgramKind::Q8Rows {
+                    rows,
+                    batch_capacity,
+                    ..
+                } => {
+                    *batch_capacity != 0
+                        && input.storage == SlotStorage::F32
+                        && output.storage == SlotStorage::F32
+                        && u64::from(*batch_capacity)
+                            .checked_mul(u64::from(spec.n_in))
+                            .and_then(|values| values.checked_mul(4))
+                            .is_some_and(|bytes| bytes <= input.byte_len)
+                        && u64::from(*batch_capacity)
+                            .checked_mul(rows.len() as u64)
+                            .and_then(|values| values.checked_mul(4))
+                            .is_some_and(|bytes| bytes <= output.byte_len)
+                }
+                ProgramKind::EmbeddingRows { row_count, .. } => {
+                    *row_count != 0
+                        && input.byte_len >= 4
+                        && output.storage == SlotStorage::F32
+                        && output.byte_len % (u64::from(spec.n_in) * 4) == 0
+                }
+                _ => false,
+            };
+            !program_ids.insert(spec.plan.id)
+                || spec.plan.input == spec.plan.output
+                || !program_bytes_valid
+                || spec.chunks.is_empty()
+                || spec.chunks.iter().any(|chunk| {
+                    chunk
+                        .descriptor_offset
+                        .checked_add(chunk.descriptor_range)
+                        .is_none_or(|end| end > plan.memory.resident_bytes)
+                })
+        })
+    {
+        return Err(BackendError::InvalidHandle);
+    }
+    Ok(ValidatedPlan {
+        slots,
+        specs,
+        resident_size,
+        arena_size,
+        staging_size,
+        descriptor_set_count,
+        storage_descriptor_count,
+        command_buffer_count,
+    })
+}
+
 fn build_program_specs(
     plan: &DevicePlan,
     catalog: &TensorCatalog,
@@ -1014,6 +1353,7 @@ fn build_program_specs(
             if entry.ggml_type != GGMLType::Q8_0
                 || n_in == 0
                 || n_in % Q8_BLOCK_ELEMENTS as u32 != 0
+                || (mode == 1 && entry.row_count != u64::from(rows.end))
             {
                 return Err(BackendError::InvalidHandle);
             }
@@ -1023,6 +1363,25 @@ fn build_program_specs(
                 .find(|resident| resident.tensor == tensor && resident.rows == rows)
                 .ok_or(BackendError::InvalidHandle)?;
             let row_bytes = u64::from(n_in) / Q8_BLOCK_ELEMENTS * Q8_BLOCK_BYTES;
+            let source_len = resident
+                .source_bytes
+                .end
+                .checked_sub(resident.source_bytes.start)
+                .ok_or(BackendError::InvalidHandle)?;
+            let expected_len = u64::from(
+                rows.end
+                    .checked_sub(rows.start)
+                    .ok_or(BackendError::InvalidHandle)?,
+            )
+            .checked_mul(row_bytes)
+            .ok_or(BackendError::InvalidHandle)?;
+            let resident_end = resident
+                .arena_offset
+                .checked_add(expected_len)
+                .ok_or(BackendError::InvalidHandle)?;
+            if source_len != expected_len || resident_end > plan.memory.resident_bytes {
+                return Err(BackendError::InvalidHandle);
+            }
             let chunks = row_chunks(
                 resident,
                 row_bytes,
@@ -1046,18 +1405,38 @@ fn row_chunks(
     max_range: u64,
     alignment: u64,
 ) -> Result<Vec<ChunkSpec>, BackendError> {
-    let total_rows = resident.rows.end - resident.rows.start;
+    let total_rows = resident
+        .rows
+        .end
+        .checked_sub(resident.rows.start)
+        .ok_or(BackendError::InvalidHandle)?;
     let mut chunks = Vec::new();
     let mut local_start = 0_u32;
     while local_start < total_rows {
-        let byte_start = resident.arena_offset + u64::from(local_start) * row_bytes;
+        let byte_start = resident
+            .arena_offset
+            .checked_add(
+                u64::from(local_start)
+                    .checked_mul(row_bytes)
+                    .ok_or(BackendError::InvalidHandle)?,
+            )
+            .ok_or(BackendError::InvalidHandle)?;
         let descriptor_offset = align_down(byte_start, alignment);
         let bias = byte_start - descriptor_offset;
         let available = max_range
             .checked_sub(bias)
             .ok_or(BackendError::InvalidHandle)?;
         let mut rows = (available / row_bytes).min(u64::from(total_rows - local_start));
-        while rows != 0 && align_up(bias + rows * row_bytes, 4) > max_range {
+        while rows != 0
+            && align_up(
+                bias.checked_add(
+                    rows.checked_mul(row_bytes)
+                        .ok_or(BackendError::InvalidHandle)?,
+                )
+                .ok_or(BackendError::InvalidHandle)?,
+                4,
+            ) > max_range
+        {
             rows -= 1;
         }
         if rows == 0 || bias > u64::from(u32::MAX) {
@@ -1065,7 +1444,14 @@ fn row_chunks(
         }
         chunks.push(ChunkSpec {
             descriptor_offset,
-            descriptor_range: align_up(bias + rows * row_bytes, 4),
+            descriptor_range: align_up(
+                bias.checked_add(
+                    rows.checked_mul(row_bytes)
+                        .ok_or(BackendError::InvalidHandle)?,
+                )
+                .ok_or(BackendError::InvalidHandle)?,
+                4,
+            ),
             local_rows: rows as u32,
             global_row_start: resident.rows.start + local_start,
             output_row_start: local_start,
@@ -1080,16 +1466,32 @@ fn validate_slots(
     plan: &DevicePlan,
     max_storage_buffer_range: u64,
 ) -> Result<BTreeMap<SlotId, SlotPlan>, BackendError> {
+    if plan.descriptor.buffer_alignment == 0 {
+        return Err(BackendError::InvalidHandle);
+    }
     let mut slots = BTreeMap::new();
+    let mut ranges = Vec::with_capacity(plan.slots.len());
     for (index, slot) in plan.slots.iter().enumerate() {
         if slot.id.0 as usize != index
             || slot.byte_len == 0
             || slot.byte_len > max_storage_buffer_range
+            || slot.alignment != plan.descriptor.buffer_alignment
             || slot.arena_offset % plan.descriptor.buffer_alignment != 0
         {
             return Err(BackendError::InvalidHandle);
         }
+        ranges.push(
+            slot.arena_offset
+                ..slot
+                    .arena_offset
+                    .checked_add(slot.byte_len)
+                    .ok_or(BackendError::InvalidHandle)?,
+        );
         slots.insert(slot.id, slot.clone());
+    }
+    ranges.sort_by_key(|range| range.start);
+    if ranges.windows(2).any(|pair| pair[0].end > pair[1].start) {
+        return Err(BackendError::InvalidHandle);
     }
     Ok(slots)
 }
@@ -1108,15 +1510,7 @@ fn upload_resident(
 ) -> Result<(), BackendError> {
     let mut copies = Vec::with_capacity(plan.tensors.len());
     for tensor in &plan.tensors {
-        let source = catalog
-            .bytes(tensor.tensor)
-            .map_err(|error| BackendError::Upload {
-                device: descriptor.id.clone(),
-                message: error.to_string(),
-            })?;
-        let bytes = source
-            .get(tensor.source_bytes.start as usize..tensor.source_bytes.end as usize)
-            .ok_or(BackendError::InvalidHandle)?;
+        let bytes = resident_source_bytes(catalog, tensor)?;
         let end = tensor
             .arena_offset
             .checked_add(bytes.len() as u64)
@@ -1213,6 +1607,31 @@ fn upload_resident(
     })
 }
 
+fn resident_source_bytes<'a>(
+    catalog: &'a TensorCatalog,
+    resident: &ResidentTensorPlan,
+) -> Result<&'a [u8], BackendError> {
+    let entry = catalog
+        .entry(resident.tensor)
+        .ok_or(BackendError::InvalidHandle)?;
+    let source = catalog
+        .bytes(resident.tensor)
+        .map_err(|_| BackendError::InvalidHandle)?;
+    let start = resident
+        .source_bytes
+        .start
+        .checked_sub(entry.segment_byte_range.start)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or(BackendError::InvalidHandle)?;
+    let end = resident
+        .source_bytes
+        .end
+        .checked_sub(entry.segment_byte_range.start)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or(BackendError::InvalidHandle)?;
+    source.get(start..end).ok_or(BackendError::InvalidHandle)
+}
+
 fn create_buffer(
     device: &ash::Device,
     adapter: &AdapterInfo,
@@ -1230,6 +1649,9 @@ fn create_buffer(
         )
     }
     .map_err(|error| allocation(&adapter.descriptor, format!("create buffer: {error:?}")))?;
+    let mut buffer_owner =
+        HandleOwner::new(|buffer| unsafe { device.destroy_buffer(buffer, None) });
+    buffer_owner.push(buffer);
     let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
     let memory_type = (0..adapter.memory.memory_type_count)
         .find(|index| {
@@ -1249,16 +1671,16 @@ fn create_buffer(
         )
     }
     .map_err(|error| allocation(&adapter.descriptor, format!("allocate buffer: {error:?}")))?;
+    let mut memory_owner = HandleOwner::new(|memory| unsafe { device.free_memory(memory, None) });
+    memory_owner.push(memory);
     if let Err(error) = unsafe { device.bind_buffer_memory(buffer, memory, 0) } {
-        unsafe {
-            device.free_memory(memory, None);
-            device.destroy_buffer(buffer, None);
-        }
         return Err(allocation(
             &adapter.descriptor,
             format!("bind buffer: {error:?}"),
         ));
     }
+    memory_owner.disarm();
+    buffer_owner.disarm();
     Ok(BufferAllocation {
         buffer,
         memory,
@@ -1370,6 +1792,13 @@ fn align_up(value: u64, alignment: u64) -> u64 {
     value.saturating_add(alignment - 1) / alignment * alignment
 }
 
+fn align_up_checked(value: u64, alignment: u64) -> Option<u64> {
+    let alignment = alignment.max(1);
+    value
+        .checked_add(alignment - 1)
+        .map(|value| value / alignment * alignment)
+}
+
 fn unavailable(message: impl Into<String>) -> BackendError {
     BackendError::Allocation {
         device: DeviceId::parse("vulkan0").expect("vulkan0 is valid"),
@@ -1401,6 +1830,338 @@ fn submission(descriptor: &DeviceDescriptor, message: impl Into<String>) -> Back
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{MetaValue, SourceFormat, SourceTensorRecord, TensorInfo, TensorSource};
+
+    struct TestSource {
+        info: TensorInfo,
+        bytes: Vec<u8>,
+        segment_start: u64,
+    }
+
+    impl TensorSource for TestSource {
+        fn metadata(&self, _key: &str) -> Option<&MetaValue> {
+            None
+        }
+
+        fn tensor_info(&self, name: &str) -> Option<&TensorInfo> {
+            (name == self.info.name).then_some(&self.info)
+        }
+
+        fn tensor_slice(&self, name: &str) -> Option<&[u8]> {
+            (name == self.info.name).then_some(self.bytes.as_slice())
+        }
+
+        fn source_format(&self) -> SourceFormat {
+            SourceFormat::Gguf
+        }
+
+        fn tensor_records(&self) -> Vec<SourceTensorRecord> {
+            vec![SourceTensorRecord {
+                info: self.info.clone(),
+                segment_id: 0,
+                segment_byte_range: self.segment_start
+                    ..self.segment_start + self.bytes.len() as u64,
+                layer: None,
+            }]
+        }
+    }
+
+    fn test_catalog() -> TensorCatalog {
+        let bytes = vec![0; 129 * 68];
+        TensorCatalog::from_sources(vec![(
+            ComponentId::Llm,
+            Arc::new(TestSource {
+                info: TensorInfo {
+                    name: "weight".into(),
+                    dims: vec![64, 129],
+                    ggml_type: GGMLType::Q8_0,
+                    offset: 0,
+                },
+                bytes,
+                segment_start: 0,
+            }),
+        )])
+        .unwrap()
+    }
+
+    fn test_adapter() -> AdapterInfo {
+        AdapterInfo {
+            descriptor: DeviceDescriptor {
+                id: DeviceId::parse("vulkan0").unwrap(),
+                backend: BackendKind::Vulkan,
+                physical_key: "vulkan:00112233445566778899aabbccddeeff".into(),
+                name: "test adapter (compute queue 3)".into(),
+                usable_bytes: 1 << 20,
+                max_allocation_bytes: 1 << 20,
+                buffer_alignment: 16,
+                unified_memory: false,
+                capabilities: DeviceCapabilities {
+                    components: BTreeSet::from([ComponentId::Llm]),
+                    modes: BTreeSet::from([PlacementMode::Row]),
+                    layer_families: BTreeSet::new(),
+                    tensor_types: BTreeSet::from([GGMLType::Q8_0]),
+                },
+            },
+            physical: vk::PhysicalDevice::null(),
+            queue_family: 3,
+            memory: vk::PhysicalDeviceMemoryProperties::default(),
+            non_coherent_atom_size: 16,
+            max_storage_buffer_range: 1 << 20,
+            portability_subset: false,
+        }
+    }
+
+    fn test_plan(descriptor: DeviceDescriptor) -> DevicePlan {
+        DevicePlan {
+            descriptor,
+            tensors: vec![ResidentTensorPlan {
+                tensor: crate::TensorId(0),
+                rows: 17..113,
+                source_bytes: 17 * 68..113 * 68,
+                arena_offset: 0,
+            }],
+            slots: vec![
+                SlotPlan {
+                    id: SlotId(0),
+                    kind: super::super::SlotKind::Activation,
+                    storage: SlotStorage::F32,
+                    byte_len: 2 * 64 * 4,
+                    alignment: 16,
+                    arena_offset: 0,
+                },
+                SlotPlan {
+                    id: SlotId(1),
+                    kind: super::super::SlotKind::Result,
+                    storage: SlotStorage::F32,
+                    byte_len: 2 * 96 * 4,
+                    alignment: 16,
+                    arena_offset: 2 * 64 * 4,
+                },
+            ],
+            programs: vec![ProgramPlan {
+                id: ProgramId(0),
+                kind: ProgramKind::Q8Rows {
+                    tensor: crate::TensorId(0),
+                    rows: 17..113,
+                    batch_capacity: 2,
+                },
+                input: SlotId(0),
+                output: SlotId(1),
+                layer_ops: Vec::new(),
+            }],
+            memory: super::super::MemoryPlan {
+                resident_bytes: 96 * 68,
+                scratch_bytes: 2 * 64 * 4 + 2 * 96 * 4,
+                staging_bytes: 96 * 68,
+                required_bytes: 96 * 68 * 2 + 2 * 64 * 4 + 2 * 96 * 4,
+                largest_allocation_bytes: 96 * 68,
+                ..super::super::MemoryPlan::default()
+            },
+        }
+    }
+
+    #[test]
+    fn forged_resident_source_and_arena_ranges_are_rejected() {
+        let catalog = test_catalog();
+        let adapter = test_adapter();
+        let mut short_source = test_plan(adapter.descriptor.clone());
+        short_source.tensors[0].source_bytes = 17 * 68..18 * 68;
+        assert!(build_program_specs(&short_source, &catalog, &adapter).is_err());
+
+        let mut outside_resident = test_plan(adapter.descriptor.clone());
+        outside_resident.tensors[0].arena_offset = outside_resident.memory.resident_bytes - 34;
+        assert!(build_program_specs(&outside_resident, &catalog, &adapter).is_err());
+    }
+
+    #[test]
+    fn resident_source_range_is_resolved_relative_to_tensor_slice() {
+        let bytes = (0..129 * 68).map(|value| value as u8).collect::<Vec<_>>();
+        let catalog = TensorCatalog::from_sources(vec![(
+            ComponentId::Llm,
+            Arc::new(TestSource {
+                info: TensorInfo {
+                    name: "weight".into(),
+                    dims: vec![64, 129],
+                    ggml_type: GGMLType::Q8_0,
+                    offset: 0,
+                },
+                bytes: bytes.clone(),
+                segment_start: 4096,
+            }),
+        )])
+        .unwrap();
+        let resident = ResidentTensorPlan {
+            tensor: crate::TensorId(0),
+            rows: 17..18,
+            source_bytes: 4096 + 17 * 68..4096 + 18 * 68,
+            arena_offset: 0,
+        };
+
+        assert_eq!(
+            resident_source_bytes(&catalog, &resident).unwrap(),
+            &bytes[17 * 68..18 * 68]
+        );
+    }
+
+    #[test]
+    fn forged_slots_program_handles_and_memory_totals_are_rejected() {
+        let catalog = test_catalog();
+        let adapter = test_adapter();
+
+        let mut missing_output = test_plan(adapter.descriptor.clone());
+        missing_output.programs[0].output = SlotId(99);
+        assert!(validate_plan(&missing_output, &catalog, &adapter).is_err());
+
+        let mut slot_overflow = test_plan(adapter.descriptor.clone());
+        slot_overflow.slots[1].arena_offset = u64::MAX - 3;
+        assert!(validate_plan(&slot_overflow, &catalog, &adapter).is_err());
+
+        let mut short_resident = test_plan(adapter.descriptor.clone());
+        short_resident.memory.resident_bytes = 68;
+        assert!(validate_plan(&short_resident, &catalog, &adapter).is_err());
+    }
+
+    #[test]
+    fn overlapping_slot_arena_ranges_are_rejected() {
+        let catalog = test_catalog();
+        let adapter = test_adapter();
+        let mut plan = test_plan(adapter.descriptor.clone());
+        plan.slots[1].arena_offset = plan.slots[0].byte_len - 16;
+
+        assert!(validate_plan(&plan, &catalog, &adapter).is_err());
+    }
+
+    #[test]
+    fn slot_alignment_must_match_the_planner_contract() {
+        let catalog = test_catalog();
+        let adapter = test_adapter();
+        let mut plan = test_plan(adapter.descriptor.clone());
+        plan.slots[0].alignment = 1;
+
+        assert!(validate_plan(&plan, &catalog, &adapter).is_err());
+    }
+
+    #[test]
+    fn forged_plan_limits_cannot_exceed_the_reopened_adapter() {
+        let catalog = test_catalog();
+
+        let mut allocation_adapter = test_adapter();
+        let mut allocation_plan = test_plan(allocation_adapter.descriptor.clone());
+        allocation_plan.descriptor.max_allocation_bytes = 1 << 30;
+        allocation_adapter.descriptor.max_allocation_bytes = 1024;
+        assert!(validate_plan(&allocation_plan, &catalog, &allocation_adapter).is_err());
+
+        let mut capacity_adapter = test_adapter();
+        let mut capacity_plan = test_plan(capacity_adapter.descriptor.clone());
+        capacity_plan.descriptor.usable_bytes = 1 << 30;
+        capacity_adapter.descriptor.usable_bytes = 1024;
+        assert!(validate_plan(&capacity_plan, &catalog, &capacity_adapter).is_err());
+
+        let mut alignment_adapter = test_adapter();
+        let alignment_plan = test_plan(alignment_adapter.descriptor.clone());
+        alignment_adapter.descriptor.buffer_alignment = 1024;
+        assert!(validate_plan(&alignment_plan, &catalog, &alignment_adapter).is_err());
+    }
+
+    #[test]
+    fn partial_created_handles_are_owned_before_the_error_is_returned() {
+        use std::sync::Mutex;
+
+        let released = Arc::new(Mutex::new(Vec::new()));
+        {
+            let output = Arc::clone(&released);
+            let mut owner = HandleOwner::new(move |handle| output.lock().unwrap().push(handle));
+            assert_eq!(
+                take_created_handle(
+                    &mut owner,
+                    Err((vec![1, 2], vk::Result::ERROR_OUT_OF_DEVICE_MEMORY)),
+                    |handle| handle,
+                ),
+                Err(vk::Result::ERROR_OUT_OF_DEVICE_MEMORY)
+            );
+        }
+        assert_eq!(*released.lock().unwrap(), vec![2, 1]);
+    }
+
+    #[test]
+    fn descriptor_counts_reject_every_u32_truncation_or_overflow() {
+        assert_eq!(descriptor_counts(2, 3), Some((3, 9, 2)));
+        assert_eq!(descriptor_counts(1, u32::MAX as usize / 3 + 1), None);
+        assert_eq!(descriptor_counts(u32::MAX as usize + 1, 1), None);
+    }
+
+    #[test]
+    fn open_handle_owner_releases_every_failure_prefix_in_reverse_order() {
+        use std::sync::Mutex;
+
+        for fail_after in 1..=8 {
+            let released = Arc::new(Mutex::new(Vec::new()));
+            {
+                let output = Arc::clone(&released);
+                let mut owner = HandleOwner::new(move |handle| output.lock().unwrap().push(handle));
+                for handle in 0..fail_after {
+                    owner.push(handle);
+                }
+                // Inject failure by leaving scope at every possible prefix.
+            }
+            assert_eq!(
+                *released.lock().unwrap(),
+                (0..fail_after).rev().collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn open_handle_owner_transfers_without_cleanup() {
+        use std::sync::Mutex;
+
+        let released = Arc::new(Mutex::new(Vec::new()));
+        let output = Arc::clone(&released);
+        let mut owner = HandleOwner::new(move |handle| output.lock().unwrap().push(handle));
+        owner.push(1);
+        owner.push(2);
+
+        assert_eq!(owner.disarm(), vec![1, 2]);
+        assert!(released.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn failed_queue_submit_poison_is_stable_and_never_looks_idle() {
+        let mut tracker = SubmissionTracker::default();
+        assert_eq!(
+            tracker.finish_submit(
+                Err(vk::Result::ERROR_DEVICE_LOST),
+                Pending {
+                    id: FenceId(1),
+                    program: ProgramId(0),
+                },
+            ),
+            Err(vk::Result::ERROR_DEVICE_LOST)
+        );
+
+        assert_eq!(tracker.require_idle(), Err("Vulkan session is poisoned"));
+        assert_eq!(tracker.require_idle(), Err("Vulkan session is poisoned"));
+    }
+
+    #[test]
+    fn reopened_adapter_must_match_discovered_physical_identity_and_queue() {
+        let expected = test_adapter().descriptor;
+        let mut changed_physical = test_adapter();
+        changed_physical.descriptor.physical_key = "vulkan:ffffffffffffffffffffffffffffffff".into();
+        assert!(select_adapter(vec![changed_physical], &expected).is_err());
+
+        let mut changed_queue = test_adapter();
+        changed_queue.descriptor.name = "test adapter (compute queue 4)".into();
+        changed_queue.queue_family = 4;
+        assert!(select_adapter(vec![changed_queue], &expected).is_err());
+
+        assert_eq!(
+            select_adapter(vec![test_adapter()], &expected)
+                .unwrap()
+                .queue_family,
+            3
+        );
+    }
 
     #[test]
     fn resident_chunks_keep_complete_rows_within_storage_range() {
