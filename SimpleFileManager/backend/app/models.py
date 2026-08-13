@@ -117,3 +117,49 @@ class AddMessageRequest(BaseModel):
 class UpdateTitleRequest(BaseModel):
     session_id: str
     title: str
+
+
+class FileSnapshot(BaseModel):
+    id: str
+    path: str
+    name: str
+    is_dir: bool
+    size: int
+    modified: str
+    snapshot_date: str
+
+
+class SnapshotRecord(BaseModel):
+    id: str
+    date: str
+    total_files: int
+    total_dirs: int
+    files: list[FileSnapshot]
+
+
+class FileChange(BaseModel):
+    path: str
+    name: str
+    change_type: str
+    size: int
+    modified: str
+
+
+class Suggestion(BaseModel):
+    id: str
+    type: str
+    priority: str
+    message: str
+    source_path: Optional[str] = None
+    target_path: Optional[str] = None
+    reason: str
+
+
+class CompareResponse(BaseModel):
+    date_from: str
+    date_to: str
+    added_files: list[FileChange]
+    added_dirs: list[FileChange]
+    deleted_files: list[FileChange]
+    deleted_dirs: list[FileChange]
+    suggestions: list[Suggestion]
