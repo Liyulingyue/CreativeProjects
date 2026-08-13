@@ -1,7 +1,7 @@
 use super::device::{
     BackendError, BackendKind, DeviceCapabilities, DeviceDescriptor, DeviceDiscovery,
-    DeviceProvider, DeviceSession, FenceId, LayerFamily, LifecycleProbe, ProgramId, RunParams,
-    SessionStats, SlotId,
+    DeviceProvider, DeviceSession, FenceId, LifecycleProbe, ProgramId, RunParams, SessionStats,
+    SlotId,
 };
 use super::program::{DevicePlan, ProgramKind, ProgramPlan, ResidentTensorPlan, SlotStorage};
 use crate::thread_pool::ComputePool;
@@ -41,12 +41,8 @@ impl CpuProvider {
             unified_memory: true,
             capabilities: DeviceCapabilities {
                 components: BTreeSet::from([ComponentId::Llm, ComponentId::Vision]),
-                modes: BTreeSet::from([PlacementMode::Layer, PlacementMode::Row]),
-                layer_families: BTreeSet::from([
-                    LayerFamily::Qwen3,
-                    LayerFamily::Qwen35Dense,
-                    LayerFamily::Qwen35Recurrent,
-                ]),
+                modes: BTreeSet::from([PlacementMode::Row]),
+                layer_families: BTreeSet::new(),
                 tensor_types: BTreeSet::from([GGMLType::F32, GGMLType::F16, GGMLType::Q8_0]),
             },
         }
@@ -1032,5 +1028,16 @@ mod tests {
             );
         }
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn cpu_descriptor_advertises_only_implemented_program_modes() {
+        let descriptor = CpuProvider::new(2).enumerate().unwrap().remove(0);
+
+        assert_eq!(
+            descriptor.capabilities.modes,
+            BTreeSet::from([PlacementMode::Row])
+        );
+        assert!(descriptor.capabilities.layer_families.is_empty());
     }
 }
