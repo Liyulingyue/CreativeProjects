@@ -290,17 +290,17 @@ fn build_asr_prompt(
     let assistant_prefill = forced_language
         .map(|name| format!("language {name}<asr_text>"))
         .unwrap_or_default();
-    let fixed_len = "<|im_start|>system\n<|im_end|>\n<|im_start|>user\n<|audio_start|><|audio_end|><|im_end|>\n<|im_start|>assistant\n".len();
+    let fixed_len = "<|im_start|>system\n<|im_end|>\n\n<|im_start|>user\n<|audio_start|><|audio_end|><|im_end|>\n<|im_start|>assistant\n".len();
     fixed_len
         .checked_add(system_prompt.len())
         .and_then(|len| len.checked_add(audio_pads.len()))
         .and_then(|len| len.checked_add(assistant_prefill.len()))
         .ok_or_else(|| unprocessable("ASR prompt length overflow"))?;
-    let prompt_text = format!(
-        "<|im_start|>system\n{}<|im_end|>\n\
-         <|im_start|>user\n<|audio_start|>{}<|audio_end|><|im_end|>\n\
+    let system_text = format!("<|im_start|>system\n{system_prompt}<|im_end|>\n");
+    let user_text = format!(
+        "\n<|im_start|>user\n<|audio_start|>{}<|audio_end|><|im_end|>\n\
          <|im_start|>assistant\n{}",
-        system_prompt, audio_pads, assistant_prefill,
+        audio_pads, assistant_prefill,
     );
 
     let semantic = |name| {
@@ -314,13 +314,12 @@ fn build_asr_prompt(
     let audio_pad = semantic("audio_pad")?;
     let audio_end = semantic("audio_end")?;
     let asr_text = semantic("asr_text")?;
-    let token_ids = tokenizer.encode(
-        &prompt_text,
-        EncodeOptions {
-            add_special: false,
-            parse_special: true,
-        },
-    );
+    let encode_options = EncodeOptions {
+        add_special: false,
+        parse_special: true,
+    };
+    let mut token_ids = tokenizer.encode(&system_text, encode_options);
+    token_ids.extend(tokenizer.encode(&user_text, encode_options));
     let count = |token| {
         token_ids
             .iter()
@@ -348,7 +347,13 @@ fn build_asr_prompt(
     positions
         .try_reserve_exact(token_ids.len())
         .map_err(|_| unprocessable("ASR position allocation failed"))?;
-    positions.extend((0..token_ids.len()).map(|index| [index; 4]));
+    positions.extend((0..token_ids.len()).map(|index| {
+        if matches!((start, end), (Some(start), Some(end)) if start < index && index < end) {
+            [index; 4]
+        } else {
+            [index, index, index, 0]
+        }
+    }));
     Ok(AsrPrompt {
         token_ids,
         positions,
@@ -493,7 +498,13 @@ fn internal(message: impl Into<String>) -> AsrError {
 mod tests {
     use super::*;
     use crate::ggufrs::{export_ggufrs, test_support, ExportOptions};
+    #[cfg(feature = "parity-trace")]
+    use crate::model::GGUFLoader;
     use crate::model::{MetaValue, MetaValueType};
+    #[cfg(feature = "parity-trace")]
+    use crate::thread_pool::ComputePool;
+    #[cfg(feature = "parity-trace")]
+    use sha2::{Digest, Sha256};
     use std::collections::HashMap;
     use std::io::{Read, Seek, SeekFrom, Write};
     use std::sync::Arc;
@@ -508,6 +519,793 @@ mod tests {
         "<|endoftext|>",
         "<tool_call>",
     ];
+
+    #[cfg(feature = "parity-trace")]
+    fn validate_metric_pair(got: &[f32], reference: &[f32]) -> Result<(), String> {
+        if got.is_empty() || got.len() != reference.len() {
+            return Err("metric inputs must be non-empty and equal length".into());
+        }
+        if got.iter().chain(reference).any(|value| !value.is_finite()) {
+            return Err("metric inputs must be finite".into());
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "parity-trace")]
+    fn nrmse(got: &[f32], reference: &[f32]) -> Result<f64, String> {
+        validate_metric_pair(got, reference)?;
+        let squared_error = got
+            .iter()
+            .zip(reference)
+            .map(|(&got, &reference)| (f64::from(got) - f64::from(reference)).powi(2))
+            .sum::<f64>();
+        let squared_reference = reference
+            .iter()
+            .map(|&value| f64::from(value).powi(2))
+            .sum::<f64>();
+        Ok(squared_error.sqrt() / squared_reference.sqrt().max(1e-12))
+    }
+
+    #[cfg(feature = "parity-trace")]
+    fn cosine(got: &[f32], reference: &[f32]) -> Result<f64, String> {
+        validate_metric_pair(got, reference)?;
+        let dot = got
+            .iter()
+            .zip(reference)
+            .map(|(&got, &reference)| f64::from(got) * f64::from(reference))
+            .sum::<f64>();
+        let got_norm = got
+            .iter()
+            .map(|&value| f64::from(value).powi(2))
+            .sum::<f64>();
+        let reference_norm = reference
+            .iter()
+            .map(|&value| f64::from(value).powi(2))
+            .sum::<f64>();
+        Ok(dot / (got_norm * reference_norm).sqrt().max(1e-12))
+    }
+
+    #[cfg(feature = "parity-trace")]
+    fn p99_abs(got: &[f32], reference: &[f32]) -> Result<f32, String> {
+        validate_metric_pair(got, reference)?;
+        let mut errors = got
+            .iter()
+            .zip(reference)
+            .map(|(&got, &reference)| (got - reference).abs())
+            .collect::<Vec<_>>();
+        errors.sort_by(f32::total_cmp);
+        Ok(errors[(99 * errors.len()).div_ceil(100) - 1])
+    }
+
+    #[cfg(feature = "parity-trace")]
+    fn p99_scaled_abs(got: &[f32], reference: &[f32]) -> Result<f64, String> {
+        validate_metric_pair(got, reference)?;
+        let rms = (reference
+            .iter()
+            .map(|&value| f64::from(value).powi(2))
+            .sum::<f64>()
+            / reference.len() as f64)
+            .sqrt();
+        Ok(f64::from(p99_abs(got, reference)?) / rms.max(1e-6))
+    }
+
+    #[cfg(feature = "parity-trace")]
+    fn row_cosines(got: &[f32], reference: &[f32], columns: usize) -> Result<Vec<f64>, String> {
+        validate_metric_pair(got, reference)?;
+        if columns == 0 || got.len() % columns != 0 {
+            return Err("row cosine columns must divide the input length".into());
+        }
+        got.chunks_exact(columns)
+            .zip(reference.chunks_exact(columns))
+            .map(|(got, reference)| cosine(got, reference))
+            .collect()
+    }
+
+    #[cfg(feature = "parity-trace")]
+    fn top_k(values: &[f32], k: usize) -> Result<Vec<usize>, String> {
+        if values.is_empty()
+            || k == 0
+            || k > values.len()
+            || values.iter().any(|value| !value.is_finite())
+        {
+            return Err("top-k requires finite values and a valid k".into());
+        }
+        let mut ids = (0..values.len()).collect::<Vec<_>>();
+        ids.sort_by(|&left, &right| {
+            values[right]
+                .total_cmp(&values[left])
+                .then(left.cmp(&right))
+        });
+        ids.truncate(k);
+        Ok(ids)
+    }
+
+    #[cfg(feature = "parity-trace")]
+    #[derive(Debug)]
+    struct TraceRecord {
+        value: serde_json::Value,
+        values: Option<Vec<f32>>,
+    }
+
+    #[cfg(feature = "parity-trace")]
+    fn required_path(name: &str) -> Result<std::path::PathBuf, String> {
+        std::env::var_os(name)
+            .map(std::path::PathBuf::from)
+            .ok_or_else(|| format!("{name} is required"))
+    }
+
+    #[cfg(feature = "parity-trace")]
+    fn file_sha256(path: &Path) -> Result<String, String> {
+        let mut file = File::open(path)
+            .map_err(|error| format!("Failed to open {}: {error}", path.display()))?;
+        let mut hasher = Sha256::new();
+        std::io::copy(&mut file, &mut hasher)
+            .map_err(|error| format!("Failed to hash {}: {error}", path.display()))?;
+        Ok(format!("{:x}", hasher.finalize()))
+    }
+
+    #[cfg(feature = "parity-trace")]
+    fn trace_records(path: &Path) -> Result<Vec<TraceRecord>, String> {
+        let contents = std::fs::read_to_string(path)
+            .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+        if contents.is_empty() {
+            return Err(format!("{} is empty", path.display()));
+        }
+        contents
+            .lines()
+            .enumerate()
+            .map(|(index, line)| {
+                let value: serde_json::Value = serde_json::from_str(line).map_err(|error| {
+                    format!(
+                        "{} line {} is invalid JSON: {error}",
+                        path.display(),
+                        index + 1
+                    )
+                })?;
+                let name = value["name"]
+                    .as_str()
+                    .ok_or_else(|| format!("{} line {} has no name", path.display(), index + 1))?;
+                let values = value
+                    .get("binary_path")
+                    .map(|binary_path| {
+                        let binary_path = binary_path.as_str().ok_or_else(|| {
+                            format!("{name} binary_path in {} is not a string", path.display())
+                        })?;
+                        let bytes = std::fs::read(binary_path)
+                            .map_err(|error| format!("Failed to read {binary_path}: {error}"))?;
+                        if bytes.is_empty() || bytes.len() % 4 != 0 {
+                            return Err(format!(
+                                "{name} sidecar length {} is invalid",
+                                bytes.len()
+                            ));
+                        }
+                        let values = bytes
+                            .chunks_exact(4)
+                            .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+                            .collect::<Vec<_>>();
+                        let shape = json_usizes(&value["shape"], &format!("{name} shape"))?;
+                        let expected = shape.iter().try_fold(1usize, |length, &dimension| {
+                            length
+                                .checked_mul(dimension)
+                                .ok_or_else(|| format!("{name} shape overflow"))
+                        })?;
+                        if value["len"].as_u64() != Some(values.len() as u64)
+                            || expected != values.len()
+                            || value["finite"] != true
+                            || values.iter().any(|value| !value.is_finite())
+                        {
+                            return Err(format!("{name} sidecar does not match its JSON record"));
+                        }
+                        Ok(values)
+                    })
+                    .transpose()?;
+                Ok(TraceRecord { value, values })
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "parity-trace")]
+    fn json_usizes(value: &serde_json::Value, context: &str) -> Result<Vec<usize>, String> {
+        value
+            .as_array()
+            .ok_or_else(|| format!("{context} is not an array"))?
+            .iter()
+            .map(|value| {
+                let value = value
+                    .as_u64()
+                    .ok_or_else(|| format!("{context} contains a non-integer"))?;
+                usize::try_from(value).map_err(|_| format!("{context} exceeds usize"))
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "parity-trace")]
+    fn json_u32s(value: &serde_json::Value, context: &str) -> Result<Vec<u32>, String> {
+        json_usizes(value, context)?
+            .into_iter()
+            .map(|value| u32::try_from(value).map_err(|_| format!("{context} exceeds u32")))
+            .collect()
+    }
+
+    #[cfg(feature = "parity-trace")]
+    fn named_records<'a>(records: &'a [TraceRecord], name: &str) -> Vec<&'a TraceRecord> {
+        records
+            .iter()
+            .filter(|record| record.value["name"] == name)
+            .collect()
+    }
+
+    #[cfg(feature = "parity-trace")]
+    fn one_record<'a>(records: &'a [TraceRecord], name: &str) -> Result<&'a TraceRecord, String> {
+        let records = named_records(records, name);
+        if records.len() != 1 {
+            return Err(format!("expected one {name} record, got {}", records.len()));
+        }
+        Ok(records[0])
+    }
+
+    #[cfg(feature = "parity-trace")]
+    fn float_values<'a>(record: &'a TraceRecord, name: &str) -> Result<&'a [f32], String> {
+        record
+            .values
+            .as_deref()
+            .ok_or_else(|| format!("{name} has no F32 sidecar"))
+    }
+
+    #[cfg(feature = "parity-trace")]
+    fn max_abs(got: &[f32], reference: &[f32]) -> Result<f32, String> {
+        validate_metric_pair(got, reference)?;
+        Ok(got
+            .iter()
+            .zip(reference)
+            .map(|(&got, &reference)| (got - reference).abs())
+            .fold(0.0, f32::max))
+    }
+
+    #[cfg(feature = "parity-trace")]
+    fn compare_metric(
+        name: &str,
+        got: &[f32],
+        reference: &[f32],
+        minimum_cosine: Option<f64>,
+        maximum_nrmse: Option<f64>,
+        maximum_p99_abs: Option<f32>,
+        maximum_abs: Option<f32>,
+        maximum_p99_scaled_abs: Option<f64>,
+    ) -> Result<(), String> {
+        let cosine = cosine(got, reference)?;
+        let nrmse = nrmse(got, reference)?;
+        let p99_abs = p99_abs(got, reference)?;
+        let max_abs = max_abs(got, reference)?;
+        let p99_scaled_abs = p99_scaled_abs(got, reference)?;
+        println!(
+            "{name}: cosine={cosine:.9} nrmse={nrmse:.9} p99_abs={p99_abs:.9} max_abs={max_abs:.9} p99_scaled_abs={p99_scaled_abs:.9}"
+        );
+        if minimum_cosine.is_some_and(|limit| cosine < limit)
+            || maximum_nrmse.is_some_and(|limit| nrmse > limit)
+            || maximum_p99_abs.is_some_and(|limit| p99_abs > limit)
+            || maximum_abs.is_some_and(|limit| max_abs > limit)
+            || maximum_p99_scaled_abs.is_some_and(|limit| p99_scaled_abs > limit)
+        {
+            return Err(format!("{name} exceeded its fixed parity threshold"));
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "parity-trace")]
+    fn compare_named_metric(
+        name: &str,
+        got_records: &[TraceRecord],
+        reference_records: &[TraceRecord],
+        minimum_cosine: Option<f64>,
+        maximum_nrmse: Option<f64>,
+        maximum_p99_abs: Option<f32>,
+        maximum_abs: Option<f32>,
+        maximum_p99_scaled_abs: Option<f64>,
+    ) -> Result<(), String> {
+        let got = named_records(got_records, name);
+        let reference = named_records(reference_records, name);
+        if got.len() != reference.len() || got.is_empty() {
+            return Err(format!(
+                "{name} occurrence mismatch: Rust {}, llama.cpp {}",
+                got.len(),
+                reference.len()
+            ));
+        }
+        for (occurrence, (got, reference)) in got.into_iter().zip(reference).enumerate() {
+            if got.value["shape"] != reference.value["shape"]
+                || got.value["occurrence"] != reference.value["occurrence"]
+            {
+                return Err(format!("{name}[{occurrence}] shape/occurrence mismatch"));
+            }
+            compare_metric(
+                &format!("{name}[{occurrence}]"),
+                float_values(got, name)?,
+                float_values(reference, name)?,
+                minimum_cosine,
+                maximum_nrmse,
+                maximum_p99_abs,
+                maximum_abs,
+                maximum_p99_scaled_abs,
+            )?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "parity-trace")]
+    fn concatenate_named(records: &[TraceRecord], name: &str) -> Result<(Vec<f32>, usize), String> {
+        let records = named_records(records, name);
+        if records.is_empty() {
+            return Err(format!("trace is missing {name}"));
+        }
+        let mut values = Vec::new();
+        let mut columns = None;
+        for record in records {
+            let shape = json_usizes(&record.value["shape"], &format!("{name} shape"))?;
+            if shape.len() != 2 {
+                return Err(format!("{name} is not a matrix"));
+            }
+            if columns
+                .replace(shape[1])
+                .is_some_and(|previous| previous != shape[1])
+            {
+                return Err(format!("{name} column count changed between occurrences"));
+            }
+            values.extend_from_slice(float_values(record, name)?);
+        }
+        Ok((values, columns.unwrap()))
+    }
+
+    #[cfg(feature = "parity-trace")]
+    fn p01_nonzero_row_cosine(
+        got: &[f32],
+        reference: &[f32],
+        columns: usize,
+    ) -> Result<f64, String> {
+        validate_metric_pair(got, reference)?;
+        if columns == 0 || got.len() % columns != 0 {
+            return Err("row cosine columns must divide the input length".into());
+        }
+        let mut cosines = got
+            .chunks_exact(columns)
+            .zip(reference.chunks_exact(columns))
+            .filter(|(_, reference)| reference.iter().any(|value| *value != 0.0))
+            .map(|(got, reference)| cosine(got, reference))
+            .collect::<Result<Vec<_>, _>>()?;
+        if cosines.is_empty() {
+            return Err("no nonzero reference rows".into());
+        }
+        cosines.sort_by(f64::total_cmp);
+        Ok(cosines[cosines.len().div_ceil(100) - 1])
+    }
+
+    #[cfg(feature = "parity-trace")]
+    fn run_qwen3_asr_trace_parity() -> Result<(), String> {
+        let model_path = required_path("QWEN3_ASR_MODEL")?;
+        let mmproj_path = required_path("QWEN3_ASR_MMPROJ")?;
+        let wav_path = required_path("QWEN3_ASR_WAV")?;
+        let reference_path = required_path("QWEN3_ASR_LLAMA_TRACE")?;
+        let rust_path = required_path("RMI_PARITY_TRACE")?;
+        for (path, size, hash) in [
+            (
+                &model_path,
+                804_749_248,
+                "bca259818b50ca7c4c05e9bdb35a5dc04fa039653a6d6f3f0f331f96f6aa1971",
+            ),
+            (
+                &mmproj_path,
+                214_392_480,
+                "41a342b5e4c514e968cb756de6cd1b7be39eff43c44c57a2ef5fc6522e36603d",
+            ),
+            (
+                &wav_path,
+                481_718,
+                "23775909b26f2ebb1ccf0b877e7590b2cc31700a94bccf2d4111b98e9595acd8",
+            ),
+        ] {
+            let actual_size = std::fs::metadata(path)
+                .map_err(|error| format!("Failed to stat {}: {error}", path.display()))?
+                .len();
+            if actual_size != size || file_sha256(path)? != hash {
+                return Err(format!("fixed resource mismatch: {}", path.display()));
+            }
+        }
+        if rust_path == reference_path {
+            return Err("RMI_PARITY_TRACE must be fresh and differ from the reference path".into());
+        }
+        if rust_path.exists() {
+            std::fs::remove_file(&rust_path)
+                .map_err(|error| format!("Failed to clear {}: {error}", rust_path.display()))?;
+        }
+
+        let reference = trace_records(&reference_path)?;
+        let expected_names = [
+            "asr.pcm",
+            "asr.raw_log_mel",
+            "asr.normalized_mel",
+            "asr.padded_mel",
+            "asr.after_conv_blocks",
+            "asr.after_conv_out",
+            "asr.after_transformer",
+            "asr.projected",
+            "asr.prompt_ids",
+            "asr.positions",
+            "asr.decoder_first_logits",
+            "asr.generated_ids",
+        ];
+        for name in expected_names {
+            if named_records(&reference, name).is_empty() {
+                return Err(format!("llama.cpp trace is missing {name}"));
+            }
+        }
+        let reference_generated_ids = json_u32s(
+            &one_record(&reference, "asr.generated_ids")?.value["token_ids"],
+            "reference asr.generated_ids",
+        )?;
+
+        let reference_padded = named_records(&reference, "asr.padded_mel");
+        let reference_chunks = reference_padded
+            .iter()
+            .map(|record| {
+                let shape = json_usizes(&record.value["shape"], "asr.padded_mel shape")?;
+                if shape.len() != 2 || shape[1] % 100 != 0 {
+                    return Err(format!("invalid reference padded Mel shape {shape:?}"));
+                }
+                Ok(shape[1] / 100)
+            })
+            .sum::<Result<usize, String>>()?;
+        for name in ["asr.after_conv_blocks", "asr.after_conv_out"] {
+            if named_records(&reference, name).len() != reference_chunks {
+                return Err(format!(
+                    "llama.cpp {name} occurrence count does not match 100-frame chunks"
+                ));
+            }
+        }
+        for name in ["asr.after_transformer", "asr.projected"] {
+            if named_records(&reference, name).len() != reference_padded.len() {
+                return Err(format!(
+                    "llama.cpp {name} occurrence count does not match Mel windows"
+                ));
+            }
+        }
+
+        let llm: Arc<dyn TensorSource> = Arc::new(
+            GGUFLoader::from_file(&model_path)
+                .map_err(|error| format!("Failed to load {}: {error}", model_path.display()))?,
+        );
+        let audio: Arc<dyn TensorSource> = Arc::new(
+            GGUFLoader::from_file(&mmproj_path)
+                .map_err(|error| format!("Failed to load {}: {error}", mmproj_path.display()))?,
+        );
+        let tokenizer = Arc::new(
+            BPETokenizer::from_gguf_metadata(|key| llm.metadata(key).cloned())
+                .map_err(|error| format!("Failed to load tokenizer: {error}"))?,
+        );
+        let decoder = Arc::new(Qwen3Model::from_source(
+            llm,
+            tokenizer,
+            Arc::new(ComputePool::new(1)),
+        )?);
+        let runtime = AsrRuntime::new(decoder, audio).map_err(|error| error.to_string())?;
+        let wav = std::fs::read(&wav_path)
+            .map_err(|error| format!("Failed to read {}: {error}", wav_path.display()))?;
+        let samples = decode_pcm16_wav(&wav)
+            .map_err(map_audio_error)
+            .map_err(|error| error.to_string())?;
+        let windows = log_mel_windows(&samples)
+            .map_err(map_audio_error)
+            .map_err(|error| error.to_string())?;
+        let audio = runtime.audio.encode(&windows)?;
+        let prompt = build_asr_prompt(
+            runtime.decoder.tokenizer(),
+            runtime.decoder.config().n_ctx,
+            audio.tokens,
+            Some(""),
+            None,
+        )
+        .map_err(|error| error.to_string())?;
+        validate_generation_context(
+            prompt.token_ids.len(),
+            reference_generated_ids.len(),
+            runtime.decoder.config().n_ctx,
+        )
+        .map_err(|error| error.to_string())?;
+        let embeddings = replace_audio_embeddings(&runtime.decoder, &prompt, &audio)
+            .map_err(|error| error.to_string())?;
+        let generation = runtime.decoder.generate_asr(
+            Qwen3Input {
+                token_ids: &prompt.token_ids,
+                positions: &prompt.positions,
+                embeddings: Some(&embeddings),
+            },
+            Qwen3GenerateOptions {
+                max_new_tokens: reference_generated_ids.len(),
+                temperature: 0.0,
+            },
+        )?;
+        let got = trace_records(&rust_path)?;
+
+        if named_records(&got, "asr.pcm").len() != 1
+            || float_values(one_record(&got, "asr.pcm")?, "asr.pcm")?
+                .iter()
+                .zip(float_values(one_record(&reference, "asr.pcm")?, "asr.pcm")?)
+                .any(|(got, reference)| got.to_bits() != reference.to_bits())
+            || one_record(&got, "asr.pcm")?.value["shape"]
+                != one_record(&reference, "asr.pcm")?.value["shape"]
+        {
+            return Err("asr.pcm F32 bytes or sample count differ".into());
+        }
+        compare_named_metric(
+            "asr.raw_log_mel",
+            &got,
+            &reference,
+            None,
+            None,
+            Some(3e-4),
+            Some(1e-3),
+            None,
+        )?;
+        compare_named_metric(
+            "asr.normalized_mel",
+            &got,
+            &reference,
+            None,
+            None,
+            Some(1e-4),
+            Some(5e-4),
+            None,
+        )?;
+
+        let raw_shape = json_usizes(
+            &one_record(&got, "asr.raw_log_mel")?.value["shape"],
+            "asr.raw_log_mel shape",
+        )?;
+        if raw_shape.len() != 2 || raw_shape[0] != 128 || raw_shape[1] == 0 {
+            return Err(format!("invalid raw Mel shape {raw_shape:?}"));
+        }
+        let expected_windows = raw_shape[1].div_ceil(800);
+        let padded = named_records(&got, "asr.padded_mel");
+        if padded.len() != expected_windows
+            || padded.len() != named_records(&reference, "asr.padded_mel").len()
+        {
+            return Err("Mel window count differs from 800-frame boundaries".into());
+        }
+        let mut consumed_frames = 0usize;
+        let normalized = float_values(
+            one_record(&got, "asr.normalized_mel")?,
+            "asr.normalized_mel",
+        )?;
+        for (index, record) in padded.iter().enumerate() {
+            let shape = json_usizes(&record.value["shape"], "asr.padded_mel shape")?;
+            if shape.len() != 2
+                || shape[0] != 128
+                || shape[1] == 0
+                || shape[1] > 800
+                || shape[1] % 100 != 0
+            {
+                return Err(format!("invalid padded Mel window {index} shape {shape:?}"));
+            }
+            let valid_frames = (raw_shape[1] - consumed_frames).min(800);
+            let values = float_values(record, "asr.padded_mel")?;
+            for mel in 0..128 {
+                let source = &normalized[mel * raw_shape[1] + consumed_frames
+                    ..mel * raw_shape[1] + consumed_frames + valid_frames];
+                let row = &values[mel * shape[1]..(mel + 1) * shape[1]];
+                if &row[..valid_frames] != source
+                    || row[valid_frames..].iter().any(|value| *value != 0.0)
+                {
+                    return Err(format!("padded Mel window {index} data/padding mismatch"));
+                }
+            }
+            consumed_frames += valid_frames;
+        }
+        if consumed_frames != raw_shape[1] {
+            return Err("Mel windows do not cover every raw frame".into());
+        }
+
+        for (index, record) in named_records(&got, "asr.after_conv_blocks")
+            .into_iter()
+            .enumerate()
+        {
+            let shape = json_usizes(&record.value["shape"], "asr.after_conv_blocks shape")?;
+            if shape != [1, 480, 16, 13] {
+                return Err(format!(
+                    "invalid after_conv_blocks[{index}] shape {shape:?}"
+                ));
+            }
+        }
+        for (index, record) in named_records(&got, "asr.after_conv_out")
+            .into_iter()
+            .enumerate()
+        {
+            let shape = json_usizes(&record.value["shape"], "asr.after_conv_out shape")?;
+            if shape != [13, 896] {
+                return Err(format!("invalid after_conv_out[{index}] shape {shape:?}"));
+            }
+        }
+        for name in ["asr.after_transformer"] {
+            for (record, padded) in named_records(&got, name).into_iter().zip(&padded) {
+                let shape = json_usizes(&record.value["shape"], &format!("{name} shape"))?;
+                let padded_shape = json_usizes(&padded.value["shape"], "asr.padded_mel shape")?;
+                if shape != [padded_shape[1] / 100 * 13, 896] {
+                    return Err(format!("invalid {name} window shape {shape:?}"));
+                }
+            }
+        }
+
+        compare_named_metric(
+            "asr.after_conv_blocks",
+            &got,
+            &reference,
+            Some(0.9999),
+            Some(1.5e-2),
+            None,
+            None,
+            Some(2e-2),
+        )?;
+        compare_named_metric(
+            "asr.after_conv_out",
+            &got,
+            &reference,
+            Some(0.9999),
+            Some(2e-2),
+            None,
+            None,
+            Some(2e-2),
+        )?;
+        for name in ["asr.after_transformer", "asr.projected"] {
+            let (got_values, columns) = concatenate_named(&got, name)?;
+            let (reference_values, reference_columns) = concatenate_named(&reference, name)?;
+            if columns != reference_columns {
+                return Err(format!("{name} column count differs"));
+            }
+            compare_metric(
+                name,
+                &got_values,
+                &reference_values,
+                Some(0.999),
+                Some(4e-2),
+                None,
+                None,
+                None,
+            )?;
+            let p01 = p01_nonzero_row_cosine(&got_values, &reference_values, columns)?;
+            println!("{name}: nonzero-row p01 cosine={p01:.9}");
+            if p01 < 0.99 {
+                return Err(format!("{name} row cosine below 0.99"));
+            }
+        }
+
+        let projected_shapes = named_records(&got, "asr.projected")
+            .into_iter()
+            .map(|record| json_usizes(&record.value["shape"], "asr.projected shape"))
+            .collect::<Result<Vec<_>, _>>()?;
+        let expected_audio_tokens = padded
+            .iter()
+            .map(|record| {
+                let shape = json_usizes(&record.value["shape"], "asr.padded_mel shape")?;
+                Ok(shape[1] / 100 * 13)
+            })
+            .sum::<Result<usize, String>>()?;
+        if projected_shapes
+            .iter()
+            .any(|shape| shape.len() != 2 || shape[1] != 1024)
+            || projected_shapes.iter().map(|shape| shape[0]).sum::<usize>() != expected_audio_tokens
+            || audio.tokens != expected_audio_tokens
+        {
+            return Err("projected audio token count/order differs from 100-frame chunks".into());
+        }
+        let prompt_ids = json_u32s(
+            &one_record(&got, "asr.prompt_ids")?.value["token_ids"],
+            "asr.prompt_ids",
+        )?;
+        let reference_prompt_ids = json_u32s(
+            &one_record(&reference, "asr.prompt_ids")?.value["token_ids"],
+            "reference asr.prompt_ids",
+        )?;
+        let positions = json_usizes(
+            &one_record(&got, "asr.positions")?.value["usize_values"],
+            "asr.positions",
+        )?;
+        let audio_pad = runtime
+            .decoder
+            .tokenizer()
+            .special_token_id("audio_pad")
+            .ok_or("tokenizer has no audio_pad token")?;
+        if prompt_ids != reference_prompt_ids
+            || positions.len() != prompt_ids.len() * 4
+            || positions
+                .chunks_exact(4)
+                .enumerate()
+                .any(|(index, position)| {
+                    let expected = if prompt_ids[index] == audio_pad {
+                        [index; 4]
+                    } else {
+                        [index, index, index, 0]
+                    };
+                    position != expected
+                })
+        {
+            return Err("prompt token IDs/order or segmented positions differ".into());
+        }
+        let pad_rows = prompt_ids
+            .iter()
+            .enumerate()
+            .filter_map(|(index, &id)| (id == audio_pad).then_some(index))
+            .collect::<Vec<_>>();
+        if pad_rows.len() != expected_audio_tokens
+            || pad_rows.windows(2).any(|rows| rows[1] != rows[0] + 1)
+        {
+            return Err("embedding-slot indices do not exactly cover projected audio rows".into());
+        }
+
+        let got_logits = float_values(
+            one_record(&got, "asr.decoder_first_logits")?,
+            "asr.decoder_first_logits",
+        )?;
+        let reference_logits = float_values(
+            one_record(&reference, "asr.decoder_first_logits")?,
+            "asr.decoder_first_logits",
+        )?;
+        validate_metric_pair(got_logits, reference_logits)?;
+        let got_mean = got_logits
+            .iter()
+            .map(|&value| f64::from(value))
+            .sum::<f64>()
+            / got_logits.len() as f64;
+        let reference_mean = reference_logits
+            .iter()
+            .map(|&value| f64::from(value))
+            .sum::<f64>()
+            / reference_logits.len() as f64;
+        let centered_got = got_logits
+            .iter()
+            .map(|&value| (f64::from(value) - got_mean) as f32)
+            .collect::<Vec<_>>();
+        let centered_reference = reference_logits
+            .iter()
+            .map(|&value| (f64::from(value) - reference_mean) as f32)
+            .collect::<Vec<_>>();
+        compare_metric(
+            "asr.decoder_first_logits centered",
+            &centered_got,
+            &centered_reference,
+            Some(0.9995),
+            Some(3e-2),
+            Some(0.10),
+            Some(0.30),
+            None,
+        )?;
+        let got_top10 = top_k(got_logits, 10)?;
+        let reference_top10 = top_k(reference_logits, 10)?;
+        let overlap = got_top10
+            .iter()
+            .filter(|id| reference_top10.contains(id))
+            .count();
+        if overlap < 9 {
+            return Err(format!("first-token top-10 overlap is {overlap}/10"));
+        }
+        let reference_margin =
+            reference_logits[reference_top10[0]] - reference_logits[reference_top10[1]];
+        if (reference_margin >= 0.10 && got_top10[0] != reference_top10[0])
+            || (reference_margin < 0.10 && !reference_top10[..3].contains(&got_top10[0]))
+        {
+            return Err(format!(
+                "first-token argmax rejected: Rust {}, reference {}, margin {reference_margin}",
+                got_top10[0], reference_top10[0]
+            ));
+        }
+
+        let generated_ids = json_u32s(
+            &one_record(&got, "asr.generated_ids")?.value["token_ids"],
+            "asr.generated_ids",
+        )?;
+        if generated_ids != reference_generated_ids || generated_ids != generation.token_ids {
+            return Err("generated token IDs differ exactly".into());
+        }
+        println!("exact generated IDs: {generated_ids:?}");
+        Ok(())
+    }
 
     fn is_direct_byte(byte: u8) -> bool {
         matches!(byte, b'!'..=b'~' | 0xa1..=0xac | 0xae..=0xff)
@@ -529,8 +1327,11 @@ mod tests {
                 .iter()
                 .map(|literal| (*literal).to_string()),
         );
+        let newline = byte_token(b'\n');
+        tokens.push(format!("{newline}{newline}"));
         let mut token_types = vec![MetaValue::Uint32(1); 256];
         token_types.extend((0..SPECIAL_LITERALS.len()).map(|_| MetaValue::Uint32(3)));
+        token_types.push(MetaValue::Uint32(1));
         let eos_id = u32::try_from(256 + 6).unwrap();
         let metadata: HashMap<String, MetaValue> = HashMap::from([
             (
@@ -554,7 +1355,10 @@ mod tests {
             ),
             (
                 "tokenizer.ggml.merges".into(),
-                MetaValue::Array(MetaValueType::String, Vec::new()),
+                MetaValue::Array(
+                    MetaValueType::String,
+                    vec![MetaValue::String(format!("{newline} {newline}"))],
+                ),
             ),
             (
                 "tokenizer.ggml.eos_token_id".into(),
@@ -694,18 +1498,39 @@ mod tests {
     }
 
     #[test]
+    fn prompt_matches_the_two_call_oracle_separator() {
+        let tokenizer = tokenizer();
+        let prompt = build_asr_prompt(&tokenizer, 4096, 1, None, None).unwrap();
+        let encode = |text| {
+            tokenizer.encode(
+                text,
+                EncodeOptions {
+                    add_special: false,
+                    parse_special: true,
+                },
+            )
+        };
+        let mut expected = encode("<|im_start|>system\n<|im_end|>\n");
+        expected.extend(encode(
+            "\n<|im_start|>user\n<|audio_start|><|audio_pad|><|audio_end|><|im_end|>\n<|im_start|>assistant\n",
+        ));
+
+        assert_eq!(prompt.token_ids, expected);
+    }
+
+    #[test]
     fn prompt_retains_empty_system_framing_and_places_optional_prompt_inside_it() {
         let tokenizer = tokenizer();
         let (_, empty) = decoded_prompt(&tokenizer, 1, None, None);
         assert_eq!(
             empty,
-            "<|im_start|>system\n<|im_end|>\n<|im_start|>user\n<|audio_start|><|audio_pad|><|audio_end|><|im_end|>\n<|im_start|>assistant\n"
+            "<|im_start|>system\n<|im_end|>\n\n<|im_start|>user\n<|audio_start|><|audio_pad|><|audio_end|><|im_end|>\n<|im_start|>assistant\n"
         );
 
         let (_, populated) = decoded_prompt(&tokenizer, 1, Some("Use names exactly."), None);
         assert_eq!(
             populated,
-            "<|im_start|>system\nUse names exactly.<|im_end|>\n<|im_start|>user\n<|audio_start|><|audio_pad|><|audio_end|><|im_end|>\n<|im_start|>assistant\n"
+            "<|im_start|>system\nUse names exactly.<|im_end|>\n\n<|im_start|>user\n<|audio_start|><|audio_pad|><|audio_end|><|im_end|>\n<|im_start|>assistant\n"
         );
     }
 
@@ -726,7 +1551,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_has_exact_audio_pad_count_prefill_and_four_axis_positions() {
+    fn prompt_has_exact_audio_pad_count_prefill_and_segmented_positions() {
         let tokenizer = tokenizer();
         let (prompt, decoded) = decoded_prompt(&tokenizer, 3, None, Some("English"));
         let audio_start = tokenizer.special_token_id("audio_start").unwrap();
@@ -752,12 +1577,11 @@ mod tests {
             3
         );
         assert!(decoded.ends_with("<|im_start|>assistant\nlanguage English<asr_text>"));
-        assert_eq!(
-            prompt.positions,
-            (0..prompt.token_ids.len())
-                .map(|index| [index; 4])
-                .collect::<Vec<_>>()
-        );
+        assert_eq!(prompt.positions[start], [start, start, start, 0]);
+        for index in start + 1..end {
+            assert_eq!(prompt.positions[index], [index; 4]);
+        }
+        assert_eq!(prompt.positions[end], [end, end, end, 0]);
     }
 
     #[test]
@@ -931,5 +1755,52 @@ mod tests {
         assert_eq!(options.language, None);
         assert_eq!(options.prompt, None);
         assert_eq!(options.max_new_tokens, 256);
+    }
+
+    #[cfg(feature = "parity-trace")]
+    #[test]
+    fn parity_metrics_match_hand_calculated_vectors() {
+        let got = [1.0, 2.0, 3.0];
+        let reference = [1.0, 2.0, 4.0];
+        assert!((nrmse(&got, &reference).unwrap() - (1.0f64 / 21.0).sqrt()).abs() < 1e-12);
+        assert!((cosine(&got, &reference).unwrap() - 17.0 / (14.0f64 * 21.0).sqrt()).abs() < 1e-12);
+        assert_eq!(p99_abs(&got, &reference).unwrap(), 1.0);
+        assert!((p99_scaled_abs(&got, &reference).unwrap() - 1.0 / 7.0f64.sqrt()).abs() < 1e-12);
+        assert_eq!(
+            row_cosines(&got, &reference, 3).unwrap(),
+            vec![cosine(&got, &reference).unwrap()]
+        );
+    }
+
+    #[cfg(feature = "parity-trace")]
+    #[test]
+    fn parity_metrics_reject_invalid_inputs_and_rank_ties_by_token_id() {
+        let invalid_pairs: &[(&[f32], &[f32])] = &[
+            (&[], &[]),
+            (&[1.0], &[]),
+            (&[f32::NAN], &[1.0]),
+            (&[1.0], &[f32::INFINITY]),
+        ];
+        for (got, reference) in invalid_pairs {
+            assert!(nrmse(got, reference).is_err());
+            assert!(cosine(got, reference).is_err());
+            assert!(p99_abs(got, reference).is_err());
+            assert!(p99_scaled_abs(got, reference).is_err());
+        }
+        assert!(row_cosines(&[1.0], &[1.0], 0).is_err());
+        assert!(row_cosines(&[1.0, 2.0], &[1.0, 2.0], 3).is_err());
+        assert!(row_cosines(&[1.0, f32::NAN], &[1.0, 2.0], 1).is_err());
+        assert!(top_k(&[], 1).is_err());
+        assert!(top_k(&[1.0], 0).is_err());
+        assert!(top_k(&[1.0], 2).is_err());
+        assert!(top_k(&[f32::NAN], 1).is_err());
+        assert_eq!(top_k(&[1.0, 2.0, 2.0, 0.0], 3).unwrap(), vec![1, 2, 0]);
+    }
+
+    #[cfg(feature = "parity-trace")]
+    #[test]
+    #[ignore = "requires the fixed Qwen3-ASR GGUFs, WAV, and llama.cpp trace"]
+    fn qwen3_asr_matches_pinned_llama_cpp_trace() {
+        run_qwen3_asr_trace_parity().unwrap();
     }
 }

@@ -203,7 +203,7 @@ fn checked_generated_position(
         .checked_add(1)
         .and_then(|position| position.checked_add(generated_index))
         .ok_or_else(|| "Generated position overflow".to_string())?;
-    Ok([position; 4])
+    Ok([position, position, position, 0])
 }
 
 fn validate_input_shapes(
@@ -881,47 +881,64 @@ impl<'model> Qwen3Session<'model> {
                 }
 
                 let pool = Arc::clone(&model.pool);
+                let scores_ptr = self.scratch.scores.as_mut_ptr();
+                let score_stride = self.scratch.score_stride;
                 pool.compute(move |thread, threads| {
                     let q = unsafe { std::slice::from_raw_parts(q_ptr, n_embd_q) };
                     let attn_out = unsafe { std::slice::from_raw_parts_mut(attn_out_ptr, n_attn) };
                     let k_cache = unsafe { std::slice::from_raw_parts(k_cache_ptr, kv_cache_size) };
                     let v_cache = unsafe { std::slice::from_raw_parts(v_cache_ptr, kv_cache_size) };
+                    let scores = unsafe {
+                        std::slice::from_raw_parts_mut(
+                            scores_ptr.add(thread * score_stride),
+                            score_stride,
+                        )
+                    };
+                    let f16_scratch = scores.as_mut_ptr().cast::<u16>();
                     let head_start = thread * config.n_head / threads;
                     let head_end = (thread + 1) * config.n_head / threads;
                     let layer_base = layer * capacity * kv_stride;
+                    let n_padded = (step + 1).div_ceil(256) * 256;
                     for head in head_start..head_end {
                         let kv_head = head / group_size;
                         let q_offset = head * config.n_embd_head_k;
                         let output_offset = head * config.n_embd_head_v;
                         let output =
                             &mut attn_out[output_offset..output_offset + config.n_embd_head_v];
-                        output.fill(0.0);
-                        let mut max_score = 0.0f32;
-                        let mut score_sum = 0.0f32;
+                        let query = unsafe {
+                            std::slice::from_raw_parts_mut(
+                                output.as_mut_ptr().cast::<u16>(),
+                                config.n_embd_head_k,
+                            )
+                        };
+                        f32_slice_to_f16(&q[q_offset..q_offset + config.n_embd_head_k], query);
+                        scores[..n_padded].fill(f32::NEG_INFINITY);
                         for token in 0..=step {
                             let row = layer_base + token * kv_stride;
                             let key_offset = row + kv_head * config.n_embd_head_k;
-                            let score = dot_f16_f32(
-                                &q[q_offset..q_offset + config.n_embd_head_k],
+                            scores[token] = dot_f16(
+                                query,
                                 &k_cache[key_offset..key_offset + config.n_embd_head_k],
                                 config.n_embd_head_k,
                             ) * kq_scale;
-                            if score > max_score {
-                                let rescale = (max_score - score).exp();
-                                vec_scale_f32(output, rescale);
-                                score_sum *= rescale;
-                                max_score = score;
-                            }
-                            let weight = (score - max_score).exp();
-                            let value_offset = row + kv_head * config.n_embd_head_v;
-                            vec_mad_f16_f32(
-                                output,
-                                &v_cache[value_offset..value_offset + config.n_embd_head_v],
-                                weight,
-                            );
-                            score_sum += weight;
                         }
-                        vec_scale_f32(output, 1.0 / score_sum);
+                        softmax(&mut scores[..n_padded]);
+                        for index in 0..n_padded {
+                            unsafe { *f16_scratch.add(index) = f32_to_f16(scores[index]) };
+                        }
+                        let weights = unsafe { std::slice::from_raw_parts(f16_scratch, n_padded) };
+                        let values = unsafe {
+                            std::slice::from_raw_parts_mut(f16_scratch.add(score_stride), n_padded)
+                        };
+                        values[step + 1..].fill(0);
+                        for dimension in 0..config.n_embd_head_v {
+                            for token in 0..=step {
+                                let row = layer_base + token * kv_stride;
+                                values[token] =
+                                    v_cache[row + kv_head * config.n_embd_head_v + dimension];
+                            }
+                            output[dimension] = dot_f16(values, weights, n_padded);
+                        }
                     }
                 });
 
@@ -1478,8 +1495,14 @@ mod tests {
     #[test]
     fn generated_positions_continue_from_prompt_text_positions() {
         let prompt = [[7, 8, 9, 10], [42, 100, 200, 300]];
-        assert_eq!(checked_generated_position(&prompt, 0).unwrap(), [43; 4]);
-        assert_eq!(checked_generated_position(&prompt, 1).unwrap(), [44; 4]);
+        assert_eq!(
+            checked_generated_position(&prompt, 0).unwrap(),
+            [43, 43, 43, 0]
+        );
+        assert_eq!(
+            checked_generated_position(&prompt, 1).unwrap(),
+            [44, 44, 44, 0]
+        );
         assert!(checked_generated_position(&[[usize::MAX; 4]], 0).is_err());
     }
 

@@ -1,7 +1,10 @@
 use crate::model::{GGMLType, MetaValue, TensorSource};
-use crate::ops::{dot_f32, f16_to_f32, matmul_q8_0_quantized_range, quantize_q8_0_into};
+#[cfg(target_arch = "aarch64")]
+use crate::ops::matmul_q8_0_quantized_range_nrc1;
+use crate::ops::{
+    dot_f16_f16_bytes, dot_f32, f16_to_f32, matmul_q8_0_quantized_range, quantize_q8_0_into,
+};
 use crate::thread_pool::ComputePool;
-use rustfft::{num_complex::Complex, FftPlanner};
 use std::sync::Arc;
 
 const SAMPLE_RATE: usize = 16_000;
@@ -10,6 +13,36 @@ const HOP: usize = 160;
 const MEL_BINS: usize = 128;
 const WINDOW_FRAMES: usize = 800;
 const CHUNK_FRAMES: usize = 100;
+
+unsafe extern "C" {
+    fn cosf(value: f32) -> f32;
+    fn erff(value: f32) -> f32;
+    fn log10(value: f64) -> f64;
+    fn sinf(value: f32) -> f32;
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "Accelerate", kind = "framework")]
+unsafe extern "C" {
+    fn vDSP_sve(input: *const f32, stride: isize, sum: *mut f32, count: usize);
+    fn vDSP_vsadd(
+        input: *const f32,
+        input_stride: isize,
+        scalar: *const f32,
+        output: *mut f32,
+        output_stride: isize,
+        count: usize,
+    );
+    fn vDSP_measqv(input: *const f32, stride: isize, result: *mut f32, count: usize);
+    fn vDSP_vsmul(
+        input: *const f32,
+        input_stride: isize,
+        scalar: *const f32,
+        output: *mut f32,
+        output_stride: isize,
+        count: usize,
+    );
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AsrAudioError {
@@ -184,11 +217,11 @@ fn reflect_pad(samples: &[f32]) -> Result<Vec<f32>, AsrAudioError> {
     Ok(padded)
 }
 
-fn slaney_mel_hz(mel: f32) -> f32 {
+fn slaney_mel_hz(mel: f64) -> f64 {
     let min_log_hz = 1_000.0;
     let min_log_mel = min_log_hz / (200.0 / 3.0);
     if mel >= min_log_mel {
-        min_log_hz * ((mel - min_log_mel) * (6.4f32.ln() / 27.0)).exp()
+        min_log_hz * ((mel - min_log_mel) * (6.4f64.ln() / 27.0)).exp()
     } else {
         mel * (200.0 / 3.0)
     }
@@ -200,16 +233,16 @@ fn mel_filters() -> Result<Vec<f32>, AsrAudioError> {
         .checked_mul(fft_bins)
         .ok_or_else(|| AsrAudioError::Invalid("Mel filter size overflow".into()))?;
     let mut filters = zeroed_f32(filter_len)?;
-    let max_mel = 15.0 + (8.0f32).ln() / (6.4f32.ln() / 27.0);
-    let mel_hz: Vec<f32> = (0..MEL_BINS + 2)
-        .map(|i| slaney_mel_hz(max_mel * i as f32 / (MEL_BINS + 1) as f32))
+    let max_mel = 15.0 + (8.0f64).ln() / (6.4f64.ln() / 27.0);
+    let mel_hz: Vec<f64> = (0..MEL_BINS + 2)
+        .map(|i| slaney_mel_hz(max_mel * i as f64 / (MEL_BINS + 1) as f64))
         .collect();
     for mel in 0..MEL_BINS {
         let lower_width = mel_hz[mel + 1] - mel_hz[mel];
         let upper_width = mel_hz[mel + 2] - mel_hz[mel + 1];
         let norm = 2.0 / (mel_hz[mel + 2] - mel_hz[mel]);
         for bin in 0..fft_bins {
-            let hz = bin as f32 * SAMPLE_RATE as f32 / FFT_SIZE as f32;
+            let hz = bin as f64 * SAMPLE_RATE as f64 / FFT_SIZE as f64;
             let weight = ((hz - mel_hz[mel]) / lower_width)
                 .min((mel_hz[mel + 2] - hz) / upper_width)
                 .max(0.0)
@@ -217,10 +250,132 @@ fn mel_filters() -> Result<Vec<f32>, AsrAudioError> {
             if !weight.is_finite() {
                 return Err(AsrAudioError::Invalid("non-finite Mel filter".into()));
             }
-            filters[mel * fft_bins + bin] = weight;
+            filters[mel * fft_bins + bin] = weight as f32;
         }
     }
     Ok(filters)
+}
+
+fn periodic_hann_window() -> Vec<f32> {
+    (0..FFT_SIZE)
+        .map(|i| {
+            let angle = (2.0 * std::f64::consts::PI * i as f64 / FFT_SIZE as f64) as f32;
+            (0.5 * (1.0 - f64::from(unsafe { cosf(angle) }))) as f32
+        })
+        .collect()
+}
+
+struct AudioFft {
+    sin: Vec<f32>,
+    cos: Vec<f32>,
+    input: Vec<f32>,
+    output: Vec<f32>,
+}
+
+impl AudioFft {
+    fn new() -> Self {
+        let mut sin = Vec::with_capacity(FFT_SIZE);
+        let mut cos = Vec::with_capacity(FFT_SIZE);
+        for index in 0..FFT_SIZE {
+            let angle = (2.0 * std::f64::consts::PI * index as f64 / FFT_SIZE as f64) as f32;
+            sin.push(unsafe { sinf(angle) });
+            cos.push(unsafe { cosf(angle) });
+        }
+        Self {
+            sin,
+            cos,
+            input: vec![0.0; FFT_SIZE * 2],
+            output: vec![0.0; FFT_SIZE * 8],
+        }
+    }
+
+    fn transform(&mut self, input: &[f32]) {
+        self.input[..FFT_SIZE].copy_from_slice(input);
+        fft_real(
+            &self.sin,
+            &self.cos,
+            &mut self.input,
+            0,
+            FFT_SIZE,
+            &mut self.output,
+            0,
+        );
+    }
+
+    fn power(&mut self, input: &[f32], output: &mut [f32]) {
+        debug_assert_eq!(input.len(), FFT_SIZE);
+        debug_assert_eq!(output.len(), FFT_SIZE / 2 + 1);
+        self.transform(input);
+        for (bin, value) in output.iter_mut().enumerate() {
+            let real = self.output[bin * 2];
+            let imaginary = self.output[bin * 2 + 1];
+            *value = real.mul_add(real, imaginary * imaginary);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fft_real(
+    sin: &[f32],
+    cos: &[f32],
+    input: &mut [f32],
+    input_offset: usize,
+    n: usize,
+    output: &mut [f32],
+    output_offset: usize,
+) {
+    if n == 1 {
+        output[output_offset] = input[input_offset];
+        output[output_offset + 1] = 0.0;
+        return;
+    }
+    let half = n / 2;
+    if n % 2 != 0 {
+        let step = FFT_SIZE / n;
+        for k in 0..n {
+            let mut real = 0.0f32;
+            let mut imaginary = 0.0f32;
+            for index in 0..n {
+                let table = (k * index * step) % FFT_SIZE;
+                let value = input[input_offset + index];
+                real = value.mul_add(cos[table], real);
+                imaginary = (-value).mul_add(sin[table], imaginary);
+            }
+            output[output_offset + k * 2] = real;
+            output[output_offset + k * 2 + 1] = imaginary;
+        }
+        return;
+    }
+
+    let scratch = input_offset + n;
+    for index in 0..half {
+        input[scratch + index] = input[input_offset + index * 2];
+    }
+    let even = output_offset + n * 2;
+    fft_real(sin, cos, input, scratch, half, output, even);
+    for index in 0..half {
+        input[scratch + index] = input[input_offset + index * 2 + 1];
+    }
+    let odd = even + n;
+    fft_real(sin, cos, input, scratch, half, output, odd);
+
+    let step = FFT_SIZE / n;
+    for k in 0..half {
+        let real = cos[k * step];
+        let sine = sin[k * step];
+        let odd_real = output[odd + k * 2];
+        let odd_imaginary = output[odd + k * 2 + 1];
+        let even_real = output[even + k * 2];
+        let even_imaginary = output[even + k * 2 + 1];
+        output[output_offset + k * 2] =
+            sine.mul_add(odd_imaginary, real.mul_add(odd_real, even_real));
+        output[output_offset + k * 2 + 1] =
+            (-sine).mul_add(odd_real, real.mul_add(odd_imaginary, even_imaginary));
+        output[output_offset + (k + half) * 2] =
+            (-sine).mul_add(odd_imaginary, (-real).mul_add(odd_real, even_real));
+        output[output_offset + (k + half) * 2 + 1] =
+            sine.mul_add(odd_real, (-real).mul_add(odd_imaginary, even_imaginary));
+    }
 }
 
 fn compute_log_mel(samples: &[f32]) -> Result<LogMel, AsrAudioError> {
@@ -248,16 +403,10 @@ fn compute_log_mel(samples: &[f32]) -> Result<LogMel, AsrAudioError> {
     let mut raw = zeroed_f32(raw_len)?;
     let filters = mel_filters()?;
     let fft_bins = FFT_SIZE / 2 + 1;
-    let mut frame = Vec::new();
-    frame
-        .try_reserve_exact(FFT_SIZE)
-        .map_err(|_| AsrAudioError::Invalid("FFT allocation failed".into()))?;
-    frame.resize(FFT_SIZE, Complex::new(0.0, 0.0));
-    let hann: Vec<f32> = (0..FFT_SIZE)
-        .map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / FFT_SIZE as f32).cos()))
-        .collect();
-    let mut planner = FftPlanner::<f32>::new();
-    let fft = planner.plan_fft_forward(FFT_SIZE);
+    let mut frame = zeroed_f32(FFT_SIZE)?;
+    let hann = periodic_hann_window();
+    let mut fft = AudioFft::new();
+    let mut power = zeroed_f32(fft_bins)?;
 
     for frame_index in 0..frames {
         let start = frame_index
@@ -270,34 +419,29 @@ fn compute_log_mel(samples: &[f32]) -> Result<LogMel, AsrAudioError> {
             .get(start..end)
             .ok_or_else(|| AsrAudioError::Invalid("truncated padded frame".into()))?;
         for i in 0..FFT_SIZE {
-            frame[i] = Complex::new(input[i] * hann[i], 0.0);
+            frame[i] = input[i] * hann[i];
         }
-        fft.process(&mut frame);
-        if frame
-            .iter()
-            .any(|value| !value.re.is_finite() || !value.im.is_finite())
-        {
+        fft.power(&frame, &mut power);
+        if power.iter().any(|value| !value.is_finite()) {
             return Err(AsrAudioError::Invalid("non-finite FFT output".into()));
         }
         for mel in 0..MEL_BINS {
-            let mut power_sum = 0.0;
-            for bin in 0..fft_bins {
-                let power = frame[bin].norm_sqr();
-                if !power.is_finite() {
-                    return Err(AsrAudioError::Invalid("non-finite FFT power".into()));
-                }
-                let weighted_power = power * filters[mel * fft_bins + bin];
-                if !weighted_power.is_finite() {
-                    return Err(AsrAudioError::Invalid(
-                        "non-finite weighted Mel power".into(),
-                    ));
-                }
-                power_sum += weighted_power;
-                if !power_sum.is_finite() {
-                    return Err(AsrAudioError::Invalid("non-finite Mel power sum".into()));
-                }
+            let filter = &filters[mel * fft_bins..(mel + 1) * fft_bins];
+            let mut power_sum = 0.0f64;
+            let mut bin = 0;
+            while bin + 3 < fft_bins {
+                let sum = power[bin + 1] * filter[bin + 1];
+                let sum = power[bin].mul_add(filter[bin], sum);
+                let sum = power[bin + 2].mul_add(filter[bin + 2], sum);
+                let sum = power[bin + 3].mul_add(filter[bin + 3], sum);
+                power_sum += f64::from(sum);
+                bin += 4;
             }
-            let value = power_sum.max(5.960464477539063e-8).log10();
+            while bin < fft_bins {
+                power_sum += f64::from(power[bin] * filter[bin]);
+                bin += 1;
+            }
+            let value = unsafe { log10(power_sum.max(f64::from(5.960464477539063e-8f32))) } as f32;
             if !value.is_finite() {
                 return Err(AsrAudioError::Invalid("non-finite log-Mel value".into()));
             }
@@ -309,9 +453,15 @@ fn compute_log_mel(samples: &[f32]) -> Result<LogMel, AsrAudioError> {
     if !global_max.is_finite() {
         return Err(AsrAudioError::Invalid("non-finite log-Mel maximum".into()));
     }
+    let threshold = f64::from(global_max) - 8.0;
     let mut normalized = zeroed_f32(raw_len)?;
     for (normalized, value) in normalized.iter_mut().zip(&raw) {
-        *normalized = (value.max(global_max - 8.0) + 4.0) / 4.0;
+        let value = if f64::from(*value) < threshold {
+            threshold as f32
+        } else {
+            *value
+        };
+        *normalized = ((f64::from(value) + 4.0) / 4.0) as f32;
     }
     if normalized.iter().any(|value| !value.is_finite()) {
         return Err(AsrAudioError::Invalid(
@@ -708,7 +858,7 @@ impl Qwen3AudioModel {
             self.config.projection,
         )?;
 
-        for (layer_index, layer) in self.layers.iter().enumerate() {
+        for layer in &self.layers {
             layer_norm_rows(
                 &hidden.values,
                 hidden.tokens,
@@ -777,18 +927,6 @@ impl Qwen3AudioModel {
             )?;
             scratch.normed = normed;
             add_residual(&mut hidden.values, &scratch.ffn_down)?;
-
-            #[cfg(feature = "parity-trace")]
-            if layer_index == 0 {
-                crate::parity_trace::report(crate::parity_trace::checkpoint(
-                    "asr.transformer_layer_0",
-                    None,
-                    &[hidden.tokens, self.config.hidden],
-                    &hidden.values,
-                ));
-            }
-            #[cfg(not(feature = "parity-trace"))]
-            let _ = layer_index;
         }
 
         audio_projector(
@@ -1009,17 +1147,20 @@ impl AudioLinear {
         if input.iter().all(|value| *value == 0.0) {
             return Ok(());
         }
+        let mut input_f16 = vec![crate::ops::f32_to_f16(0.0); self.input];
         for row in 0..rows {
             let input_row = &input[row * self.input..(row + 1) * self.input];
+            for (bits, value) in input_f16.iter_mut().zip(input_row) {
+                *bits = crate::ops::f32_to_f16(*value);
+            }
             for output in 0..self.output {
                 let weight_start = checked_product("audio projection weight", output, self.input)?;
-                let mut sum = 0.0;
-                for (column, value) in input_row.iter().enumerate() {
-                    let byte =
-                        checked_product("audio projection weight byte", weight_start + column, 2)?;
-                    let bits = u16::from_le_bytes([self.weight[byte], self.weight[byte + 1]]);
-                    sum += *value * f16_to_f32(bits);
-                }
+                let weight_byte = checked_product("audio projection weight byte", weight_start, 2)?;
+                let sum = dot_f16_f16_bytes(
+                    &input_f16,
+                    &self.weight[weight_byte..weight_byte + self.input * 2],
+                    self.input,
+                );
                 if !sum.is_finite() {
                     return Err("Non-finite audio projection output".into());
                 }
@@ -1062,6 +1203,8 @@ impl AudioLinear {
             return Err("Invalid Q8_0 audio projection tensors".into());
         }
         resize_f32(result, "Q8_0 audio projection output", output_len)?;
+        #[cfg(target_arch = "aarch64")]
+        let (output_chunk, input_chunk) = ggml_q8_chunk_shape(self.output, rows, pool.n_threads());
         for row in 0..rows {
             let input = &input[row * self.input..(row + 1) * self.input];
             quantize_q8_0_into(
@@ -1089,6 +1232,48 @@ impl AudioLinear {
                 };
                 let q8 = unsafe { std::slice::from_raw_parts(q8_ptr, input_width) };
                 let scales = unsafe { std::slice::from_raw_parts(scales_ptr, input_width / 32) };
+                #[cfg(target_arch = "aarch64")]
+                {
+                    let input_chunk_start = row / input_chunk * input_chunk;
+                    let input_chunk_len =
+                        (input_chunk_start + input_chunk).min(rows) - input_chunk_start;
+                    let mut start = partition.start;
+                    while start < partition.end {
+                        let output_chunk_start = start / output_chunk * output_chunk;
+                        let output_chunk_len = (output_chunk_start + output_chunk)
+                            .min(output_width)
+                            - output_chunk_start;
+                        let end = (output_chunk_start + output_chunk).min(partition.end);
+                        let result = &mut output[start - partition.start..end - partition.start];
+                        if output_width % 2 != 0
+                            || rows % 2 != 0
+                            || output_chunk_len % 2 != 0
+                            || input_chunk_len % 2 != 0
+                        {
+                            matmul_q8_0_quantized_range_nrc1(
+                                weight,
+                                q8,
+                                scales,
+                                result,
+                                input_width,
+                                start,
+                                end,
+                            );
+                        } else {
+                            matmul_q8_0_quantized_range(
+                                weight,
+                                q8,
+                                scales,
+                                result,
+                                input_width,
+                                start,
+                                end,
+                            );
+                        }
+                        start = end;
+                    }
+                }
+                #[cfg(not(target_arch = "aarch64"))]
                 matmul_q8_0_quantized_range(
                     weight,
                     q8,
@@ -1108,6 +1293,21 @@ impl AudioLinear {
         }
         Ok(())
     }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn ggml_q8_chunk_shape(output: usize, rows: usize, threads: usize) -> (usize, usize) {
+    let chunk_size = if output == 1 || rows == 1 { 64 } else { 16 };
+    let mut output_chunks = output.div_ceil(chunk_size);
+    let mut input_chunks = rows.div_ceil(chunk_size);
+    if output_chunks * input_chunks < threads * 4 {
+        (output_chunks, input_chunks) = if output > rows {
+            (threads, 1)
+        } else {
+            (1, threads)
+        };
+    }
+    (output.div_ceil(output_chunks), rows.div_ceil(input_chunks))
 }
 
 fn q8_worker_output_partition(
@@ -1248,39 +1448,39 @@ fn conv2d_stride2_padding1(
         return Ok((output_height, output_width));
     }
 
-    for output_channel in 0..weights.output_channels {
-        for output_y in 0..output_height {
-            for output_x in 0..output_width {
-                let mut sum = weights.bias[output_channel];
-                for input_channel in 0..input_channels {
-                    for kernel_y in 0..3 {
-                        let padded_y = output_y * 2 + kernel_y;
-                        if padded_y == 0 || padded_y > input_height {
+    let patch_len = checked_product("convolution patch", input_channels, 9)?;
+    let mut patch = vec![crate::ops::f32_to_f16(0.0); patch_len];
+    for output_y in 0..output_height {
+        for output_x in 0..output_width {
+            patch.fill(crate::ops::f32_to_f16(0.0));
+            for input_channel in 0..input_channels {
+                for kernel_y in 0..3 {
+                    let padded_y = output_y * 2 + kernel_y;
+                    if padded_y == 0 || padded_y > input_height {
+                        continue;
+                    }
+                    let input_y = padded_y - 1;
+                    for kernel_x in 0..3 {
+                        let padded_x = output_x * 2 + kernel_x;
+                        if padded_x == 0 || padded_x > input_width {
                             continue;
                         }
-                        let input_y = padded_y - 1;
-                        for kernel_x in 0..3 {
-                            let padded_x = output_x * 2 + kernel_x;
-                            if padded_x == 0 || padded_x > input_width {
-                                continue;
-                            }
-                            let input_x = padded_x - 1;
-                            let input_index =
-                                (input_channel * input_height + input_y) * input_width + input_x;
-                            let weight_index =
-                                (((output_channel * input_channels + input_channel) * 3
-                                    + kernel_y)
-                                    * 3)
-                                    + kernel_x;
-                            let byte = weight_index * 2;
-                            let bits = u16::from_le_bytes([
-                                weights.weight.bytes[byte],
-                                weights.weight.bytes[byte + 1],
-                            ]);
-                            sum += input[input_index] * f16_to_f32(bits);
-                        }
+                        let input_x = padded_x - 1;
+                        let input_index =
+                            (input_channel * input_height + input_y) * input_width + input_x;
+                        patch[(input_channel * 3 + kernel_y) * 3 + kernel_x] =
+                            crate::ops::f32_to_f16(input[input_index]);
                     }
                 }
+            }
+            for output_channel in 0..weights.output_channels {
+                let weight_byte = output_channel * patch_len * 2;
+                let sum = weights.bias[output_channel]
+                    + dot_f16_f16_bytes(
+                        &patch,
+                        &weights.weight.bytes[weight_byte..weight_byte + patch_len * 2],
+                        patch_len,
+                    );
                 if !sum.is_finite() {
                     return Err("Non-finite convolution output".into());
                 }
@@ -1366,27 +1566,72 @@ fn layer_norm(
     {
         return Err("Invalid layer norm tensors".into());
     }
-    let count = input.len() as f32;
-    let mean = input.iter().sum::<f32>() / count;
-    let variance = input
-        .iter()
-        .map(|value| {
-            let centered = *value - mean;
-            centered * centered
-        })
-        .sum::<f32>()
-        / count;
-    let inverse = 1.0 / (variance + epsilon).sqrt();
-    if !mean.is_finite() || !inverse.is_finite() {
-        return Err("Non-finite layer norm statistics".into());
-    }
-    for (((value, weight), bias), output) in input.iter().zip(weight).zip(bias).zip(output) {
-        *output = (*value - mean) * inverse * *weight + *bias;
-        if !output.is_finite() {
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut sum = 0.0;
+        unsafe { vDSP_sve(input.as_ptr(), 1, &mut sum, input.len()) };
+        let negative_mean = -(sum / input.len() as f32);
+        unsafe {
+            vDSP_vsadd(
+                input.as_ptr(),
+                1,
+                &negative_mean,
+                output.as_mut_ptr(),
+                1,
+                input.len(),
+            )
+        };
+        let mut variance = 0.0;
+        unsafe { vDSP_measqv(output.as_ptr(), 1, &mut variance, output.len()) };
+        let inverse = 1.0 / (variance + epsilon).sqrt();
+        unsafe {
+            vDSP_vsmul(
+                output.as_ptr(),
+                1,
+                &inverse,
+                output.as_mut_ptr(),
+                1,
+                output.len(),
+            )
+        };
+        for (output, weight) in output.iter_mut().zip(weight) {
+            *output *= weight;
+        }
+        for (output, bias) in output.iter_mut().zip(bias) {
+            *output += bias;
+        }
+        if output.iter().any(|value| !value.is_finite()) {
             return Err("Non-finite layer norm output".into());
         }
+        return Ok(());
     }
-    Ok(())
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let count = input.len() as f64;
+        let mean = input.iter().map(|&value| f64::from(value)).sum::<f64>() / count;
+        let variance = input
+            .iter()
+            .map(|&value| {
+                let centered = f64::from(value) - mean;
+                centered * centered
+            })
+            .sum::<f64>()
+            / count;
+        let mean = mean as f32;
+        let inverse = (1.0 / (variance + f64::from(epsilon)).sqrt()) as f32;
+        if !mean.is_finite() || !inverse.is_finite() {
+            return Err("Non-finite layer norm statistics".into());
+        }
+        for (((value, weight), bias), output) in input.iter().zip(weight).zip(bias).zip(output) {
+            *output = (*value - mean) * inverse * *weight + *bias;
+            if !output.is_finite() {
+                return Err("Non-finite layer norm output".into());
+            }
+        }
+        Ok(())
+    }
 }
 
 fn layer_norm_rows(
@@ -1417,19 +1662,8 @@ fn layer_norm_rows(
     Ok(())
 }
 
-fn erf_approx(value: f32) -> f32 {
-    let sign = if value < 0.0 { -1.0 } else { 1.0 };
-    let x = value.abs();
-    let t = 1.0 / (1.0 + 0.327_591_1 * x);
-    let polynomial = (((((1.061_405_4 * t - 1.453_152_1) * t) + 1.421_413_8) * t - 0.284_496_72)
-        * t
-        + 0.254_829_6)
-        * t;
-    sign * (1.0 - polynomial * (-x * x).exp())
-}
-
 fn gelu_erf(value: f32) -> f32 {
-    0.5 * value * (1.0 + erf_approx(value * std::f32::consts::FRAC_1_SQRT_2))
+    0.5 * value * (1.0 + unsafe { erff(value * std::f32::consts::FRAC_1_SQRT_2) })
 }
 
 fn apply_gelu_erf(values: &mut [f32]) -> Result<(), String> {
@@ -1441,6 +1675,14 @@ fn apply_gelu_erf(values: &mut [f32]) -> Result<(), String> {
         if !value.is_finite() {
             return Err("Non-finite audio GELU output".into());
         }
+    }
+    Ok(())
+}
+
+fn attention_softmax(scores: &mut [f32]) -> Result<(), String> {
+    crate::ops::softmax(scores);
+    if scores.iter().any(|score| !score.is_finite()) {
+        return Err("Invalid attention softmax".into());
     }
     Ok(())
 }
@@ -1498,6 +1740,7 @@ fn full_attention_into(
     resize_f32(scores, "attention scores", tokens)?;
     resize_f32(output, "attention output", len)?;
     output.fill(0.0);
+    let mut value_column = reserved_f32("attention value column", tokens)?;
     let scale = 1.0 / (head_dim as f32).sqrt();
     for query_token in 0..tokens {
         for head in 0..heads {
@@ -1506,29 +1749,21 @@ fn full_attention_into(
             let mut maximum = f32::NEG_INFINITY;
             for key_token in 0..tokens {
                 let key_start = key_token * width + head * head_dim;
-                let score =
-                    dot_f32(query_head, &key[key_start..key_start + head_dim], head_dim) * scale;
+                let dot = dot_f32(query_head, &key[key_start..key_start + head_dim], head_dim);
+                let score = dot * scale;
                 if !score.is_finite() {
                     return Err("Non-finite attention score".into());
                 }
                 scores[key_token] = score;
                 maximum = maximum.max(score);
             }
-            let mut denominator = 0.0;
-            for score in scores.iter_mut() {
-                *score = (*score - maximum).exp();
-                denominator += *score;
-            }
-            if !denominator.is_finite() || denominator <= 0.0 {
-                return Err("Invalid attention softmax".into());
-            }
+            attention_softmax(&mut scores[..tokens])?;
             let output_start = query_token * width + head * head_dim;
-            for key_token in 0..tokens {
-                let probability = scores[key_token] / denominator;
-                let value_start = key_token * width + head * head_dim;
-                for lane in 0..head_dim {
-                    output[output_start + lane] += probability * value[value_start + lane];
+            for lane in 0..head_dim {
+                for key_token in 0..tokens {
+                    value_column[key_token] = value[key_token * width + head * head_dim + lane];
                 }
+                output[output_start + lane] = dot_f32(scores, &value_column, tokens);
             }
         }
     }
@@ -1614,7 +1849,8 @@ fn audio_ffn(
         &mut scratch.ffn_down,
         &mut scratch.q8,
         &mut scratch.scales,
-    )
+    )?;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1932,10 +2168,87 @@ mod tests {
     }
 
     #[test]
+    fn layer_norm_keeps_wide_near_constant_rows_centered() {
+        let input = (0..896)
+            .map(|index| 1.0 + ((index as f32) * 0.17).sin() * 1e-3)
+            .collect::<Vec<_>>();
+        let weight = vec![1.0; input.len()];
+        let bias = vec![0.0; input.len()];
+        let mut output = vec![0.0; input.len()];
+
+        layer_norm(&input, &weight, &bias, 1e-5, &mut output).unwrap();
+
+        let sum = output.iter().map(|value| f64::from(*value)).sum::<f64>();
+        assert!(sum.abs() < 0.02, "normalized row sum was {sum}");
+    }
+
+    #[test]
     fn gelu_erf_keeps_zero_and_matches_fixed_values() {
         assert_eq!(gelu_erf(0.0), 0.0);
         assert!((gelu_erf(1.0) - 0.841_344_7).abs() < 1e-6);
         assert!((gelu_erf(-1.0) + 0.158_655_26).abs() < 1e-6);
+    }
+
+    #[test]
+    fn gelu_erf_matches_ggml_libc_erff_bits() {
+        let expected = [
+            (-3.25, 3_136_671_360),
+            (-1.0, 3_189_929_606),
+            (-0.125, 3_177_613_494),
+            (0.0, 0),
+            (0.75, 1_058_307_280),
+            (2.5, 1_075_773_863),
+        ];
+        for (input, bits) in expected {
+            assert_eq!(gelu_erf(input).to_bits(), bits, "input {input}");
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn attention_softmax_uses_shared_ggml_reduction() {
+        let mut actual = [-1.0, 0.0, 1.0, f32::NEG_INFINITY];
+        let mut expected = actual;
+
+        attention_softmax(&mut actual).unwrap();
+        crate::ops::softmax(&mut expected);
+
+        assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
+    }
+
+    #[test]
+    fn f16_projection_quantizes_input_and_uses_ggml_f16_dot() {
+        let input = (0..32)
+            .map(|index| (index as f32 - 15.0) * 0.17)
+            .collect::<Vec<_>>();
+        let weights = (0..32)
+            .map(|index| crate::ops::f32_to_f16(0.9 - index as f32 * 0.031))
+            .collect::<Vec<_>>();
+        let linear = AudioLinear {
+            weight: Box::leak(
+                weights
+                    .iter()
+                    .flat_map(|bits| bits.to_le_bytes())
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            ),
+            kind: GGMLType::F16,
+            input: 32,
+            output: 1,
+            bias: Vec::new(),
+        };
+        let input_f16 = input
+            .iter()
+            .map(|value| crate::ops::f32_to_f16(*value))
+            .collect::<Vec<_>>();
+        let mut output = Vec::new();
+
+        linear.project_f16(&input, 1, &mut output).unwrap();
+
+        assert_eq!(
+            output[0].to_bits(),
+            crate::ops::dot_f16(&input_f16, &weights, 32).to_bits()
+        );
     }
 
     #[test]
@@ -1953,6 +2266,23 @@ mod tests {
         assert!((output[1] - 2.660_477).abs() < 1e-5);
         assert!((output[2] - 2.339_523).abs() < 1e-5);
         assert!((output[3] - 3.339_523).abs() < 1e-5);
+    }
+
+    #[test]
+    fn full_attention_reduces_values_like_ggml_f32_dot() {
+        let tokens = 104;
+        let query = vec![0.0; tokens];
+        let key = vec![0.0; tokens];
+        let value = (0..tokens)
+            .map(|index| ((index * 37 % 101) as f32 - 50.0) * 0.03125)
+            .collect::<Vec<_>>();
+        let mut probabilities = vec![0.0; tokens];
+        attention_softmax(&mut probabilities).unwrap();
+        let expected = dot_f32(&probabilities, &value, tokens);
+
+        let output = full_attention(&query, &key, &value, tokens, 1, 1).unwrap();
+
+        assert_eq!(output[0].to_bits(), expected.to_bits());
     }
 
     fn q8_identity(width: usize) -> &'static [u8] {
@@ -1986,6 +2316,15 @@ mod tests {
             .collect();
 
         assert_eq!(partitions, vec![0..3, 3..6, 6..9, 9..10]);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn ggml_q8_chunks_select_nrc1_then_nrc2_for_asr_rows() {
+        let (output_chunk, input_chunk) = ggml_q8_chunk_shape(896, 104, 8);
+        assert_eq!((output_chunk, input_chunk), (16, 15));
+        assert_eq!((0..104).filter(|row| row / input_chunk < 6).count(), 90);
+        assert_eq!(104 - 6 * input_chunk, 14);
     }
 
     #[test]
@@ -2306,6 +2645,63 @@ mod tests {
     }
 
     #[test]
+    fn f16_convolution_quantizes_the_input_patch_like_ggml() {
+        let weights = Conv2dWeights {
+            weight: F16Tensor {
+                bytes: Box::leak(filled_f16(9, 1.0).into_boxed_slice()),
+                dims: vec![3, 3, 1, 1],
+            },
+            bias: vec![0.0],
+            input_channels: 1,
+            output_channels: 1,
+        };
+        let mut output = Vec::new();
+
+        conv2d_stride2_padding1(&[1.000_3], 1, 1, 1, &weights, &mut output).unwrap();
+
+        assert_eq!(output, vec![f16_to_f32(crate::ops::f32_to_f16(1.000_3))]);
+    }
+
+    #[test]
+    fn f16_convolution_uses_ggml_f16_dot_reduction() {
+        let input = (0..32)
+            .map(|index| (index as f32 - 15.0) * 0.17)
+            .collect::<Vec<_>>();
+        let weight_values = (0..32)
+            .map(|index| 0.9 - index as f32 * 0.031)
+            .collect::<Vec<_>>();
+        let mut weight_bits = vec![crate::ops::f32_to_f16(0.0); 9 * 32];
+        let mut patch_bits = vec![crate::ops::f32_to_f16(0.0); 9 * 32];
+        for channel in 0..32 {
+            weight_bits[channel * 9 + 4] = crate::ops::f32_to_f16(weight_values[channel]);
+            patch_bits[channel * 9 + 4] = crate::ops::f32_to_f16(input[channel]);
+        }
+        let weights = Conv2dWeights {
+            weight: F16Tensor {
+                bytes: Box::leak(
+                    weight_bits
+                        .iter()
+                        .flat_map(|bits| bits.to_le_bytes())
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                ),
+                dims: vec![3, 3, 32, 1],
+            },
+            bias: vec![0.0],
+            input_channels: 32,
+            output_channels: 1,
+        };
+        let mut output = Vec::new();
+
+        conv2d_stride2_padding1(&input, 32, 1, 1, &weights, &mut output).unwrap();
+
+        assert_eq!(
+            output[0].to_bits(),
+            crate::ops::dot_f16(&patch_bits, &weight_bits, 288).to_bits()
+        );
+    }
+
+    #[test]
     fn conv_output_flattens_channel_then_mel_per_time() {
         let channels = 480;
         let mel_bins = 16;
@@ -2366,6 +2762,25 @@ mod tests {
         apply_gelu(&mut values).unwrap();
         for (actual, expected) in values.iter().zip([-0.15865526, 0.0, 0.8413448, 1.9544997]) {
             assert!((actual - expected).abs() <= 3e-7, "{actual} != {expected}");
+        }
+    }
+
+    #[test]
+    fn periodic_hann_matches_llama_libc_cosf_bits() {
+        let hann = periodic_hann_window();
+        for (index, expected) in [
+            (0, 0x00000000),
+            (1, 0x38816000),
+            (2, 0x39815c00),
+            (26, 0x3d287040),
+            (62, 0x3e60369c),
+            (100, 0x3f000000),
+            (199, 0x3f7ffbf5),
+            (200, 0x3f800000),
+            (201, 0x3f7ffbf5),
+            (399, 0x38816000),
+        ] {
+            assert_eq!(hann[index].to_bits(), expected, "Hann index {index}");
         }
     }
 
@@ -2508,15 +2923,21 @@ mod tests {
             for mel in 0..128 {
                 assert!(
                     (actual.raw[mel * actual.frames + reference_frame] - expected[mel]).abs()
-                        <= 1e-5,
+                        <= 5e-5,
                     "mel {mel}: actual {}, expected {}",
                     actual.raw[mel * actual.frames + reference_frame],
                     expected[mel]
                 );
             }
             let global_max = actual.raw.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let threshold = f64::from(global_max) - 8.0;
             for (raw, normalized) in actual.raw.iter().zip(&actual.normalized) {
-                assert_eq!(*normalized, (raw.max(global_max - 8.0) + 4.0) / 4.0);
+                let raw = if f64::from(*raw) < threshold {
+                    threshold as f32
+                } else {
+                    *raw
+                };
+                assert_eq!(*normalized, ((f64::from(raw) + 4.0) / 4.0) as f32);
             }
         }
     }
