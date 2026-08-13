@@ -250,7 +250,7 @@ fn catalog_models_reject_metadata_tensor_layout_mismatches() {
 }
 
 #[test]
-fn invalid_model_inputs_fail_before_recording_backend_submit() {
+fn invalid_model_inputs_fail_before_recording_backend_submit_except_supported_qwen35_layer_batch() {
     for (name, fixture) in [
         ("qwen3", support::tiny_qwen3()),
         ("qwen35", support::tiny_qwen35_hybrid()),
@@ -270,6 +270,15 @@ fn invalid_model_inputs_fail_before_recording_backend_submit() {
             let (result, trace) = fixture
                 .run_recording_forward(placement, &tokens, &positions)
                 .unwrap();
+            if name == "qwen35" && placement == "llm:layer=cpu0@1" && tokens == [1, 2] {
+                assert!(result.is_ok(), "{name} rejected supported layer batch");
+                assert_ne!(
+                    trace,
+                    support::PlacementTrace::default(),
+                    "{name} {placement}"
+                );
+                continue;
+            }
             assert!(
                 result.is_err(),
                 "{name} accepted {placement} {tokens:?} {positions:?}"

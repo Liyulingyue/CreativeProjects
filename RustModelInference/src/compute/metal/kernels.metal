@@ -171,6 +171,34 @@ kernel void rope(device float *q [[buffer(0)]],
     values[base + lane + half_width] = fma(x0, s, x1 * c);
 }
 
+struct MRopeParams { uint batch, q_width, k_width, head_dim, freq_base, positions[4], sections[4]; };
+
+kernel void mrope(device float *q [[buffer(0)]], device float *k [[buffer(1)]],
+                  constant MRopeParams &params [[buffer(2)]], uint index [[thread_position_in_grid]]) {
+    uint half_width = params.head_dim / 2;
+    uint q_pairs = params.q_width / 2, k_pairs = params.k_width / 2;
+    if (index >= q_pairs + k_pairs) return;
+    device float *values = index < q_pairs ? q : k;
+    uint width = index < q_pairs ? params.q_width : params.k_width;
+    uint pair = index < q_pairs ? index : index - q_pairs;
+    uint lane = pair % half_width, head = pair / half_width;
+    uint sector = lane % (params.sections[0] + params.sections[1] + params.sections[2] + params.sections[3]);
+    uint axis = sector < params.sections[0] ? 0 : sector < params.sections[0] + params.sections[1] ? 1 : sector < params.sections[0] + params.sections[1] + params.sections[2] ? 2 : 3;
+    float theta = float(params.positions[axis]);
+    float theta_scale = pow(as_type<float>(params.freq_base), -2.0f / float(params.head_dim));
+    for (uint i = 0; i < lane; ++i) theta *= theta_scale;
+    uint base = head * params.head_dim;
+    float x0 = values[base + lane], x1 = values[base + lane + half_width];
+    float c = cos(theta), s = sin(theta);
+    values[base + lane] = fma(x0, c, -x1 * s);
+    values[base + lane + half_width] = fma(x0, s, x1 * c);
+}
+
+kernel void slice(device const float *input [[buffer(0)]], device float *output [[buffer(1)]],
+                  constant LayerParams &params [[buffer(2)]], uint index [[thread_position_in_grid]]) {
+    if (index < params.batch * params.width) output[index] = input[(index / params.width) * params.groups + params.aux0 + index % params.width];
+}
+
 kernel void kv_append(device const float *k [[buffer(0)]],
                       device const float *v [[buffer(1)]],
                       device half *keys [[buffer(2)]],
@@ -239,6 +267,11 @@ kernel void silu_mul(device const float *gate [[buffer(0)]],
     if (index >= params.batch * params.width) return;
     float value = gate[index];
     up[index] *= value / (1.0f + exp(-value));
+}
+
+kernel void sigmoid_mul(device const float *gate [[buffer(0)]], device float *values [[buffer(1)]],
+                        constant LayerParams &params [[buffer(2)]], uint index [[thread_position_in_grid]]) {
+    if (index < params.batch * params.width) values[index] *= 1.0f / (1.0f + exp(-gate[index]));
 }
 
 kernel void add(device const float *left [[buffer(0)]],

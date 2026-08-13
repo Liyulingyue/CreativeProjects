@@ -46,7 +46,7 @@ impl CpuProvider {
             capabilities: DeviceCapabilities {
                 components: BTreeSet::from([ComponentId::Llm, ComponentId::Vision]),
                 modes: BTreeSet::from([PlacementMode::Layer, PlacementMode::Row]),
-                layer_families: BTreeSet::from([LayerFamily::Qwen3]),
+                layer_families: BTreeSet::from([LayerFamily::Qwen3, LayerFamily::Qwen35Dense]),
                 tensor_types: BTreeSet::from([
                     GGMLType::F32,
                     GGMLType::F16,
@@ -521,6 +521,7 @@ impl CpuWorker {
                 let mut state = WorkerState {
                     pool: ComputePool::new(thread_count),
                     device: worker_device,
+                    batch_capacity: parameter_capacity,
                     catalog,
                     slots,
                     auxiliary,
@@ -706,6 +707,7 @@ struct SlotPtr {
 struct WorkerState {
     pool: ComputePool,
     device: DeviceId,
+    batch_capacity: usize,
     catalog: Arc<TensorCatalog>,
     slots: Vec<SlotPtr>,
     auxiliary: BTreeMap<crate::TensorId, Box<[f32]>>,
@@ -760,12 +762,41 @@ impl WorkerState {
                     weight,
                     output,
                     epsilon_bits,
-                } => self.execute_rms_norm(input, weight, output, f32::from_bits(epsilon_bits))?,
+                } => self.execute_rms_norm(
+                    input,
+                    weight,
+                    output,
+                    f32::from_bits(epsilon_bits),
+                    batch,
+                )?,
                 LayerOp::Q8Matmul {
                     input,
                     weight,
                     output,
                 } => self.execute_bound_q8_matmul(input, output, weight, batch)?,
+                LayerOp::Slice {
+                    input,
+                    offset,
+                    elements,
+                    output,
+                } => {
+                    let source = self.slot(input)?;
+                    let width = self.active_slot_width(input)?;
+                    let offset = offset as usize;
+                    let elements = elements as usize;
+                    if offset.checked_add(elements).is_none_or(|end| end > width) {
+                        return Err(BackendError::InvalidHandle);
+                    }
+                    let output = self.slot_mut(output)?;
+                    if output.len() < batch * elements {
+                        return Err(BackendError::InvalidHandle);
+                    }
+                    for item in 0..batch {
+                        output[item * elements..(item + 1) * elements].copy_from_slice(
+                            &source[item * width + offset..item * width + offset + elements],
+                        );
+                    }
+                }
                 LayerOp::Rope {
                     q,
                     k,
@@ -777,8 +808,8 @@ impl WorkerState {
                         return Err(BackendError::InvalidHandle);
                     }
                     for slot in [q, k] {
+                        let width = self.active_slot_width(slot)?;
                         let values = self.slot_mut(slot)?;
-                        let width = values.len() / batch;
                         for (item, values) in
                             values[..batch * width].chunks_exact_mut(width).enumerate()
                         {
@@ -786,6 +817,52 @@ impl WorkerState {
                             crate::ops::rope_neox(
                                 values,
                                 position,
+                                key_head_dim as usize,
+                                f32::from_bits(freq_base_bits),
+                            );
+                        }
+                    }
+                }
+                LayerOp::MRope {
+                    q,
+                    k,
+                    sections,
+                    key_head_dim,
+                    rope_dims,
+                    freq_base_bits,
+                } => {
+                    if key_head_dim != rope_dims
+                        || sections.iter().any(|section| *section < 0)
+                        || sections.iter().sum::<i32>() == 0
+                    {
+                        return Err(BackendError::InvalidHandle);
+                    }
+                    for slot in [q, k] {
+                        let width = self.active_slot_width(slot)?;
+                        let values = self.slot_mut(slot)?;
+                        for (item, values) in
+                            values[..batch * width].chunks_exact_mut(width).enumerate()
+                        {
+                            let positions = params
+                                .mrope_positions
+                                .get(item)
+                                .filter(|_| item < params.mrope_positions_len)
+                                .copied()
+                                .unwrap_or([params.position_start + item as u32; 4]);
+                            let positions = [
+                                usize::try_from(positions[0])
+                                    .map_err(|_| BackendError::InvalidHandle)?,
+                                usize::try_from(positions[1])
+                                    .map_err(|_| BackendError::InvalidHandle)?,
+                                usize::try_from(positions[2])
+                                    .map_err(|_| BackendError::InvalidHandle)?,
+                                usize::try_from(positions[3])
+                                    .map_err(|_| BackendError::InvalidHandle)?,
+                            ];
+                            crate::ops::rope_mrope(
+                                values,
+                                positions,
+                                sections,
                                 key_head_dim as usize,
                                 f32::from_bits(freq_base_bits),
                             );
@@ -827,16 +904,28 @@ impl WorkerState {
                     context_capacity as usize,
                 )?,
                 LayerOp::SiluMul { gate, up } => {
+                    let gate_len = self.active_slot_len(gate, batch)?;
+                    let up_len = self.active_slot_len(up, batch)?;
                     let gate = self.slot(gate)?;
                     let up = self.slot_mut(up)?;
-                    let len = gate.len().min(up.len());
+                    let len = gate_len.min(up_len);
                     crate::ops::silu_mul_inplace(&gate[..len], &mut up[..len]);
+                }
+                LayerOp::SigmoidMul { gate, values } => {
+                    let gate_len = self.active_slot_len(gate, batch)?;
+                    let values_len = self.active_slot_len(values, batch)?;
+                    let gate = self.slot(gate)?;
+                    let values = self.slot_mut(values)?;
+                    let len = gate_len.min(values_len);
+                    for (value, gate) in values[..len].iter_mut().zip(&gate[..len]) {
+                        *value *= 1.0 / (1.0 + (-gate).exp());
+                    }
                 }
                 LayerOp::Add {
                     left,
                     right,
                     output,
-                } => self.execute_add(left, right, output)?,
+                } => self.execute_add(left, right, output, batch)?,
                 _ => {
                     return Err(BackendError::Unsupported {
                         device: self.device.clone(),
@@ -854,6 +943,7 @@ impl WorkerState {
         weight: crate::TensorId,
         output: SlotId,
         epsilon: f32,
+        batch: usize,
     ) -> Result<(), BackendError> {
         let weights = self
             .auxiliary
@@ -868,21 +958,29 @@ impl WorkerState {
             .slots
             .get(output.0 as usize)
             .ok_or(BackendError::InvalidHandle)?;
-        if width == 0 || input_slot.len != output_slot.len || input_slot.len % width != 0 {
+        let active_len = batch
+            .checked_mul(width)
+            .filter(|_| batch <= self.batch_capacity)
+            .ok_or(BackendError::InvalidHandle)?;
+        if width == 0
+            || input_slot.len != output_slot.len
+            || input_slot.len % width != 0
+            || active_len > input_slot.len
+        {
             return Err(BackendError::InvalidHandle);
         }
         let output_values =
             unsafe { std::slice::from_raw_parts_mut(output_slot.ptr as *mut f32, output_slot.len) };
         if input == output {
-            for values in output_values.chunks_exact_mut(width) {
+            for values in output_values[..active_len].chunks_exact_mut(width) {
                 crate::ops::rms_norm_inplace(values, weights, epsilon);
             }
         } else {
             let input =
                 unsafe { std::slice::from_raw_parts(input_slot.ptr as *const f32, input_slot.len) };
-            for (input, output) in input
+            for (input, output) in input[..active_len]
                 .chunks_exact(width)
-                .zip(output_values.chunks_exact_mut(width))
+                .zip(output_values[..active_len].chunks_exact_mut(width))
             {
                 crate::ops::rms_norm(input, weights, output, epsilon);
             }
@@ -952,9 +1050,9 @@ impl WorkerState {
         values: SlotId,
         state: SlotId,
     ) -> Result<(), BackendError> {
+        let width = self.active_slot_width(values)?;
         let values = self.slot(values)?;
         let state = self.slot_mut(state)?;
-        let width = values.len() / batch;
         if width == 0 {
             return Err(BackendError::InvalidHandle);
         }
@@ -1058,36 +1156,62 @@ impl WorkerState {
         Ok(())
     }
 
-    fn execute_add(&self, left: SlotId, right: SlotId, output: SlotId) -> Result<(), BackendError> {
+    fn active_slot_width(&self, slot: SlotId) -> Result<usize, BackendError> {
+        let slot_len = self.slot(slot)?.len();
+        slot_len
+            .checked_div(self.batch_capacity)
+            .filter(|_| slot_len % self.batch_capacity == 0)
+            .ok_or(BackendError::InvalidHandle)
+    }
+
+    fn active_slot_len(&self, slot: SlotId, batch: usize) -> Result<usize, BackendError> {
+        let slot_len = self.slot(slot)?.len();
+        let width = self.active_slot_width(slot)?;
+        batch
+            .checked_mul(width)
+            .filter(|active_len| batch <= self.batch_capacity && *active_len <= slot_len)
+            .ok_or(BackendError::InvalidHandle)
+    }
+
+    fn execute_add(
+        &self,
+        left: SlotId,
+        right: SlotId,
+        output: SlotId,
+        batch: usize,
+    ) -> Result<(), BackendError> {
+        let left_len = self.active_slot_len(left, batch)?;
+        let right_len = self.active_slot_len(right, batch)?;
+        let output_len = self.active_slot_len(output, batch)?;
         if output == right {
             let left = self.slot(left)?;
             let output = self.slot_mut(output)?;
-            if left.len() != output.len() {
+            if left_len != output_len {
                 return Err(BackendError::InvalidHandle);
             }
-            crate::ops::vec_add_into(left, output);
+            crate::ops::vec_add_into(&left[..left_len], &mut output[..output_len]);
             return Ok(());
         }
         if output == left {
             let right = self.slot(right)?;
             let output = self.slot_mut(output)?;
-            if right.len() != output.len() {
+            if right_len != output_len {
                 return Err(BackendError::InvalidHandle);
             }
-            crate::ops::vec_add_into(right, output);
+            crate::ops::vec_add_into(&right[..right_len], &mut output[..output_len]);
             return Ok(());
         }
         let right_values = self.slot(right)?;
         let output_values = self.slot_mut(output)?;
-        if right_values.len() != output_values.len() {
+        if right_len != output_len {
             return Err(BackendError::InvalidHandle);
         }
-        output_values.copy_from_slice(right_values);
+        output_values[..output_len].copy_from_slice(&right_values[..right_len]);
         let left_values = self.slot(left)?;
-        if left_values.len() != output_values.len() {
+        if left_len != output_len {
             return Err(BackendError::InvalidHandle);
         }
-        crate::ops::vec_add_into(left_values, output_values);
+        crate::ops::vec_add_into(&left_values[..left_len], &mut output_values[..output_len]);
         Ok(())
     }
 
@@ -1789,7 +1913,7 @@ mod tests {
         );
         assert_eq!(
             descriptor.capabilities.layer_families,
-            BTreeSet::from([LayerFamily::Qwen3])
+            BTreeSet::from([LayerFamily::Qwen3, LayerFamily::Qwen35Dense])
         );
     }
 
@@ -1810,6 +1934,7 @@ mod tests {
         let mut worker = WorkerState {
             pool: ComputePool::new(1),
             device: DeviceId::parse("cpu0").unwrap(),
+            batch_capacity: 1,
             catalog,
             slots,
             auxiliary: BTreeMap::new(),

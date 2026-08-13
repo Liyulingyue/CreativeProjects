@@ -107,7 +107,10 @@ fn enumerate_adapters() -> Vec<AdapterInfo> {
                     capabilities: DeviceCapabilities {
                         components: BTreeSet::from([ComponentId::Llm]),
                         modes: BTreeSet::from([PlacementMode::Layer, PlacementMode::Row]),
-                        layer_families: BTreeSet::from([LayerFamily::Qwen3]),
+                        layer_families: BTreeSet::from([
+                            LayerFamily::Qwen3,
+                            LayerFamily::Qwen35Dense,
+                        ]),
                         tensor_types: BTreeSet::from([
                             GGMLType::F32,
                             GGMLType::F16,
@@ -219,12 +222,28 @@ enum BoundLayerOp {
         n_in: u32,
         rows: u32,
     },
+    Slice {
+        input: SlotId,
+        output: SlotId,
+        offset: u32,
+        elements: u32,
+        input_width: u32,
+    },
     Rope {
         q: SlotId,
         k: SlotId,
         q_width: u32,
         k_width: u32,
         key_head_dim: u32,
+        freq_base_bits: u32,
+    },
+    MRope {
+        q: SlotId,
+        k: SlotId,
+        q_width: u32,
+        k_width: u32,
+        key_head_dim: u32,
+        sections: [i32; 4],
         freq_base_bits: u32,
     },
     KvAppend {
@@ -249,6 +268,11 @@ enum BoundLayerOp {
     SiluMul {
         gate: SlotId,
         up: SlotId,
+        elements: u32,
+    },
+    SigmoidMul {
+        gate: SlotId,
+        values: SlotId,
         elements: u32,
     },
     Add {
@@ -324,9 +348,12 @@ impl MetalSession {
                 "quantize_q8",
                 "rms_norm",
                 "rope",
+                "mrope",
+                "slice",
                 "kv_append",
                 "attention",
                 "silu_mul",
+                "sigmoid_mul",
                 "add",
             ]
             .into_iter()
@@ -570,21 +597,24 @@ impl MetalSession {
                 .and_then(|values| values.checked_mul(4))
                 .is_some_and(|bytes| bytes <= self.slots[&slot].plan.byte_len)
         };
-        let dispatch =
-            |name: &'static str, work: u32, buffers: &[(&Buffer, u64)], push: &[u32; 8]| {
-                let pipeline = &self.pipelines[name];
-                let encoder = command.new_compute_command_encoder();
-                encoder.set_compute_pipeline_state(pipeline);
-                for (index, (buffer, offset)) in buffers.iter().enumerate() {
-                    encoder.set_buffer(index as u64, Some(buffer), *offset);
-                }
-                encoder.set_bytes(buffers.len() as u64, 32, push.as_ptr().cast());
-                encoder.dispatch_threads(
-                    MTLSize::new(u64::from(work), 1, 1),
-                    MTLSize::new(pipeline.thread_execution_width(), 1, 1),
-                );
-                encoder.end_encoding();
-            };
+        let dispatch = |name: &'static str, work: u32, buffers: &[(&Buffer, u64)], push: &[u32]| {
+            let pipeline = &self.pipelines[name];
+            let encoder = command.new_compute_command_encoder();
+            encoder.set_compute_pipeline_state(pipeline);
+            for (index, (buffer, offset)) in buffers.iter().enumerate() {
+                encoder.set_buffer(index as u64, Some(buffer), *offset);
+            }
+            encoder.set_bytes(
+                buffers.len() as u64,
+                (push.len() * 4) as u64,
+                push.as_ptr().cast(),
+            );
+            encoder.dispatch_threads(
+                MTLSize::new(u64::from(work), 1, 1),
+                MTLSize::new(pipeline.thread_execution_width(), 1, 1),
+            );
+            encoder.end_encoding();
+        };
         match op {
             BoundLayerOp::RmsNorm {
                 input,
@@ -637,6 +667,28 @@ impl MetalSession {
                 }
                 self.encode_q8_rows(command, chunks, *input, *output, batch, *n_in, *rows, 0, 0)?;
             }
+            BoundLayerOp::Slice {
+                input,
+                output,
+                offset,
+                elements,
+                input_width,
+            } => {
+                if !fits_f32(*input, *input_width) || !fits_f32(*output, *elements) {
+                    return Err(BackendError::InvalidHandle);
+                }
+                dispatch(
+                    "slice",
+                    batch
+                        .checked_mul(*elements)
+                        .ok_or(BackendError::InvalidHandle)?,
+                    &[
+                        (&self.slots[input].buffer, 0),
+                        (&self.slots[output].buffer, 0),
+                    ],
+                    &[batch, *elements, *input_width, *offset, 0, 0, 0, 0],
+                );
+            }
             BoundLayerOp::Rope {
                 q,
                 k,
@@ -667,6 +719,55 @@ impl MetalSession {
                     &[(&self.slots[q].buffer, 0), (&self.slots[k].buffer, 0)],
                     &push,
                 );
+            }
+            BoundLayerOp::MRope {
+                q,
+                k,
+                q_width,
+                k_width,
+                key_head_dim,
+                sections,
+                freq_base_bits,
+            } => {
+                if !fits_f32(*q, *q_width) || !fits_f32(*k, *k_width) {
+                    return Err(BackendError::InvalidHandle);
+                }
+                for item in 0..batch {
+                    let positions = params
+                        .mrope_positions
+                        .get(item as usize)
+                        .copied()
+                        .unwrap_or([params.position_start + item; 4]);
+                    dispatch(
+                        "mrope",
+                        (q_width + k_width) / 2,
+                        &[
+                            (
+                                &self.slots[q].buffer,
+                                u64::from(item) * u64::from(*q_width) * 4,
+                            ),
+                            (
+                                &self.slots[k].buffer,
+                                u64::from(item) * u64::from(*k_width) * 4,
+                            ),
+                        ],
+                        &[
+                            1,
+                            *q_width,
+                            *k_width,
+                            *key_head_dim,
+                            *freq_base_bits,
+                            positions[0],
+                            positions[1],
+                            positions[2],
+                            positions[3],
+                            sections[0] as u32,
+                            sections[1] as u32,
+                            sections[2] as u32,
+                            sections[3] as u32,
+                        ],
+                    );
+                }
             }
             BoundLayerOp::KvAppend {
                 k,
@@ -784,6 +885,26 @@ impl MetalSession {
                     work,
                     &[(&self.slots[gate].buffer, 0), (&self.slots[up].buffer, 0)],
                     &push,
+                );
+            }
+            BoundLayerOp::SigmoidMul {
+                gate,
+                values,
+                elements,
+            } => {
+                if !fits_f32(*gate, *elements) || !fits_f32(*values, *elements) {
+                    return Err(BackendError::InvalidHandle);
+                }
+                dispatch(
+                    "sigmoid_mul",
+                    batch
+                        .checked_mul(*elements)
+                        .ok_or(BackendError::InvalidHandle)?,
+                    &[
+                        (&self.slots[gate].buffer, 0),
+                        (&self.slots[values].buffer, 0),
+                    ],
+                    &[batch, *elements, 0, 0, 0, 0, 0, 0],
                 );
             }
             BoundLayerOp::Add {
@@ -1314,7 +1435,10 @@ fn bind_layer_ops(
     chunk_ranges: &BTreeMap<(TensorId, u32, u32), Range<usize>>,
 ) -> Result<Vec<BoundLayerOp>, BackendError> {
     if let ProgramKind::LayerSegment { families, .. } = &program.kind {
-        if families.iter().any(|family| *family != LayerFamily::Qwen3) {
+        if families
+            .iter()
+            .any(|family| !matches!(family, LayerFamily::Qwen3 | LayerFamily::Qwen35Dense))
+        {
             return Err(BackendError::InvalidHandle);
         }
     }
@@ -1345,8 +1469,7 @@ fn bind_layer_ops(
                 let elements =
                     u32::try_from(entry.shape[0]).map_err(|_| BackendError::InvalidHandle)?;
                 let chunks = tensor_chunks(weight)?;
-                let groups = u32::try_from(slots[&input].byte_len / 4 / u64::from(elements))
-                    .map_err(|_| BackendError::InvalidHandle)?;
+                let groups = 1;
                 if !matches!(entry.ggml_type, GGMLType::F32 | GGMLType::F16)
                     || chunks.len() != 1
                     || groups == 0
@@ -1394,6 +1517,28 @@ fn bind_layer_ops(
                     rows,
                 });
             }
+            LayerOp::Slice {
+                input,
+                offset,
+                elements,
+                output,
+            } if f32_slot(input) && f32_slot(output) => {
+                let input_width = *widths.get(&input).ok_or(BackendError::InvalidHandle)?;
+                if offset
+                    .checked_add(elements)
+                    .is_none_or(|end| end > input_width)
+                {
+                    return Err(BackendError::InvalidHandle);
+                }
+                widths.insert(output, elements);
+                bound.push(BoundLayerOp::Slice {
+                    input,
+                    output,
+                    offset,
+                    elements,
+                    input_width,
+                });
+            }
             LayerOp::Rope {
                 q,
                 k,
@@ -1409,6 +1554,29 @@ fn bind_layer_ops(
                     q_width,
                     k_width,
                     key_head_dim,
+                    freq_base_bits,
+                });
+            }
+            LayerOp::MRope {
+                q,
+                k,
+                sections,
+                key_head_dim,
+                rope_dims,
+                freq_base_bits,
+            } if f32_slot(q) && f32_slot(k) && key_head_dim == rope_dims => {
+                if sections.iter().any(|section| !(0..=255).contains(section))
+                    || sections.iter().sum::<i32>() == 0
+                {
+                    return Err(BackendError::InvalidHandle);
+                }
+                bound.push(BoundLayerOp::MRope {
+                    q,
+                    k,
+                    q_width: *widths.get(&q).ok_or(BackendError::InvalidHandle)?,
+                    k_width: *widths.get(&k).ok_or(BackendError::InvalidHandle)?,
+                    key_head_dim,
+                    sections,
                     freq_base_bits,
                 });
             }
@@ -1482,6 +1650,17 @@ fn bind_layer_ops(
                     return Err(BackendError::InvalidHandle);
                 }
                 bound.push(BoundLayerOp::SiluMul { gate, up, elements });
+            }
+            LayerOp::SigmoidMul { gate, values } if f32_slot(gate) && f32_slot(values) => {
+                let elements = *widths.get(&values).ok_or(BackendError::InvalidHandle)?;
+                if widths.get(&gate) != Some(&elements) {
+                    return Err(BackendError::InvalidHandle);
+                }
+                bound.push(BoundLayerOp::SigmoidMul {
+                    gate,
+                    values,
+                    elements,
+                });
             }
             LayerOp::Add {
                 left,

@@ -285,29 +285,74 @@ impl PlacementFixture {
     }
 
     pub fn cpu_reference_two_tokens(&self) -> Result<Qwen3LayerRun, String> {
-        self.run_qwen3_two_tokens(BackendKind::Cpu, "row", [1, 2])
+        self.run_layer_two_tokens(BackendKind::Cpu, "row", [1, 2])
     }
 
     pub fn compiled_cpu_two_tokens(&self) -> Result<Qwen3LayerRun, String> {
-        self.run_qwen3_two_tokens(BackendKind::Cpu, "layer", [1, 2])
+        self.run_layer_two_tokens(BackendKind::Cpu, "layer", [1, 2])
     }
 
     pub fn compiled_backend_two_tokens(
         &self,
         backend: BackendKind,
     ) -> Result<Qwen3LayerRun, String> {
-        self.run_qwen3_two_tokens(backend, "layer", [1, 2])
+        self.run_layer_two_tokens(backend, "layer", [1, 2])
     }
 
-    fn run_qwen3_two_tokens(
+    pub fn compiled_backend_two_token_batch(
+        &self,
+        backend: BackendKind,
+    ) -> Result<Vec<f32>, String> {
+        let PlacementModel::Qwen35(model) = &self.model else {
+            return Err("fixture is not Qwen3.5".into());
+        };
+        let mut registry = DeviceRegistry::new();
+        let requested = BTreeSet::from([backend]);
+        rust_model_inference::compute::register_requested_providers(&mut registry, &requested, 1)
+            .map_err(|error| error.to_string())?;
+        registry
+            .discover(&requested)
+            .map_err(|error| error.to_string())?;
+        let device = match backend {
+            BackendKind::Cpu => "cpu0",
+            BackendKind::Vulkan => "vulkan0",
+            BackendKind::Metal => "metal0",
+            BackendKind::Npu => return Err("NPU backend is not implemented".into()),
+        };
+        let registry = Arc::new(registry);
+        let plan = PlacementCompiler {
+            catalog: &self.catalog,
+            registry: &registry,
+            requirements: std::slice::from_ref(&self.requirements()),
+        }
+        .compile(&BTreeMap::from([(
+            ComponentId::Llm,
+            parse_placement(&format!("llm:layer={device}@1")).map_err(|error| error.to_string())?,
+        )]))
+        .map_err(|error| error.to_string())?;
+        let compiled = CompiledModel::compile(Arc::clone(&self.catalog), plan, registry)
+            .map_err(|error| format!("compiled batch open: {error}"))?;
+        let mut run = compiled.start_run().map_err(|error| error.to_string())?;
+        run.batch_capacity(ComponentId::Llm)
+            .map_err(|error| format!("compiled batch capacity: {error}"))?;
+        let mut logits = vec![0.0; 64];
+        model
+            .forward_compiled(
+                &mut run,
+                &[1, 2],
+                &[[0, 0, 0, 0], [1, 1, 1, 0]],
+                &mut logits,
+            )
+            .map_err(|error| format!("compiled batch forward: {error}"))?;
+        Ok(logits)
+    }
+
+    fn run_layer_two_tokens(
         &self,
         backend: BackendKind,
         mode: &str,
         tokens: [u32; 2],
     ) -> Result<Qwen3LayerRun, String> {
-        let PlacementModel::Qwen3(model) = &self.model else {
-            return Err("fixture is not Qwen3".into());
-        };
         let mut registry = DeviceRegistry::new();
         let requested = BTreeSet::from([backend]);
         rust_model_inference::compute::register_requested_providers(&mut registry, &requested, 1)
@@ -342,19 +387,35 @@ impl PlacementFixture {
             .map_err(|error| error.to_string())?;
         let mut run = compiled.start_run().map_err(|error| error.to_string())?;
         let mut first_token_logits = vec![0.0; 64];
-        model.forward(
-            &mut run,
-            &tokens[..1],
-            &[[0, 0, 0, 0]],
-            &mut first_token_logits,
-        )?;
+        match &self.model {
+            PlacementModel::Qwen3(model) => model.forward(
+                &mut run,
+                &tokens[..1],
+                &[[0, 0, 0, 0]],
+                &mut first_token_logits,
+            )?,
+            PlacementModel::Qwen35(model) => model.forward_compiled(
+                &mut run,
+                &tokens[..1],
+                &[[0, 0, 0, 0]],
+                &mut first_token_logits,
+            )?,
+        }
         let mut second_token_logits = vec![0.0; 64];
-        model.forward(
-            &mut run,
-            &tokens[1..],
-            &[[1, 1, 1, 0]],
-            &mut second_token_logits,
-        )?;
+        match &self.model {
+            PlacementModel::Qwen3(model) => model.forward(
+                &mut run,
+                &tokens[1..],
+                &[[1, 1, 1, 0]],
+                &mut second_token_logits,
+            )?,
+            PlacementModel::Qwen35(model) => model.forward_compiled(
+                &mut run,
+                &tokens[1..],
+                &[[1, 1, 1, 0]],
+                &mut second_token_logits,
+            )?,
+        }
         let tokens = [&first_token_logits, &second_token_logits]
             .into_iter()
             .map(|logits| {
@@ -588,6 +649,68 @@ pub fn tiny_qwen35_f32_dense() -> PlacementFixture {
 
 pub fn tiny_qwen35_f16_dense() -> PlacementFixture {
     tiny_qwen35_dense(GGMLType::F16, BTreeMap::new())
+}
+
+pub fn tiny_qwen35_q8_dense() -> PlacementFixture {
+    tiny_qwen35_dense(
+        GGMLType::Q8_0,
+        BTreeMap::from([
+            (
+                "token_embd.weight".into(),
+                q8_0_matrix_bytes(64, 64, |row, col| {
+                    i8::from((row, col) == (1, 0) || (row, col) == (2, 1))
+                }),
+            ),
+            (
+                "blk.0.attn_q.weight".into(),
+                q8_0_matrix_bytes(128, 64, |row, col| {
+                    if row < 64 && row == col {
+                        1
+                    } else if row >= 64 && row - 64 == col {
+                        2
+                    } else {
+                        0
+                    }
+                }),
+            ),
+            (
+                "blk.0.attn_k.weight".into(),
+                q8_0_matrix_bytes(32, 64, |row, col| i8::from(row == col)),
+            ),
+            (
+                "blk.0.attn_v.weight".into(),
+                q8_0_matrix_bytes(32, 64, |row, col| i8::from(row == col)),
+            ),
+            (
+                "blk.0.attn_output.weight".into(),
+                q8_0_matrix_bytes(64, 64, |row, col| {
+                    i8::from((row, col) == (2, 0) || (row, col) == (3, 1))
+                }),
+            ),
+            (
+                "blk.0.ffn_gate.weight".into(),
+                q8_0_matrix_bytes(96, 64, |row, col| {
+                    i8::from((row, col) == (0, 0) || (row, col) == (1, 2))
+                }),
+            ),
+            (
+                "blk.0.ffn_up.weight".into(),
+                q8_0_matrix_bytes(96, 64, |row, col| {
+                    i8::from((row, col) == (0, 2) || (row, col) == (1, 0))
+                }),
+            ),
+            (
+                "blk.0.ffn_down.weight".into(),
+                q8_0_matrix_bytes(64, 96, |row, col| {
+                    i8::from((row, col) == (4, 0) || (row, col) == (5, 1))
+                }),
+            ),
+            (
+                "output.weight".into(),
+                q8_0_matrix_bytes(64, 64, |row, col| i8::from(row == col)),
+            ),
+        ]),
+    )
 }
 
 pub fn tiny_qwen35_f32_dense_with_attention_gate(gate_value: f32) -> PlacementFixture {

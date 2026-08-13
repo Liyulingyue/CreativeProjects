@@ -1267,24 +1267,24 @@ fn append_layer_ops(
                     weight: spec.o,
                     output,
                 },
-                LayerOp::RmsNorm {
-                    input: output,
-                    weight: spec.post_attn_norm,
-                    output: output,
-                    epsilon_bits: spec.norm_epsilon_bits,
-                },
                 LayerOp::Add {
                     left: input,
                     right: output,
                     output,
                 },
-                LayerOp::Q8Matmul {
+                LayerOp::RmsNorm {
                     input: output,
+                    weight: spec.post_attn_norm,
+                    output: norm,
+                    epsilon_bits: spec.norm_epsilon_bits,
+                },
+                LayerOp::Q8Matmul {
+                    input: norm,
                     weight: spec.ffn_gate,
                     output: ffn_gate,
                 },
                 LayerOp::Q8Matmul {
-                    input: output,
+                    input: norm,
                     weight: spec.ffn_up,
                     output: ffn_up,
                 },

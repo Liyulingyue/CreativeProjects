@@ -107,6 +107,37 @@ void rope(uint index) {
     set_arena_f32(base_words, base + lane + half_width, fma(x0, s, x1 * c));
 }
 
+void mrope(uint index) {
+    uint half_width = params.p6 / 2;
+    uint q_pairs = params.p4 / 2, k_pairs = params.p5 / 2;
+    if (index >= q_pairs + k_pairs) return;
+    uint base_words = index < q_pairs ? params.p2 : params.p3;
+    uint pair = index < q_pairs ? index : index - q_pairs;
+    uint lane = pair % half_width, head = pair / half_width;
+    uint section0 = params.p12 & 0xff;
+    uint section1 = (params.p12 >> 8) & 0xff;
+    uint section2 = (params.p12 >> 16) & 0xff;
+    uint section3 = params.p12 >> 24;
+    uint total = section0 + section1 + section2 + section3;
+    uint sector = lane % total;
+    uint axis = sector < section0 ? 0 : sector < section0 + section1 ? 1 : sector < section0 + section1 + section2 ? 2 : 3;
+    float theta = float(axis == 0 ? params.p8 : axis == 1 ? params.p9 : axis == 2 ? params.p10 : params.p11);
+    float theta_scale = pow(uintBitsToFloat(params.p7), -2.0 / float(params.p6));
+    for (uint i = 0; i < lane; ++i) theta *= theta_scale;
+    uint base = head * params.p6;
+    float x0 = arena_f32(base_words, base + lane), x1 = arena_f32(base_words, base + lane + half_width);
+    float c = cos(theta), s = sin(theta);
+    set_arena_f32(base_words, base + lane, fma(x0, c, -x1 * s));
+    set_arena_f32(base_words, base + lane + half_width, fma(x0, s, x1 * c));
+}
+
+void slice(uint index) {
+    if (index < params.batch * params.p2) {
+        set_arena_f32(params.p1, index,
+            arena_f32(params.p0, (index / params.p2) * params.p3 + params.p4 + index % params.p2));
+    }
+}
+
 void kv_append(uint item) {
     if (item >= params.batch) return;
     uint position = params.p6 + item;
@@ -169,6 +200,13 @@ void silu_mul(uint index) {
     set_arena_f32(params.p1, index, up * value / (1.0 + exp(-value)));
 }
 
+void sigmoid_mul(uint index) {
+    if (index < params.batch * params.p2) {
+        float gate = arena_f32(params.p0, index);
+        set_arena_f32(params.p1, index, arena_f32(params.p1, index) / (1.0 + exp(-gate)));
+    }
+}
+
 void add(uint index) {
     if (index >= params.batch * params.p3) return;
     set_arena_f32(params.p2, index,
@@ -183,4 +221,7 @@ void main() {
     else if (params.op == 3) attention(index);
     else if (params.op == 4) silu_mul(index);
     else if (params.op == 5) add(index);
+    else if (params.op == 6) mrope(index);
+    else if (params.op == 7) slice(index);
+    else if (params.op == 8) sigmoid_mul(index);
 }

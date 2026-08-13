@@ -293,7 +293,10 @@ impl VulkanProvider {
                         capabilities: DeviceCapabilities {
                             components: BTreeSet::from([ComponentId::Llm]),
                             modes: BTreeSet::from([PlacementMode::Layer, PlacementMode::Row]),
-                            layer_families: BTreeSet::from([LayerFamily::Qwen3]),
+                            layer_families: BTreeSet::from([
+                                LayerFamily::Qwen3,
+                                LayerFamily::Qwen35Dense,
+                            ]),
                             tensor_types: BTreeSet::from([
                                 GGMLType::F32,
                                 GGMLType::F16,
@@ -489,12 +492,28 @@ enum LayerOpSpec {
         n_in: u32,
         rows: u32,
     },
+    Slice {
+        input: SlotId,
+        output: SlotId,
+        offset: u32,
+        elements: u32,
+        input_width: u32,
+    },
     Rope {
         q: SlotId,
         k: SlotId,
         q_width: u32,
         k_width: u32,
         key_head_dim: u32,
+        freq_base_bits: u32,
+    },
+    MRope {
+        q: SlotId,
+        k: SlotId,
+        q_width: u32,
+        k_width: u32,
+        key_head_dim: u32,
+        sections: [i32; 4],
         freq_base_bits: u32,
     },
     KvAppend {
@@ -519,6 +538,11 @@ enum LayerOpSpec {
     SiluMul {
         gate: SlotId,
         up: SlotId,
+        elements: u32,
+    },
+    SigmoidMul {
+        gate: SlotId,
+        values: SlotId,
         elements: u32,
     },
     Add {
@@ -546,12 +570,28 @@ enum BoundLayerOp {
         n_in: u32,
         rows: u32,
     },
+    Slice {
+        input: SlotId,
+        output: SlotId,
+        offset: u32,
+        elements: u32,
+        input_width: u32,
+    },
     Rope {
         q: SlotId,
         k: SlotId,
         q_width: u32,
         k_width: u32,
         key_head_dim: u32,
+        freq_base_bits: u32,
+    },
+    MRope {
+        q: SlotId,
+        k: SlotId,
+        q_width: u32,
+        k_width: u32,
+        key_head_dim: u32,
+        sections: [i32; 4],
         freq_base_bits: u32,
     },
     KvAppend {
@@ -576,6 +616,11 @@ enum BoundLayerOp {
     SiluMul {
         gate: SlotId,
         up: SlotId,
+        elements: u32,
+    },
+    SigmoidMul {
+        gate: SlotId,
+        values: SlotId,
         elements: u32,
     },
     Add {
@@ -1013,6 +1058,19 @@ impl VulkanSession {
                             rows,
                         }
                     }
+                    LayerOpSpec::Slice {
+                        input,
+                        output,
+                        offset,
+                        elements,
+                        input_width,
+                    } => BoundLayerOp::Slice {
+                        input,
+                        output,
+                        offset,
+                        elements,
+                        input_width,
+                    },
                     LayerOpSpec::RmsNorm {
                         input,
                         weight,
@@ -1043,6 +1101,23 @@ impl VulkanSession {
                         q_width,
                         k_width,
                         key_head_dim,
+                        freq_base_bits,
+                    },
+                    LayerOpSpec::MRope {
+                        q,
+                        k,
+                        q_width,
+                        k_width,
+                        key_head_dim,
+                        sections,
+                        freq_base_bits,
+                    } => BoundLayerOp::MRope {
+                        q,
+                        k,
+                        q_width,
+                        k_width,
+                        key_head_dim,
+                        sections,
                         freq_base_bits,
                     },
                     LayerOpSpec::KvAppend {
@@ -1084,6 +1159,15 @@ impl VulkanSession {
                     LayerOpSpec::SiluMul { gate, up, elements } => {
                         BoundLayerOp::SiluMul { gate, up, elements }
                     }
+                    LayerOpSpec::SigmoidMul {
+                        gate,
+                        values,
+                        elements,
+                    } => BoundLayerOp::SigmoidMul {
+                        gate,
+                        values,
+                        elements,
+                    },
                     LayerOpSpec::Add {
                         left,
                         right,
@@ -1330,6 +1414,76 @@ impl VulkanSession {
             }
             return self.record_q8(command, dispatches, batch, *n_in, *rows, 0);
         }
+        if let BoundLayerOp::MRope {
+            q,
+            k,
+            q_width,
+            k_width,
+            key_head_dim,
+            sections,
+            freq_base_bits,
+        } = op
+        {
+            if !fits_f32(*q, *q_width) || !fits_f32(*k, *k_width) {
+                return Err(BackendError::InvalidHandle);
+            }
+            let sections = (sections[0] as u32)
+                | ((sections[1] as u32) << 8)
+                | ((sections[2] as u32) << 16)
+                | ((sections[3] as u32) << 24);
+            self.device.cmd_bind_pipeline(
+                command,
+                vk::PipelineBindPoint::COMPUTE,
+                self.layer_pipeline,
+            );
+            self.device.cmd_bind_descriptor_sets(
+                command,
+                vk::PipelineBindPoint::COMPUTE,
+                self.pipeline_layout,
+                0,
+                &[set],
+                &[],
+            );
+            for item in 0..batch {
+                let positions = params
+                    .mrope_positions
+                    .get(item as usize)
+                    .copied()
+                    .unwrap_or([params.position_start + item; 4]);
+                let push = [
+                    6,
+                    1,
+                    word(*q)? + item * *q_width,
+                    word(*k)? + item * *k_width,
+                    *q_width,
+                    *k_width,
+                    *key_head_dim,
+                    *freq_base_bits,
+                    positions[0],
+                    positions[1],
+                    positions[2],
+                    positions[3],
+                    sections,
+                    0,
+                    0,
+                    0,
+                ];
+                self.device.cmd_push_constants(
+                    command,
+                    self.pipeline_layout,
+                    vk::ShaderStageFlags::COMPUTE,
+                    0,
+                    std::slice::from_raw_parts(push.as_ptr().cast(), 64),
+                );
+                self.device.cmd_dispatch(
+                    command,
+                    (q_width + k_width).div_ceil(2 * LOCAL_SIZE),
+                    1,
+                    1,
+                );
+            }
+            return Ok(());
+        }
         let (push, work) = match op {
             BoundLayerOp::RmsNorm {
                 input,
@@ -1368,6 +1522,38 @@ impl VulkanSession {
                     batch.checked_mul(*groups),
                 )
             }
+            BoundLayerOp::Slice {
+                input,
+                output,
+                offset,
+                elements,
+                input_width,
+            } => {
+                if !fits_f32(*input, *input_width) || !fits_f32(*output, *elements) {
+                    return Err(BackendError::InvalidHandle);
+                }
+                (
+                    [
+                        7,
+                        batch,
+                        word(*input)?,
+                        word(*output)?,
+                        *elements,
+                        *input_width,
+                        *offset,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ],
+                    batch.checked_mul(*elements),
+                )
+            }
             BoundLayerOp::Rope {
                 q,
                 k,
@@ -1401,6 +1587,7 @@ impl VulkanSession {
                     batch.checked_mul((q_width + k_width) / 2),
                 )
             }
+            BoundLayerOp::MRope { .. } => unreachable!(),
             BoundLayerOp::KvAppend {
                 k,
                 v,
@@ -1509,6 +1696,36 @@ impl VulkanSession {
                         batch,
                         word(*gate)?,
                         word(*up)?,
+                        *elements,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ],
+                    batch.checked_mul(*elements),
+                )
+            }
+            BoundLayerOp::SigmoidMul {
+                gate,
+                values,
+                elements,
+            } => {
+                if !fits_f32(*gate, *elements) || !fits_f32(*values, *elements) {
+                    return Err(BackendError::InvalidHandle);
+                }
+                (
+                    [
+                        8,
+                        batch,
+                        word(*gate)?,
+                        word(*values)?,
                         *elements,
                         0,
                         0,
@@ -2324,7 +2541,7 @@ fn build_program_specs(
                 ProgramKind::LayerSegment { .. } | ProgramKind::FinalNormQ8Logits { .. }
             ) {
                 if matches!(&program.kind, ProgramKind::LayerSegment { families, .. }
-                    if families.iter().any(|family| *family != LayerFamily::Qwen3))
+                    if families.iter().any(|family| !matches!(family, LayerFamily::Qwen3 | LayerFamily::Qwen35Dense)))
                 {
                     return Err(BackendError::InvalidHandle);
                 }
@@ -2459,8 +2676,7 @@ fn bind_layer_ops(
                 let (entry, _, weight_range) = resident(weight)?;
                 let elements =
                     u32::try_from(entry.shape[0]).map_err(|_| BackendError::InvalidHandle)?;
-                let groups = u32::try_from(slot(input)?.byte_len / 4 / u64::from(elements))
-                    .map_err(|_| BackendError::InvalidHandle)?;
+                let groups = 1;
                 if !matches!(entry.ggml_type, GGMLType::F32 | GGMLType::F16)
                     || groups == 0
                     || !f32_slot(input)
@@ -2515,6 +2731,28 @@ fn bind_layer_ops(
                     rows,
                 });
             }
+            LayerOp::Slice {
+                input,
+                offset,
+                elements,
+                output,
+            } if f32_slot(input) && f32_slot(output) => {
+                let input_width = *widths.get(&input).ok_or(BackendError::InvalidHandle)?;
+                if offset
+                    .checked_add(elements)
+                    .is_none_or(|end| end > input_width)
+                {
+                    return Err(BackendError::InvalidHandle);
+                }
+                widths.insert(output, elements);
+                bound.push(LayerOpSpec::Slice {
+                    input,
+                    output,
+                    offset,
+                    elements,
+                    input_width,
+                });
+            }
             LayerOp::Rope {
                 q,
                 k,
@@ -2528,6 +2766,29 @@ fn bind_layer_ops(
                     q_width: *widths.get(&q).ok_or(BackendError::InvalidHandle)?,
                     k_width: *widths.get(&k).ok_or(BackendError::InvalidHandle)?,
                     key_head_dim,
+                    freq_base_bits,
+                });
+            }
+            LayerOp::MRope {
+                q,
+                k,
+                sections,
+                key_head_dim,
+                rope_dims,
+                freq_base_bits,
+            } if key_head_dim == rope_dims && f32_slot(q) && f32_slot(k) => {
+                if sections.iter().any(|section| !(0..=255).contains(section))
+                    || sections.iter().sum::<i32>() == 0
+                {
+                    return Err(BackendError::InvalidHandle);
+                }
+                bound.push(LayerOpSpec::MRope {
+                    q,
+                    k,
+                    q_width: *widths.get(&q).ok_or(BackendError::InvalidHandle)?,
+                    k_width: *widths.get(&k).ok_or(BackendError::InvalidHandle)?,
+                    key_head_dim,
+                    sections,
                     freq_base_bits,
                 });
             }
@@ -2608,6 +2869,17 @@ fn bind_layer_ops(
                     return Err(BackendError::InvalidHandle);
                 }
                 bound.push(LayerOpSpec::SiluMul { gate, up, elements });
+            }
+            LayerOp::SigmoidMul { gate, values } if f32_slot(gate) && f32_slot(values) => {
+                let elements = *widths.get(&values).ok_or(BackendError::InvalidHandle)?;
+                if widths.get(&gate) != Some(&elements) {
+                    return Err(BackendError::InvalidHandle);
+                }
+                bound.push(LayerOpSpec::SigmoidMul {
+                    gate,
+                    values,
+                    elements,
+                });
             }
             LayerOp::Add {
                 left,

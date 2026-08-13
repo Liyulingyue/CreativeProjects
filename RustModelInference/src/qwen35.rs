@@ -494,7 +494,7 @@ impl Qwen35Model {
                     .expect("Qwen3.5 hidden size was validated"),
                 context_length: u32::try_from(self.config.n_ctx)
                     .expect("Qwen3.5 context length was validated"),
-                max_batch_tokens: 1,
+                max_batch_tokens: 2,
                 kv_cache: KvCacheType::F16,
                 final_norm: self.tensor_ids.final_norm,
                 output: self.tensor_ids.output,
@@ -545,9 +545,9 @@ impl Qwen35Model {
                     tokens,
                     &params,
                 )
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| format!("Qwen3.5 layer embedding: {error}"))?;
                 run.execute_logits(ComponentId::Llm, &params, output)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| format!("Qwen3.5 layer logits: {error}"))?;
                 *self
                     .layer_next_position
                     .lock()
