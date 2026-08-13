@@ -105,6 +105,15 @@ pub struct PlacementFixture {
     model: PlacementModel,
 }
 
+pub struct Qwen3LayerRun {
+    pub logits: Vec<f32>,
+    pub first_token_logits: Vec<f32>,
+    pub second_token_logits: Vec<f32>,
+    pub tokens: Vec<usize>,
+    pub same_device_internal_host_waits: u64,
+    pub kv_transfer_bytes: u64,
+}
+
 enum PlacementModel {
     Qwen3(rust_model_inference::Qwen3Model),
     Qwen35(rust_model_inference::Qwen35Model),
@@ -275,6 +284,99 @@ impl PlacementFixture {
         Ok(logits)
     }
 
+    pub fn cpu_reference_two_tokens(&self) -> Result<Qwen3LayerRun, String> {
+        self.run_qwen3_two_tokens(BackendKind::Cpu, "row", [1, 2])
+    }
+
+    pub fn compiled_cpu_two_tokens(&self) -> Result<Qwen3LayerRun, String> {
+        self.run_qwen3_two_tokens(BackendKind::Cpu, "layer", [1, 2])
+    }
+
+    pub fn compiled_backend_two_tokens(
+        &self,
+        backend: BackendKind,
+    ) -> Result<Qwen3LayerRun, String> {
+        self.run_qwen3_two_tokens(backend, "layer", [1, 2])
+    }
+
+    fn run_qwen3_two_tokens(
+        &self,
+        backend: BackendKind,
+        mode: &str,
+        tokens: [u32; 2],
+    ) -> Result<Qwen3LayerRun, String> {
+        let PlacementModel::Qwen3(model) = &self.model else {
+            return Err("fixture is not Qwen3".into());
+        };
+        let mut registry = DeviceRegistry::new();
+        let requested = BTreeSet::from([backend]);
+        rust_model_inference::compute::register_requested_providers(&mut registry, &requested, 1)
+            .map_err(|error| error.to_string())?;
+        registry
+            .discover(&requested)
+            .map_err(|error| error.to_string())?;
+        let device = match backend {
+            BackendKind::Cpu => "cpu0",
+            BackendKind::Vulkan => "vulkan0",
+            BackendKind::Metal => "metal0",
+            BackendKind::Npu => return Err("NPU backend is not implemented".into()),
+        };
+        let registry = Arc::new(registry);
+        let plan = PlacementCompiler {
+            catalog: &self.catalog,
+            registry: &registry,
+            requirements: std::slice::from_ref(&self.requirements()),
+        }
+        .compile(&BTreeMap::from([(
+            ComponentId::Llm,
+            parse_placement(&format!("llm:{mode}={device}@1"))
+                .map_err(|error| error.to_string())?,
+        )]))
+        .map_err(|error| error.to_string())?;
+        let kv_transfer_bytes = plan.components[&ComponentId::Llm]
+            .activation_transfers
+            .iter()
+            .map(|transfer| u64::from(transfer.f32_values_per_token) * 4)
+            .sum();
+        let compiled = CompiledModel::compile(Arc::clone(&self.catalog), plan, registry)
+            .map_err(|error| error.to_string())?;
+        let mut run = compiled.start_run().map_err(|error| error.to_string())?;
+        let mut first_token_logits = vec![0.0; 64];
+        model.forward(
+            &mut run,
+            &tokens[..1],
+            &[[0, 0, 0, 0]],
+            &mut first_token_logits,
+        )?;
+        let mut second_token_logits = vec![0.0; 64];
+        model.forward(
+            &mut run,
+            &tokens[1..],
+            &[[1, 1, 1, 0]],
+            &mut second_token_logits,
+        )?;
+        let tokens = [&first_token_logits, &second_token_logits]
+            .into_iter()
+            .map(|logits| {
+                logits
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, left), (_, right)| left.total_cmp(right))
+                    .map(|(index, _)| index)
+                    .unwrap()
+            })
+            .collect();
+        let host_waits: u64 = run.stats().values().map(|stats| stats.host_waits).sum();
+        Ok(Qwen3LayerRun {
+            logits: second_token_logits.clone(),
+            first_token_logits,
+            second_token_logits,
+            tokens,
+            same_device_internal_host_waits: host_waits.saturating_sub(2),
+            kv_transfer_bytes,
+        })
+    }
+
     pub fn run_cpu_qwen3_embedding(
         &self,
         tokens: &[u32],
@@ -355,6 +457,9 @@ pub fn tiny_qwen3() -> PlacementFixture {
             ("token_embd.weight".into(), q8_0_matrix_bytes(64, 64, |row, col| i8::from((row, col) == (1, 0) || (row, col) == (2, 1)))),
             ("blk.0.attn_v.weight".into(), q8_0_matrix_bytes(32, 64, |row, col| if row == 0 && col == 0 { 1 } else if row == 0 && col == 1 { -1 } else { 0 })),
             ("blk.0.attn_output.weight".into(), q8_0_matrix_bytes(64, 64, |row, col| i8::from((row, col) == (2, 0)))),
+            ("output.weight".into(), q8_0_matrix_bytes(64, 64, |row, col| {
+                if row == 0 && col == 0 { 1 } else if row == 1 && col == 1 { 2 } else if row == 2 && col == 2 { 3 } else { 0 }
+            })),
         ]),
     );
     let model = rust_model_inference::Qwen3Model::from_catalog(&catalog).unwrap();

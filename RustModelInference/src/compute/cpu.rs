@@ -4,11 +4,12 @@ use super::device::{
     SlotId,
 };
 use super::program::{
-    DevicePlan, ProgramKind, ProgramPlan, ResidentTensorPlan, SlotKind, SlotPlan, SlotStorage,
+    DevicePlan, LayerOp, ProgramKind, ProgramPlan, ResidentTensorPlan, SlotKind, SlotPlan,
+    SlotStorage,
 };
 use crate::thread_pool::ComputePool;
-use crate::{ComponentId, DeviceId, GGMLType, PlacementMode, TensorCatalog};
-use std::collections::{BTreeMap, BTreeSet};
+use crate::{ComponentId, DeviceId, GGMLType, LayerFamily, PlacementMode, TensorCatalog};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -43,8 +44,8 @@ impl CpuProvider {
             unified_memory: true,
             capabilities: DeviceCapabilities {
                 components: BTreeSet::from([ComponentId::Llm, ComponentId::Vision]),
-                modes: BTreeSet::from([PlacementMode::Row]),
-                layer_families: BTreeSet::new(),
+                modes: BTreeSet::from([PlacementMode::Layer, PlacementMode::Row]),
+                layer_families: BTreeSet::from([LayerFamily::Qwen3]),
                 tensor_types: BTreeSet::from([
                     GGMLType::F32,
                     GGMLType::F16,
@@ -92,6 +93,8 @@ impl DeviceProvider for CpuProvider {
 
         let mut max_batch = 1_usize;
         let mut max_q8_input = 0_usize;
+        let mut max_attention_context = 0_usize;
+        let mut auxiliary = BTreeMap::new();
         for program in programs.values() {
             match &program.kind {
                 ProgramKind::Q8Rows {
@@ -180,6 +183,52 @@ impl DeviceProvider for CpuProvider {
                 }
                 ProgramKind::LayerSegment { .. } => {}
             }
+            for op in &program.layer_ops {
+                match op {
+                    LayerOp::Q8Matmul { weight, .. } => {
+                        let entry = catalog.entry(*weight).ok_or(BackendError::InvalidHandle)?;
+                        if entry.ggml_type != GGMLType::Q8_0 {
+                            return Err(BackendError::InvalidHandle);
+                        }
+                        max_q8_input = max_q8_input.max(
+                            usize::try_from(entry.shape[0])
+                                .map_err(|_| BackendError::InvalidHandle)?,
+                        );
+                    }
+                    LayerOp::RmsNorm { weight, .. } => {
+                        if !auxiliary.contains_key(weight) {
+                            let entry =
+                                catalog.entry(*weight).ok_or(BackendError::InvalidHandle)?;
+                            let bytes = catalog
+                                .bytes(*weight)
+                                .map_err(|_| BackendError::InvalidHandle)?;
+                            let values = match entry.ggml_type {
+                                GGMLType::F32 => bytes
+                                    .chunks_exact(4)
+                                    .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+                                    .collect(),
+                                GGMLType::F16 => bytes
+                                    .chunks_exact(2)
+                                    .map(|bytes| {
+                                        crate::ops::f16_to_f32(u16::from_le_bytes(
+                                            bytes.try_into().unwrap(),
+                                        ))
+                                    })
+                                    .collect(),
+                                _ => return Err(BackendError::InvalidHandle),
+                            };
+                            auxiliary.insert(*weight, values);
+                        }
+                    }
+                    LayerOp::Attention {
+                        context_capacity, ..
+                    } => {
+                        max_attention_context = max_attention_context
+                            .max((*context_capacity as usize).div_ceil(32) * 32);
+                    }
+                    _ => {}
+                }
+            }
         }
 
         let mut slots = Vec::with_capacity(plan.slots.len());
@@ -213,8 +262,10 @@ impl DeviceProvider for CpuProvider {
             Arc::clone(&catalog),
             programs.clone(),
             slot_ptrs,
+            auxiliary,
             max_batch,
             max_q8_input,
+            max_attention_context,
         )?;
         let resident_count = plan.tensors.len() as u64;
 
@@ -288,7 +339,7 @@ impl DeviceSession for CpuSession {
     }
 
     fn wait(&mut self, fence: FenceId) -> Result<(), BackendError> {
-        if self.worker.pending != Some(fence) {
+        if !self.worker.has_pending(fence) {
             return Err(BackendError::InvalidHandle);
         }
         let result = self.worker.wait(fence);
@@ -337,7 +388,7 @@ impl DeviceSession for CpuSession {
 
 impl CpuSession {
     fn require_idle(&self, message: &'static str) -> Result<(), BackendError> {
-        if self.worker.pending.is_some() {
+        if !self.worker.pending.is_empty() {
             Err(BackendError::Submission {
                 device: self.descriptor.id.clone(),
                 message: message.into(),
@@ -355,12 +406,12 @@ impl Drop for CpuSession {
 }
 
 struct CpuWorker {
-    requests: Option<SyncSender<(FenceId, ProgramId)>>,
+    requests: Option<SyncSender<(FenceId, ProgramId, usize)>>,
     completions: Receiver<(FenceId, Result<(), BackendError>)>,
     thread: Option<JoinHandle<()>>,
-    params: Box<CpuRunParams>,
+    params: Vec<Box<CpuRunParams>>,
     next_fence: u64,
-    pending: Option<FenceId>,
+    pending: VecDeque<(FenceId, usize)>,
     device: DeviceId,
 }
 
@@ -372,16 +423,26 @@ impl CpuWorker {
         catalog: Arc<TensorCatalog>,
         programs: BTreeMap<ProgramId, ProgramPlan>,
         slots: Vec<SlotPtr>,
+        auxiliary: BTreeMap<crate::TensorId, Box<[f32]>>,
         parameter_capacity: usize,
         q8_len: usize,
+        attention_context: usize,
     ) -> Result<Self, BackendError> {
-        let (requests, request_rx) = mpsc::sync_channel(1);
-        let (completion_tx, completions) = mpsc::sync_channel(1);
+        let in_flight_capacity = programs.len().max(1);
+        let (requests, request_rx) = mpsc::sync_channel(in_flight_capacity);
+        let (completion_tx, completions) = mpsc::sync_channel(in_flight_capacity);
         let (ready_tx, ready_rx) = mpsc::sync_channel(0);
-        let mut params = Box::new(CpuRunParams::new(parameter_capacity));
-        let params_ptr = (&mut *params as *mut CpuRunParams) as usize;
+        let mut params = (0..in_flight_capacity)
+            .map(|_| Box::new(CpuRunParams::new(parameter_capacity)))
+            .collect::<Vec<_>>();
+        let param_ptrs = params
+            .iter_mut()
+            .map(|params| (&mut **params as *mut CpuRunParams) as usize)
+            .collect::<Vec<_>>();
         let q8 = vec![0; q8_len].into_boxed_slice();
         let scales = vec![0.0; q8_len / 32].into_boxed_slice();
+        let attention_scores = vec![0.0; attention_context].into_boxed_slice();
+        let attention_values = vec![0.0; attention_context].into_boxed_slice();
         let worker_device = device.clone();
         let thread = std::thread::Builder::new()
             .name(format!("{}-compiled-session", device.as_str()))
@@ -392,13 +453,18 @@ impl CpuWorker {
                     catalog,
                     programs,
                     slots,
-                    params_ptr,
+                    auxiliary,
                     q8,
                     scales,
+                    attention_scores,
+                    attention_values,
                 };
                 let _ = ready_tx.send(());
-                while let Ok((fence, program)) = request_rx.recv() {
-                    let result = state.execute(program);
+                while let Ok((fence, program, params_index)) = request_rx.recv() {
+                    let result = param_ptrs
+                        .get(params_index)
+                        .ok_or(BackendError::InvalidHandle)
+                        .and_then(|params| state.execute(program, *params));
                     if completion_tx.send((fence, result)).is_err() {
                         break;
                     }
@@ -414,7 +480,7 @@ impl CpuWorker {
             thread: Some(thread),
             params,
             next_fence: 0,
-            pending: None,
+            pending: VecDeque::with_capacity(in_flight_capacity),
             device,
         })
     }
@@ -424,22 +490,30 @@ impl CpuWorker {
         program: ProgramId,
         params: &RunParams<'_>,
     ) -> Result<FenceId, BackendError> {
-        if self.pending.is_some()
-            || params.token_count as usize > self.params.token_ids.len()
-            || params.token_ids.len() > self.params.token_ids.len()
-            || params.mrope_positions.len() > self.params.mrope_positions.len()
+        let Some(params_index) = (0..self.params.len())
+            .find(|index| self.pending.iter().all(|(_, pending)| pending != index))
+        else {
+            return Err(submission_error(
+                &self.device,
+                "CPU in-flight queue is full",
+            ));
+        };
+        let destination = &mut self.params[params_index];
+        if params.token_count as usize > destination.token_ids.len()
+            || params.token_ids.len() > destination.token_ids.len()
+            || params.mrope_positions.len() > destination.mrope_positions.len()
         {
             return Err(submission_error(
                 &self.device,
-                "CPU worker is busy or parameters exceed capacity",
+                "CPU parameters exceed capacity",
             ));
         }
-        self.params.token_count = params.token_count;
-        self.params.position_start = params.position_start;
-        self.params.token_ids_len = params.token_ids.len();
-        self.params.token_ids[..params.token_ids.len()].copy_from_slice(params.token_ids);
-        self.params.mrope_positions_len = params.mrope_positions.len();
-        self.params.mrope_positions[..params.mrope_positions.len()]
+        destination.token_count = params.token_count;
+        destination.position_start = params.position_start;
+        destination.token_ids_len = params.token_ids.len();
+        destination.token_ids[..params.token_ids.len()].copy_from_slice(params.token_ids);
+        destination.mrope_positions_len = params.mrope_positions.len();
+        destination.mrope_positions[..params.mrope_positions.len()]
             .copy_from_slice(params.mrope_positions);
 
         let fence = FenceId(
@@ -451,11 +525,11 @@ impl CpuWorker {
             .requests
             .as_ref()
             .ok_or_else(|| submission_error(&self.device, "CPU worker stopped"))?
-            .try_send((fence, program))
+            .try_send((fence, program, params_index))
         {
             Ok(()) => {
                 self.next_fence = fence.0;
-                self.pending = Some(fence);
+                self.pending.push_back((fence, params_index));
                 Ok(fence)
             }
             Err(TrySendError::Full(_)) => {
@@ -468,18 +542,32 @@ impl CpuWorker {
     }
 
     fn wait(&mut self, fence: FenceId) -> Result<(), BackendError> {
-        if self.pending != Some(fence) {
+        if !self.has_pending(fence) {
             return Err(BackendError::InvalidHandle);
         }
-        let (completed, result) = self
-            .completions
-            .recv()
-            .map_err(|_| submission_error(&self.device, "CPU worker stopped before completion"))?;
-        self.pending = None;
-        if completed != fence {
-            return Err(BackendError::InvalidHandle);
+        let mut first_error = None;
+        loop {
+            let (completed, result) = self.completions.recv().map_err(|_| {
+                submission_error(&self.device, "CPU worker stopped before completion")
+            })?;
+            let (expected, _) = self
+                .pending
+                .pop_front()
+                .ok_or(BackendError::InvalidHandle)?;
+            if completed != expected {
+                return Err(BackendError::InvalidHandle);
+            }
+            if first_error.is_none() {
+                first_error = result.err();
+            }
+            if completed == fence {
+                return first_error.map_or(Ok(()), Err);
+            }
         }
-        result
+    }
+
+    fn has_pending(&self, fence: FenceId) -> bool {
+        self.pending.iter().any(|(pending, _)| *pending == fence)
     }
 
     fn shutdown(&mut self) {
@@ -530,13 +618,16 @@ struct WorkerState {
     catalog: Arc<TensorCatalog>,
     programs: BTreeMap<ProgramId, ProgramPlan>,
     slots: Vec<SlotPtr>,
-    params_ptr: usize,
+    auxiliary: BTreeMap<crate::TensorId, Box<[f32]>>,
     q8: Box<[u8]>,
     scales: Box<[f32]>,
+    attention_scores: Box<[f32]>,
+    attention_values: Box<[f32]>,
 }
 
 impl WorkerState {
-    fn execute(&mut self, program: ProgramId) -> Result<(), BackendError> {
+    fn execute(&mut self, program: ProgramId, params_ptr: usize) -> Result<(), BackendError> {
+        let params = unsafe { &*(params_ptr as *const CpuRunParams) };
         let plan = self
             .programs
             .get(&program)
@@ -544,12 +635,14 @@ impl WorkerState {
         let input = plan.input;
         let output = plan.output;
         let kind = plan.kind.clone();
+        let layer_ops = plan.layer_ops.clone();
         match kind {
             ProgramKind::Q8Rows {
                 tensor,
                 rows,
                 batch_capacity,
             } => self.execute_q8_rows(
+                params,
                 tensor,
                 rows.start as usize,
                 rows.end as usize,
@@ -558,19 +651,394 @@ impl WorkerState {
                 output,
             ),
             ProgramKind::EmbeddingRows { tensor, row_count } => {
-                self.execute_embedding_rows(tensor, row_count as usize, output)
+                self.execute_embedding_rows(params, tensor, row_count as usize, output)
             }
             ProgramKind::LayerSegment { .. } | ProgramKind::FinalNormQ8Logits { .. } => {
-                Err(BackendError::Unsupported {
-                    device: self.device.clone(),
-                    operation: "compiled CPU program kind",
-                })
+                self.execute_layer_ops(params, &layer_ops)
             }
         }
     }
 
+    fn execute_layer_ops(
+        &mut self,
+        params: &CpuRunParams,
+        ops: &[LayerOp],
+    ) -> Result<(), BackendError> {
+        let batch = params.token_count as usize;
+        if batch == 0 {
+            return Err(BackendError::InvalidHandle);
+        }
+        for op in ops {
+            match *op {
+                LayerOp::RmsNorm {
+                    input,
+                    weight,
+                    output,
+                    epsilon_bits,
+                } => self.execute_rms_norm(input, weight, output, f32::from_bits(epsilon_bits))?,
+                LayerOp::Q8Matmul {
+                    input,
+                    weight,
+                    output,
+                } => self.execute_q8_matmul(input, weight, output, batch)?,
+                LayerOp::Rope {
+                    q,
+                    k,
+                    key_head_dim,
+                    rope_dims,
+                    freq_base_bits,
+                } => {
+                    if key_head_dim != rope_dims {
+                        return Err(BackendError::InvalidHandle);
+                    }
+                    for slot in [q, k] {
+                        let values = self.slot_mut(slot)?;
+                        let width = values.len() / batch;
+                        for (item, values) in
+                            values[..batch * width].chunks_exact_mut(width).enumerate()
+                        {
+                            let position = self.position(params, item)?;
+                            crate::ops::rope_neox(
+                                values,
+                                position,
+                                key_head_dim as usize,
+                                f32::from_bits(freq_base_bits),
+                            );
+                        }
+                    }
+                }
+                LayerOp::KvAppend {
+                    k,
+                    v,
+                    key_state,
+                    value_state,
+                    ..
+                } => {
+                    self.append_kv(params, batch, k, key_state)?;
+                    self.append_kv(params, batch, v, value_state)?;
+                }
+                LayerOp::Attention {
+                    q,
+                    output,
+                    head_count,
+                    kv_head_count,
+                    key_state,
+                    value_state,
+                    key_head_dim,
+                    value_head_dim,
+                    context_capacity,
+                    ..
+                } => self.execute_attention(
+                    params,
+                    batch,
+                    q,
+                    output,
+                    head_count as usize,
+                    kv_head_count as usize,
+                    key_state,
+                    value_state,
+                    key_head_dim as usize,
+                    value_head_dim as usize,
+                    context_capacity as usize,
+                )?,
+                LayerOp::SiluMul { gate, up } => {
+                    let gate = self.slot(gate)?;
+                    let up = self.slot_mut(up)?;
+                    let len = gate.len().min(up.len());
+                    crate::ops::silu_mul_inplace(&gate[..len], &mut up[..len]);
+                }
+                LayerOp::Add {
+                    left,
+                    right,
+                    output,
+                } => self.execute_add(left, right, output)?,
+                _ => {
+                    return Err(BackendError::Unsupported {
+                        device: self.device.clone(),
+                        operation: "compiled CPU layer operation",
+                    })
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn execute_rms_norm(
+        &self,
+        input: SlotId,
+        weight: crate::TensorId,
+        output: SlotId,
+        epsilon: f32,
+    ) -> Result<(), BackendError> {
+        let weights = self
+            .auxiliary
+            .get(&weight)
+            .ok_or(BackendError::InvalidHandle)?;
+        let width = weights.len();
+        let input_slot = *self
+            .slots
+            .get(input.0 as usize)
+            .ok_or(BackendError::InvalidHandle)?;
+        let output_slot = *self
+            .slots
+            .get(output.0 as usize)
+            .ok_or(BackendError::InvalidHandle)?;
+        if width == 0 || input_slot.len != output_slot.len || input_slot.len % width != 0 {
+            return Err(BackendError::InvalidHandle);
+        }
+        let output_values =
+            unsafe { std::slice::from_raw_parts_mut(output_slot.ptr as *mut f32, output_slot.len) };
+        if input == output {
+            for values in output_values.chunks_exact_mut(width) {
+                crate::ops::rms_norm_inplace(values, weights, epsilon);
+            }
+        } else {
+            let input =
+                unsafe { std::slice::from_raw_parts(input_slot.ptr as *const f32, input_slot.len) };
+            for (input, output) in input
+                .chunks_exact(width)
+                .zip(output_values.chunks_exact_mut(width))
+            {
+                crate::ops::rms_norm(input, weights, output, epsilon);
+            }
+        }
+        Ok(())
+    }
+
+    fn execute_q8_matmul(
+        &mut self,
+        input: SlotId,
+        weight: crate::TensorId,
+        output: SlotId,
+        batch: usize,
+    ) -> Result<(), BackendError> {
+        let entry = self
+            .catalog
+            .entry(weight)
+            .ok_or(BackendError::InvalidHandle)?;
+        let n_in = usize::try_from(entry.shape[0]).map_err(|_| BackendError::InvalidHandle)?;
+        let rows = usize::try_from(entry.row_count).map_err(|_| BackendError::InvalidHandle)?;
+        let input_slot = *self
+            .slots
+            .get(input.0 as usize)
+            .ok_or(BackendError::InvalidHandle)?;
+        let output_slot = *self
+            .slots
+            .get(output.0 as usize)
+            .ok_or(BackendError::InvalidHandle)?;
+        if batch * n_in > input_slot.len
+            || batch * rows > output_slot.len
+            || n_in > self.q8.len()
+            || n_in / 32 > self.scales.len()
+        {
+            return Err(BackendError::InvalidHandle);
+        }
+        let weight_bytes = self
+            .catalog
+            .bytes(weight)
+            .map_err(|_| BackendError::InvalidHandle)?;
+        for item in 0..batch {
+            let input = unsafe {
+                std::slice::from_raw_parts((input_slot.ptr as *const f32).add(item * n_in), n_in)
+            };
+            crate::ops::quantize_q8_0_into(
+                input,
+                n_in,
+                &mut self.q8[..n_in],
+                &mut self.scales[..n_in / 32],
+            );
+            let output = unsafe {
+                std::slice::from_raw_parts_mut((output_slot.ptr as *mut f32).add(item * rows), rows)
+            };
+            matmul_q8_range_with_pool(
+                &self.pool,
+                weight_bytes,
+                &self.q8[..n_in],
+                &self.scales[..n_in / 32],
+                output,
+                n_in,
+                0,
+                rows,
+            );
+        }
+        Ok(())
+    }
+
+    fn append_kv(
+        &self,
+        params: &CpuRunParams,
+        batch: usize,
+        values: SlotId,
+        state: SlotId,
+    ) -> Result<(), BackendError> {
+        let values = self.slot(values)?;
+        let state = self.slot_mut(state)?;
+        let width = values.len() / batch;
+        if width == 0 {
+            return Err(BackendError::InvalidHandle);
+        }
+        for item in 0..batch {
+            let position = self.position(params, item)?;
+            let start = position
+                .checked_mul(width)
+                .ok_or(BackendError::InvalidHandle)?;
+            if start + width > state.len() {
+                return Err(BackendError::InvalidHandle);
+            }
+            for index in 0..width {
+                state[start + index] = half::f16::from_f32(values[item * width + index]).to_f32();
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_attention(
+        &mut self,
+        params: &CpuRunParams,
+        batch: usize,
+        q: SlotId,
+        output: SlotId,
+        head_count: usize,
+        kv_head_count: usize,
+        key_state: SlotId,
+        value_state: SlotId,
+        key_head_dim: usize,
+        value_head_dim: usize,
+        context_capacity: usize,
+    ) -> Result<(), BackendError> {
+        if kv_head_count == 0 || head_count % kv_head_count != 0 {
+            return Err(BackendError::InvalidHandle);
+        }
+        let queries = *self
+            .slots
+            .get(q.0 as usize)
+            .ok_or(BackendError::InvalidHandle)?;
+        let keys = *self
+            .slots
+            .get(key_state.0 as usize)
+            .ok_or(BackendError::InvalidHandle)?;
+        let values = *self
+            .slots
+            .get(value_state.0 as usize)
+            .ok_or(BackendError::InvalidHandle)?;
+        let output = *self
+            .slots
+            .get(output.0 as usize)
+            .ok_or(BackendError::InvalidHandle)?;
+        let q_width = head_count * key_head_dim;
+        let key_width = kv_head_count * key_head_dim;
+        let value_width = kv_head_count * value_head_dim;
+        let output_width = head_count * value_head_dim;
+        if batch * q_width > queries.len
+            || context_capacity * key_width > keys.len
+            || context_capacity * value_width > values.len
+            || batch * output_width > output.len
+        {
+            return Err(BackendError::InvalidHandle);
+        }
+        let queries = unsafe { std::slice::from_raw_parts(queries.ptr as *const f32, queries.len) };
+        let keys = unsafe { std::slice::from_raw_parts(keys.ptr as *const f32, keys.len) };
+        let values = unsafe { std::slice::from_raw_parts(values.ptr as *const f32, values.len) };
+        let output = unsafe { std::slice::from_raw_parts_mut(output.ptr as *mut f32, output.len) };
+        let group = head_count / kv_head_count;
+        let scale = 1.0 / (key_head_dim as f32).sqrt();
+        output[..batch * output_width].fill(0.0);
+        for item in 0..batch {
+            let position = self.position(params, item)?;
+            let cached = position + 1;
+            let padded = cached.div_ceil(32) * 32;
+            for head in 0..head_count {
+                let kv_head = head / group;
+                let query = &queries[item * q_width + head * key_head_dim
+                    ..item * q_width + (head + 1) * key_head_dim];
+                let scores = &mut self.attention_scores[..padded];
+                scores.fill(f32::NEG_INFINITY);
+                for (prior, score) in scores[..cached].iter_mut().enumerate() {
+                    let start = prior * key_width + kv_head * key_head_dim;
+                    *score = crate::ops::dot_f32(
+                        query,
+                        &keys[start..start + key_head_dim],
+                        key_head_dim,
+                    ) * scale;
+                }
+                crate::ops::softmax(scores);
+                for lane in 0..value_head_dim {
+                    let attention_values = &mut self.attention_values[..padded];
+                    attention_values.fill(0.0);
+                    for (prior, value) in attention_values[..cached].iter_mut().enumerate() {
+                        *value = values[prior * value_width + kv_head * value_head_dim + lane];
+                    }
+                    output[item * output_width + head * value_head_dim + lane] =
+                        crate::ops::attention_value_f32(attention_values, scores, cached, padded);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn execute_add(&self, left: SlotId, right: SlotId, output: SlotId) -> Result<(), BackendError> {
+        if output == right {
+            let left = self.slot(left)?;
+            let output = self.slot_mut(output)?;
+            if left.len() != output.len() {
+                return Err(BackendError::InvalidHandle);
+            }
+            crate::ops::vec_add_into(left, output);
+            return Ok(());
+        }
+        if output == left {
+            let right = self.slot(right)?;
+            let output = self.slot_mut(output)?;
+            if right.len() != output.len() {
+                return Err(BackendError::InvalidHandle);
+            }
+            crate::ops::vec_add_into(right, output);
+            return Ok(());
+        }
+        let right_values = self.slot(right)?;
+        let output_values = self.slot_mut(output)?;
+        if right_values.len() != output_values.len() {
+            return Err(BackendError::InvalidHandle);
+        }
+        output_values.copy_from_slice(right_values);
+        let left_values = self.slot(left)?;
+        if left_values.len() != output_values.len() {
+            return Err(BackendError::InvalidHandle);
+        }
+        crate::ops::vec_add_into(left_values, output_values);
+        Ok(())
+    }
+
+    fn slot(&self, slot: SlotId) -> Result<&[f32], BackendError> {
+        let slot = *self
+            .slots
+            .get(slot.0 as usize)
+            .ok_or(BackendError::InvalidHandle)?;
+        Ok(unsafe { std::slice::from_raw_parts(slot.ptr as *const f32, slot.len) })
+    }
+
+    fn slot_mut(&self, slot: SlotId) -> Result<&mut [f32], BackendError> {
+        let slot = *self
+            .slots
+            .get(slot.0 as usize)
+            .ok_or(BackendError::InvalidHandle)?;
+        Ok(unsafe { std::slice::from_raw_parts_mut(slot.ptr as *mut f32, slot.len) })
+    }
+
+    fn position(&self, params: &CpuRunParams, item: usize) -> Result<usize, BackendError> {
+        let position = params
+            .mrope_positions
+            .get(item)
+            .filter(|_| item < params.mrope_positions_len)
+            .map(|position| position[0])
+            .unwrap_or_else(|| params.position_start + item as u32);
+        usize::try_from(position).map_err(|_| BackendError::InvalidHandle)
+    }
+
     fn execute_q8_rows(
         &mut self,
+        params: &CpuRunParams,
         tensor: crate::TensorId,
         row_start: usize,
         row_end: usize,
@@ -578,9 +1046,6 @@ impl WorkerState {
         input: SlotId,
         output: SlotId,
     ) -> Result<(), BackendError> {
-        // SAFETY: submit does not mutate the preallocated parameter box until wait clears the
-        // single pending fence, and the request channel synchronizes this read with that write.
-        let params = unsafe { &*(self.params_ptr as *const CpuRunParams) };
         let batch = params.token_count as usize;
         if batch > batch_capacity {
             return Err(BackendError::InvalidHandle);
@@ -645,12 +1110,11 @@ impl WorkerState {
 
     fn execute_embedding_rows(
         &mut self,
+        params: &CpuRunParams,
         tensor: crate::TensorId,
         row_count: usize,
         output: SlotId,
     ) -> Result<(), BackendError> {
-        // SAFETY: identical single-pending-fence synchronization to execute_q8_rows.
-        let params = unsafe { &*(self.params_ptr as *const CpuRunParams) };
         let batch = params.token_count as usize;
         if batch != params.token_ids_len {
             return Err(BackendError::InvalidHandle);
@@ -1108,8 +1572,76 @@ mod tests {
 
         assert_eq!(
             descriptor.capabilities.modes,
-            BTreeSet::from([PlacementMode::Row])
+            BTreeSet::from([PlacementMode::Layer, PlacementMode::Row])
         );
-        assert!(descriptor.capabilities.layer_families.is_empty());
+        assert_eq!(
+            descriptor.capabilities.layer_families,
+            BTreeSet::from([LayerFamily::Qwen3])
+        );
+    }
+
+    #[test]
+    fn qwen3_kv_append_persists_both_positions_for_attention() {
+        let (catalog, _, _) = q8_program_fixture(1, 64, 1, 0..1);
+        let mut buffers = [1, 1, 1, 2, 2, 1]
+            .map(|len| vec![0.0; len].into_boxed_slice())
+            .into_iter()
+            .collect::<Vec<_>>();
+        let slots = buffers
+            .iter_mut()
+            .map(|slot| SlotPtr {
+                ptr: slot.as_mut_ptr() as usize,
+                len: slot.len(),
+            })
+            .collect();
+        let mut worker = WorkerState {
+            pool: ComputePool::new(1),
+            device: DeviceId::parse("cpu0").unwrap(),
+            catalog,
+            programs: BTreeMap::new(),
+            slots,
+            auxiliary: BTreeMap::new(),
+            q8: Box::new([]),
+            scales: Box::new([]),
+            attention_scores: vec![0.0; 32].into_boxed_slice(),
+            attention_values: vec![0.0; 32].into_boxed_slice(),
+        };
+        let ops = [
+            LayerOp::KvAppend {
+                layer: 0,
+                k: SlotId(0),
+                v: SlotId(1),
+                key_state: SlotId(3),
+                value_state: SlotId(4),
+            },
+            LayerOp::Attention {
+                layer: 0,
+                q: SlotId(2),
+                output: SlotId(5),
+                head_count: 1,
+                kv_head_count: 1,
+                key_state: SlotId(3),
+                value_state: SlotId(4),
+                key_head_dim: 1,
+                value_head_dim: 1,
+                context_capacity: 2,
+            },
+        ];
+        for (position, value) in [2.0, 6.0].into_iter().enumerate() {
+            worker.slot_mut(SlotId(0)).unwrap()[0] = 0.0;
+            worker.slot_mut(SlotId(1)).unwrap()[0] = value;
+            worker.slot_mut(SlotId(2)).unwrap()[0] = 1.0;
+            let params = CpuRunParams {
+                token_count: 1,
+                position_start: position as u32,
+                mrope_positions: vec![[position as u32, 0, 0, 0]].into_boxed_slice(),
+                mrope_positions_len: 1,
+                token_ids: Box::new([]),
+                token_ids_len: 0,
+            };
+            worker.execute_layer_ops(&params, &ops).unwrap();
+        }
+        assert_eq!(&worker.slot(SlotId(4)).unwrap()[..2], &[2.0, 6.0]);
+        assert_eq!(worker.slot(SlotId(5)).unwrap()[0], 4.0);
     }
 }
