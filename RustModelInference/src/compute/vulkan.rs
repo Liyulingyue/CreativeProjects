@@ -646,6 +646,20 @@ fn drain_pending(
     }
 }
 
+fn fixed_program_entry_dependency() -> (
+    vk::PipelineStageFlags,
+    vk::AccessFlags,
+    vk::PipelineStageFlags,
+    vk::AccessFlags,
+) {
+    (
+        vk::PipelineStageFlags::TRANSFER | vk::PipelineStageFlags::COMPUTE_SHADER,
+        vk::AccessFlags::TRANSFER_WRITE | vk::AccessFlags::SHADER_WRITE,
+        vk::PipelineStageFlags::COMPUTE_SHADER,
+        vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
+    )
+}
+
 struct VulkanSession {
     _context: Arc<VulkanContext>,
     descriptor: DeviceDescriptor,
@@ -1186,6 +1200,22 @@ impl VulkanSession {
         );
     }
 
+    unsafe fn fixed_program_entry_barrier(&self, command: vk::CommandBuffer) {
+        let (src_stage, src_access, dst_stage, dst_access) = fixed_program_entry_dependency();
+        let barrier = vk::MemoryBarrier::default()
+            .src_access_mask(src_access)
+            .dst_access_mask(dst_access);
+        self.device.cmd_pipeline_barrier(
+            command,
+            src_stage,
+            dst_stage,
+            vk::DependencyFlags::empty(),
+            &[barrier],
+            &[],
+            &[],
+        );
+    }
+
     unsafe fn record_q8(
         &self,
         command: vk::CommandBuffer,
@@ -1628,6 +1658,7 @@ impl DeviceSession for VulkanSession {
                         .map_err(|error| {
                             submission(&self.descriptor, format!("begin command: {error:?}"))
                         })?;
+                    self.fixed_program_entry_barrier(command);
                     let set = resource.layer_set.ok_or(BackendError::InvalidHandle)?;
                     for (index, op) in resource.layer_ops.iter().enumerate() {
                         if index != 0 {
@@ -3184,6 +3215,24 @@ mod tests {
         plan.slots[1].arena_offset = plan.slots[0].byte_len - 16;
 
         assert!(validate_plan(&plan, &catalog, &adapter).is_err());
+    }
+
+    #[test]
+    fn fixed_program_entry_depends_on_prior_transfer_and_compute_writes() {
+        let (src_stage, src_access, dst_stage, dst_access) = fixed_program_entry_dependency();
+        assert_eq!(
+            src_stage,
+            vk::PipelineStageFlags::TRANSFER | vk::PipelineStageFlags::COMPUTE_SHADER
+        );
+        assert_eq!(
+            src_access,
+            vk::AccessFlags::TRANSFER_WRITE | vk::AccessFlags::SHADER_WRITE
+        );
+        assert_eq!(dst_stage, vk::PipelineStageFlags::COMPUTE_SHADER);
+        assert_eq!(
+            dst_access,
+            vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE
+        );
     }
 
     #[test]
