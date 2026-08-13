@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .routers import fs, search, settings, rag, chat, chat_history_router
+from .routers import fs, search, settings, rag, chat, chat_history_router, agent
 
 app = FastAPI(title="SimpleFileManager", version="0.2.0")
 
@@ -18,6 +18,7 @@ app.include_router(settings, prefix="/api/settings", tags=["settings"])
 app.include_router(rag, prefix="/api/rag", tags=["rag"])
 app.include_router(chat, prefix="/api/chat", tags=["chat"])
 app.include_router(chat_history_router, prefix="/api/chat_history", tags=["chat_history"])
+app.include_router(agent, prefix="/api/agent", tags=["agent"])
 
 
 @app.get("/api/health")

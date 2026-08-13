@@ -199,3 +199,45 @@ export async function updateChatSessionTitle(sessionId: string, title: string): 
   });
   if (!res.ok) throw new Error('Failed to update chat session title');
 }
+
+export interface AgentMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'tool';
+  content: string;
+  tool_calls?: Array<{
+    name: string;
+    arguments: Record<string, unknown>;
+    result?: unknown;
+  }>;
+  timestamp: number;
+}
+
+export interface AgentResponse {
+  response: string;
+  tool_results?: Array<{
+    tool: string;
+    arguments: Record<string, unknown>;
+    result: unknown;
+  }>;
+  needs_tool_calls: boolean;
+  available_tools: string[];
+}
+
+export async function sendAgentMessage(
+  message: string,
+  sessionId?: string
+): Promise<AgentResponse> {
+  const res = await fetch(`${API_BASE}/agent/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, session_id: sessionId }),
+  });
+  if (!res.ok) throw new Error('Failed to send agent message');
+  return res.json();
+}
+
+export async function getAgentTools(): Promise<{ tools: string[] }> {
+  const res = await fetch(`${API_BASE}/agent/tools`);
+  if (!res.ok) throw new Error('Failed to get agent tools');
+  return res.json();
+}
