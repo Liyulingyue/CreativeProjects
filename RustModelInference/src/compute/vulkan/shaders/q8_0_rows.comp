@@ -1,0 +1,79 @@
+#version 450
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer Weights {
+    uint data[];
+} weights;
+layout(set = 0, binding = 1, std430) readonly buffer Input {
+    uint data[];
+} input_values;
+layout(set = 0, binding = 2, std430) writeonly buffer Output {
+    uint data[];
+} output_values;
+
+layout(push_constant) uniform Params {
+    uint batch;
+    uint n_in;
+    uint local_rows;
+    uint global_row_start;
+    uint global_output_stride;
+    uint mode;
+    uint weight_byte_bias;
+    uint output_row_start;
+} params;
+
+uint byte_at(uint byte_index) {
+    uint word = weights.data[byte_index >> 2];
+    return (word >> ((byte_index & 3) * 8)) & 0xff;
+}
+
+float half_to_float(uint bits) {
+    return unpackHalf2x16(bits & 0xffff).x;
+}
+
+float q8_value(uint row, uint column) {
+    uint blocks_per_row = params.n_in >> 5;
+    uint block = column >> 5;
+    uint lane = column & 31;
+    uint byte_index = params.weight_byte_bias + (row * blocks_per_row + block) * 34;
+    uint scale_bits = byte_at(byte_index) | (byte_at(byte_index + 1) << 8);
+    int q = int(byte_at(byte_index + 2 + lane));
+    q = q >= 128 ? q - 256 : q;
+    return half_to_float(scale_bits) * float(q);
+}
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    if (params.mode == 0) {
+        uint count = params.batch * params.local_rows;
+        if (index >= count) {
+            return;
+        }
+        uint item = index / params.local_rows;
+        uint local_row = index % params.local_rows;
+        float sum = 0.0;
+        for (uint column = 0; column < params.n_in; ++column) {
+            float input_value = uintBitsToFloat(input_values.data[item * params.n_in + column]);
+            sum += q8_value(local_row, column) * input_value;
+        }
+        uint output_index = item * params.global_output_stride
+            + params.output_row_start + local_row;
+        output_values.data[output_index] = floatBitsToUint(sum);
+        return;
+    }
+
+    uint count = params.batch * params.n_in;
+    if (index >= count) {
+        return;
+    }
+    uint item = index / params.n_in;
+    uint column = index % params.n_in;
+    uint token = input_values.data[item];
+    if (token < params.global_row_start
+        || token >= params.global_row_start + params.local_rows) {
+        return;
+    }
+    output_values.data[item * params.global_output_stride + column] =
+        floatBitsToUint(q8_value(token - params.global_row_start, column));
+}

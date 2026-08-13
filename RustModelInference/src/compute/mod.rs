@@ -2,6 +2,8 @@ pub mod cpu;
 pub mod device;
 pub mod program;
 pub mod session;
+#[cfg(feature = "vulkan")]
+pub mod vulkan;
 
 pub use cpu::{CpuProvider, CpuSession};
 pub use device::{
@@ -11,6 +13,8 @@ pub use device::{
 };
 pub use program::*;
 pub use session::{CompiledModel, ExecutionRun};
+#[cfg(feature = "vulkan")]
+pub use vulkan::VulkanProvider;
 
 #[doc(hidden)]
 pub fn execute_q8_cpu_compat(

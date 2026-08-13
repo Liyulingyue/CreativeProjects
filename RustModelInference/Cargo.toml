@@ -8,7 +8,9 @@ license = "MIT"
 [features]
 default = []
 parity-trace = []
-gpu = ["ash"]
+vulkan = ["dep:ash"]
+metal = ["dep:metal"]
+gpu = ["vulkan", "metal"]
 
 [dependencies]
 memmap2 = "0.9"
@@ -26,6 +28,9 @@ unicode_categories = "0.1"
 sha2 = "0.10"
 ash = { version = "0.38", optional = true }
 thiserror = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = { version = "0.32", optional = true }
 
 [profile.release]
 opt-level = 3
