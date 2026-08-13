@@ -21,11 +21,12 @@ pub mod vision;
 
 pub use clip_config::{ClipVisionConfig, Qwen35Config};
 pub use compute::{
-    ActivationTransfer, BackendError, BackendKind, ComponentPlan, DeviceCapabilities,
-    DeviceDescriptor, DeviceDiscovery, DevicePlan, DeviceProvider, DeviceRegistry, DeviceSession,
-    ExecutionPlan, FenceId, LayerFamily, LayerOp, LayerSpan, LifecycleProbe, MemoryPlan,
-    ProgramBinding, ProgramId, ProgramKind, ProgramPlan, ResidentTensorPlan, RowShard, RunParams,
-    SessionStats, SlotId, SlotKind, SlotPlan, SlotStorage, TransferTarget,
+    ActivationTransfer, BackendError, BackendKind, CompiledModel, ComponentPlan,
+    DeviceCapabilities, DeviceDescriptor, DeviceDiscovery, DevicePlan, DeviceProvider,
+    DeviceRegistry, DeviceSession, ExecutionPlan, ExecutionRun, FenceId, LayerFamily, LayerOp,
+    LayerSpan, LifecycleProbe, MemoryPlan, ProgramBinding, ProgramId, ProgramKind, ProgramPlan,
+    ResidentTensorPlan, RowShard, RunParams, SessionStats, SlotId, SlotKind, SlotPlan, SlotStorage,
+    TransferTarget,
 };
 pub use ggufrs::{
     export_ggufrs, open_model_source, ComponentInfo, ComponentRole, ExportOptions, GgufrsError,

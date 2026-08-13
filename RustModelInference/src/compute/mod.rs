@@ -1,5 +1,6 @@
 pub mod device;
 pub mod program;
+pub mod session;
 
 pub use device::{
     BackendError, BackendKind, DeviceCapabilities, DeviceDescriptor, DeviceDiscovery,
@@ -7,6 +8,7 @@ pub use device::{
     RunParams, SessionStats, SlotId,
 };
 pub use program::*;
+pub use session::{CompiledModel, ExecutionRun};
 
 #[doc(hidden)]
 pub fn execute_q8_cpu_compat(
