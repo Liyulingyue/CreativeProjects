@@ -1,12 +1,14 @@
 import json
 import os
 import time
+import sqlite3
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
 import httpx
 from dotenv import load_dotenv
-from .models import AppSettings, IndexStats, IndexStatus
+from .models import AppSettings, IndexStats, IndexStatus, ChatSession, ChatMessage
 
 load_dotenv()
 
@@ -217,6 +219,146 @@ class RAGService:
         self.vector_store.clear()
 
 
+class ChatHistoryService:
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self._init_db()
+
+    def _get_conn(self) -> sqlite3.Connection:
+        return sqlite3.connect(self.db_path, check_same_thread=False)
+
+    def _init_db(self):
+        conn = self._get_conn()
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT DEFAULT '',
+                session_type TEXT DEFAULT 'chat',
+                updated_at INTEGER
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id TEXT PRIMARY KEY,
+                session_id TEXT,
+                role TEXT,
+                content TEXT,
+                sources TEXT,
+                timestamp INTEGER,
+                FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session ON chat_messages(session_id)")
+        conn.commit()
+        conn.close()
+
+    def create_session(self, session_type: str = "chat") -> ChatSession:
+        session_id = uuid.uuid4().hex
+        now = int(time.time() * 1000)
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT INTO chat_sessions (id, title, session_type, updated_at) VALUES (?, ?, ?, ?)",
+            (session_id, "", session_type, now)
+        )
+        conn.commit()
+        conn.close()
+        return ChatSession(id=session_id, title="", messages=[], updated_at=now, session_type=session_type)
+
+    def get_sessions(self, session_type: Optional[str] = None) -> list[ChatSession]:
+        conn = self._get_conn()
+        if session_type:
+            rows = conn.execute(
+                "SELECT id, title, session_type, updated_at FROM chat_sessions WHERE session_type = ? ORDER BY updated_at DESC",
+                (session_type,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, title, session_type, updated_at FROM chat_sessions ORDER BY updated_at DESC"
+            ).fetchall()
+
+        sessions = []
+        for row in rows:
+            session_id, title, sess_type, updated_at = row
+            messages = self._get_messages(conn, session_id)
+            sessions.append(ChatSession(
+                id=session_id,
+                title=title or "",
+                messages=messages,
+                updated_at=updated_at,
+                session_type=sess_type
+            ))
+        conn.close()
+        return sessions
+
+    def _get_messages(self, conn: sqlite3.Connection, session_id: str) -> list[ChatMessage]:
+        rows = conn.execute(
+            "SELECT id, role, content, sources, timestamp FROM chat_messages WHERE session_id = ? ORDER BY timestamp ASC",
+            (session_id,)
+        ).fetchall()
+        messages = []
+        for row in rows:
+            msg_id, role, content, sources, timestamp = row
+            sources_list = json.loads(sources) if sources else None
+            messages.append(ChatMessage(
+                id=msg_id,
+                role=role,
+                content=content,
+                sources=sources_list,
+                timestamp=timestamp
+            ))
+        return messages
+
+    def get_session(self, session_id: str) -> Optional[ChatSession]:
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT id, title, session_type, updated_at FROM chat_sessions WHERE id = ?",
+            (session_id,)
+        ).fetchone()
+        if not row:
+            conn.close()
+            return None
+        session_id, title, sess_type, updated_at = row
+        messages = self._get_messages(conn, session_id)
+        conn.close()
+        return ChatSession(
+            id=session_id,
+            title=title or "",
+            messages=messages,
+            updated_at=updated_at,
+            session_type=sess_type
+        )
+
+    def add_message(self, session_id: str, role: str, content: str, sources: Optional[list] = None) -> ChatMessage:
+        msg_id = uuid.uuid4().hex
+        now = int(time.time() * 1000)
+        sources_json = json.dumps(sources) if sources else None
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT INTO chat_messages (id, session_id, role, content, sources, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+            (msg_id, session_id, role, content, sources_json, now)
+        )
+        conn.execute(
+            "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
+            (now, session_id)
+        )
+        conn.commit()
+        conn.close()
+        return ChatMessage(id=msg_id, role=role, content=content, sources=sources, timestamp=now)
+
+    def delete_session(self, session_id: str):
+        conn = self._get_conn()
+        conn.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
+        conn.commit()
+        conn.close()
+
+    def update_session_title(self, session_id: str, title: str):
+        conn = self._get_conn()
+        conn.execute("UPDATE chat_sessions SET title = ? WHERE id = ?", (title, session_id))
+        conn.commit()
+        conn.close()
+
+
 def _get_default_settings() -> AppSettings:
     embedding_dim_str = os.getenv("EMBEDDING_DIM", "AUTO")
     embedding_api_key = os.getenv("EMBEDDING_API_KEY", "")
@@ -247,6 +389,7 @@ class AppState:
         )
         self._index_status: IndexStatus = IndexStatus(is_indexing=False, progress=0.0)
         self._rag_service: Optional[RAGService] = None
+        self._chat_history: Optional[ChatHistoryService] = None
         self._load()
 
     def _load(self):
@@ -312,6 +455,12 @@ class AppState:
                 db_path=db_path,
             )
         return self._rag_service
+
+    def get_chat_history(self) -> ChatHistoryService:
+        if self._chat_history is None:
+            db_path = str(DATA_DIR / "chat_history.db")
+            self._chat_history = ChatHistoryService(db_path)
+        return self._chat_history
 
 
 state = AppState()

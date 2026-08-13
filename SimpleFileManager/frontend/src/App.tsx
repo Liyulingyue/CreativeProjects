@@ -1,12 +1,12 @@
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom';
 import { FileManagerPage } from './components/FileManagerPage';
-import { RAGPanel } from './components/RAGPanel';
+import { SearchPage } from './components/SearchPage';
 import { SimpleChat } from './components/SimpleChat';
 
 function App() {
   return (
     <BrowserRouter>
-      <div className="app">
+      <div className="app h-screen flex flex-col">
         <header className="flex items-center justify-between px-6 py-4 bg-white border-b border-slate-100">
           <h1 className="text-xl font-bold text-slate-900">📁 SimpleFileManager</h1>
           <nav className="flex gap-2">
@@ -21,14 +21,14 @@ function App() {
               📂 文件管理
             </NavLink>
             <NavLink
-              to="/rag"
+              to="/search"
               className={({ isActive }) =>
                 `px-4 py-2 rounded-xl text-sm font-medium transition-colors ${
                   isActive ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                 }`
               }
             >
-              📚 AI 问答
+              🔍 文件搜索
             </NavLink>
             <NavLink
               to="/chat"
@@ -38,16 +38,18 @@ function App() {
                 }`
               }
             >
-              💬 单纯对话
+              🤖 Agent 对话
             </NavLink>
           </nav>
         </header>
 
-        <Routes>
-          <Route path="/" element={<FileManagerPage />} />
-          <Route path="/rag" element={<RAGPanel />} />
-          <Route path="/chat" element={<SimpleChat />} />
-        </Routes>
+        <div className="flex-1 overflow-hidden">
+          <Routes>
+            <Route path="/" element={<FileManagerPage />} />
+            <Route path="/search" element={<SearchPage />} />
+            <Route path="/chat" element={<SimpleChat />} />
+          </Routes>
+        </div>
       </div>
     </BrowserRouter>
   );

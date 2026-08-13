@@ -80,3 +80,40 @@ class IndexStatus(BaseModel):
     is_indexing: bool
     progress: float
     current_path: Optional[str] = None
+
+
+class ChatMessage(BaseModel):
+    id: str
+    role: str
+    content: str
+    sources: Optional[list[dict]] = None
+    timestamp: int
+
+
+class ChatSession(BaseModel):
+    id: str
+    title: str = ""
+    messages: list[ChatMessage] = []
+    updated_at: int
+    session_type: str = "chat"
+
+
+class ChatHistoryResponse(BaseModel):
+    sessions: list[ChatSession]
+    current_session_id: Optional[str] = None
+
+
+class CreateSessionRequest(BaseModel):
+    session_type: str = "chat"
+
+
+class AddMessageRequest(BaseModel):
+    session_id: str
+    role: str
+    content: str
+    sources: Optional[list[dict]] = None
+
+
+class UpdateTitleRequest(BaseModel):
+    session_id: str
+    title: str
