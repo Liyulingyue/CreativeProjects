@@ -5,6 +5,7 @@ pub mod load_plan;
 pub mod memory;
 pub mod model;
 pub mod ops;
+pub mod placement;
 #[cfg(feature = "parity-trace")]
 #[doc(hidden)]
 pub mod parity_trace;
@@ -32,6 +33,10 @@ pub use model::{
     QuantizedLinear, TensorInfo, TensorSource,
 };
 pub use ops::*;
+pub use placement::{
+    parse_placement, parse_placements, ComponentId, DeviceId, NormalizedTarget, PlacementError,
+    PlacementMode, PlacementRule,
+};
 pub use prompt::{
     append_qwen_assistant_prefix, append_qwen_message_tokens, build_qwen_chat_prompt, QwenMessage,
 };
