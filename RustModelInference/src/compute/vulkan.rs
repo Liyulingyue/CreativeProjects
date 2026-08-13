@@ -416,6 +416,8 @@ unsafe fn bind_q8_dispatch(
     arena: vk::Buffer,
     input: &SlotPlan,
     output: &SlotPlan,
+    scratch_offset: u64,
+    scratch_size: u64,
     chunk: ChunkSpec,
 ) -> Dispatch {
     let infos = [
@@ -431,8 +433,12 @@ unsafe fn bind_q8_dispatch(
             .buffer(arena)
             .offset(output.arena_offset)
             .range(output.byte_len),
+        vk::DescriptorBufferInfo::default()
+            .buffer(arena)
+            .offset(scratch_offset)
+            .range(scratch_size.max(4)),
     ];
-    let writes = [0, 1, 2].map(|binding| {
+    let writes = [0, 1, 2, 3].map(|binding| {
         vk::WriteDescriptorSet::default()
             .dst_set(set)
             .dst_binding(binding)
@@ -602,11 +608,7 @@ impl SubmissionTracker {
         }
     }
 
-    fn finish_submit(
-        &mut self,
-        result: Result<(), vk::Result>,
-        pending: Pending,
-    ) -> Result<(), vk::Result> {
+    fn finish_submit<E>(&mut self, result: Result<(), E>, pending: Pending) -> Result<(), E> {
         match result {
             Ok(()) => {
                 self.pending.push_back(pending);
@@ -780,7 +782,7 @@ impl VulkanSession {
             &catalog,
         )?;
 
-        let bindings = [0, 1, 2].map(|binding| {
+        let bindings = [0, 1, 2, 3].map(|binding| {
             vk::DescriptorSetLayoutBinding::default()
                 .binding(binding)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
@@ -943,6 +945,8 @@ impl VulkanSession {
                         arena.buffer,
                         input,
                         output,
+                        spec.q8_scratch_offset,
+                        spec.q8_scratch_size,
                         chunk,
                     )
                 });
@@ -995,6 +999,8 @@ impl VulkanSession {
                                     arena.buffer,
                                     &slots[&input],
                                     &slots[&output],
+                                    spec.q8_scratch_offset,
+                                    spec.q8_scratch_size,
                                     chunk,
                                 )
                             });
@@ -1227,6 +1233,31 @@ impl VulkanSession {
     ) -> Result<(), BackendError> {
         self.device
             .cmd_bind_pipeline(command, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+        if mode == 0 {
+            let set = dispatches.first().ok_or(BackendError::InvalidHandle)?.set;
+            self.device.cmd_bind_descriptor_sets(
+                command,
+                vk::PipelineBindPoint::COMPUTE,
+                self.pipeline_layout,
+                0,
+                &[set],
+                &[],
+            );
+            let push = [batch, n_in, 0, 0, 0, 2, 0, 0];
+            self.device.cmd_push_constants(
+                command,
+                self.pipeline_layout,
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                std::slice::from_raw_parts(push.as_ptr().cast(), 32),
+            );
+            let blocks = batch
+                .checked_mul(n_in / Q8_BLOCK_ELEMENTS as u32)
+                .ok_or(BackendError::InvalidHandle)?;
+            self.device
+                .cmd_dispatch(command, blocks.div_ceil(LOCAL_SIZE), 1, 1);
+            self.compute_barrier(command);
+        }
         for (index, dispatch) in dispatches.iter().enumerate() {
             if index != 0 {
                 self.compute_barrier(command);
@@ -1796,15 +1827,24 @@ impl DeviceSession for VulkanSession {
                 "program fence is not complete",
             ));
         }
-        let record_result = (|| -> Result<(), vk::Result> {
+        let record_result = (|| -> Result<(), BackendError> {
+            let record_error = |error| {
+                submission(
+                    &self.descriptor,
+                    format!("record or submit failed: {error:?}"),
+                )
+            };
             unsafe {
                 self.device
-                    .reset_command_buffer(command, vk::CommandBufferResetFlags::empty())?;
-                self.device.begin_command_buffer(
-                    command,
-                    &vk::CommandBufferBeginInfo::default()
-                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-                )?;
+                    .reset_command_buffer(command, vk::CommandBufferResetFlags::empty())
+                    .map_err(record_error)?;
+                self.device
+                    .begin_command_buffer(
+                        command,
+                        &vk::CommandBufferBeginInfo::default()
+                            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                    )
+                    .map_err(record_error)?;
                 self.device.cmd_copy_buffer(
                     command,
                     self.staging.buffer,
@@ -1831,62 +1871,14 @@ impl DeviceSession for VulkanSession {
                     &[input_barrier],
                     &[],
                 );
-                self.device.cmd_bind_pipeline(
+                self.record_q8(
                     command,
-                    vk::PipelineBindPoint::COMPUTE,
-                    self.pipeline,
-                );
-                for (index, dispatch) in dispatches.iter().enumerate() {
-                    if index != 0 {
-                        let compute_barrier = vk::MemoryBarrier::default()
-                            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                            .dst_access_mask(
-                                vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
-                            );
-                        self.device.cmd_pipeline_barrier(
-                            command,
-                            vk::PipelineStageFlags::COMPUTE_SHADER,
-                            vk::PipelineStageFlags::COMPUTE_SHADER,
-                            vk::DependencyFlags::empty(),
-                            &[compute_barrier],
-                            &[],
-                            &[],
-                        );
-                    }
-                    self.device.cmd_bind_descriptor_sets(
-                        command,
-                        vk::PipelineBindPoint::COMPUTE,
-                        self.pipeline_layout,
-                        0,
-                        &[dispatch.set],
-                        &[],
-                    );
-                    let push = [
-                        params.token_count,
-                        n_in,
-                        dispatch.local_rows,
-                        dispatch.global_row_start,
-                        output_stride,
-                        mode,
-                        dispatch.weight_byte_bias,
-                        dispatch.output_row_start,
-                    ];
-                    let bytes = std::slice::from_raw_parts(push.as_ptr() as *const u8, 32);
-                    self.device.cmd_push_constants(
-                        command,
-                        self.pipeline_layout,
-                        vk::ShaderStageFlags::COMPUTE,
-                        0,
-                        bytes,
-                    );
-                    let work = if mode == 0 {
-                        params.token_count * dispatch.local_rows
-                    } else {
-                        params.token_count * n_in
-                    };
-                    self.device
-                        .cmd_dispatch(command, work.div_ceil(LOCAL_SIZE), 1, 1);
-                }
+                    &dispatches,
+                    params.token_count,
+                    n_in,
+                    output_stride,
+                    mode,
+                )?;
                 let output_barrier = vk::BufferMemoryBarrier::default()
                     .src_access_mask(vk::AccessFlags::SHADER_WRITE)
                     .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
@@ -1913,11 +1905,15 @@ impl DeviceSession for VulkanSession {
                         .dst_offset(output_offset)
                         .size(output_bytes)],
                 );
-                self.device.end_command_buffer(command)?;
-                self.device.reset_fences(&[fence])?;
+                self.device
+                    .end_command_buffer(command)
+                    .map_err(record_error)?;
+                self.device.reset_fences(&[fence]).map_err(record_error)?;
                 let commands = [command];
                 let submit = [vk::SubmitInfo::default().command_buffers(&commands)];
-                self.device.queue_submit(self.queue, &submit, fence)
+                self.device
+                    .queue_submit(self.queue, &submit, fence)
+                    .map_err(record_error)
             }
         })();
         let id = FenceId(self.next_fence);
@@ -1925,10 +1921,7 @@ impl DeviceSession for VulkanSession {
             .submission
             .finish_submit(record_result, Pending { id, program })
         {
-            return Err(submission(
-                &self.descriptor,
-                format!("record or submit failed; session poisoned: {error:?}"),
-            ));
+            return Err(error);
         }
         self.next_fence += 1;
         self.stats.submissions += 1;
@@ -2035,6 +2028,8 @@ struct ProgramSpec {
     output_stride: u32,
     mode: u32,
     layer_ops: Vec<LayerOpSpec>,
+    q8_scratch_offset: u64,
+    q8_scratch_size: u64,
 }
 
 struct ValidatedPlan {
@@ -2051,12 +2046,23 @@ struct ValidatedPlan {
 fn descriptor_counts(program_count: usize, set_count: usize) -> Option<(u32, u32, u32)> {
     let command_buffer_count = u32::try_from(program_count).ok()?;
     let descriptor_set_count = u32::try_from(set_count).ok()?;
-    let storage_descriptor_count = descriptor_set_count.checked_mul(3)?;
+    let storage_descriptor_count = descriptor_set_count.checked_mul(4)?;
     Some((
         descriptor_set_count,
         storage_descriptor_count,
         command_buffer_count,
     ))
+}
+
+fn q8_activation_scratch_bytes(batch: u32, n_in: u32) -> Option<u64> {
+    if batch == 0 || n_in == 0 || n_in % Q8_BLOCK_ELEMENTS as u32 != 0 {
+        return None;
+    }
+    let values = u64::from(batch).checked_mul(u64::from(n_in))?;
+    let scales = values
+        .checked_div(Q8_BLOCK_ELEMENTS)?
+        .checked_mul(size_of::<f32>() as u64)?;
+    values.checked_add(scales)
 }
 
 fn validate_plan(
@@ -2145,7 +2151,45 @@ fn validate_plan(
     }
     let resident_size = align_up_checked(plan.memory.resident_bytes.max(4), 4)
         .ok_or(BackendError::InvalidHandle)?;
-    let arena_size = arena_size.max(4);
+    let mut specs = build_program_specs(plan, catalog, adapter)?;
+    let mut arena_size = align_up_checked(arena_size.max(4), plan.descriptor.buffer_alignment)
+        .ok_or(BackendError::InvalidHandle)?;
+    for spec in &mut specs {
+        let scratch_size = match &spec.plan.kind {
+            ProgramKind::Q8Rows { batch_capacity, .. } => {
+                q8_activation_scratch_bytes(*batch_capacity, spec.n_in)
+            }
+            ProgramKind::LayerSegment { .. } | ProgramKind::FinalNormQ8Logits { .. } => spec
+                .layer_ops
+                .iter()
+                .filter_map(|op| match op {
+                    LayerOpSpec::Q8Matmul { input, n_in, .. } => {
+                        let capacity = slots[input].byte_len / 4 / u64::from(*n_in);
+                        u32::try_from(capacity)
+                            .ok()
+                            .and_then(|batch| q8_activation_scratch_bytes(batch, *n_in))
+                    }
+                    _ => None,
+                })
+                .max(),
+            ProgramKind::EmbeddingRows { .. } => Some(0),
+        }
+        .ok_or(BackendError::InvalidHandle)?;
+        if scratch_size != 0 {
+            if scratch_size > adapter.max_storage_buffer_range {
+                return Err(BackendError::InvalidHandle);
+            }
+            spec.q8_scratch_offset = arena_size;
+            spec.q8_scratch_size = scratch_size;
+            arena_size = align_up_checked(
+                arena_size
+                    .checked_add(scratch_size)
+                    .ok_or(BackendError::InvalidHandle)?,
+                plan.descriptor.buffer_alignment,
+            )
+            .ok_or(BackendError::InvalidHandle)?;
+        }
+    }
     let staging_size = resident_size.max(arena_size);
     let required_bytes = resident_size
         .checked_add(arena_size)
@@ -2163,7 +2207,6 @@ fn validate_plan(
     {
         return Err(BackendError::InvalidHandle);
     }
-    let specs = build_program_specs(plan, catalog, adapter)?;
     let has_fixed = specs.iter().any(|spec| !spec.layer_ops.is_empty());
     if has_fixed
         && (resident_size > adapter.max_storage_buffer_range
@@ -2295,6 +2338,8 @@ fn build_program_specs(
                     output_stride: 0,
                     mode: 2,
                     layer_ops: bind_layer_ops(program, plan, catalog, adapter)?,
+                    q8_scratch_offset: 0,
+                    q8_scratch_size: 0,
                 });
             }
             let (tensor, rows, n_in, output_stride, mode) = match &program.kind {
@@ -2362,6 +2407,8 @@ fn build_program_specs(
                 output_stride: if mode == 0 { output_stride } else { n_in },
                 mode,
                 layer_ops: Vec::new(),
+                q8_scratch_offset: 0,
+                q8_scratch_size: 0,
             })
         })
         .collect()
@@ -3326,9 +3373,17 @@ mod tests {
 
     #[test]
     fn descriptor_counts_reject_every_u32_truncation_or_overflow() {
-        assert_eq!(descriptor_counts(2, 3), Some((3, 9, 2)));
-        assert_eq!(descriptor_counts(1, u32::MAX as usize / 3 + 1), None);
+        assert_eq!(descriptor_counts(2, 3), Some((3, 12, 2)));
+        assert_eq!(descriptor_counts(1, u32::MAX as usize / 4 + 1), None);
         assert_eq!(descriptor_counts(u32::MAX as usize + 1, 1), None);
+    }
+
+    #[test]
+    fn q8_activation_scratch_holds_signed_values_and_f32_scales() {
+        assert_eq!(q8_activation_scratch_bytes(2, 64), Some(144));
+        assert_eq!(q8_activation_scratch_bytes(0, 64), None);
+        assert_eq!(q8_activation_scratch_bytes(1, 31), None);
+        assert_eq!(q8_activation_scratch_bytes(u32::MAX, u32::MAX - 31), None);
     }
 
     #[test]

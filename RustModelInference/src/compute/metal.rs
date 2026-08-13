@@ -175,6 +175,8 @@ struct ValidatedPlan {
     chunks: Vec<ChunkSpec>,
     programs: Vec<ProgramResource>,
     runtime_bytes: u64,
+    q8_values_bytes: u64,
+    q8_scales_bytes: u64,
 }
 
 struct ResidentChunk {
@@ -286,6 +288,8 @@ pub struct MetalSession {
     pipelines: BTreeMap<&'static str, ComputePipelineState>,
     resident: Vec<ResidentChunk>,
     slots: BTreeMap<SlotId, SlotResource>,
+    q8_values: Buffer,
+    q8_scales: Buffer,
     programs: BTreeMap<ProgramId, ProgramResource>,
     pending: VecDeque<(FenceId, CommandBuffer)>,
     next_fence: u64,
@@ -317,6 +321,7 @@ impl MetalSession {
                 })?;
             let pipelines = [
                 "q8_rows",
+                "quantize_q8",
                 "rms_norm",
                 "rope",
                 "kv_append",
@@ -406,12 +411,20 @@ impl MetalSession {
             .into_iter()
             .map(|program| (program.plan.id, program))
             .collect();
+        let q8_values = device.new_buffer(
+            validated.q8_values_bytes,
+            MTLResourceOptions::StorageModePrivate,
+        );
+        let q8_scales = device.new_buffer(
+            validated.q8_scales_bytes,
+            MTLResourceOptions::StorageModePrivate,
+        );
         let allocation_count = resident.len() as u64
             + slots
                 .values()
                 .map(|slot| 1 + u64::from(slot.staging.is_some()))
                 .sum::<u64>()
-            + 1;
+            + 3;
         let weight_upload_bytes = plan
             .tensors
             .iter()
@@ -425,6 +438,8 @@ impl MetalSession {
             pipelines,
             resident,
             slots,
+            q8_values,
+            q8_scales,
             programs,
             pending: VecDeque::new(),
             next_fence: 1,
@@ -488,6 +503,24 @@ impl MetalSession {
         mode: u32,
         first_row: u32,
     ) -> Result<(), BackendError> {
+        if mode == 0 {
+            let blocks = batch
+                .checked_mul(n_in / Q8_BLOCK_ELEMENTS as u32)
+                .ok_or(BackendError::InvalidHandle)?;
+            let pipeline = &self.pipelines["quantize_q8"];
+            let encoder = command.new_compute_command_encoder();
+            encoder.set_compute_pipeline_state(pipeline);
+            encoder.set_buffer(0, Some(&self.slots[&input].buffer), 0);
+            encoder.set_buffer(1, Some(&self.q8_values), 0);
+            encoder.set_buffer(2, Some(&self.q8_scales), 0);
+            let push = [batch, n_in, 0, 0, 0, 0, 0, 0];
+            encoder.set_bytes(3, 32, push.as_ptr().cast());
+            encoder.dispatch_threads(
+                MTLSize::new(u64::from(blocks), 1, 1),
+                MTLSize::new(pipeline.thread_execution_width(), 1, 1),
+            );
+            encoder.end_encoding();
+        }
         let pipeline = &self.pipelines["q8_rows"];
         for &chunk_index in chunks {
             let chunk = &self.resident[chunk_index];
@@ -496,6 +529,8 @@ impl MetalSession {
             encoder.set_buffer(0, Some(&chunk.buffer), 0);
             encoder.set_buffer(1, Some(&self.slots[&input].buffer), 0);
             encoder.set_buffer(2, Some(&self.slots[&output].buffer), 0);
+            encoder.set_buffer(3, Some(&self.q8_values), 0);
+            encoder.set_buffer(4, Some(&self.q8_scales), 0);
             let push = [
                 batch,
                 n_in,
@@ -506,7 +541,7 @@ impl MetalSession {
                 0,
                 chunk.spec.global_row_start.saturating_sub(first_row),
             ];
-            encoder.set_bytes(3, 32, push.as_ptr().cast());
+            encoder.set_bytes(5, 32, push.as_ptr().cast());
             let work = if mode == 0 {
                 batch.checked_mul(chunk.spec.local_rows)
             } else {
@@ -1201,6 +1236,35 @@ fn validate_plan(
         return Err(BackendError::InvalidHandle);
     }
 
+    let q8_values_bytes = programs
+        .iter()
+        .try_fold(0_u64, |largest, program| {
+            let values = match &program.plan.kind {
+                ProgramKind::Q8Rows { batch_capacity, .. } => {
+                    u64::from(*batch_capacity).checked_mul(u64::from(program.n_in))?
+                }
+                ProgramKind::LayerSegment { .. } | ProgramKind::FinalNormQ8Logits { .. } => program
+                    .layer_ops
+                    .iter()
+                    .filter_map(|op| match op {
+                        BoundLayerOp::Q8Matmul { input, .. } => {
+                            Some(slots.get(input)?.byte_len / size_of::<f32>() as u64)
+                        }
+                        _ => None,
+                    })
+                    .max()
+                    .unwrap_or(0),
+                ProgramKind::EmbeddingRows { .. } => 0,
+            };
+            Some(largest.max(values))
+        })
+        .ok_or(BackendError::InvalidHandle)?
+        .max(Q8_BLOCK_ELEMENTS);
+    let q8_scales_bytes = q8_values_bytes
+        .checked_div(Q8_BLOCK_ELEMENTS)
+        .and_then(|blocks| blocks.checked_mul(size_of::<f32>() as u64))
+        .ok_or(BackendError::InvalidHandle)?;
+
     let slot_bytes = slots
         .values()
         .try_fold(0_u64, |total, slot| total.checked_add(slot.byte_len));
@@ -1218,13 +1282,17 @@ fn validate_plan(
         .resident_bytes
         .checked_add(slot_bytes)
         .and_then(|bytes| bytes.checked_add(staging_bytes))
+        .and_then(|bytes| bytes.checked_add(q8_values_bytes))
+        .and_then(|bytes| bytes.checked_add(q8_scales_bytes))
         .ok_or(BackendError::InvalidHandle)?;
     let upload_peak = plan
         .memory
         .resident_bytes
         .checked_mul(2)
         .ok_or(BackendError::InvalidHandle)?;
-    if runtime_bytes.max(upload_peak) > adapter.descriptor.usable_bytes
+    if q8_values_bytes > adapter.max_buffer_length
+        || q8_scales_bytes > adapter.max_buffer_length
+        || runtime_bytes.max(upload_peak) > adapter.descriptor.usable_bytes
         || plan.memory.required_bytes > adapter.descriptor.usable_bytes
     {
         return Err(BackendError::InvalidHandle);
@@ -1234,6 +1302,8 @@ fn validate_plan(
         chunks,
         programs,
         runtime_bytes,
+        q8_values_bytes,
+        q8_scales_bytes,
     })
 }
 

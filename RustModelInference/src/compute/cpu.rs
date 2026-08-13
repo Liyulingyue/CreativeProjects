@@ -10,6 +10,7 @@ use super::program::{
 use crate::thread_pool::ComputePool;
 use crate::{ComponentId, DeviceId, GGMLType, LayerFamily, PlacementMode, TensorCatalog};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -256,13 +257,22 @@ impl DeviceProvider for CpuProvider {
                 len: slot.len(),
             })
             .collect();
+        let mut q8_weights = BTreeMap::new();
+        let cpu_programs: BTreeMap<ProgramId, CpuProgram> = programs
+            .values()
+            .map(|program| {
+                bind_cpu_program(program, &catalog, &mut q8_weights)
+                    .map(|program| (program.id, program))
+            })
+            .collect::<Result<_, _>>()?;
         let worker = CpuWorker::start(
             self.thread_count,
             descriptor.id.clone(),
             Arc::clone(&catalog),
-            programs.clone(),
+            cpu_programs,
             slot_ptrs,
             auxiliary,
+            q8_weights,
             max_batch,
             max_q8_input,
             max_attention_context,
@@ -388,7 +398,9 @@ impl DeviceSession for CpuSession {
 
 impl CpuSession {
     fn require_idle(&self, message: &'static str) -> Result<(), BackendError> {
-        if !self.worker.pending.is_empty() {
+        if self.worker.is_poisoned() {
+            Err(BackendError::PoisonedRun)
+        } else if !self.worker.pending.is_empty() {
             Err(BackendError::Submission {
                 device: self.descriptor.id.clone(),
                 message: message.into(),
@@ -413,6 +425,62 @@ struct CpuWorker {
     next_fence: u64,
     pending: VecDeque<(FenceId, usize)>,
     device: DeviceId,
+    poisoned: Arc<AtomicBool>,
+}
+
+struct CpuProgram {
+    id: ProgramId,
+    kind: ProgramKind,
+    input: SlotId,
+    output: SlotId,
+    layer_ops: Arc<[LayerOp]>,
+}
+
+struct CpuQ8Weight {
+    bytes: Arc<[u8]>,
+    n_in: usize,
+    rows: usize,
+}
+
+fn bind_cpu_program(
+    program: &ProgramPlan,
+    catalog: &TensorCatalog,
+    q8_weights: &mut BTreeMap<crate::TensorId, CpuQ8Weight>,
+) -> Result<CpuProgram, BackendError> {
+    if matches!(
+        program.kind,
+        ProgramKind::LayerSegment { .. } | ProgramKind::FinalNormQ8Logits { .. }
+    ) {
+        for op in &program.layer_ops {
+            if let LayerOp::Q8Matmul { weight, .. } = op {
+                let entry = catalog.entry(*weight).ok_or(BackendError::InvalidHandle)?;
+                let n_in =
+                    usize::try_from(entry.shape[0]).map_err(|_| BackendError::InvalidHandle)?;
+                let rows =
+                    usize::try_from(entry.row_count).map_err(|_| BackendError::InvalidHandle)?;
+                if !q8_weights.contains_key(weight) {
+                    q8_weights.insert(
+                        *weight,
+                        CpuQ8Weight {
+                            bytes: catalog
+                                .bytes(*weight)
+                                .map_err(|_| BackendError::InvalidHandle)?
+                                .into(),
+                            n_in,
+                            rows,
+                        },
+                    );
+                }
+            }
+        }
+    }
+    Ok(CpuProgram {
+        id: program.id,
+        kind: program.kind.clone(),
+        input: program.input,
+        output: program.output,
+        layer_ops: program.layer_ops.clone().into(),
+    })
 }
 
 impl CpuWorker {
@@ -421,9 +489,10 @@ impl CpuWorker {
         thread_count: usize,
         device: DeviceId,
         catalog: Arc<TensorCatalog>,
-        programs: BTreeMap<ProgramId, ProgramPlan>,
+        programs: BTreeMap<ProgramId, CpuProgram>,
         slots: Vec<SlotPtr>,
         auxiliary: BTreeMap<crate::TensorId, Box<[f32]>>,
+        q8_weights: BTreeMap<crate::TensorId, CpuQ8Weight>,
         parameter_capacity: usize,
         q8_len: usize,
         attention_context: usize,
@@ -443,6 +512,8 @@ impl CpuWorker {
         let scales = vec![0.0; q8_len / 32].into_boxed_slice();
         let attention_scores = vec![0.0; attention_context].into_boxed_slice();
         let attention_values = vec![0.0; attention_context].into_boxed_slice();
+        let poisoned = Arc::new(AtomicBool::new(false));
+        let worker_poisoned = Arc::clone(&poisoned);
         let worker_device = device.clone();
         let thread = std::thread::Builder::new()
             .name(format!("{}-compiled-session", device.as_str()))
@@ -451,9 +522,9 @@ impl CpuWorker {
                     pool: ComputePool::new(thread_count),
                     device: worker_device,
                     catalog,
-                    programs,
                     slots,
                     auxiliary,
+                    q8_weights,
                     q8,
                     scales,
                     attention_scores,
@@ -461,10 +532,22 @@ impl CpuWorker {
                 };
                 let _ = ready_tx.send(());
                 while let Ok((fence, program, params_index)) = request_rx.recv() {
-                    let result = param_ptrs
-                        .get(params_index)
-                        .ok_or(BackendError::InvalidHandle)
-                        .and_then(|params| state.execute(program, *params));
+                    let result = if worker_poisoned.load(Ordering::Acquire) {
+                        Err(BackendError::PoisonedRun)
+                    } else {
+                        param_ptrs
+                            .get(params_index)
+                            .ok_or(BackendError::InvalidHandle)
+                            .and_then(|params| {
+                                programs
+                                    .get(&program)
+                                    .ok_or(BackendError::InvalidHandle)
+                                    .and_then(|program| state.execute(program, *params))
+                            })
+                    };
+                    if result.is_err() {
+                        worker_poisoned.store(true, Ordering::Release);
+                    }
                     if completion_tx.send((fence, result)).is_err() {
                         break;
                     }
@@ -482,6 +565,7 @@ impl CpuWorker {
             next_fence: 0,
             pending: VecDeque::with_capacity(in_flight_capacity),
             device,
+            poisoned,
         })
     }
 
@@ -490,6 +574,9 @@ impl CpuWorker {
         program: ProgramId,
         params: &RunParams<'_>,
     ) -> Result<FenceId, BackendError> {
+        if self.poisoned.load(Ordering::Acquire) {
+            return Err(BackendError::PoisonedRun);
+        }
         let Some(params_index) = (0..self.params.len())
             .find(|index| self.pending.iter().all(|(_, pending)| pending != index))
         else {
@@ -570,6 +657,10 @@ impl CpuWorker {
         self.pending.iter().any(|(pending, _)| *pending == fence)
     }
 
+    fn is_poisoned(&self) -> bool {
+        self.poisoned.load(Ordering::Acquire)
+    }
+
     fn shutdown(&mut self) {
         self.requests.take();
         if let Some(thread) = self.thread.take() {
@@ -616,9 +707,9 @@ struct WorkerState {
     pool: ComputePool,
     device: DeviceId,
     catalog: Arc<TensorCatalog>,
-    programs: BTreeMap<ProgramId, ProgramPlan>,
     slots: Vec<SlotPtr>,
     auxiliary: BTreeMap<crate::TensorId, Box<[f32]>>,
+    q8_weights: BTreeMap<crate::TensorId, CpuQ8Weight>,
     q8: Box<[u8]>,
     scales: Box<[f32]>,
     attention_scores: Box<[f32]>,
@@ -626,35 +717,29 @@ struct WorkerState {
 }
 
 impl WorkerState {
-    fn execute(&mut self, program: ProgramId, params_ptr: usize) -> Result<(), BackendError> {
+    fn execute(&mut self, plan: &CpuProgram, params_ptr: usize) -> Result<(), BackendError> {
         let params = unsafe { &*(params_ptr as *const CpuRunParams) };
-        let plan = self
-            .programs
-            .get(&program)
-            .ok_or(BackendError::InvalidHandle)?;
         let input = plan.input;
         let output = plan.output;
-        let kind = plan.kind.clone();
-        let layer_ops = plan.layer_ops.clone();
-        match kind {
+        match &plan.kind {
             ProgramKind::Q8Rows {
                 tensor,
                 rows,
                 batch_capacity,
             } => self.execute_q8_rows(
                 params,
-                tensor,
+                *tensor,
                 rows.start as usize,
                 rows.end as usize,
-                batch_capacity as usize,
+                *batch_capacity as usize,
                 input,
                 output,
             ),
             ProgramKind::EmbeddingRows { tensor, row_count } => {
-                self.execute_embedding_rows(params, tensor, row_count as usize, output)
+                self.execute_embedding_rows(params, *tensor, *row_count as usize, output)
             }
             ProgramKind::LayerSegment { .. } | ProgramKind::FinalNormQ8Logits { .. } => {
-                self.execute_layer_ops(params, &layer_ops)
+                self.execute_layer_ops(params, &plan.layer_ops)
             }
         }
     }
@@ -680,7 +765,7 @@ impl WorkerState {
                     input,
                     weight,
                     output,
-                } => self.execute_q8_matmul(input, weight, output, batch)?,
+                } => self.execute_bound_q8_matmul(input, output, weight, batch)?,
                 LayerOp::Rope {
                     q,
                     k,
@@ -805,19 +890,19 @@ impl WorkerState {
         Ok(())
     }
 
-    fn execute_q8_matmul(
+    fn execute_bound_q8_matmul(
         &mut self,
         input: SlotId,
-        weight: crate::TensorId,
         output: SlotId,
+        weight: crate::TensorId,
         batch: usize,
     ) -> Result<(), BackendError> {
-        let entry = self
-            .catalog
-            .entry(weight)
+        let weight = self
+            .q8_weights
+            .get(&weight)
             .ok_or(BackendError::InvalidHandle)?;
-        let n_in = usize::try_from(entry.shape[0]).map_err(|_| BackendError::InvalidHandle)?;
-        let rows = usize::try_from(entry.row_count).map_err(|_| BackendError::InvalidHandle)?;
+        let n_in = weight.n_in;
+        let rows = weight.rows;
         let input_slot = *self
             .slots
             .get(input.0 as usize)
@@ -833,10 +918,6 @@ impl WorkerState {
         {
             return Err(BackendError::InvalidHandle);
         }
-        let weight_bytes = self
-            .catalog
-            .bytes(weight)
-            .map_err(|_| BackendError::InvalidHandle)?;
         for item in 0..batch {
             let input = unsafe {
                 std::slice::from_raw_parts((input_slot.ptr as *const f32).add(item * n_in), n_in)
@@ -852,7 +933,7 @@ impl WorkerState {
             };
             matmul_q8_range_with_pool(
                 &self.pool,
-                weight_bytes,
+                &weight.bytes,
                 &self.q8[..n_in],
                 &self.scales[..n_in / 32],
                 output,
@@ -1280,11 +1361,13 @@ mod tests {
         TensorId, TensorInfo, TensorSource,
     };
     use std::ops::Range;
+    use std::sync::atomic::AtomicUsize;
     use std::sync::Arc;
 
     struct TestSource {
         info: TensorInfo,
         bytes: Vec<u8>,
+        accesses: Arc<AtomicUsize>,
     }
 
     impl TensorSource for TestSource {
@@ -1297,6 +1380,7 @@ mod tests {
         }
 
         fn tensor_slice(&self, name: &str) -> Option<&[u8]> {
+            self.accesses.fetch_add(1, Ordering::Relaxed);
             (name == self.info.name).then_some(&self.bytes)
         }
 
@@ -1320,6 +1404,17 @@ mod tests {
         n_out: usize,
         rows: Range<u32>,
     ) -> (Arc<TensorCatalog>, DevicePlan, Vec<f32>) {
+        let (catalog, plan, input, _) =
+            q8_program_fixture_with_access_count(batch, n_in, n_out, rows);
+        (catalog, plan, input)
+    }
+
+    fn q8_program_fixture_with_access_count(
+        batch: usize,
+        n_in: usize,
+        n_out: usize,
+        rows: Range<u32>,
+    ) -> (Arc<TensorCatalog>, DevicePlan, Vec<f32>, Arc<AtomicUsize>) {
         let mut bytes = Vec::with_capacity(n_out * n_in / 32 * 34);
         for row in 0..n_out {
             for block in 0..n_in / 32 {
@@ -1330,6 +1425,7 @@ mod tests {
                 );
             }
         }
+        let accesses = Arc::new(AtomicUsize::new(0));
         let catalog = Arc::new(
             TensorCatalog::from_sources(vec![(
                 ComponentId::Llm,
@@ -1341,6 +1437,7 @@ mod tests {
                         offset: 0,
                     },
                     bytes,
+                    accesses: Arc::clone(&accesses),
                 }),
             )])
             .unwrap(),
@@ -1403,7 +1500,7 @@ mod tests {
         let input = (0..batch * n_in)
             .map(|index| (index as i32 % 19 - 9) as f32 * 0.07)
             .collect();
-        (catalog, plan, input)
+        (catalog, plan, input, accesses)
     }
 
     fn open_cpu_session(catalog: &Arc<TensorCatalog>, plan: &DevicePlan) -> Box<dyn DeviceSession> {
@@ -1500,6 +1597,95 @@ mod tests {
     }
 
     #[test]
+    fn predecessor_failure_skips_successors_and_poisons_cpu_worker() {
+        let (catalog, plan, input) = q8_program_fixture(1, 64, 1, 0..1);
+        let mut buffers = [input.into_boxed_slice(), vec![0.0].into_boxed_slice()];
+        let slots = buffers
+            .iter_mut()
+            .map(|slot| SlotPtr {
+                ptr: slot.as_mut_ptr() as usize,
+                len: slot.len(),
+            })
+            .collect();
+        let mut successor = plan.programs[0].clone();
+        successor.id = ProgramId(1);
+        let programs: BTreeMap<ProgramId, ProgramPlan> = [
+            ProgramPlan {
+                id: ProgramId(0),
+                kind: ProgramKind::LayerSegment {
+                    layers: 0..1,
+                    families: vec![LayerFamily::Qwen3],
+                },
+                input: SlotId(0),
+                output: SlotId(1),
+                layer_ops: vec![LayerOp::Copy {
+                    input: SlotId(0),
+                    output: SlotId(1),
+                    elements: 1,
+                }],
+            },
+            successor,
+        ]
+        .into_iter()
+        .map(|program| (program.id, program))
+        .collect();
+        let mut q8_weights = BTreeMap::new();
+        let cpu_programs = programs
+            .values()
+            .map(|program| {
+                bind_cpu_program(program, &catalog, &mut q8_weights)
+                    .map(|program| (program.id, program))
+            })
+            .collect::<Result<_, BackendError>>()
+            .unwrap();
+        let worker = CpuWorker::start(
+            1,
+            plan.descriptor.id.clone(),
+            Arc::clone(&catalog),
+            cpu_programs,
+            slots,
+            BTreeMap::new(),
+            q8_weights,
+            1,
+            64,
+            0,
+        )
+        .unwrap();
+        let mut session = CpuSession {
+            descriptor: plan.descriptor,
+            catalog,
+            resident: plan.tensors,
+            slots: buffers.into_iter().collect(),
+            slot_plans: plan.slots,
+            programs,
+            worker,
+            stats: SessionStats::default(),
+        };
+        let params = RunParams {
+            token_count: 1,
+            position_start: 0,
+            mrope_positions: &[],
+            token_ids: &[],
+        };
+        let _predecessor = session.submit(ProgramId(0), &params).unwrap();
+        let successor = session.submit(ProgramId(1), &params).unwrap();
+
+        assert!(matches!(
+            session.wait(successor),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert_eq!(session.slots[1][0], 0.0);
+        assert!(matches!(
+            session.submit(ProgramId(1), &params),
+            Err(BackendError::PoisonedRun)
+        ));
+        assert!(matches!(
+            session.read_f32(SlotId(1), &mut [0.0]),
+            Err(BackendError::PoisonedRun)
+        ));
+    }
+
+    #[test]
     fn opening_cpu_session_borrows_each_resident_range_once() {
         let (catalog, plan, _) = q8_program_fixture(2, 64, 129, 17..113);
         let session = open_cpu_session(&catalog, &plan);
@@ -1509,6 +1695,33 @@ mod tests {
         assert_eq!(stats.resident_allocations, 1);
         assert_eq!(stats.weight_uploads, 1);
         assert_eq!(stats.weight_upload_bytes, 96 * 68);
+    }
+
+    #[test]
+    fn fixed_q8_execution_does_not_read_catalog_after_open() {
+        let (catalog, mut plan, input, accesses) =
+            q8_program_fixture_with_access_count(1, 64, 1, 0..1);
+        plan.programs[0].kind = ProgramKind::LayerSegment {
+            layers: 0..1,
+            families: vec![LayerFamily::Qwen3],
+        };
+        let mut session = open_cpu_session(&catalog, &plan);
+        let open_accesses = accesses.load(Ordering::Relaxed);
+        session.write_f32(SlotId(0), &input).unwrap();
+        let fence = session
+            .submit(
+                ProgramId(0),
+                &RunParams {
+                    token_count: 1,
+                    position_start: 0,
+                    mrope_positions: &[],
+                    token_ids: &[],
+                },
+            )
+            .unwrap();
+        session.wait(fence).unwrap();
+
+        assert_eq!(accesses.load(Ordering::Relaxed), open_accesses);
     }
 
     #[test]
@@ -1598,9 +1811,9 @@ mod tests {
             pool: ComputePool::new(1),
             device: DeviceId::parse("cpu0").unwrap(),
             catalog,
-            programs: BTreeMap::new(),
             slots,
             auxiliary: BTreeMap::new(),
+            q8_weights: BTreeMap::new(),
             q8: Box::new([]),
             scales: Box::new([]),
             attention_scores: vec![0.0; 32].into_boxed_slice(),

@@ -11,6 +11,9 @@ layout(set = 0, binding = 1, std430) readonly buffer Input {
 layout(set = 0, binding = 2, std430) writeonly buffer Output {
     uint data[];
 } output_values;
+layout(set = 0, binding = 3, std430) buffer QuantizedInput {
+    uint data[];
+} quantized_input;
 
 layout(push_constant) uniform Params {
     uint batch;
@@ -43,8 +46,47 @@ float q8_value(uint row, uint column) {
     return half_to_float(scale_bits) * float(q);
 }
 
+uint quantized_byte(uint byte_index) {
+    uint word = quantized_input.data[byte_index >> 2];
+    return (word >> ((byte_index & 3) * 8)) & 0xff;
+}
+
+void quantize_block(uint block_index) {
+    uint blocks_per_item = params.n_in >> 5;
+    uint item = block_index / blocks_per_item;
+    uint block = block_index % blocks_per_item;
+    uint input_base = item * params.n_in + block * 32;
+    float amax = 0.0;
+    for (uint lane = 0; lane < 32; ++lane) {
+        amax = max(amax, abs(uintBitsToFloat(input_values.data[input_base + lane])));
+    }
+    float scale = amax == 0.0 ? 0.0 : amax / 127.0;
+    float inverse = scale == 0.0 ? 0.0 : 1.0 / scale;
+    uint output_base = item * params.n_in + block * 32;
+    for (uint word_lane = 0; word_lane < 8; ++word_lane) {
+        uint packed = 0;
+        for (uint byte_lane = 0; byte_lane < 4; ++byte_lane) {
+            uint lane = word_lane * 4 + byte_lane;
+            float value = uintBitsToFloat(input_values.data[input_base + lane]);
+            int q = int(clamp(roundEven(value * inverse), -128.0, 127.0));
+            packed |= (uint(q) & 0xff) << (byte_lane * 8);
+        }
+        quantized_input.data[(output_base >> 2) + word_lane] = packed;
+    }
+    uint scale_base = params.batch * params.n_in / 4;
+    quantized_input.data[scale_base + block_index] =
+        floatBitsToUint(unpackHalf2x16(packHalf2x16(vec2(scale, 0.0))).x);
+}
+
 void main() {
     uint index = gl_GlobalInvocationID.x;
+    if (params.mode == 2) {
+        uint block_count = params.batch * (params.n_in >> 5);
+        if (index < block_count) {
+            quantize_block(index);
+        }
+        return;
+    }
     if (params.mode == 0) {
         uint count = params.batch * params.local_rows;
         if (index >= count) {
@@ -52,10 +94,27 @@ void main() {
         }
         uint item = index / params.local_rows;
         uint local_row = index % params.local_rows;
+        uint blocks_per_row = params.n_in >> 5;
+        uint scale_base = params.batch * params.n_in / 4;
         float sum = 0.0;
-        for (uint column = 0; column < params.n_in; ++column) {
-            float input_value = uintBitsToFloat(input_values.data[item * params.n_in + column]);
-            sum += q8_value(local_row, column) * input_value;
+        for (uint block = 0; block < blocks_per_row; ++block) {
+            int dot = 0;
+            for (uint lane = 0; lane < 32; ++lane) {
+                uint column = block * 32 + lane;
+                uint byte_index = params.weight_byte_bias
+                    + (local_row * blocks_per_row + block) * 34 + 2 + lane;
+                int weight_q = int(byte_at(byte_index));
+                weight_q = weight_q >= 128 ? weight_q - 256 : weight_q;
+                int input_q = int(quantized_byte(item * params.n_in + column));
+                input_q = input_q >= 128 ? input_q - 256 : input_q;
+                dot += weight_q * input_q;
+            }
+            uint scale_byte = params.weight_byte_bias
+                + (local_row * blocks_per_row + block) * 34;
+            uint weight_scale_bits = byte_at(scale_byte) | (byte_at(scale_byte + 1) << 8);
+            float input_scale = uintBitsToFloat(
+                quantized_input.data[scale_base + item * blocks_per_row + block]);
+            sum += half_to_float(weight_scale_bits) * input_scale * float(dot);
         }
         uint output_index = item * params.global_output_stride
             + params.output_row_start + local_row;

@@ -455,10 +455,22 @@ pub fn tiny_qwen3() -> PlacementFixture {
         model_metadata("qwen3", 17, 2, 4, 2, 96, 64),
         BTreeMap::from([
             ("token_embd.weight".into(), q8_0_matrix_bytes(64, 64, |row, col| i8::from((row, col) == (1, 0) || (row, col) == (2, 1)))),
+            ("blk.0.attn_q.weight".into(), q8_0_matrix_bytes(64, 64, |_, _| 0)),
+            ("blk.0.attn_k.weight".into(), q8_0_matrix_bytes(32, 64, |_, _| 0)),
             ("blk.0.attn_v.weight".into(), q8_0_matrix_bytes(32, 64, |row, col| if row == 0 && col == 0 { 1 } else if row == 0 && col == 1 { -1 } else { 0 })),
             ("blk.0.attn_output.weight".into(), q8_0_matrix_bytes(64, 64, |row, col| i8::from((row, col) == (2, 0)))),
+            ("blk.0.ffn_gate.weight".into(), q8_0_matrix_bytes(96, 64, |_, _| 0)),
+            ("blk.0.ffn_up.weight".into(), q8_0_matrix_bytes(96, 64, |_, _| 0)),
+            ("blk.0.ffn_down.weight".into(), q8_0_matrix_bytes(64, 96, |_, _| 0)),
+            ("blk.1.attn_q.weight".into(), q8_0_matrix_bytes(64, 64, |_, _| 0)),
+            ("blk.1.attn_k.weight".into(), q8_0_matrix_bytes(32, 64, |_, _| 0)),
+            ("blk.1.attn_v.weight".into(), q8_0_matrix_bytes(32, 64, |_, _| 0)),
+            ("blk.1.attn_output.weight".into(), q8_0_matrix_bytes(64, 64, |_, _| 0)),
+            ("blk.1.ffn_gate.weight".into(), q8_0_matrix_bytes(96, 64, |_, _| 0)),
+            ("blk.1.ffn_up.weight".into(), q8_0_matrix_bytes(96, 64, |_, _| 0)),
+            ("blk.1.ffn_down.weight".into(), q8_0_matrix_bytes(64, 96, |_, _| 0)),
             ("output.weight".into(), q8_0_matrix_bytes(64, 64, |row, col| {
-                if row == 0 && col == 0 { 1 } else if row == 1 && col == 1 { 2 } else if row == 2 && col == 2 { 3 } else { 0 }
+                if (row == 0 && col == 0) || (row == 2 && col == 0) { 1 } else if (row == 1 || row == 2) && col == 1 { 2 } else { 0 }
             })),
         ]),
     );

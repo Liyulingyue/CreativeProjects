@@ -51,10 +51,32 @@ static float q8_value(device const uchar *weights, constant Params &params,
     return float(as_type<half>(scale_bits)) * float(q);
 }
 
+kernel void quantize_q8(device const float *input [[buffer(0)]],
+                        device char *values [[buffer(1)]],
+                        device float *scales [[buffer(2)]],
+                        constant Params &params [[buffer(3)]],
+                        uint block [[thread_position_in_grid]]) {
+    uint block_count = params.batch * (params.n_in >> 5);
+    if (block >= block_count) return;
+    uint base = block * 32;
+    float amax = 0.0f;
+    for (uint lane = 0; lane < 32; ++lane) {
+        amax = max(amax, abs(input[base + lane]));
+    }
+    float scale = amax == 0.0f ? 0.0f : amax / 127.0f;
+    float inverse = scale == 0.0f ? 0.0f : 1.0f / scale;
+    scales[block] = float(half(scale));
+    for (uint lane = 0; lane < 32; ++lane) {
+        values[base + lane] = char(clamp(rint(input[base + lane] * inverse), -128.0f, 127.0f));
+    }
+}
+
 kernel void q8_rows(device const uchar *weights [[buffer(0)]],
                     device const uchar *input [[buffer(1)]],
                     device float *output [[buffer(2)]],
-                    constant Params &params [[buffer(3)]],
+                    device const char *input_q8 [[buffer(3)]],
+                    device const float *input_scales [[buffer(4)]],
+                    constant Params &params [[buffer(5)]],
                     uint index [[thread_position_in_grid]]) {
     if (params.mode == 0) {
         uint count = params.batch * params.local_rows;
@@ -66,9 +88,21 @@ kernel void q8_rows(device const uchar *weights [[buffer(0)]],
         uint global_row = params.global_row_start + local_row;
         (void)global_row;
         float sum = 0.0f;
-        for (uint column = 0; column < params.n_in; ++column) {
-            float value = as_type<float>(load_u32(input, (batch * params.n_in + column) * 4));
-            sum += q8_value(weights, params, local_row, column) * value;
+        uint blocks = params.n_in >> 5;
+        for (uint block = 0; block < blocks; ++block) {
+            uint weight_index = params.weight_byte_bias
+                + (local_row * blocks + block) * 34;
+            ushort scale_bits = ushort(weights[weight_index])
+                | (ushort(weights[weight_index + 1]) << 8);
+            int dot = 0;
+            uint input_index = batch * params.n_in + block * 32;
+            for (uint lane = 0; lane < 32; ++lane) {
+                dot += int(char(weights[weight_index + 2 + lane]))
+                    * int(input_q8[input_index + lane]);
+            }
+            float scale = float(as_type<half>(scale_bits))
+                * input_scales[batch * blocks + block];
+            sum += float(dot) * scale;
         }
         output[batch * params.global_output_stride
             + params.output_row_start + local_row] = sum;
