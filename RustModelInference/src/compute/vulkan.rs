@@ -866,25 +866,46 @@ impl DeviceSession for VulkanSession {
             .programs
             .get(&program)
             .ok_or(BackendError::InvalidHandle)?;
-        let batch_capacity = match &resource.plan.kind {
-            ProgramKind::Q8Rows { batch_capacity, .. } => *batch_capacity,
-            ProgramKind::EmbeddingRows { .. } => {
-                (self.slots[&resource.plan.output].byte_len / 4 / u64::from(resource.n_in)) as u32
+        let input = &self.slots[&resource.plan.input];
+        let output = &self.slots[&resource.plan.output];
+        let (input_bytes, output_bytes) = match &resource.plan.kind {
+            ProgramKind::Q8Rows { batch_capacity, .. } => {
+                if params.token_count == 0 || params.token_count > *batch_capacity {
+                    return Err(BackendError::InvalidHandle);
+                }
+                let input_bytes = u64::from(params.token_count)
+                    .checked_mul(u64::from(resource.n_in))
+                    .and_then(|values| values.checked_mul(size_of::<f32>() as u64))
+                    .ok_or(BackendError::InvalidHandle)?;
+                let output_bytes = u64::from(params.token_count)
+                    .checked_mul(u64::from(resource.output_stride))
+                    .and_then(|values| values.checked_mul(size_of::<f32>() as u64))
+                    .ok_or(BackendError::InvalidHandle)?;
+                (input_bytes, output_bytes)
+            }
+            ProgramKind::EmbeddingRows { row_count, .. } => {
+                if params.token_count == 0
+                    || params.token_ids.len() != params.token_count as usize
+                    || params.token_ids.iter().any(|token| token >= row_count)
+                {
+                    return Err(BackendError::InvalidHandle);
+                }
+                let input_bytes = u64::from(params.token_count)
+                    .checked_mul(size_of::<u32>() as u64)
+                    .ok_or(BackendError::InvalidHandle)?;
+                let output_bytes = u64::from(params.token_count)
+                    .checked_mul(u64::from(resource.output_stride))
+                    .and_then(|values| values.checked_mul(size_of::<f32>() as u64))
+                    .ok_or(BackendError::InvalidHandle)?;
+                (input_bytes, output_bytes)
             }
             _ => return Err(BackendError::InvalidHandle),
         };
-        if params.token_count == 0 || params.token_count > batch_capacity {
+        if input_bytes > input.byte_len || output_bytes > output.byte_len {
             return Err(BackendError::InvalidHandle);
         }
-        let input = &self.slots[&resource.plan.input];
-        let output = &self.slots[&resource.plan.output];
-        let input_bytes = if resource.mode == 0 {
-            u64::from(params.token_count) * u64::from(resource.n_in) * 4
-        } else {
-            if params.token_ids.len() != params.token_count as usize {
-                return Err(BackendError::InvalidHandle);
-            }
-            let bytes = params.token_count as usize * size_of::<u32>();
+        if resource.mode == 1 {
+            let bytes = usize::try_from(input_bytes).map_err(|_| BackendError::InvalidHandle)?;
             unsafe {
                 std::ptr::copy_nonoverlapping(
                     params.token_ids.as_ptr() as *const u8,
@@ -894,11 +915,6 @@ impl DeviceSession for VulkanSession {
             };
             self.flush_staging(input.arena_offset, bytes as u64)?;
             self.stats.activation_h2d_bytes += bytes as u64;
-            bytes as u64
-        };
-        let output_bytes = u64::from(params.token_count) * u64::from(resource.output_stride) * 4;
-        if input_bytes > input.byte_len || output_bytes > output.byte_len {
-            return Err(BackendError::InvalidHandle);
         }
         let fence = resource.fence;
         let command = resource.command;
@@ -1323,13 +1339,20 @@ fn validate_plan(
                             .is_some_and(|bytes| bytes <= output.byte_len)
                 }
                 ProgramKind::EmbeddingRows { row_count, .. } => {
+                    let output_row_bytes = u64::from(spec.n_in).checked_mul(4);
+                    let input_capacity = input.byte_len / size_of::<u32>() as u64;
                     *row_count != 0
                         && input.kind == SlotKind::Scratch
                         && input.storage == SlotStorage::I8
                         && input.byte_len >= 4
                         && output.storage == SlotStorage::F32
                         && matches!(output.kind, SlotKind::Activation | SlotKind::Result)
-                        && output.byte_len % (u64::from(spec.n_in) * 4) == 0
+                        && output_row_bytes.is_some_and(|bytes| {
+                            bytes != 0
+                                && output.byte_len % bytes == 0
+                                && output.byte_len / bytes <= input_capacity
+                                && output.byte_len / bytes <= u64::from(u32::MAX)
+                        })
                 }
                 _ => false,
             };
@@ -2081,6 +2104,28 @@ mod tests {
         i8_input.slots[0].kind = SlotKind::Scratch;
         i8_input.slots[0].storage = SlotStorage::I8;
         assert!(validate_plan(&i8_input, &catalog, &adapter).is_err());
+    }
+
+    #[test]
+    fn embedding_input_capacity_must_cover_output_rows_before_open() {
+        let catalog = test_catalog();
+        let adapter = test_adapter();
+        let mut plan = test_plan(adapter.descriptor.clone());
+        plan.tensors[0].rows = 0..129;
+        plan.tensors[0].source_bytes = 0..129 * 68;
+        plan.slots[0].kind = SlotKind::Scratch;
+        plan.slots[0].storage = SlotStorage::I8;
+        plan.slots[0].byte_len = size_of::<u32>() as u64;
+        plan.slots[1].kind = SlotKind::Activation;
+        plan.slots[1].byte_len = 2 * 64 * size_of::<f32>() as u64;
+        plan.slots[1].arena_offset = 16;
+        plan.programs[0].kind = ProgramKind::EmbeddingRows {
+            tensor: crate::TensorId(0),
+            row_count: 129,
+        };
+        plan.memory.resident_bytes = 129 * 68;
+
+        assert!(validate_plan(&plan, &catalog, &adapter).is_err());
     }
 
     #[test]
