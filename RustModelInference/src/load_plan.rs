@@ -1295,13 +1295,11 @@ fn append_layer_ops(
         LlmLayerSpec::Qwen35Recurrent(spec) => {
             let norm = f32_slot(builder, u64::from(llm.hidden_size))?;
             let key_elements = u64::from(spec.state_size) * u64::from(spec.group_count);
-            let qkv = f32_slot(
-                builder,
-                key_elements
-                    .checked_mul(2)
-                    .and_then(|value| value.checked_add(u64::from(spec.inner_size)))
-                    .ok_or(PlanError::SizeOverflow)?,
-            )?;
+            let qkv_elements = key_elements
+                .checked_mul(2)
+                .and_then(|value| value.checked_add(u64::from(spec.inner_size)))
+                .ok_or(PlanError::SizeOverflow)?;
+            let qkv = f32_slot(builder, qkv_elements)?;
             let q = f32_slot(builder, key_elements)?;
             let k = f32_slot(builder, key_elements)?;
             let v = f32_slot(builder, u64::from(spec.inner_size))?;
@@ -1313,10 +1311,7 @@ fn append_layer_ops(
             let conv_state = builder.slot(
                 SlotKind::ConvState,
                 SlotStorage::F32,
-                checked_mul(
-                    checked_mul(u64::from(spec.conv_width), u64::from(spec.inner_size))?,
-                    4,
-                )?,
+                checked_mul(checked_mul(u64::from(spec.conv_width), qkv_elements)?, 4)?,
             )?;
             let ssm_state = builder.slot(
                 SlotKind::SsmState,
@@ -1338,6 +1333,14 @@ fn append_layer_ops(
                     weight: spec.qkv,
                     output: qkv,
                 },
+                LayerOp::DepthwiseCausalConv {
+                    input: qkv,
+                    weight: spec.conv_weight,
+                    state: conv_state,
+                    width: spec.conv_width,
+                    output: qkv,
+                },
+                LayerOp::Silu { values: qkv },
                 LayerOp::Q8Matmul {
                     input: norm,
                     weight: spec.gate,
@@ -1375,14 +1378,6 @@ fn append_layer_ops(
                     weight: spec.alpha,
                     output: alpha,
                 },
-                LayerOp::DepthwiseCausalConv {
-                    input: q,
-                    weight: spec.conv_weight,
-                    state: conv_state,
-                    width: spec.conv_width,
-                    output: q,
-                },
-                LayerOp::Silu { values: q },
                 LayerOp::L2Norm {
                     values: q,
                     epsilon_bits: spec.norm_epsilon_bits,

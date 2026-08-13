@@ -91,9 +91,9 @@ pub fn assert_close(actual: &[f32], expected: &[f32], atol: f32, rtol: f32) {
 use rust_model_inference::{
     parse_placement, BackendError, BackendKind, CompiledModel, ComponentId, DeviceCapabilities,
     DeviceDescriptor, DeviceDiscovery, DeviceId, DevicePlan, DeviceProvider, DeviceRegistry,
-    DeviceSession, FenceId, GGMLType, LifecycleProbe, PlacementCompiler, ProgramId, ProgramKind,
-    RunParams, SessionStats, SlotId, SourceFormat, SourceTensorRecord, TensorCatalog, TensorId,
-    TensorInfo, TensorSource,
+    DeviceSession, FenceId, GGMLType, LayerOp, LifecycleProbe, PlacementCompiler, ProgramId,
+    ProgramKind, RunParams, SessionStats, SlotId, SourceFormat, SourceTensorRecord, TensorCatalog,
+    TensorId, TensorInfo, TensorSource,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -114,6 +114,9 @@ enum PlacementModel {
 pub struct PlacementTrace {
     pub q8_matrix_tensor_ids: BTreeSet<TensorId>,
     pub embedding_tensor_ids: BTreeSet<TensorId>,
+    pub program_kinds: Vec<ProgramKind>,
+    pub layer_ops: Vec<LayerOp>,
+    pub slot_byte_lengths: BTreeMap<SlotId, u64>,
 }
 
 impl PlacementFixture {
@@ -1313,7 +1316,19 @@ impl DeviceSession for RecordingSession {
             .programs
             .get(&program)
             .ok_or(BackendError::InvalidHandle)?;
+        let layer_ops = plan.layer_ops.clone();
+        let conv_states = layer_ops
+            .iter()
+            .filter_map(|op| match op {
+                LayerOp::DepthwiseCausalConv { state, .. } => self
+                    .slots
+                    .get(state)
+                    .map(|values| (*state, u64::try_from(values.len()).unwrap() * 4)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         let mut trace = self.trace.lock().map_err(|_| BackendError::PoisonedRun)?;
+        trace.program_kinds.push(plan.kind.clone());
         match &plan.kind {
             ProgramKind::Q8Rows { tensor, .. } => {
                 trace.q8_matrix_tensor_ids.insert(*tensor);
@@ -1322,6 +1337,8 @@ impl DeviceSession for RecordingSession {
                 trace.embedding_tensor_ids.insert(*tensor);
             }
             ProgramKind::LayerSegment { .. } => {
+                trace.layer_ops.extend(layer_ops);
+                trace.slot_byte_lengths.extend(conv_states);
                 for operation in &plan.layer_ops {
                     if let rust_model_inference::LayerOp::Q8Matmul { weight, .. } = operation {
                         trace.q8_matrix_tensor_ids.insert(*weight);
