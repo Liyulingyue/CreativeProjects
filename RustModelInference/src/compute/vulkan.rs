@@ -19,6 +19,7 @@ const Q8_BLOCK_BYTES: u64 = 34;
 
 pub struct VulkanProvider {
     context: Arc<VulkanContext>,
+    adapters: Vec<AdapterInfo>,
 }
 
 struct VulkanContext {
@@ -182,12 +183,16 @@ impl VulkanProvider {
             .flags(flags);
         let instance = unsafe { entry.create_instance(&create_info, None) }
             .map_err(|error| unavailable(format!("create Vulkan 1.1 instance: {error:?}")))?;
-        Ok(Self {
-            context: Arc::new(VulkanContext {
-                _entry: entry,
-                instance,
-            }),
-        })
+        let context = Arc::new(VulkanContext {
+            _entry: entry,
+            instance,
+        });
+        let mut provider = Self {
+            context,
+            adapters: Vec::new(),
+        };
+        provider.adapters = provider.adapters()?;
+        Ok(provider)
     }
 
     fn adapters(&self) -> Result<Vec<AdapterInfo>, BackendError> {
@@ -311,9 +316,9 @@ impl DeviceDiscovery for VulkanProvider {
 
     fn enumerate(&self) -> Result<Vec<DeviceDescriptor>, BackendError> {
         Ok(self
-            .adapters()?
-            .into_iter()
-            .map(|adapter| adapter.descriptor)
+            .adapters
+            .iter()
+            .map(|adapter| adapter.descriptor.clone())
             .collect())
     }
 }
@@ -328,7 +333,14 @@ impl DeviceProvider for VulkanProvider {
         if descriptor.backend != BackendKind::Vulkan || descriptor != &plan.descriptor {
             return Err(BackendError::InvalidHandle);
         }
-        let adapter = select_adapter(self.adapters()?, descriptor)?;
+        let expected = self
+            .adapters
+            .iter()
+            .find(|adapter| adapter.descriptor.id == descriptor.id)
+            .ok_or_else(|| BackendError::DeviceUnavailable {
+                device: descriptor.id.clone(),
+            })?;
+        let adapter = select_adapter(self.adapters()?, descriptor, expected)?;
         VulkanSession::open(Arc::clone(&self.context), adapter, plan, catalog)
             .map(|session| Box::new(session) as Box<dyn DeviceSession>)
     }
@@ -337,15 +349,15 @@ impl DeviceProvider for VulkanProvider {
 fn select_adapter(
     adapters: Vec<AdapterInfo>,
     descriptor: &DeviceDescriptor,
+    expected: &AdapterInfo,
 ) -> Result<AdapterInfo, BackendError> {
     match adapters
         .into_iter()
         .find(|adapter| adapter.descriptor.id == descriptor.id)
     {
         Some(adapter)
-            if adapter.descriptor.backend == descriptor.backend
-                && adapter.descriptor.physical_key == descriptor.physical_key
-                && adapter.descriptor.name == descriptor.name =>
+            if immutable_adapter_matches(&adapter, expected)
+                && immutable_descriptor_matches(descriptor, &expected.descriptor) =>
         {
             Ok(adapter)
         }
@@ -354,6 +366,25 @@ fn select_adapter(
             device: descriptor.id.clone(),
         }),
     }
+}
+
+fn immutable_adapter_matches(current: &AdapterInfo, expected: &AdapterInfo) -> bool {
+    immutable_descriptor_matches(&current.descriptor, &expected.descriptor)
+        && current.queue_family == expected.queue_family
+        && current.non_coherent_atom_size == expected.non_coherent_atom_size
+        && current.max_storage_buffer_range == expected.max_storage_buffer_range
+        && current.portability_subset == expected.portability_subset
+}
+
+fn immutable_descriptor_matches(current: &DeviceDescriptor, expected: &DeviceDescriptor) -> bool {
+    current.id == expected.id
+        && current.backend == expected.backend
+        && current.physical_key == expected.physical_key
+        && current.name == expected.name
+        && current.max_allocation_bytes == expected.max_allocation_bytes
+        && current.buffer_alignment == expected.buffer_alignment
+        && current.unified_memory == expected.unified_memory
+        && current.capabilities == expected.capabilities
 }
 
 #[derive(Clone, Copy)]
@@ -1250,6 +1281,7 @@ fn validate_plan(
         })
         || required_bytes > plan.descriptor.usable_bytes
         || required_bytes > adapter.descriptor.usable_bytes
+        || plan.memory.required_bytes > adapter.descriptor.usable_bytes
     {
         return Err(BackendError::InvalidHandle);
     }
@@ -2145,22 +2177,75 @@ mod tests {
 
     #[test]
     fn reopened_adapter_must_match_discovered_physical_identity_and_queue() {
-        let expected = test_adapter().descriptor;
+        let expected = test_adapter();
         let mut changed_physical = test_adapter();
         changed_physical.descriptor.physical_key = "vulkan:ffffffffffffffffffffffffffffffff".into();
-        assert!(select_adapter(vec![changed_physical], &expected).is_err());
+        assert!(select_adapter(vec![changed_physical], &expected.descriptor, &expected).is_err());
 
         let mut changed_queue = test_adapter();
         changed_queue.descriptor.name = "test adapter (compute queue 4)".into();
         changed_queue.queue_family = 4;
-        assert!(select_adapter(vec![changed_queue], &expected).is_err());
+        assert!(select_adapter(vec![changed_queue], &expected.descriptor, &expected).is_err());
 
         assert_eq!(
-            select_adapter(vec![test_adapter()], &expected)
+            select_adapter(vec![test_adapter()], &expected.descriptor, &expected)
                 .unwrap()
                 .queue_family,
             3
         );
+    }
+
+    #[test]
+    fn reopened_adapter_must_match_discovered_immutable_limits() {
+        let expected = test_adapter();
+
+        let mut forged_allocation = expected.descriptor.clone();
+        forged_allocation.max_allocation_bytes += 1;
+        assert!(select_adapter(vec![test_adapter()], &forged_allocation, &expected).is_err());
+
+        let mut forged_alignment = expected.descriptor.clone();
+        forged_alignment.buffer_alignment *= 2;
+        assert!(select_adapter(vec![test_adapter()], &forged_alignment, &expected).is_err());
+
+        let mut changed_storage_range = test_adapter();
+        changed_storage_range.max_storage_buffer_range /= 2;
+        assert!(
+            select_adapter(vec![changed_storage_range], &expected.descriptor, &expected).is_err()
+        );
+
+        let mut changed_atom_size = test_adapter();
+        changed_atom_size.non_coherent_atom_size *= 2;
+        assert!(select_adapter(vec![changed_atom_size], &expected.descriptor, &expected).is_err());
+    }
+
+    #[test]
+    fn reopened_adapter_allows_dynamic_budget_drift() {
+        let expected = test_adapter();
+        let mut planned = expected.descriptor.clone();
+        planned.usable_bytes *= 2;
+        let mut current = test_adapter();
+        current.descriptor.usable_bytes /= 2;
+
+        assert_eq!(
+            select_adapter(vec![current], &planned, &expected)
+                .unwrap()
+                .descriptor
+                .usable_bytes,
+            expected.descriptor.usable_bytes / 2
+        );
+    }
+
+    #[test]
+    fn reopened_adapter_uses_current_budget_for_plan_capacity() {
+        let catalog = test_catalog();
+        let expected = test_adapter();
+        let mut current = test_adapter();
+        current.descriptor.usable_bytes = 1 << 18;
+        let mut plan = test_plan(expected.descriptor.clone());
+        plan.memory.required_bytes = 1 << 19;
+
+        let current = select_adapter(vec![current], &expected.descriptor, &expected).unwrap();
+        assert!(validate_plan(&plan, &catalog, &current).is_err());
     }
 
     #[test]
