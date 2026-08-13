@@ -121,6 +121,7 @@ impl<'a> ExecutionRun<'a> {
         batch: u32,
         output: &mut [f32],
     ) -> Result<(), BackendError> {
+        self.require_healthy()?;
         let component_plan = self
             .plan
             .components
@@ -139,51 +140,57 @@ impl<'a> ExecutionRun<'a> {
             return Err(BackendError::InvalidHandle);
         }
 
-        let SessionSet {
-            sessions,
-            host_results,
-            pending,
-            ..
-        } = &mut *self.sessions;
-        pending.clear();
-        for (index, shard) in shards.iter().enumerate() {
-            let session = session_mut(sessions, &shard.device)?;
-            session.write_f32(shard.input, input)?;
-            let fence = session.submit(
-                shard.program,
-                &RunParams {
-                    token_count: batch,
-                    position_start: 0,
-                    mrope_positions: &[],
-                    token_ids: &[],
-                },
-            )?;
-            pending.push((index, fence));
-        }
-        for &(index, fence) in pending.iter() {
-            session_mut(sessions, &shards[index].device)?.wait(fence)?;
-        }
-        for &(index, _) in pending.iter() {
-            let shard = &shards[index];
-            let rows = (shard.rows.end - shard.rows.start) as usize;
-            let local = host_result_mut(host_results, &shard.device, shard.output)?;
-            let local_len = (batch as usize)
-                .checked_mul(rows)
-                .ok_or(BackendError::InvalidHandle)?;
-            if local_len > local.len() {
-                return Err(BackendError::InvalidHandle);
+        let result = (|| {
+            let SessionSet {
+                sessions,
+                host_results,
+                pending,
+                ..
+            } = &mut *self.sessions;
+            pending.clear();
+            for (index, shard) in shards.iter().enumerate() {
+                let session = session_mut(sessions, &shard.device)?;
+                session.write_f32(shard.input, input)?;
+                let fence = session.submit(
+                    shard.program,
+                    &RunParams {
+                        token_count: batch,
+                        position_start: 0,
+                        mrope_positions: &[],
+                        token_ids: &[],
+                    },
+                )?;
+                pending.push((index, fence));
             }
-            session_mut(sessions, &shard.device)?
-                .read_f32(shard.output, &mut local[..local_len])?;
-            for item in 0..batch as usize {
-                let src = &local[item * rows..(item + 1) * rows];
-                let dst = &mut output[item * total_rows + shard.rows.start as usize
-                    ..item * total_rows + shard.rows.end as usize];
-                dst.copy_from_slice(src);
+            for &(index, fence) in pending.iter() {
+                session_mut(sessions, &shards[index].device)?.wait(fence)?;
             }
+            for &(index, _) in pending.iter() {
+                let shard = &shards[index];
+                let rows = (shard.rows.end - shard.rows.start) as usize;
+                let local = host_result_mut(host_results, &shard.device, shard.output)?;
+                let local_len = (batch as usize)
+                    .checked_mul(rows)
+                    .ok_or(BackendError::InvalidHandle)?;
+                if local_len > local.len() {
+                    return Err(BackendError::InvalidHandle);
+                }
+                session_mut(sessions, &shard.device)?
+                    .read_f32(shard.output, &mut local[..local_len])?;
+                for item in 0..batch as usize {
+                    let src = &local[item * rows..(item + 1) * rows];
+                    let dst = &mut output[item * total_rows + shard.rows.start as usize
+                        ..item * total_rows + shard.rows.end as usize];
+                    dst.copy_from_slice(src);
+                }
+            }
+            pending.clear();
+            Ok(())
+        })();
+        if result.is_err() {
+            self.sessions.poisoned = true;
         }
-        pending.clear();
-        Ok(())
+        result
     }
 
     pub fn execute_embedding(
@@ -193,6 +200,7 @@ impl<'a> ExecutionRun<'a> {
         token_ids: &[u32],
         output: &mut [f32],
     ) -> Result<(), BackendError> {
+        self.require_healthy()?;
         let component_plan = component_plan(&self.plan, component)?;
         let embedding = component_plan
             .embedding
@@ -210,18 +218,24 @@ impl<'a> ExecutionRun<'a> {
         }
         let token_count =
             u32::try_from(token_ids.len()).map_err(|_| BackendError::InvalidHandle)?;
-        let session = session_mut(&mut self.sessions.sessions, &embedding.device)?;
-        let fence = session.submit(
-            embedding.program,
-            &RunParams {
-                token_count,
-                position_start: 0,
-                mrope_positions: &[],
-                token_ids,
-            },
-        )?;
-        session.wait(fence)?;
-        session.read_f32(embedding.output, output)
+        let result = (|| {
+            let session = session_mut(&mut self.sessions.sessions, &embedding.device)?;
+            let fence = session.submit(
+                embedding.program,
+                &RunParams {
+                    token_count,
+                    position_start: 0,
+                    mrope_positions: &[],
+                    token_ids,
+                },
+            )?;
+            session.wait(fence)?;
+            session.read_f32(embedding.output, output)
+        })();
+        if result.is_err() {
+            self.sessions.poisoned = true;
+        }
+        result
     }
 
     pub fn execute_embedding_into_layers(
@@ -231,6 +245,7 @@ impl<'a> ExecutionRun<'a> {
         token_ids: &[u32],
         params: &RunParams<'_>,
     ) -> Result<(), BackendError> {
+        self.require_healthy()?;
         let component_plan = component_plan(&self.plan, component)?;
         let embedding = component_plan
             .embedding
@@ -240,40 +255,46 @@ impl<'a> ExecutionRun<'a> {
         if params.token_count as usize != token_ids.len() {
             return Err(BackendError::InvalidHandle);
         }
-        let fence = session_mut(&mut self.sessions.sessions, &embedding.device)?.submit(
-            embedding.program,
-            &RunParams {
-                token_count: params.token_count,
-                position_start: params.position_start,
-                mrope_positions: params.mrope_positions,
-                token_ids,
-            },
-        )?;
-        if let Some(first) = component_plan.layer_spans.first() {
-            if first.device == embedding.device && first.input == embedding.output {
-                if component_plan
-                    .activation_transfers
-                    .iter()
-                    .any(|transfer| transfer.after_span.is_none())
-                {
-                    return Err(BackendError::InvalidHandle);
+        let result = (|| {
+            let fence = session_mut(&mut self.sessions.sessions, &embedding.device)?.submit(
+                embedding.program,
+                &RunParams {
+                    token_count: params.token_count,
+                    position_start: params.position_start,
+                    mrope_positions: params.mrope_positions,
+                    token_ids,
+                },
+            )?;
+            if let Some(first) = component_plan.layer_spans.first() {
+                if first.device == embedding.device && first.input == embedding.output {
+                    if component_plan
+                        .activation_transfers
+                        .iter()
+                        .any(|transfer| transfer.after_span.is_none())
+                    {
+                        return Err(BackendError::InvalidHandle);
+                    }
+                } else {
+                    let transfer = component_plan
+                        .activation_transfers
+                        .iter()
+                        .find(|transfer| transfer.after_span.is_none())
+                        .filter(|transfer| transfer.target == TransferTarget::Span(0))
+                        .ok_or(BackendError::InvalidHandle)?;
+                    copy_transfer(&mut self.sessions, transfer, params.token_count, fence)?;
                 }
-            } else {
-                let transfer = component_plan
-                    .activation_transfers
-                    .iter()
-                    .find(|transfer| transfer.after_span.is_none())
-                    .filter(|transfer| transfer.target == TransferTarget::Span(0))
-                    .ok_or(BackendError::InvalidHandle)?;
-                copy_transfer(&mut self.sessions, transfer, params.token_count, fence)?;
             }
+            execute_spans(
+                &mut self.sessions,
+                &component_plan.layer_spans,
+                &component_plan.activation_transfers,
+                params,
+            )
+        })();
+        if result.is_err() {
+            self.sessions.poisoned = true;
         }
-        execute_spans(
-            &mut self.sessions,
-            &component_plan.layer_spans,
-            &component_plan.activation_transfers,
-            params,
-        )
+        result
     }
 
     pub fn execute_layers(
@@ -282,18 +303,26 @@ impl<'a> ExecutionRun<'a> {
         hidden: &mut [f32],
         params: &RunParams<'_>,
     ) -> Result<(), BackendError> {
+        self.require_healthy()?;
         let component_plan = component_plan(&self.plan, component)?;
         let first = component_plan
             .layer_spans
             .first()
             .ok_or(BackendError::InvalidHandle)?;
-        session_mut(&mut self.sessions.sessions, &first.device)?.write_f32(first.input, hidden)?;
-        execute_spans(
-            &mut self.sessions,
-            &component_plan.layer_spans,
-            &component_plan.activation_transfers,
-            params,
-        )
+        let result = (|| {
+            session_mut(&mut self.sessions.sessions, &first.device)?
+                .write_f32(first.input, hidden)?;
+            execute_spans(
+                &mut self.sessions,
+                &component_plan.layer_spans,
+                &component_plan.activation_transfers,
+                params,
+            )
+        })();
+        if result.is_err() {
+            self.sessions.poisoned = true;
+        }
+        result
     }
 
     pub fn execute_logits(
@@ -302,6 +331,7 @@ impl<'a> ExecutionRun<'a> {
         params: &RunParams<'_>,
         output: &mut [f32],
     ) -> Result<(), BackendError> {
+        self.require_healthy()?;
         let component_plan = component_plan(&self.plan, component)?;
         let finalization = component_plan
             .finalization
@@ -323,12 +353,36 @@ impl<'a> ExecutionRun<'a> {
         reset_sessions(&mut self.sessions)
     }
 
+    pub fn batch_capacity(&self, component: ComponentId) -> Result<u32, BackendError> {
+        let binding = component_plan(&self.plan, component)?
+            .embedding
+            .as_ref()
+            .ok_or(BackendError::InvalidHandle)?;
+        let slot = self
+            .plan
+            .devices
+            .get(&binding.device)
+            .and_then(|device| device.slots.iter().find(|slot| slot.id == binding.input))
+            .filter(|slot| slot.storage == super::SlotStorage::I8 && slot.byte_len % 4 == 0)
+            .ok_or(BackendError::InvalidHandle)?;
+        u32::try_from(slot.byte_len / 4)
+            .ok()
+            .filter(|capacity| *capacity != 0)
+            .ok_or(BackendError::InvalidHandle)
+    }
+
     pub fn stats(&self) -> BTreeMap<DeviceId, SessionStats> {
         self.sessions
             .sessions
             .iter()
             .map(|(device, session)| (device.clone(), session.stats()))
             .collect()
+    }
+
+    fn require_healthy(&self) -> Result<(), BackendError> {
+        (!self.sessions.poisoned)
+            .then_some(())
+            .ok_or(BackendError::PoisonedRun)
     }
 }
 

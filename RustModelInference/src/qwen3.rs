@@ -29,6 +29,7 @@ pub struct Qwen3Model {
     q8_input_widths: BTreeMap<TensorId, usize>,
     row_weights: Qwen3RowWeights,
     row_state: Arc<Mutex<Qwen3RowState>>,
+    layer_next_position: Arc<Mutex<usize>>,
 }
 
 #[derive(Debug, Clone)]
@@ -225,6 +226,7 @@ impl Qwen3Model {
                 .collect(),
             row_weights,
             row_state: Arc::new(Mutex::new(Qwen3RowState::default())),
+            layer_next_position: Arc::new(Mutex::new(0)),
         })
     }
 
@@ -287,8 +289,34 @@ impl Qwen3Model {
         positions: &[[u32; 4]],
         output: &mut [f32],
     ) -> Result<(), String> {
-        let params = checked_params(tokens, positions)?;
-        match run.plan().components[&ComponentId::Llm].mode {
+        let mode = run.plan().components[&ComponentId::Llm].mode;
+        let expected_position = match mode {
+            PlacementMode::Row => {
+                self.row_state
+                    .lock()
+                    .map_err(|_| "Qwen3 row state poisoned")?
+                    .next_position
+            }
+            PlacementMode::Layer => *self
+                .layer_next_position
+                .lock()
+                .map_err(|_| "Qwen3 layer state poisoned")?,
+        };
+        let expected_position = positions
+            .first()
+            .filter(|position| position[0] == 0)
+            .map(|_| 0)
+            .unwrap_or(expected_position);
+        let params = validate_model_inputs(
+            run,
+            tokens,
+            positions,
+            output.len(),
+            self.config.vocab,
+            self.config.n_ctx,
+            expected_position,
+        )?;
+        match mode {
             PlacementMode::Row => {
                 for (token, position) in tokens.iter().zip(positions) {
                     let params = checked_params(
@@ -308,7 +336,16 @@ impl Qwen3Model {
                 )
                 .map_err(|error| error.to_string())?;
                 run.execute_logits(ComponentId::Llm, &params, output)
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| error.to_string())?;
+                *self
+                    .layer_next_position
+                    .lock()
+                    .map_err(|_| "Qwen3 layer state poisoned")? =
+                    usize::try_from(positions.last().expect("validated non-empty positions")[0])
+                        .map_err(|_| "Qwen3 position does not fit usize")?
+                        .checked_add(1)
+                        .ok_or("Qwen3 position overflow")?;
+                Ok(())
             }
         }
     }
@@ -583,6 +620,9 @@ pub(crate) fn checked_params<'a>(
     tokens: &'a [u32],
     positions: &'a [[u32; 4]],
 ) -> Result<RunParams<'a>, String> {
+    if tokens.is_empty() {
+        return Err("token count must be non-zero".into());
+    }
     if positions.len() != tokens.len() {
         return Err(format!(
             "position count mismatch: tokens={}, positions={}",
@@ -598,4 +638,52 @@ pub(crate) fn checked_params<'a>(
         mrope_positions: positions,
         token_ids: tokens,
     })
+}
+
+pub(crate) fn validate_model_inputs<'a>(
+    run: &ExecutionRun,
+    tokens: &'a [u32],
+    positions: &'a [[u32; 4]],
+    output_len: usize,
+    vocab: usize,
+    context: usize,
+    expected_position: usize,
+) -> Result<RunParams<'a>, String> {
+    let params = checked_params(tokens, positions)?;
+    if output_len != vocab {
+        return Err(format!(
+            "model output buffer size mismatch: expected {vocab}, got {output_len}"
+        ));
+    }
+    if tokens.iter().any(|token| *token as usize >= vocab) {
+        return Err("token ID exceeds vocabulary".into());
+    }
+    let capacity = usize::try_from(
+        run.batch_capacity(ComponentId::Llm)
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|_| "compiled batch capacity does not fit usize")?;
+    if run.plan().components[&ComponentId::Llm].mode == PlacementMode::Layer
+        && tokens.len() > capacity
+    {
+        return Err(format!(
+            "token batch exceeds compiled capacity: tokens={}, capacity={capacity}",
+            tokens.len()
+        ));
+    }
+    if run.plan().components[&ComponentId::Llm].mode == PlacementMode::Row && capacity == 0 {
+        return Err("compiled Row capacity is zero".into());
+    }
+    for (offset, position) in positions.iter().enumerate() {
+        let position = usize::try_from(position[0]).map_err(|_| "position does not fit usize")?;
+        let expected = expected_position
+            .checked_add(offset)
+            .ok_or("position overflow")?;
+        if position != expected || position >= context {
+            return Err(format!(
+                "positions must be contiguous within context from {expected_position}; got {position}"
+            ));
+        }
+    }
+    Ok(params)
 }

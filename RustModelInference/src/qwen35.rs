@@ -71,6 +71,7 @@ pub struct Qwen35Model {
     cpu_row_matrices: BTreeMap<TensorId, CpuRowMatrix>,
     row_weights: Qwen35RowWeights,
     row_state: Arc<Mutex<Qwen35RowState>>,
+    layer_next_position: Arc<Mutex<usize>>,
 }
 
 enum CpuRowMatrix {
@@ -391,6 +392,7 @@ impl Qwen35Model {
             cpu_row_matrices,
             row_weights,
             row_state: Arc::new(Mutex::new(Qwen35RowState::default())),
+            layer_next_position: Arc::new(Mutex::new(0)),
         })
     }
 
@@ -508,8 +510,34 @@ impl Qwen35Model {
         positions: &[[u32; 4]],
         output: &mut [f32],
     ) -> Result<(), String> {
-        let params = crate::qwen3::checked_params(tokens, positions)?;
-        match run.plan().components[&ComponentId::Llm].mode {
+        let mode = run.plan().components[&ComponentId::Llm].mode;
+        let expected_position = match mode {
+            PlacementMode::Row => {
+                self.row_state
+                    .lock()
+                    .map_err(|_| "Qwen3.5 row state poisoned")?
+                    .next_position
+            }
+            PlacementMode::Layer => *self
+                .layer_next_position
+                .lock()
+                .map_err(|_| "Qwen3.5 layer state poisoned")?,
+        };
+        let expected_position = positions
+            .first()
+            .filter(|position| position[0] == 0)
+            .map(|_| 0)
+            .unwrap_or(expected_position);
+        let params = crate::qwen3::validate_model_inputs(
+            run,
+            tokens,
+            positions,
+            output.len(),
+            self.config.vocab_size,
+            self.config.n_ctx,
+            expected_position,
+        )?;
+        match mode {
             PlacementMode::Layer => {
                 run.execute_embedding_into_layers(
                     ComponentId::Llm,
@@ -519,7 +547,16 @@ impl Qwen35Model {
                 )
                 .map_err(|error| error.to_string())?;
                 run.execute_logits(ComponentId::Llm, &params, output)
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| error.to_string())?;
+                *self
+                    .layer_next_position
+                    .lock()
+                    .map_err(|_| "Qwen3.5 layer state poisoned")? =
+                    usize::try_from(positions.last().expect("validated non-empty positions")[0])
+                        .map_err(|_| "Qwen3.5 position does not fit usize")?
+                        .checked_add(1)
+                        .ok_or("Qwen3.5 position overflow")?;
+                Ok(())
             }
             PlacementMode::Row => {
                 for (token, position) in tokens.iter().zip(positions) {

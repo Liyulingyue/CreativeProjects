@@ -204,6 +204,8 @@ struct MockState {
     opens: AtomicUsize,
     fail_open: Mutex<Option<BackendKind>>,
     fail_submit: Mutex<Option<(DeviceId, ProgramId)>>,
+    fail_wait: Mutex<Option<DeviceId>>,
+    fail_read: Mutex<Option<DeviceId>>,
 }
 
 struct MockProvider {
@@ -415,6 +417,19 @@ impl DeviceSession for MockSession {
     fn wait(&mut self, fence: FenceId) -> Result<(), BackendError> {
         self.trace(format!("wait:{}:{}", self.descriptor.id.as_str(), fence.0));
         self.stats.lock().unwrap().host_waits += 1;
+        if self
+            .state
+            .fail_wait
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|device| device == &self.descriptor.id)
+        {
+            return Err(BackendError::Submission {
+                device: self.descriptor.id.clone(),
+                message: "mock wait failure".into(),
+            });
+        }
         Ok(())
     }
 
@@ -425,6 +440,19 @@ impl DeviceSession for MockSession {
             slot.0,
             values.len() * 4
         ));
+        if self
+            .state
+            .fail_read
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|device| device == &self.descriptor.id)
+        {
+            return Err(BackendError::Submission {
+                device: self.descriptor.id.clone(),
+                message: "mock read failure".into(),
+            });
+        }
         let source = self.slots.get(&slot).ok_or(BackendError::InvalidHandle)?;
         if values.len() > source.len() {
             return Err(BackendError::InvalidHandle);
@@ -884,6 +912,57 @@ fn weights_upload_once_and_row_submits_all_before_any_wait() {
             .count(),
         3
     );
+}
+
+#[test]
+fn q8_and_embedding_failures_poison_the_stateful_run() {
+    for failure in [
+        ("q8 submit", false, true, false),
+        ("q8 wait", false, false, true),
+        ("embedding read", true, false, false),
+    ] {
+        let state = Arc::new(MockState::default());
+        let compiled = if failure.1 {
+            compile(embedding_row_plan(), Arc::clone(&state))
+        } else {
+            compile(row_plan(), Arc::clone(&state))
+        };
+        if failure.2 {
+            *state.fail_submit.lock().unwrap() = Some((id("cpu0"), ProgramId(10)));
+        }
+        if failure.3 {
+            *state.fail_wait.lock().unwrap() = Some(id("cpu0"));
+        }
+        if failure.0 == "embedding read" {
+            *state.fail_read.lock().unwrap() = Some(id("cpu0"));
+        }
+        let mut run = compiled.start_run().unwrap();
+        let result = if failure.1 {
+            let mut output = [0.0; HIDDEN];
+            run.execute_embedding(ComponentId::Llm, EMBEDDING, &[1], &mut output)
+        } else {
+            let mut output = vec![0.0; 12];
+            run.execute_q8(ComponentId::Llm, ROW_WEIGHT, &[1.0; 64], 1, &mut output)
+        };
+        assert!(result.is_err(), "{}", failure.0);
+        let retry = if failure.1 {
+            let mut output = [0.0; HIDDEN];
+            run.execute_embedding(ComponentId::Llm, EMBEDDING, &[1], &mut output)
+        } else {
+            let mut output = vec![0.0; 12];
+            run.execute_q8(ComponentId::Llm, ROW_WEIGHT, &[1.0; 64], 1, &mut output)
+        };
+        assert!(
+            matches!(retry, Err(BackendError::PoisonedRun)),
+            "{}",
+            failure.0
+        );
+        assert!(
+            matches!(run.reset_state(), Err(BackendError::PoisonedRun)),
+            "{}",
+            failure.0
+        );
+    }
 }
 
 #[test]

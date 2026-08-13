@@ -121,6 +121,40 @@ fn catalog_models_reject_metadata_tensor_layout_mismatches() {
 }
 
 #[test]
+fn invalid_model_inputs_fail_before_recording_backend_submit() {
+    for (name, fixture) in [
+        ("qwen3", support::tiny_qwen3()),
+        ("qwen35", support::tiny_qwen35_hybrid()),
+    ] {
+        for (placement, tokens, positions) in [
+            ("llm:row=cpu0@1", vec![64], vec![[0, 0, 0, 0]]),
+            ("llm:row=cpu0@1", vec![1], vec![[1, 1, 1, 0]]),
+            ("llm:row=cpu0@1", vec![1], vec![[8, 8, 8, 0]]),
+            ("llm:layer=cpu0@1", vec![64], vec![[0, 0, 0, 0]]),
+            ("llm:layer=cpu0@1", vec![1], vec![[8, 8, 8, 0]]),
+            (
+                "llm:layer=cpu0@1",
+                vec![1, 2],
+                vec![[0, 0, 0, 0], [1, 1, 1, 0]],
+            ),
+        ] {
+            let (result, trace) = fixture
+                .run_recording_forward(placement, &tokens, &positions)
+                .unwrap();
+            assert!(
+                result.is_err(),
+                "{name} accepted {placement} {tokens:?} {positions:?}"
+            );
+            assert_eq!(
+                trace,
+                support::PlacementTrace::default(),
+                "{name} {placement}"
+            );
+        }
+    }
+}
+
+#[test]
 fn qwen35_quantized_cpu_row_fallback_matrices_produce_logits() {
     for matrix_type in [GGMLType::Q4K, GGMLType::Q5K, GGMLType::Q6K] {
         let logits = support::tiny_qwen35_quantized_dense(matrix_type)

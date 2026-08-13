@@ -110,7 +110,7 @@ enum PlacementModel {
     Qwen35(rust_model_inference::Qwen35Model),
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PlacementTrace {
     pub q8_matrix_tensor_ids: BTreeSet<TensorId>,
     pub embedding_tensor_ids: BTreeSet<TensorId>,
@@ -137,6 +137,16 @@ impl PlacementFixture {
     }
 
     pub fn run_recording_forward_two_tokens(&self) -> Result<PlacementTrace, String> {
+        self.run_recording_forward("llm:row=cpu0@1", &[1, 2], &[[0, 0, 0, 0], [1, 1, 1, 0]])
+            .map(|(_, trace)| trace)
+    }
+
+    pub fn run_recording_forward(
+        &self,
+        placement: &str,
+        tokens: &[u32],
+        positions: &[[u32; 4]],
+    ) -> Result<(Result<(), String>, PlacementTrace), String> {
         let requirements = match &self.model {
             PlacementModel::Qwen3(model) => model.requirements(),
             PlacementModel::Qwen35(model) => model.requirements(),
@@ -160,35 +170,25 @@ impl PlacementFixture {
         }
         .compile(&BTreeMap::from([(
             ComponentId::Llm,
-            parse_placement("llm:row=cpu0@1").map_err(|error| error.to_string())?,
+            parse_placement(placement).map_err(|error| error.to_string())?,
         )]))
         .map_err(|error| error.to_string())?;
         let model = CompiledModel::compile(Arc::clone(&self.catalog), plan, registry)
             .map_err(|error| error.to_string())?;
         let mut run = model.start_run().map_err(|error| error.to_string())?;
-        let tokens = [1, 2];
-        let positions = [[0, 0, 0, 0], [1, 1, 1, 0]];
         let mut logits = vec![0.0; 64];
         let result: Result<(), String> = match &self.model {
-            PlacementModel::Qwen3(model) => {
-                for (&token, &position) in tokens.iter().zip(&positions) {
-                    model.forward(&mut run, &[token], &[position], &mut logits)?;
-                }
-                Ok(())
-            }
+            PlacementModel::Qwen3(model) => model.forward(&mut run, tokens, positions, &mut logits),
             PlacementModel::Qwen35(model) => {
-                for (&token, &position) in tokens.iter().zip(&positions) {
-                    model.forward_compiled(&mut run, &[token], &[position], &mut logits)?;
-                }
-                Ok(())
+                model.forward_compiled(&mut run, tokens, positions, &mut logits)
             }
         };
-        result?;
         drop(run);
-        trace
+        let trace = trace
             .lock()
             .map_err(|_| "recording trace poisoned".to_string())
-            .map(|trace| trace.clone())
+            .map(|trace| trace.clone())?;
+        Ok((result, trace))
     }
 
     pub fn run_cpu_forward_two_tokens(&self) -> Result<Vec<f32>, String> {
@@ -1257,6 +1257,14 @@ impl DeviceSession for RecordingSession {
             }
         }
         drop(trace);
+        if let ProgramKind::EmbeddingRows { row_count, .. } = plan.kind {
+            if _params.token_count == 0
+                || _params.token_ids.len() != _params.token_count as usize
+                || _params.token_ids.iter().any(|token| *token >= row_count)
+            {
+                return Err(BackendError::InvalidHandle);
+            }
+        }
         self.fence += 1;
         Ok(FenceId(self.fence))
     }
@@ -1301,8 +1309,15 @@ fn recording_descriptor() -> DeviceDescriptor {
         unified_memory: true,
         capabilities: DeviceCapabilities {
             components: BTreeSet::from([ComponentId::Llm]),
-            modes: BTreeSet::from([rust_model_inference::PlacementMode::Row]),
-            layer_families: BTreeSet::new(),
+            modes: BTreeSet::from([
+                rust_model_inference::PlacementMode::Row,
+                rust_model_inference::PlacementMode::Layer,
+            ]),
+            layer_families: BTreeSet::from([
+                rust_model_inference::LayerFamily::Qwen3,
+                rust_model_inference::LayerFamily::Qwen35Dense,
+                rust_model_inference::LayerFamily::Qwen35Recurrent,
+            ]),
             tensor_types: BTreeSet::from([GGMLType::F32, GGMLType::Q8_0]),
         },
     }
