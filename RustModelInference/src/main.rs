@@ -142,15 +142,6 @@ mod tests {
     }
 
     #[test]
-    fn embedding_l2_matches_llama_f32_product_and_scale_bits() {
-        let mut values = [f32::from_bits(1)];
-
-        l2_normalize(&mut values).unwrap();
-
-        assert_eq!(values, [0.0]);
-    }
-
-    #[test]
     fn generation_decodes_only_the_requested_token_budget() {
         let metadata: std::collections::HashMap<String, MetaValue> =
             std::collections::HashMap::from([
@@ -258,22 +249,9 @@ fn run_embedding(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), String
         cli.threads,
         &cli.placements,
     )?;
-    let mut rows = vec![0.0; tokens.len() * model.config.n_embd];
+    let config = Qwen3EmbeddingConfig::from_metadata(|key| source.metadata(key).cloned())?;
     let mut run = compiled.start_run().map_err(|error| error.to_string())?;
-    for (token, row) in tokens
-        .iter()
-        .zip(rows.chunks_exact_mut(model.config.n_embd))
-    {
-        run.execute_embedding(
-            ComponentId::Llm,
-            model.tensors.token_embedding,
-            std::slice::from_ref(token),
-            row,
-        )
-        .map_err(|error| error.to_string())?;
-    }
-    let mut embedding = mean_rows(&rows, tokens.len(), model.config.n_embd)?;
-    l2_normalize(&mut embedding)?;
+    let embedding = model.embed(&mut run, &tokens, config)?;
     match cli.embedding_output {
         EmbeddingOutput::Summary => println!(
             "Embedding ({} dims): {:?}",
@@ -473,41 +451,6 @@ fn run_interactive(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), Stri
         };
         run_inference(source, &interactive_cli)?;
     }
-}
-
-fn mean_rows(values: &[f32], rows: usize, width: usize) -> Result<Vec<f32>, String> {
-    if rows == 0 || values.len() != rows * width {
-        return Err("Embedding rows have an invalid shape".into());
-    }
-    let mut result = vec![0.0; width];
-    for row in values.chunks_exact(width) {
-        for (result, value) in result.iter_mut().zip(row) {
-            *result += value;
-        }
-    }
-    for value in &mut result {
-        *value /= rows as f32;
-    }
-    Ok(result)
-}
-
-fn l2_normalize(values: &mut [f32]) -> Result<(), String> {
-    if values.iter().any(|value| !value.is_finite()) {
-        return Err("Embedding contains a non-finite value".into());
-    }
-    let sum = values
-        .iter()
-        .map(|&value| f64::from(value * value))
-        .sum::<f64>();
-    let scale = if sum > 0.0 {
-        (1.0 / sum.sqrt()) as f32
-    } else {
-        0.0
-    };
-    for value in values {
-        *value *= scale;
-    }
-    Ok(())
 }
 
 fn sample_token(logits: &[f32], temperature: f32) -> Result<u32, String> {

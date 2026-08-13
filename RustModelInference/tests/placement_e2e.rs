@@ -2,7 +2,10 @@ mod support;
 
 use std::collections::BTreeSet;
 
-use rust_model_inference::{ComponentId, ComponentWorkload, GGMLType};
+use rust_model_inference::{
+    ComponentId, ComponentWorkload, GGMLType, MetaValue, Qwen3EmbeddingConfig,
+    Qwen3EmbeddingPooling,
+};
 
 #[test]
 fn qwen3_and_qwen35_q8_tensors_all_use_compiled_programs() {
@@ -72,6 +75,86 @@ fn qwen3_tied_embedding_output_uses_the_compiled_q8_program() {
     assert!(trace.q8_matrix_tensor_ids.contains(&fixture.output_id()));
     let logits = fixture.run_cpu_forward_two_tokens().unwrap();
     assert!(logits.iter().any(|logit| *logit != 0.0));
+}
+
+#[test]
+fn qwen3_embedding_runs_full_sequence_metadata_and_compiled_q8() {
+    assert_eq!(
+        Qwen3EmbeddingConfig::from_metadata(|key| match key {
+            "qwen3.pooling_type" => Some(MetaValue::Uint32(3)),
+            "qwen3.attention.causal" => Some(MetaValue::Bool(false)),
+            _ => None,
+        })
+        .unwrap(),
+        Qwen3EmbeddingConfig {
+            causal: false,
+            pooling: Qwen3EmbeddingPooling::Last,
+        }
+    );
+    assert!(Qwen3EmbeddingConfig::from_metadata(|_| None)
+        .unwrap_err()
+        .contains("qwen3.pooling_type"));
+
+    let fixture = support::tiny_qwen3();
+    let tokens = [1, 2];
+    let config = |causal, pooling| Qwen3EmbeddingConfig { causal, pooling };
+    let mean = fixture
+        .run_cpu_qwen3_embedding(&tokens, config(true, Qwen3EmbeddingPooling::Mean))
+        .unwrap();
+    let noncausal = fixture
+        .run_cpu_qwen3_embedding(&tokens, config(false, Qwen3EmbeddingPooling::Mean))
+        .unwrap();
+    let last = fixture
+        .run_cpu_qwen3_embedding(&tokens, config(true, Qwen3EmbeddingPooling::Last))
+        .unwrap();
+    assert_ne!(
+        mean,
+        [0.70710677, 0.70710677]
+            .into_iter()
+            .chain(std::iter::repeat(0.0))
+            .take(64)
+            .collect::<Vec<_>>()
+    );
+    assert_ne!(
+        mean, noncausal,
+        "future token must affect noncausal attention"
+    );
+    assert_ne!(mean, last, "metadata pooling must select MEAN versus LAST");
+
+    let (result, trace) = fixture
+        .run_recording_qwen3_embedding(
+            "llm:row=cpu0@1",
+            &tokens,
+            config(true, Qwen3EmbeddingPooling::Mean),
+        )
+        .unwrap();
+    result.unwrap();
+    let expected = fixture
+        .catalog()
+        .entries()
+        .iter()
+        .filter(|entry| entry.component == ComponentId::Llm && entry.ggml_type == GGMLType::Q8_0)
+        .filter(|entry| entry.id != fixture.token_embedding_id() && entry.id != fixture.output_id())
+        .map(|entry| entry.id)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(trace.q8_matrix_tensor_ids, expected);
+}
+
+#[test]
+fn qwen3_embedding_rejects_layer_placement_before_submitting_work() {
+    let fixture = support::tiny_qwen3();
+    let (result, trace) = fixture
+        .run_recording_qwen3_embedding(
+            "llm:layer=cpu0@1",
+            &[1, 2],
+            Qwen3EmbeddingConfig {
+                causal: true,
+                pooling: Qwen3EmbeddingPooling::Mean,
+            },
+        )
+        .unwrap();
+    assert!(result.unwrap_err().contains("Row placement"));
+    assert_eq!(trace, support::PlacementTrace::default());
 }
 
 #[test]

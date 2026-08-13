@@ -53,7 +53,8 @@ pub use prompt::{
 };
 pub use quant::dequant_weight_q4k;
 pub use qwen3::{
-    Qwen3AuxiliaryWeights, Qwen3Config, Qwen3LayerTensorIds, Qwen3Model, Qwen3TensorIds,
+    Qwen3AuxiliaryWeights, Qwen3Config, Qwen3EmbeddingConfig, Qwen3EmbeddingPooling,
+    Qwen3LayerTensorIds, Qwen3Model, Qwen3TensorIds,
 };
 pub use qwen35::{build_qwen35_positions, Qwen35Model};
 pub use scratchpad::{ExecutionScratchpad, KvCache, KvCacheF16, KvCacheF32};

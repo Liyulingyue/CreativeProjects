@@ -271,12 +271,88 @@ impl PlacementFixture {
         }
         Ok(logits)
     }
+
+    pub fn run_cpu_qwen3_embedding(
+        &self,
+        tokens: &[u32],
+        config: rust_model_inference::Qwen3EmbeddingConfig,
+    ) -> Result<Vec<f32>, String> {
+        let PlacementModel::Qwen3(model) = &self.model else {
+            return Err("fixture is not Qwen3".into());
+        };
+        let compiled = self.compile_with(
+            "llm:row=cpu0@1",
+            Arc::new(rust_model_inference::compute::CpuProvider::new(1)),
+        )?;
+        let mut run = compiled.start_run().map_err(|error| error.to_string())?;
+        model.embed(&mut run, tokens, config)
+    }
+
+    pub fn run_recording_qwen3_embedding(
+        &self,
+        placement: &str,
+        tokens: &[u32],
+        config: rust_model_inference::Qwen3EmbeddingConfig,
+    ) -> Result<(Result<Vec<f32>, String>, PlacementTrace), String> {
+        let PlacementModel::Qwen3(model) = &self.model else {
+            return Err("fixture is not Qwen3".into());
+        };
+        let trace = Arc::new(Mutex::new(PlacementTrace::default()));
+        let compiled = self.compile_with(
+            placement,
+            Arc::new(RecordingProvider {
+                descriptor: recording_descriptor(),
+                trace: Arc::clone(&trace),
+            }),
+        )?;
+        let mut run = compiled.start_run().map_err(|error| error.to_string())?;
+        let result = model.embed(&mut run, tokens, config);
+        drop(run);
+        let trace = trace
+            .lock()
+            .map_err(|_| "recording trace poisoned".to_string())?
+            .clone();
+        Ok((result, trace))
+    }
+
+    fn compile_with(
+        &self,
+        placement: &str,
+        provider: Arc<dyn DeviceProvider>,
+    ) -> Result<CompiledModel, String> {
+        let mut registry = DeviceRegistry::new();
+        registry
+            .register_provider(provider)
+            .map_err(|error| error.to_string())?;
+        registry
+            .discover(&BTreeSet::from([BackendKind::Cpu]))
+            .map_err(|error| error.to_string())?;
+        let registry = Arc::new(registry);
+        let plan = PlacementCompiler {
+            catalog: &self.catalog,
+            registry: &registry,
+            requirements: std::slice::from_ref(&self.requirements()),
+        }
+        .compile(&BTreeMap::from([(
+            ComponentId::Llm,
+            parse_placement(placement).map_err(|error| error.to_string())?,
+        )]))
+        .map_err(|error| error.to_string())?;
+        CompiledModel::compile(Arc::clone(&self.catalog), plan, registry)
+            .map_err(|error| error.to_string())
+    }
 }
 
 pub fn tiny_qwen3() -> PlacementFixture {
-    let catalog = fixture_catalog(
+    #[rustfmt::skip]
+    let catalog = fixture_catalog_with_overrides(
         qwen3_tensors(),
         model_metadata("qwen3", 17, 2, 4, 2, 96, 64),
+        BTreeMap::from([
+            ("token_embd.weight".into(), q8_0_matrix_bytes(64, 64, |row, col| i8::from((row, col) == (1, 0) || (row, col) == (2, 1)))),
+            ("blk.0.attn_v.weight".into(), q8_0_matrix_bytes(32, 64, |row, col| if row == 0 && col == 0 { 1 } else if row == 0 && col == 1 { -1 } else { 0 })),
+            ("blk.0.attn_output.weight".into(), q8_0_matrix_bytes(64, 64, |row, col| i8::from((row, col) == (2, 0)))),
+        ]),
     );
     let model = rust_model_inference::Qwen3Model::from_catalog(&catalog).unwrap();
     PlacementFixture {

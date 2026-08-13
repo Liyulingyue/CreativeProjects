@@ -1,7 +1,7 @@
 use crate::{
     ComponentId, ComponentRequirements, ComponentWorkload, ExecutionRun, GGMLType, KvCacheType,
-    LlmLayerSpec, LlmRequirements, PlacementMode, Qwen3LayerSpec, RunParams, TensorCatalog,
-    TensorId,
+    LlmLayerSpec, LlmRequirements, MetaValue, PlacementMode, Qwen3LayerSpec, RunParams,
+    TensorCatalog, TensorId,
 };
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -19,6 +19,45 @@ pub struct Qwen3Config {
     pub n_ctx: usize,
     pub eps: f32,
     pub freq_base: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Qwen3EmbeddingPooling {
+    Mean,
+    Last,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Qwen3EmbeddingConfig {
+    pub causal: bool,
+    pub pooling: Qwen3EmbeddingPooling,
+}
+
+impl Qwen3EmbeddingConfig {
+    pub fn from_metadata(get: impl Fn(&str) -> Option<MetaValue>) -> Result<Self, String> {
+        let pooling_key = "qwen3.pooling_type";
+        let pooling = match get(pooling_key).and_then(|value| value.to_u64()) {
+            Some(1) => Qwen3EmbeddingPooling::Mean,
+            Some(3) => Qwen3EmbeddingPooling::Last,
+            Some(value) => {
+                return Err(format!(
+                    "Unsupported {pooling_key}: {value}; expected 1=MEAN or 3=LAST"
+                ));
+            }
+            None => return Err(format!("Missing or invalid metadata: {pooling_key}")),
+        };
+        let causal_key = "qwen3.attention.causal";
+        let causal = match get(causal_key) {
+            None => true,
+            Some(MetaValue::Bool(value)) => value,
+            Some(value) => {
+                return Err(format!(
+                    "Invalid metadata {causal_key}: expected bool, got {value:?}"
+                ));
+            }
+        };
+        Ok(Self { causal, pooling })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -282,6 +321,120 @@ impl Qwen3Model {
         }
     }
 
+    pub fn embed(
+        &self,
+        run: &mut ExecutionRun,
+        tokens: &[u32],
+        config: Qwen3EmbeddingConfig,
+    ) -> Result<Vec<f32>, String> {
+        if run.plan().components[&ComponentId::Llm].mode != PlacementMode::Row {
+            return Err("Qwen3 embedding requires Row placement".into());
+        }
+        if tokens.is_empty() {
+            return Err("Embedding input produced no tokens".into());
+        }
+        if tokens.len() > self.config.n_ctx {
+            return Err(format!(
+                "Embedding token count exceeds context: tokens={}, context={}",
+                tokens.len(),
+                self.config.n_ctx
+            ));
+        }
+        if tokens
+            .iter()
+            .any(|token| *token as usize >= self.config.vocab)
+        {
+            return Err("token ID exceeds vocabulary".into());
+        }
+
+        let mut hidden = vec![0.0; tokens.len() * self.config.n_embd];
+        for (token, row) in tokens
+            .iter()
+            .zip(hidden.chunks_exact_mut(self.config.n_embd))
+        {
+            run.execute_embedding(
+                ComponentId::Llm,
+                self.tensors.token_embedding,
+                std::slice::from_ref(token),
+                row,
+            )
+            .map_err(|error| error.to_string())?;
+        }
+
+        let (_, _, group_size) = self.attention_dimensions()?;
+
+        for layer in 0..self.tensors.layers.len() {
+            let mut queries = Vec::with_capacity(tokens.len());
+            let mut keys = Vec::with_capacity(tokens.len());
+            let mut values = Vec::with_capacity(tokens.len());
+            for (position, row) in hidden.chunks_exact(self.config.n_embd).enumerate() {
+                let attention_input = rms_normed(
+                    row,
+                    &self.row_weights.attention_norms[layer],
+                    self.config.eps,
+                );
+                let (q, k, v) = self.project_qkv(run, layer, position, &attention_input)?;
+                queries.push(q);
+                keys.push(k);
+                values.push(v);
+            }
+
+            let scale = 1.0 / (self.config.n_embd_head_k as f32).sqrt();
+            let mut attention_rows = Vec::with_capacity(tokens.len());
+            for (position, query) in queries.iter().enumerate() {
+                let key_end = if config.causal {
+                    position + 1
+                } else {
+                    tokens.len()
+                };
+                let mut attention = vec![0.0; self.config.n_head * self.config.n_embd_head_v];
+                for head in 0..self.config.n_head {
+                    let kv_head = head / group_size;
+                    let q_head = &query
+                        [head * self.config.n_embd_head_k..(head + 1) * self.config.n_embd_head_k];
+                    let mut scores = Vec::with_capacity(key_end);
+                    for key in keys.iter().take(key_end) {
+                        let offset = kv_head * self.config.n_embd_head_k;
+                        scores.push(
+                            crate::dot_f32(
+                                q_head,
+                                &key[offset..offset + self.config.n_embd_head_k],
+                                self.config.n_embd_head_k,
+                            ) * scale,
+                        );
+                    }
+                    crate::softmax(&mut scores);
+                    let output_head = &mut attention
+                        [head * self.config.n_embd_head_v..(head + 1) * self.config.n_embd_head_v];
+                    for (value, score) in values.iter().take(key_end).zip(scores) {
+                        let offset = kv_head * self.config.n_embd_head_v;
+                        for (output, value) in output_head
+                            .iter_mut()
+                            .zip(&value[offset..offset + self.config.n_embd_head_v])
+                        {
+                            *output += score * value;
+                        }
+                    }
+                }
+                attention_rows.push(attention);
+            }
+            for (row, attention) in hidden
+                .chunks_exact_mut(self.config.n_embd)
+                .zip(attention_rows.iter())
+            {
+                let attention_output =
+                    self.execute_q8_row(run, self.tensors.layers[layer].o, attention)?;
+                add_assign(row, &attention_output, "Qwen3 attention output")?;
+                self.apply_ffn(run, layer, row)?;
+            }
+        }
+
+        for row in hidden.chunks_exact_mut(self.config.n_embd) {
+            crate::rms_norm_inplace(row, &self.row_weights.final_norm, self.config.eps);
+        }
+        pool_and_normalize_embedding(&hidden, self.config.n_embd, config.pooling)
+    }
+
     pub fn forward(
         &self,
         run: &mut ExecutionRun,
@@ -409,22 +562,7 @@ impl Qwen3Model {
         position: usize,
         hidden: &mut [f32],
     ) -> Result<(), String> {
-        let key_width = self
-            .config
-            .n_head_kv
-            .checked_mul(self.config.n_embd_head_k)
-            .ok_or("Qwen3 key width overflow")?;
-        let value_width = self
-            .config
-            .n_head_kv
-            .checked_mul(self.config.n_embd_head_v)
-            .ok_or("Qwen3 value width overflow")?;
-        let group_size = self
-            .config
-            .n_head
-            .checked_div(self.config.n_head_kv)
-            .filter(|size| *size != 0)
-            .ok_or("Invalid Qwen3 grouped-query attention")?;
+        let (key_width, value_width, group_size) = self.attention_dimensions()?;
 
         for (layer, tensors) in self.tensors.layers.iter().enumerate() {
             let attention_input = rms_normed(
@@ -432,37 +570,7 @@ impl Qwen3Model {
                 &self.row_weights.attention_norms[layer],
                 self.config.eps,
             );
-            let mut q = self.execute_q8_row(run, tensors.q, &attention_input)?;
-            let mut k = self.execute_q8_row(run, tensors.k, &attention_input)?;
-            let v = self.execute_q8_row(run, tensors.v, &attention_input)?;
-            if q.len() != self.config.n_head * self.config.n_embd_head_k
-                || k.len() != key_width
-                || v.len() != value_width
-            {
-                return Err("Qwen3 attention projection shape mismatch".into());
-            }
-            if let Some(weight) = &self.row_weights.q_norms[layer] {
-                for head in q.chunks_exact_mut(self.config.n_embd_head_k) {
-                    crate::rms_norm_inplace(head, weight, self.config.eps);
-                }
-            }
-            if let Some(weight) = &self.row_weights.k_norms[layer] {
-                for head in k.chunks_exact_mut(self.config.n_embd_head_k) {
-                    crate::rms_norm_inplace(head, weight, self.config.eps);
-                }
-            }
-            crate::rope_neox(
-                &mut q,
-                position,
-                self.config.n_embd_head_k,
-                self.config.freq_base,
-            );
-            crate::rope_neox(
-                &mut k,
-                position,
-                self.config.n_embd_head_k,
-                self.config.freq_base,
-            );
+            let (q, k, v) = self.project_qkv(run, layer, position, &attention_input)?;
 
             let cache_key = state.keys.get_mut(layer).ok_or("Missing Qwen3 key state")?;
             let cache_value = state
@@ -510,18 +618,90 @@ impl Qwen3Model {
             }
             let attention_output = self.execute_q8_row(run, tensors.o, &attention)?;
             add_assign(hidden, &attention_output, "Qwen3 attention output")?;
-
-            let ffn_input = rms_normed(hidden, &self.row_weights.ffn_norms[layer], self.config.eps);
-            let gate = self.execute_q8_row(run, tensors.gate, &ffn_input)?;
-            let mut up = self.execute_q8_row(run, tensors.up, &ffn_input)?;
-            if gate.len() != self.config.n_ff || up.len() != self.config.n_ff {
-                return Err("Qwen3 FFN up projection shape mismatch".into());
-            }
-            crate::silu_mul_inplace(&gate, &mut up);
-            let down = self.execute_q8_row(run, tensors.down, &up)?;
-            add_assign(hidden, &down, "Qwen3 FFN down projection")?;
+            self.apply_ffn(run, layer, hidden)?;
         }
         Ok(())
+    }
+
+    fn project_qkv(
+        &self,
+        run: &mut ExecutionRun,
+        layer: usize,
+        position: usize,
+        attention_input: &[f32],
+    ) -> Result<(Vec<f32>, Vec<f32>, Vec<f32>), String> {
+        let tensors = &self.tensors.layers[layer];
+        let mut q = self.execute_q8_row(run, tensors.q, attention_input)?;
+        let mut k = self.execute_q8_row(run, tensors.k, attention_input)?;
+        let v = self.execute_q8_row(run, tensors.v, attention_input)?;
+        let (key_width, value_width, _) = self.attention_dimensions()?;
+        if q.len() != self.config.n_head * self.config.n_embd_head_k
+            || k.len() != key_width
+            || v.len() != value_width
+        {
+            return Err("Qwen3 attention projection shape mismatch".into());
+        }
+        if let Some(weight) = &self.row_weights.q_norms[layer] {
+            for head in q.chunks_exact_mut(self.config.n_embd_head_k) {
+                crate::rms_norm_inplace(head, weight, self.config.eps);
+            }
+        }
+        if let Some(weight) = &self.row_weights.k_norms[layer] {
+            for head in k.chunks_exact_mut(self.config.n_embd_head_k) {
+                crate::rms_norm_inplace(head, weight, self.config.eps);
+            }
+        }
+        crate::rope_neox(
+            &mut q,
+            position,
+            self.config.n_embd_head_k,
+            self.config.freq_base,
+        );
+        crate::rope_neox(
+            &mut k,
+            position,
+            self.config.n_embd_head_k,
+            self.config.freq_base,
+        );
+        Ok((q, k, v))
+    }
+
+    fn attention_dimensions(&self) -> Result<(usize, usize, usize), String> {
+        let key_width = self
+            .config
+            .n_head_kv
+            .checked_mul(self.config.n_embd_head_k)
+            .ok_or("Qwen3 key width overflow")?;
+        let value_width = self
+            .config
+            .n_head_kv
+            .checked_mul(self.config.n_embd_head_v)
+            .ok_or("Qwen3 value width overflow")?;
+        let group_size = self
+            .config
+            .n_head
+            .checked_div(self.config.n_head_kv)
+            .filter(|size| *size != 0)
+            .ok_or("Invalid Qwen3 grouped-query attention")?;
+        Ok((key_width, value_width, group_size))
+    }
+
+    fn apply_ffn(
+        &self,
+        run: &mut ExecutionRun,
+        layer: usize,
+        hidden: &mut [f32],
+    ) -> Result<(), String> {
+        let tensors = &self.tensors.layers[layer];
+        let ffn_input = rms_normed(hidden, &self.row_weights.ffn_norms[layer], self.config.eps);
+        let gate = self.execute_q8_row(run, tensors.gate, &ffn_input)?;
+        let mut up = self.execute_q8_row(run, tensors.up, &ffn_input)?;
+        if gate.len() != self.config.n_ff || up.len() != self.config.n_ff {
+            return Err("Qwen3 FFN up projection shape mismatch".into());
+        }
+        crate::silu_mul_inplace(&gate, &mut up);
+        let down = self.execute_q8_row(run, tensors.down, &up)?;
+        add_assign(hidden, &down, "Qwen3 FFN down projection")
     }
 
     fn execute_q8_row(
@@ -550,6 +730,65 @@ impl Qwen3Model {
         run.execute_q8(ComponentId::Llm, tensor, input, 1, &mut result)
             .map_err(|error| error.to_string())?;
         Ok(result)
+    }
+}
+
+fn pool_and_normalize_embedding(
+    hidden: &[f32],
+    width: usize,
+    pooling: Qwen3EmbeddingPooling,
+) -> Result<Vec<f32>, String> {
+    if width == 0 || hidden.is_empty() || hidden.len() % width != 0 {
+        return Err("Embedding rows have an invalid shape".into());
+    }
+    let mut embedding = match pooling {
+        Qwen3EmbeddingPooling::Last => hidden[hidden.len() - width..].to_vec(),
+        Qwen3EmbeddingPooling::Mean => {
+            let rows = hidden.len() / width;
+            let mut mean = vec![0.0; width];
+            for row in hidden.chunks_exact(width) {
+                for (output, value) in mean.iter_mut().zip(row) {
+                    *output += value;
+                }
+            }
+            for value in &mut mean {
+                *value /= rows as f32;
+            }
+            mean
+        }
+    };
+    if embedding.iter().any(|value| !value.is_finite()) {
+        return Err("Embedding contains a non-finite value".into());
+    }
+    let sum = embedding
+        .iter()
+        .map(|&value| f64::from(value * value))
+        .sum::<f64>();
+    let scale = if sum > 0.0 {
+        (1.0 / sum.sqrt()) as f32
+    } else {
+        0.0
+    };
+    for value in &mut embedding {
+        *value *= scale;
+    }
+    if embedding.iter().any(|value| !value.is_finite()) {
+        return Err("Normalized embedding contains a non-finite value".into());
+    }
+    Ok(embedding)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedding_l2_matches_llama_f32_product_and_scale_bits() {
+        assert_eq!(
+            pool_and_normalize_embedding(&[f32::from_bits(1)], 1, Qwen3EmbeddingPooling::Last)
+                .unwrap(),
+            [0.0]
+        );
     }
 }
 
