@@ -91,11 +91,11 @@ pub fn assert_close(actual: &[f32], expected: &[f32], atol: f32, rtol: f32) {
 }
 
 use rust_model_inference::{
-    parse_placement, BackendError, BackendKind, CompiledModel, ComponentId, ComponentWorkload,
-    DeviceCapabilities, DeviceDescriptor, DeviceDiscovery, DeviceId, DevicePlan, DeviceProvider,
-    DeviceRegistry, DeviceSession, FenceId, GGMLType, LayerOp, LifecycleProbe, PlacementCompiler,
-    ProgramId, ProgramKind, RunParams, SessionStats, SlotId, SourceFormat, SourceTensorRecord,
-    TensorCatalog, TensorId, TensorInfo, TensorSource,
+    parse_placement, BackendError, BackendKind, CompiledModel, ComponentId, DeviceCapabilities,
+    DeviceDescriptor, DeviceDiscovery, DeviceId, DevicePlan, DeviceProvider, DeviceRegistry,
+    DeviceSession, FenceId, GGMLType, LayerOp, LifecycleProbe, PlacementCompiler, ProgramId,
+    ProgramKind, RunParams, SessionStats, SlotId, SourceFormat, SourceTensorRecord, TensorCatalog,
+    TensorId, TensorInfo, TensorSource,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -764,39 +764,6 @@ pub fn compile_fixture_with_probes(
     placements: &[&str],
     probes: &ProviderProbes,
 ) -> Result<(), String> {
-    let mut rules = rust_model_inference::parse_placements(
-        &placements
-            .iter()
-            .map(|value| (*value).to_owned())
-            .collect::<Vec<_>>(),
-    )
-    .map_err(|error| error.to_string())?;
-    let mut requirements = vec![fixture.requirements()];
-    if rules.contains_key(&ComponentId::Vision) {
-        requirements.push(rust_model_inference::ComponentRequirements {
-            component: ComponentId::Vision,
-            workload: ComponentWorkload::VisionCpu { layer_count: 1 },
-        });
-    }
-    rules
-        .entry(ComponentId::Llm)
-        .or_insert_with(|| rust_model_inference::parse_placement("llm:layer=cpu0@1").unwrap());
-
-    let mut requested = BTreeSet::from([BackendKind::Cpu]);
-    for rule in rules.values() {
-        for target in &rule.targets {
-            requested.insert(
-                match target.device.as_str().trim_end_matches(char::is_numeric) {
-                    "cpu" => BackendKind::Cpu,
-                    "vulkan" => BackendKind::Vulkan,
-                    "metal" => BackendKind::Metal,
-                    "npu" => BackendKind::Npu,
-                    _ => return Err(format!("unknown backend {}", target.device.as_str())),
-                },
-            );
-        }
-    }
-
     let mut registry = DeviceRegistry::new();
     registry
         .register_provider(Arc::new(rust_model_inference::compute::CpuProvider::new(1)))
@@ -815,20 +782,18 @@ pub fn compile_fixture_with_probes(
             opens: Arc::clone(&probes.metal_open),
         }))
         .map_err(|error| error.to_string())?;
-    registry
-        .discover(&requested)
-        .map_err(|error| error.to_string())?;
-    let registry = Arc::new(registry);
-    let plan = PlacementCompiler {
-        catalog: fixture.catalog(),
-        registry: &registry,
-        requirements: &requirements,
-    }
-    .compile(&rules)
-    .map_err(|error| error.to_string())?;
-    CompiledModel::compile(fixture.catalog_arc(), plan, registry)
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+    rust_model_inference::compile_model_with_registered_providers(
+        vec![(ComponentId::Llm, fixture.llm_source())],
+        &rust_model_inference::ExecutionOptions {
+            placements: placements.iter().map(|value| (*value).to_owned()).collect(),
+            thread_count: 1,
+            max_batch_tokens: 1,
+            ..Default::default()
+        },
+        registry,
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
 }
 
 pub struct ModelSourceFixture {

@@ -134,6 +134,7 @@ fn explicit_layer_backend_matches_cpu_for_all_model_sources() {
 }
 
 #[test]
+#[cfg(feature = "gpu")]
 fn default_cpu_compilation_never_discovers_or_opens_gpu_providers() {
     let probes = support::ProviderProbes::default();
     support::compile_fixture_with_probes(&support::tiny_qwen3(), &[], &probes).unwrap();

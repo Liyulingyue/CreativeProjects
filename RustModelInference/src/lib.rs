@@ -180,6 +180,34 @@ pub fn compile_model(
     sources: Vec<(ComponentId, Arc<dyn TensorSource>)>,
     options: &ExecutionOptions,
 ) -> Result<(CompiledModel, QwenRunner), CompileModelError> {
+    compile_model_core(sources, options, |backends, cpu_threads| {
+        let mut registry = DeviceRegistry::new();
+        compute::register_requested_providers(&mut registry, backends, cpu_threads)?;
+        Ok(registry)
+    })
+}
+
+/// Compiles a model with providers registered by the caller.
+///
+/// This is intended for integration tests that need to verify provider discovery
+/// behavior without constructing optional hardware providers.
+#[doc(hidden)]
+pub fn compile_model_with_registered_providers(
+    sources: Vec<(ComponentId, Arc<dyn TensorSource>)>,
+    options: &ExecutionOptions,
+    registry: DeviceRegistry,
+) -> Result<(CompiledModel, QwenRunner), CompileModelError> {
+    compile_model_core(sources, options, move |_, _| Ok(registry))
+}
+
+fn compile_model_core<F>(
+    sources: Vec<(ComponentId, Arc<dyn TensorSource>)>,
+    options: &ExecutionOptions,
+    register_providers: F,
+) -> Result<(CompiledModel, QwenRunner), CompileModelError>
+where
+    F: FnOnce(&BTreeSet<BackendKind>, usize) -> Result<DeviceRegistry, BackendError>,
+{
     let catalog = Arc::new(TensorCatalog::from_sources(sources)?);
     let llm = catalog
         .source(ComponentId::Llm)
@@ -261,8 +289,7 @@ pub fn compile_model(
             );
         }
     }
-    let mut registry = DeviceRegistry::new();
-    compute::register_requested_providers(&mut registry, &backends, options.thread_count.max(1))?;
+    let mut registry = register_providers(&backends, options.thread_count.max(1))?;
     registry.discover(&backends)?;
     let registry = Arc::new(registry);
     let plan = PlacementCompiler {
