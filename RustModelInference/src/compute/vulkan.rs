@@ -2155,6 +2155,15 @@ impl DeviceSession for VulkanSession {
     }
 
     fn read_f32(&mut self, slot: SlotId, values: &mut [f32]) -> Result<(), BackendError> {
+        self.read_f32_at(slot, 0, values)
+    }
+
+    fn read_f32_at(
+        &mut self,
+        slot: SlotId,
+        offset: usize,
+        values: &mut [f32],
+    ) -> Result<(), BackendError> {
         self.require_idle()?;
         let slot = self
             .slots
@@ -2165,13 +2174,24 @@ impl DeviceSession for VulkanSession {
             .len()
             .checked_mul(size_of::<f32>())
             .ok_or(BackendError::InvalidHandle)? as u64;
-        if byte_len > slot.byte_len {
+        let byte_offset = u64::try_from(offset)
+            .ok()
+            .and_then(|offset| offset.checked_mul(size_of::<f32>() as u64))
+            .ok_or(BackendError::InvalidHandle)?;
+        let source_offset = slot
+            .arena_offset
+            .checked_add(byte_offset)
+            .ok_or(BackendError::InvalidHandle)?;
+        if byte_offset
+            .checked_add(byte_len)
+            .is_none_or(|end| end > slot.byte_len)
+        {
             return Err(BackendError::InvalidHandle);
         }
-        self.invalidate_staging(slot.arena_offset, byte_len)?;
+        self.invalidate_staging(source_offset, byte_len)?;
         unsafe {
             std::ptr::copy_nonoverlapping(
-                (self.staging_ptr + slot.arena_offset as usize) as *const u8,
+                (self.staging_ptr + source_offset as usize) as *const u8,
                 values.as_mut_ptr() as *mut u8,
                 byte_len as usize,
             )
@@ -2676,7 +2696,11 @@ fn bind_layer_ops(
                 let (entry, _, weight_range) = resident(weight)?;
                 let elements =
                     u32::try_from(entry.shape[0]).map_err(|_| BackendError::InvalidHandle)?;
-                let groups = 1;
+                let input_width = widths.get(&input).copied().unwrap_or(elements);
+                let groups = input_width
+                    .checked_div(elements)
+                    .filter(|_| input_width % elements == 0)
+                    .ok_or(BackendError::InvalidHandle)?;
                 if !matches!(entry.ggml_type, GGMLType::F32 | GGMLType::F16)
                     || groups == 0
                     || !f32_slot(input)
@@ -2684,8 +2708,8 @@ fn bind_layer_ops(
                 {
                     return Err(BackendError::InvalidHandle);
                 }
-                widths.insert(input, elements);
-                widths.insert(output, elements);
+                widths.insert(input, input_width);
+                widths.insert(output, input_width);
                 bound.push(LayerOpSpec::RmsNorm {
                     input,
                     weight: weight_range,

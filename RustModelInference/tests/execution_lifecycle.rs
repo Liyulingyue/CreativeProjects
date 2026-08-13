@@ -434,6 +434,15 @@ impl DeviceSession for MockSession {
     }
 
     fn read_f32(&mut self, slot: SlotId, values: &mut [f32]) -> Result<(), BackendError> {
+        self.read_f32_at(slot, 0, values)
+    }
+
+    fn read_f32_at(
+        &mut self,
+        slot: SlotId,
+        offset: usize,
+        values: &mut [f32],
+    ) -> Result<(), BackendError> {
         self.trace(format!(
             "read:{}:{}:{}",
             self.descriptor.id.as_str(),
@@ -454,10 +463,11 @@ impl DeviceSession for MockSession {
             });
         }
         let source = self.slots.get(&slot).ok_or(BackendError::InvalidHandle)?;
-        if values.len() > source.len() {
-            return Err(BackendError::InvalidHandle);
-        }
-        values.copy_from_slice(&source[..values.len()]);
+        let end = offset
+            .checked_add(values.len())
+            .filter(|end| *end <= source.len())
+            .ok_or(BackendError::InvalidHandle)?;
+        values.copy_from_slice(&source[offset..end]);
         self.stats.lock().unwrap().activation_d2h_bytes += (values.len() * 4) as u64;
         Ok(())
     }

@@ -340,7 +340,7 @@ impl PlacementFixture {
             .forward_compiled(
                 &mut run,
                 &[1, 2],
-                &[[0, 0, 0, 0], [1, 1, 1, 0]],
+                &[[0, 0, 0, 0], [1, 2, 3, 4]],
                 &mut logits,
             )
             .map_err(|error| format!("compiled batch forward: {error}"))?;
@@ -386,6 +386,10 @@ impl PlacementFixture {
         let compiled = CompiledModel::compile(Arc::clone(&self.catalog), plan, registry)
             .map_err(|error| error.to_string())?;
         let mut run = compiled.start_run().map_err(|error| error.to_string())?;
+        let second_position = match &self.model {
+            PlacementModel::Qwen3(_) => [1, 1, 1, 0],
+            PlacementModel::Qwen35(_) => [1, 2, 3, 4],
+        };
         let mut first_token_logits = vec![0.0; 64];
         match &self.model {
             PlacementModel::Qwen3(model) => model.forward(
@@ -406,13 +410,13 @@ impl PlacementFixture {
             PlacementModel::Qwen3(model) => model.forward(
                 &mut run,
                 &tokens[1..],
-                &[[1, 1, 1, 0]],
+                &[second_position],
                 &mut second_token_logits,
             )?,
             PlacementModel::Qwen35(model) => model.forward_compiled(
                 &mut run,
                 &tokens[1..],
-                &[[1, 1, 1, 0]],
+                &[second_position],
                 &mut second_token_logits,
             )?,
         }
@@ -664,7 +668,7 @@ pub fn tiny_qwen35_q8_dense() -> PlacementFixture {
             (
                 "blk.0.attn_q.weight".into(),
                 q8_0_matrix_bytes(128, 64, |row, col| {
-                    if row < 64 && row == col {
+                    if row < 64 && (row == col || row == col + 16) {
                         1
                     } else if row >= 64 && row - 64 == col {
                         2
@@ -675,16 +679,16 @@ pub fn tiny_qwen35_q8_dense() -> PlacementFixture {
             ),
             (
                 "blk.0.attn_k.weight".into(),
-                q8_0_matrix_bytes(32, 64, |row, col| i8::from(row == col)),
+                q8_0_matrix_bytes(32, 64, |row, col| i8::from(row == col || row == col + 16)),
             ),
             (
                 "blk.0.attn_v.weight".into(),
-                q8_0_matrix_bytes(32, 64, |row, col| i8::from(row == col)),
+                q8_0_matrix_bytes(32, 64, |row, col| i8::from(row == col || row == col + 16)),
             ),
             (
                 "blk.0.attn_output.weight".into(),
                 q8_0_matrix_bytes(64, 64, |row, col| {
-                    i8::from((row, col) == (2, 0) || (row, col) == (3, 1))
+                    i8::from((row, col) == (2, 0) || (row, col) == (3, 1) || (row, col) == (4, 16))
                 }),
             ),
             (
@@ -1609,11 +1613,21 @@ impl DeviceSession for RecordingSession {
     }
 
     fn read_f32(&mut self, slot: SlotId, values: &mut [f32]) -> Result<(), BackendError> {
+        self.read_f32_at(slot, 0, values)
+    }
+
+    fn read_f32_at(
+        &mut self,
+        slot: SlotId,
+        offset: usize,
+        values: &mut [f32],
+    ) -> Result<(), BackendError> {
         let source = self.slots.get(&slot).ok_or(BackendError::InvalidHandle)?;
-        if values.len() > source.len() {
-            return Err(BackendError::InvalidHandle);
-        }
-        values.copy_from_slice(&source[..values.len()]);
+        let end = offset
+            .checked_add(values.len())
+            .filter(|end| *end <= source.len())
+            .ok_or(BackendError::InvalidHandle)?;
+        values.copy_from_slice(&source[offset..end]);
         Ok(())
     }
 

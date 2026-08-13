@@ -148,6 +148,12 @@ pub trait DeviceSession: Send {
     ) -> Result<FenceId, BackendError>;
     fn wait(&mut self, fence: FenceId) -> Result<(), BackendError>;
     fn read_f32(&mut self, slot: SlotId, values: &mut [f32]) -> Result<(), BackendError>;
+    fn read_f32_at(
+        &mut self,
+        slot: SlotId,
+        offset: usize,
+        values: &mut [f32],
+    ) -> Result<(), BackendError>;
     fn reset_state(&mut self) -> Result<(), BackendError>;
     fn stats(&self) -> SessionStats;
     fn lifecycle_probe(&self) -> LifecycleProbe;

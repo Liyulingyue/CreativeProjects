@@ -358,6 +358,15 @@ impl DeviceSession for CpuSession {
     }
 
     fn read_f32(&mut self, slot: SlotId, values: &mut [f32]) -> Result<(), BackendError> {
+        self.read_f32_at(slot, 0, values)
+    }
+
+    fn read_f32_at(
+        &mut self,
+        slot: SlotId,
+        offset: usize,
+        values: &mut [f32],
+    ) -> Result<(), BackendError> {
         self.require_idle("read while CPU work is pending")?;
         self.slot_plans
             .get(slot.0 as usize)
@@ -370,10 +379,14 @@ impl DeviceSession for CpuSession {
             .slots
             .get(slot.0 as usize)
             .ok_or(BackendError::InvalidHandle)?;
-        if values.len() > source.len() {
+        let end = offset
+            .checked_add(values.len())
+            .filter(|end| *end <= source.len())
+            .ok_or(BackendError::InvalidHandle)?;
+        if offset > source.len() {
             return Err(BackendError::InvalidHandle);
         }
-        values.copy_from_slice(&source[..values.len()]);
+        values.copy_from_slice(&source[offset..end]);
         self.stats.activation_d2h_bytes += (values.len() * size_of::<f32>()) as u64;
         Ok(())
     }
@@ -958,13 +971,14 @@ impl WorkerState {
             .slots
             .get(output.0 as usize)
             .ok_or(BackendError::InvalidHandle)?;
+        let active_width = self.active_slot_width(input)?;
         let active_len = batch
-            .checked_mul(width)
+            .checked_mul(active_width)
             .filter(|_| batch <= self.batch_capacity)
             .ok_or(BackendError::InvalidHandle)?;
         if width == 0
             || input_slot.len != output_slot.len
-            || input_slot.len % width != 0
+            || active_width % width != 0
             || active_len > input_slot.len
         {
             return Err(BackendError::InvalidHandle);

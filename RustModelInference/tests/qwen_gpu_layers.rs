@@ -90,7 +90,7 @@ fn qwen35_dense_two_token_batch_matches_cpu_row() {
     let actual = fixture
         .compiled_backend_two_token_batch(BackendKind::Cpu)
         .unwrap();
-    support::assert_close(&actual, &expected.first_token_logits, 1e-3, 1e-3);
+    support::assert_close(&actual, &expected.second_token_logits, 1e-3, 1e-3);
 }
 
 #[test]
@@ -120,5 +120,5 @@ fn gpu_qwen35_dense_two_token_batch_matches_cpu_row() {
     let fixture = support::tiny_qwen35_q8_dense();
     let expected = fixture.cpu_reference_two_tokens().unwrap();
     let actual = fixture.compiled_backend_two_token_batch(backend).unwrap();
-    support::assert_close(&actual, &expected.first_token_logits, 1e-3, 1e-3);
+    support::assert_close(&actual, &expected.second_token_logits, 1e-3, 1e-3);
 }

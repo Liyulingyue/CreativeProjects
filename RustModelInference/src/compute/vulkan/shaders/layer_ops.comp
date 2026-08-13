@@ -108,23 +108,23 @@ void rope(uint index) {
 }
 
 void mrope(uint index) {
-    uint half_width = params.p6 / 2;
-    uint q_pairs = params.p4 / 2, k_pairs = params.p5 / 2;
+    uint half_width = params.p4 / 2;
+    uint q_pairs = params.p2 / 2, k_pairs = params.p3 / 2;
     if (index >= q_pairs + k_pairs) return;
-    uint base_words = index < q_pairs ? params.p2 : params.p3;
+    uint base_words = index < q_pairs ? params.p0 : params.p1;
     uint pair = index < q_pairs ? index : index - q_pairs;
     uint lane = pair % half_width, head = pair / half_width;
-    uint section0 = params.p12 & 0xff;
-    uint section1 = (params.p12 >> 8) & 0xff;
-    uint section2 = (params.p12 >> 16) & 0xff;
-    uint section3 = params.p12 >> 24;
+    uint section0 = params.p10 & 0xff;
+    uint section1 = (params.p10 >> 8) & 0xff;
+    uint section2 = (params.p10 >> 16) & 0xff;
+    uint section3 = params.p10 >> 24;
     uint total = section0 + section1 + section2 + section3;
     uint sector = lane % total;
     uint axis = sector < section0 ? 0 : sector < section0 + section1 ? 1 : sector < section0 + section1 + section2 ? 2 : 3;
-    float theta = float(axis == 0 ? params.p8 : axis == 1 ? params.p9 : axis == 2 ? params.p10 : params.p11);
-    float theta_scale = pow(uintBitsToFloat(params.p7), -2.0 / float(params.p6));
+    float theta = float(axis == 0 ? params.p6 : axis == 1 ? params.p7 : axis == 2 ? params.p8 : params.p9);
+    float theta_scale = pow(uintBitsToFloat(params.p5), -2.0 / float(params.p4));
     for (uint i = 0; i < lane; ++i) theta *= theta_scale;
-    uint base = head * params.p6;
+    uint base = head * params.p4;
     float x0 = arena_f32(base_words, base + lane), x1 = arena_f32(base_words, base + lane + half_width);
     float c = cos(theta), s = sin(theta);
     set_arena_f32(base_words, base + lane, fma(x0, c, -x1 * s));

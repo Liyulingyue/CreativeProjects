@@ -1122,6 +1122,15 @@ impl DeviceSession for MetalSession {
     }
 
     fn read_f32(&mut self, slot: SlotId, values: &mut [f32]) -> Result<(), BackendError> {
+        self.read_f32_at(slot, 0, values)
+    }
+
+    fn read_f32_at(
+        &mut self,
+        slot: SlotId,
+        offset: usize,
+        values: &mut [f32],
+    ) -> Result<(), BackendError> {
         self.require_idle()?;
         let resource = self
             .slots
@@ -1137,12 +1146,23 @@ impl DeviceSession for MetalSession {
             .checked_mul(size_of::<f32>())
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or(BackendError::InvalidHandle)?;
-        if byte_len > resource.plan.byte_len {
+        let byte_offset = u64::try_from(offset)
+            .ok()
+            .and_then(|offset| offset.checked_mul(size_of::<f32>() as u64))
+            .ok_or(BackendError::InvalidHandle)?;
+        if byte_offset
+            .checked_add(byte_len)
+            .is_none_or(|end| end > resource.plan.byte_len)
+        {
             return Err(BackendError::InvalidHandle);
         }
         unsafe {
             std::ptr::copy_nonoverlapping(
-                resource.buffer.contents().cast::<u8>(),
+                resource
+                    .buffer
+                    .contents()
+                    .cast::<u8>()
+                    .add(byte_offset as usize),
                 values.as_mut_ptr().cast::<u8>(),
                 byte_len as usize,
             );
@@ -1469,7 +1489,11 @@ fn bind_layer_ops(
                 let elements =
                     u32::try_from(entry.shape[0]).map_err(|_| BackendError::InvalidHandle)?;
                 let chunks = tensor_chunks(weight)?;
-                let groups = 1;
+                let input_width = widths.get(&input).copied().unwrap_or(elements);
+                let groups = input_width
+                    .checked_div(elements)
+                    .filter(|_| input_width % elements == 0)
+                    .ok_or(BackendError::InvalidHandle)?;
                 if !matches!(entry.ggml_type, GGMLType::F32 | GGMLType::F16)
                     || chunks.len() != 1
                     || groups == 0
@@ -1478,8 +1502,8 @@ fn bind_layer_ops(
                 {
                     return Err(BackendError::InvalidHandle);
                 }
-                widths.insert(input, elements);
-                widths.insert(output, elements);
+                widths.insert(input, input_width);
+                widths.insert(output, input_width);
                 bound.push(BoundLayerOp::RmsNorm {
                     input,
                     weight: chunks[0],

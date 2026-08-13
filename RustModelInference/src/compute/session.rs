@@ -341,7 +341,12 @@ impl<'a> ExecutionRun<'a> {
             let session = session_mut(&mut self.sessions.sessions, &finalization.device)?;
             let fence = session.submit(finalization.program, params)?;
             session.wait(fence)?;
-            session.read_f32(finalization.output, output)
+            let offset = usize::try_from(params.token_count)
+                .ok()
+                .and_then(|batch| batch.checked_sub(1))
+                .and_then(|last| last.checked_mul(output.len()))
+                .ok_or(BackendError::InvalidHandle)?;
+            session.read_f32_at(finalization.output, offset, output)
         })();
         if result.is_err() {
             self.sessions.poisoned = true;
