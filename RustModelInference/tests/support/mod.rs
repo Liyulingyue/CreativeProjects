@@ -81,16 +81,30 @@ pub fn assert_close(actual: &[f32], expected: &[f32], atol: f32, rtol: f32) {
     }
 }
 
-#[cfg(feature = "vulkan")]
-mod vulkan {
+#[cfg(any(feature = "vulkan", all(target_os = "macos", feature = "metal")))]
+mod gpu {
     use super::Q8Fixture;
     use rust_model_inference::{
-        BackendError, BackendKind, ComponentId, DeviceDiscovery, DevicePlan, DeviceProvider,
-        GGMLType, MemoryPlan, MetaValue, ProgramId, ProgramKind, ProgramPlan, ResidentTensorPlan,
-        RunParams, SlotId, SlotKind, SlotPlan, SlotStorage, SourceFormat, SourceTensorRecord,
-        TensorCatalog, TensorId, TensorInfo, TensorSource,
+        BackendError, BackendKind, ComponentId, DevicePlan, DeviceProvider, GGMLType, MemoryPlan,
+        MetaValue, ProgramId, ProgramKind, ProgramPlan, ResidentTensorPlan, RunParams, SlotId,
+        SlotKind, SlotPlan, SlotStorage, SourceFormat, SourceTensorRecord, TensorCatalog, TensorId,
+        TensorInfo, TensorSource,
     };
     use std::sync::Arc;
+
+    fn provider(backend: BackendKind) -> Result<Box<dyn DeviceProvider>, BackendError> {
+        match backend {
+            #[cfg(feature = "vulkan")]
+            BackendKind::Vulkan => Ok(Box::new(
+                rust_model_inference::compute::VulkanProvider::new()?,
+            )),
+            #[cfg(all(target_os = "macos", feature = "metal"))]
+            BackendKind::Metal => Ok(Box::new(
+                rust_model_inference::compute::MetalProvider::new()?
+            )),
+            _ => Err(BackendError::BackendUnavailable { backend }),
+        }
+    }
 
     struct FixtureSource {
         info: TensorInfo,
@@ -125,19 +139,22 @@ mod vulkan {
     }
 
     pub fn require_backend(name: &str) {
-        assert_eq!(name, "vulkan");
+        let backend = match name {
+            "vulkan" => BackendKind::Vulkan,
+            "metal" => BackendKind::Metal,
+            _ => panic!("unknown backend {name}"),
+        };
         let required = std::env::var("RMI_REQUIRE_BACKEND").ok();
         assert!(required.as_deref().is_none_or(|value| value == name));
-        let provider =
-            rust_model_inference::compute::VulkanProvider::new().unwrap_or_else(|error| {
-                panic!("required Vulkan backend initialization failed: {error}")
-            });
+        let provider = provider(backend).unwrap_or_else(|error| {
+            panic!("required {name} backend initialization failed: {error}")
+        });
         let adapters = provider
             .enumerate()
-            .unwrap_or_else(|error| panic!("required Vulkan discovery failed: {error}"));
+            .unwrap_or_else(|error| panic!("required {name} discovery failed: {error}"));
         assert!(
             !adapters.is_empty(),
-            "required Vulkan adapter is unavailable"
+            "required {name} adapter is unavailable"
         );
     }
 
@@ -145,10 +162,7 @@ mod vulkan {
         backend: BackendKind,
         fixture: &Q8Fixture,
     ) -> Result<Vec<f32>, BackendError> {
-        if backend != BackendKind::Vulkan {
-            return Err(BackendError::BackendUnavailable { backend });
-        }
-        let provider = rust_model_inference::compute::VulkanProvider::new()?;
+        let provider = provider(backend)?;
         let descriptor = provider
             .enumerate()?
             .into_iter()
@@ -221,6 +235,12 @@ mod vulkan {
             },
         };
         let mut session = provider.open(&descriptor, &plan, Arc::clone(&catalog))?;
+        let opened = session.stats();
+        assert_eq!(opened.weight_uploads, 1);
+        assert_eq!(opened.weight_upload_bytes, resident_bytes);
+        assert!(opened.resident_allocations > 0);
+        assert_eq!(opened.submissions, 0);
+        assert_eq!(opened.host_waits, 0);
         session.write_f32(SlotId(0), &fixture.input)?;
         let fence = session.submit(
             ProgramId(0),
@@ -234,9 +254,14 @@ mod vulkan {
         session.wait(fence)?;
         let mut actual = vec![0.0; fixture.expected.len()];
         session.read_f32(SlotId(1), &mut actual)?;
+        let completed = session.stats();
+        assert_eq!(completed.weight_uploads, opened.weight_uploads);
+        assert_eq!(completed.resident_allocations, opened.resident_allocations);
+        assert_eq!(completed.submissions, 1);
+        assert_eq!(completed.host_waits, 1);
         Ok(actual)
     }
 }
 
-#[cfg(feature = "vulkan")]
-pub use vulkan::{require_backend, run_q8_backend};
+#[cfg(any(feature = "vulkan", all(target_os = "macos", feature = "metal")))]
+pub use gpu::{require_backend, run_q8_backend};

@@ -1,5 +1,7 @@
 pub mod cpu;
 pub mod device;
+#[cfg(all(target_os = "macos", feature = "metal"))]
+pub mod metal;
 pub mod program;
 pub mod session;
 #[cfg(feature = "vulkan")]
@@ -11,6 +13,8 @@ pub use device::{
     DeviceProvider, DeviceRegistry, DeviceSession, FenceId, LayerFamily, LifecycleProbe, ProgramId,
     RunParams, SessionStats, SlotId,
 };
+#[cfg(all(target_os = "macos", feature = "metal"))]
+pub use metal::MetalProvider;
 pub use program::*;
 pub use session::{CompiledModel, ExecutionRun};
 #[cfg(feature = "vulkan")]
