@@ -190,6 +190,8 @@ struct SlotResource {
     plan: SlotPlan,
     buffer: Buffer,
     staging: Option<Buffer>,
+    host_readable: bool,
+    host_writable: bool,
 }
 
 struct ProgramResource {
@@ -230,29 +232,31 @@ impl MetalSession {
     ) -> Result<Self, BackendError> {
         let device = adapter.device;
         let queue = device.new_command_queue();
-        let source = include_str!("metal/kernels.metal");
-        let options = CompileOptions::new();
-        options.set_fast_math_enabled(false);
-        debug_assert!(!options.is_fast_math_enabled());
-        let library = device
-            .new_library_with_source(source, &options)
-            .map_err(|message| BackendError::Pipeline {
-                device: adapter.descriptor.id.clone(),
-                message,
-            })?;
-        let function =
-            library
-                .get_function("q8_rows", None)
+        let (library, pipeline) = autoreleasepool(|| {
+            let source = include_str!("metal/kernels.metal");
+            let options = CompileOptions::new();
+            options.set_fast_math_enabled(false);
+            debug_assert!(!options.is_fast_math_enabled());
+            let library = device
+                .new_library_with_source(source, &options)
                 .map_err(|message| BackendError::Pipeline {
                     device: adapter.descriptor.id.clone(),
                     message,
                 })?;
-        let pipeline = device
-            .new_compute_pipeline_state_with_function(&function)
-            .map_err(|message| BackendError::Pipeline {
-                device: adapter.descriptor.id.clone(),
-                message,
+            let function = library.get_function("q8_rows", None).map_err(|message| {
+                BackendError::Pipeline {
+                    device: adapter.descriptor.id.clone(),
+                    message,
+                }
             })?;
+            let pipeline = device
+                .new_compute_pipeline_state_with_function(&function)
+                .map_err(|message| BackendError::Pipeline {
+                    device: adapter.descriptor.id.clone(),
+                    message,
+                })?;
+            Ok((library, pipeline))
+        })?;
 
         let mut resident = Vec::with_capacity(validated.chunks.len());
         let mut upload_staging = Vec::with_capacity(validated.chunks.len());
@@ -274,18 +278,29 @@ impl MetalSession {
         upload_resident(&queue, &resident, &upload_staging, &adapter.descriptor)?;
         drop(upload_staging);
 
+        let input_slots = validated
+            .programs
+            .iter()
+            .map(|program| program.plan.input)
+            .collect::<BTreeSet<_>>();
+        let output_slots = validated
+            .programs
+            .iter()
+            .map(|program| program.plan.output)
+            .collect::<BTreeSet<_>>();
         let mut slots = BTreeMap::new();
         for plan in validated.slots.into_values() {
-            let shared = plan.kind == SlotKind::Result;
+            let host_readable = output_slots.contains(&plan.id);
+            let host_writable = input_slots.contains(&plan.id);
             let buffer = device.new_buffer(
                 plan.byte_len,
-                if shared {
+                if host_readable {
                     MTLResourceOptions::StorageModeShared
                 } else {
                     MTLResourceOptions::StorageModePrivate
                 },
             );
-            let staging = (!shared)
+            let staging = host_writable
                 .then(|| device.new_buffer(plan.byte_len, MTLResourceOptions::StorageModeShared));
             slots.insert(
                 plan.id,
@@ -293,6 +308,8 @@ impl MetalSession {
                     plan,
                     buffer,
                     staging,
+                    host_readable,
+                    host_writable,
                 },
             );
         }
@@ -384,7 +401,11 @@ impl DeviceSession for MetalSession {
         let resource = self
             .slots
             .get(&slot)
-            .filter(|resource| resource.plan.storage == SlotStorage::F32)
+            .filter(|resource| {
+                resource.plan.storage == SlotStorage::F32
+                    && resource.host_writable
+                    && matches!(resource.plan.kind, SlotKind::Activation | SlotKind::Scratch)
+            })
             .ok_or(BackendError::InvalidHandle)?;
         let byte_len = values
             .len()
@@ -543,7 +564,9 @@ impl DeviceSession for MetalSession {
             .slots
             .get(&slot)
             .filter(|resource| {
-                resource.plan.storage == SlotStorage::F32 && resource.plan.kind == SlotKind::Result
+                resource.plan.storage == SlotStorage::F32
+                    && resource.host_readable
+                    && matches!(resource.plan.kind, SlotKind::Activation | SlotKind::Result)
             })
             .ok_or(BackendError::InvalidHandle)?;
         let byte_len = values
@@ -687,6 +710,7 @@ fn validate_plan(
             let input_values = u64::from(batch_capacity).checked_mul(u64::from(n_in));
             let output_values = u64::from(batch_capacity).checked_mul(rows.len() as u64);
             batch_capacity != 0
+                && matches!(input.kind, SlotKind::Activation | SlotKind::Scratch)
                 && input.storage == SlotStorage::F32
                 && output.storage == SlotStorage::F32
                 && output.kind == SlotKind::Result
@@ -708,9 +732,10 @@ fn validate_plan(
             rows.end != 0
                 && entry.row_count == u64::from(rows.end)
                 && input.byte_len >= 4
-                && input.kind != SlotKind::Result
+                && input.kind == SlotKind::Scratch
+                && input.storage == SlotStorage::I8
                 && output.storage == SlotStorage::F32
-                && output.kind == SlotKind::Result
+                && matches!(output.kind, SlotKind::Activation | SlotKind::Result)
                 && output_row_bytes.is_some_and(|bytes| {
                     bytes != 0
                         && output.byte_len % bytes == 0
@@ -750,10 +775,13 @@ fn validate_plan(
     let slot_bytes = slots
         .values()
         .try_fold(0_u64, |total, slot| total.checked_add(slot.byte_len));
-    let staging_bytes = slots
-        .values()
-        .filter(|slot| slot.kind != SlotKind::Result)
-        .try_fold(0_u64, |total, slot| total.checked_add(slot.byte_len));
+    let input_slots = programs
+        .iter()
+        .map(|program| program.plan.input)
+        .collect::<BTreeSet<_>>();
+    let staging_bytes = input_slots.into_iter().try_fold(0_u64, |total, id| {
+        total.checked_add(slots.get(&id)?.byte_len)
+    });
     let slot_bytes = slot_bytes.ok_or(BackendError::InvalidHandle)?;
     let staging_bytes = staging_bytes.ok_or(BackendError::InvalidHandle)?;
     let runtime_bytes = plan
@@ -769,7 +797,6 @@ fn validate_plan(
         .ok_or(BackendError::InvalidHandle)?;
     if runtime_bytes.max(upload_peak) > adapter.descriptor.usable_bytes
         || plan.memory.required_bytes > adapter.descriptor.usable_bytes
-        || runtime_bytes.max(upload_peak) > plan.memory.required_bytes
     {
         return Err(BackendError::InvalidHandle);
     }
@@ -979,6 +1006,39 @@ fn submission(descriptor: &DeviceDescriptor, message: impl Into<String>) -> Back
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{MetaValue, SourceFormat, SourceTensorRecord, TensorInfo, TensorSource};
+
+    struct TestSource {
+        info: TensorInfo,
+        bytes: Vec<u8>,
+    }
+
+    impl TensorSource for TestSource {
+        fn metadata(&self, _key: &str) -> Option<&MetaValue> {
+            None
+        }
+
+        fn tensor_info(&self, name: &str) -> Option<&TensorInfo> {
+            (name == self.info.name).then_some(&self.info)
+        }
+
+        fn tensor_slice(&self, name: &str) -> Option<&[u8]> {
+            (name == self.info.name).then_some(&self.bytes)
+        }
+
+        fn source_format(&self) -> SourceFormat {
+            SourceFormat::Gguf
+        }
+
+        fn tensor_records(&self) -> Vec<SourceTensorRecord> {
+            vec![SourceTensorRecord {
+                info: self.info.clone(),
+                segment_id: 0,
+                segment_byte_range: 0..self.bytes.len() as u64,
+                layer: None,
+            }]
+        }
+    }
 
     #[test]
     fn resident_chunks_are_whole_rows_and_cover_the_tail() {
@@ -1057,5 +1117,93 @@ mod tests {
         plan.slots[0].byte_len = 16;
         plan.slots[0].alignment = 8;
         assert!(validate_slots(&plan, descriptor.max_allocation_bytes).is_err());
+    }
+
+    #[test]
+    fn q8_result_input_is_rejected_before_resource_creation() {
+        let device = Device::system_default().expect("Metal tests require a device");
+        let descriptor = DeviceDescriptor {
+            id: DeviceId::parse("metal0").unwrap(),
+            backend: BackendKind::Metal,
+            physical_key: format!("metal:{:016x}", device.registry_id()),
+            name: device.name().to_owned(),
+            usable_bytes: 1 << 20,
+            max_allocation_bytes: 1 << 18,
+            buffer_alignment: 4,
+            unified_memory: device.has_unified_memory(),
+            capabilities: DeviceCapabilities {
+                components: BTreeSet::from([ComponentId::Llm]),
+                modes: BTreeSet::from([PlacementMode::Row]),
+                layer_families: BTreeSet::new(),
+                tensor_types: BTreeSet::from([GGMLType::Q8_0]),
+            },
+        };
+        let adapter = AdapterInfo {
+            descriptor: descriptor.clone(),
+            registry_id: device.registry_id(),
+            max_buffer_length: 1 << 18,
+            device,
+        };
+        let catalog = TensorCatalog::from_sources(vec![(
+            ComponentId::Llm,
+            Arc::new(TestSource {
+                info: TensorInfo {
+                    name: "weight".into(),
+                    dims: vec![32, 1],
+                    ggml_type: GGMLType::Q8_0,
+                    offset: 0,
+                },
+                bytes: vec![0; 34],
+            }),
+        )])
+        .unwrap();
+        let plan = DevicePlan {
+            descriptor,
+            tensors: vec![ResidentTensorPlan {
+                tensor: TensorId(0),
+                rows: 0..1,
+                source_bytes: 0..34,
+                arena_offset: 0,
+            }],
+            slots: vec![
+                SlotPlan {
+                    id: SlotId(0),
+                    kind: SlotKind::Result,
+                    storage: SlotStorage::F32,
+                    byte_len: 128,
+                    alignment: 4,
+                    arena_offset: 0,
+                },
+                SlotPlan {
+                    id: SlotId(1),
+                    kind: SlotKind::Result,
+                    storage: SlotStorage::F32,
+                    byte_len: 4,
+                    alignment: 4,
+                    arena_offset: 128,
+                },
+            ],
+            programs: vec![ProgramPlan {
+                id: ProgramId(0),
+                kind: ProgramKind::Q8Rows {
+                    tensor: TensorId(0),
+                    rows: 0..1,
+                    batch_capacity: 1,
+                },
+                input: SlotId(0),
+                output: SlotId(1),
+                layer_ops: Vec::new(),
+            }],
+            memory: super::super::MemoryPlan {
+                resident_bytes: 34,
+                scratch_bytes: 132,
+                staging_bytes: 34,
+                required_bytes: 200,
+                largest_allocation_bytes: 132,
+                ..super::super::MemoryPlan::default()
+            },
+        };
+
+        assert!(validate_plan(&plan, &catalog, &adapter).is_err());
     }
 }

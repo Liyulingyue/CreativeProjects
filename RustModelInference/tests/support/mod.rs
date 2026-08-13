@@ -41,7 +41,14 @@ pub fn q8_fixture(batch: usize, n_in: usize, n_out: usize, rows: Range<u32>) -> 
     }
 
     let input = (0..batch * n_in)
-        .map(|index| (index as i32 % 19 - 9) as f32 * 0.07)
+        .map(|index| {
+            let lane = index % 32;
+            if lane == 0 {
+                127.0
+            } else {
+                (index as i32 % 31 - 15) as f32
+            }
+        })
         .collect::<Vec<_>>();
     let mut expected = vec![0.0; batch * rows.len()];
     for item in 0..batch {
@@ -85,21 +92,25 @@ pub fn assert_close(actual: &[f32], expected: &[f32], atol: f32, rtol: f32) {
 mod gpu {
     use super::Q8Fixture;
     use rust_model_inference::{
-        BackendError, BackendKind, ComponentId, DevicePlan, DeviceProvider, GGMLType, MemoryPlan,
-        MetaValue, ProgramId, ProgramKind, ProgramPlan, ResidentTensorPlan, RunParams, SlotId,
-        SlotKind, SlotPlan, SlotStorage, SourceFormat, SourceTensorRecord, TensorCatalog, TensorId,
-        TensorInfo, TensorSource,
+        parse_placement, BackendError, BackendKind, CompiledModel, ComponentId,
+        ComponentRequirements, ComponentWorkload, DeviceDescriptor, DeviceDiscovery, DevicePlan,
+        DeviceProvider, DeviceRegistry, GGMLType, KvCacheType, LlmRequirements, MemoryPlan,
+        MetaValue, PlacementCompiler, ProgramId, ProgramKind, ProgramPlan, ResidentTensorPlan,
+        RunParams, SlotId, SlotKind, SlotPlan, SlotStorage, SourceFormat, SourceTensorRecord,
+        TensorCatalog, TensorId, TensorInfo, TensorSource,
     };
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
 
-    fn provider(backend: BackendKind) -> Result<Box<dyn DeviceProvider>, BackendError> {
+    fn provider(backend: BackendKind) -> Result<Arc<dyn DeviceProvider>, BackendError> {
         match backend {
+            BackendKind::Cpu => Ok(Arc::new(rust_model_inference::compute::CpuProvider::new(2))),
             #[cfg(feature = "vulkan")]
-            BackendKind::Vulkan => Ok(Box::new(
+            BackendKind::Vulkan => Ok(Arc::new(
                 rust_model_inference::compute::VulkanProvider::new()?,
             )),
             #[cfg(all(target_os = "macos", feature = "metal"))]
-            BackendKind::Metal => Ok(Box::new(
+            BackendKind::Metal => Ok(Arc::new(
                 rust_model_inference::compute::MetalProvider::new()?
             )),
             _ => Err(BackendError::BackendUnavailable { backend }),
@@ -135,6 +146,304 @@ mod gpu {
                 segment_byte_range: 0..self.bytes.len() as u64,
                 layer: None,
             }]
+        }
+    }
+
+    struct PlannerSource {
+        records: Vec<SourceTensorRecord>,
+        bytes: BTreeMap<String, Vec<u8>>,
+    }
+
+    impl TensorSource for PlannerSource {
+        fn metadata(&self, _key: &str) -> Option<&MetaValue> {
+            None
+        }
+
+        fn tensor_info(&self, name: &str) -> Option<&TensorInfo> {
+            self.records
+                .iter()
+                .find(|record| record.info.name == name)
+                .map(|record| &record.info)
+        }
+
+        fn tensor_slice(&self, name: &str) -> Option<&[u8]> {
+            self.bytes.get(name).map(Vec::as_slice)
+        }
+
+        fn source_format(&self) -> SourceFormat {
+            SourceFormat::Gguf
+        }
+
+        fn tensor_records(&self) -> Vec<SourceTensorRecord> {
+            self.records.clone()
+        }
+    }
+
+    struct DescriptorDiscovery(DeviceDescriptor);
+
+    impl DeviceDiscovery for DescriptorDiscovery {
+        fn backend(&self) -> BackendKind {
+            self.0.backend
+        }
+
+        fn enumerate(&self) -> Result<Vec<DeviceDescriptor>, BackendError> {
+            Ok(vec![self.0.clone()])
+        }
+    }
+
+    struct PlannerFixture {
+        catalog: Arc<TensorCatalog>,
+        requirements: ComponentRequirements,
+        matrix: TensorId,
+        embedding: TensorId,
+    }
+
+    fn planner_fixture(fixture: &Q8Fixture) -> PlannerFixture {
+        let tensors = [
+            (
+                "token_embd.weight",
+                vec![fixture.n_in as u64, fixture.n_out as u64],
+                GGMLType::Q8_0,
+                fixture.weight_bytes.clone(),
+            ),
+            (
+                "matrix.weight",
+                vec![fixture.n_in as u64, fixture.n_out as u64],
+                GGMLType::Q8_0,
+                fixture.weight_bytes.clone(),
+            ),
+            (
+                "output_norm.weight",
+                vec![fixture.n_in as u64],
+                GGMLType::F32,
+                vec![0; fixture.n_in * size_of::<f32>()],
+            ),
+            (
+                "output.weight",
+                vec![fixture.n_in as u64, fixture.n_out as u64],
+                GGMLType::Q8_0,
+                fixture.weight_bytes.clone(),
+            ),
+        ];
+        let mut offset = 0_u64;
+        let mut records = Vec::with_capacity(tensors.len());
+        let mut bytes = BTreeMap::new();
+        for (name, dims, ggml_type, tensor_bytes) in tensors {
+            let len = tensor_bytes.len() as u64;
+            records.push(SourceTensorRecord {
+                info: TensorInfo {
+                    name: name.into(),
+                    dims,
+                    ggml_type,
+                    offset,
+                },
+                segment_id: 0,
+                segment_byte_range: offset..offset + len,
+                layer: None,
+            });
+            bytes.insert(name.into(), tensor_bytes);
+            offset += len;
+        }
+        let catalog = Arc::new(
+            TensorCatalog::from_sources(vec![(
+                ComponentId::Llm,
+                Arc::new(PlannerSource { records, bytes }),
+            )])
+            .unwrap(),
+        );
+        let matrix = catalog.find(ComponentId::Llm, "matrix.weight").unwrap();
+        let embedding = catalog.find(ComponentId::Llm, "token_embd.weight").unwrap();
+        let requirements = ComponentRequirements {
+            component: ComponentId::Llm,
+            workload: ComponentWorkload::Llm(LlmRequirements {
+                layers: Vec::new(),
+                hidden_size: fixture.n_in as u32,
+                context_length: 8,
+                max_batch_tokens: fixture.batch as u32,
+                kv_cache: KvCacheType::F16,
+                final_norm: catalog
+                    .find(ComponentId::Llm, "output_norm.weight")
+                    .unwrap(),
+                output: catalog.find(ComponentId::Llm, "output.weight").unwrap(),
+                norm_epsilon_bits: 1e-6_f32.to_bits(),
+            }),
+        };
+        PlannerFixture {
+            catalog,
+            requirements,
+            matrix,
+            embedding,
+        }
+    }
+
+    fn compile_row_plan(
+        fixture: &PlannerFixture,
+        registry: &DeviceRegistry,
+        placement: &str,
+    ) -> rust_model_inference::ExecutionPlan {
+        let rule = parse_placement(placement).unwrap();
+        PlacementCompiler {
+            catalog: &fixture.catalog,
+            registry,
+            requirements: std::slice::from_ref(&fixture.requirements),
+        }
+        .compile(&BTreeMap::from([(ComponentId::Llm, rule)]))
+        .unwrap()
+    }
+
+    fn registered_registry(
+        backend: BackendKind,
+    ) -> Result<(Arc<DeviceRegistry>, Arc<dyn DeviceProvider>), BackendError> {
+        let cpu = provider(BackendKind::Cpu)?;
+        let selected = provider(backend)?;
+        let mut registry = DeviceRegistry::new();
+        registry.register_provider(cpu)?;
+        if backend != BackendKind::Cpu {
+            registry.register_provider(Arc::clone(&selected))?;
+        }
+        let requested = if backend == BackendKind::Cpu {
+            BTreeSet::from([BackendKind::Cpu])
+        } else {
+            BTreeSet::from([BackendKind::Cpu, backend])
+        };
+        registry.discover(&requested)?;
+        Ok((Arc::new(registry), selected))
+    }
+
+    fn assert_q8_public_input_abi(
+        plan: &rust_model_inference::ExecutionPlan,
+        tensor: TensorId,
+        batch: usize,
+        n_in: usize,
+    ) {
+        for shard in &plan.components[&ComponentId::Llm].row_shards[&tensor] {
+            let device = &plan.devices[&shard.device];
+            let input = &device.slots[shard.input.0 as usize];
+            assert!(matches!(
+                input.kind,
+                SlotKind::Activation | SlotKind::Scratch
+            ));
+            assert_eq!(input.storage, SlotStorage::F32);
+            assert_eq!(input.byte_len, (batch * n_in * size_of::<f32>()) as u64);
+            assert!(device.slots.iter().all(|slot| {
+                device.programs.iter().any(|program| {
+                    program.input == slot.id
+                        || program.output == slot.id
+                        || program.layer_ops.iter().any(|op| {
+                            matches!(
+                                op,
+                                rust_model_inference::LayerOp::Q8Matmul { input, output, .. }
+                                    if *input == slot.id || *output == slot.id
+                            )
+                        })
+                })
+            }));
+        }
+    }
+
+    pub fn run_planner_q8_backend(
+        backend: BackendKind,
+        fixture: &Q8Fixture,
+    ) -> Result<Vec<f32>, BackendError> {
+        let planner = planner_fixture(fixture);
+        let (registry, _) = registered_registry(backend)?;
+        let placement = if backend == BackendKind::Cpu {
+            "llm:row=cpu0@1".to_owned()
+        } else {
+            format!("llm:row=cpu0@1,{}@1", backend_name(backend))
+        };
+        let plan = compile_row_plan(&planner, &registry, &placement);
+        assert_q8_public_input_abi(&plan, planner.matrix, fixture.batch, fixture.n_in);
+        let model = CompiledModel::compile(Arc::clone(&planner.catalog), plan, registry)?;
+        let mut actual = vec![0.0; fixture.batch * fixture.n_out];
+        model.start_run()?.execute_q8(
+            ComponentId::Llm,
+            planner.matrix,
+            &fixture.input,
+            fixture.batch as u32,
+            &mut actual,
+        )?;
+        Ok(actual)
+    }
+
+    pub fn run_planner_embedding_backend(
+        backend: BackendKind,
+        fixture: &Q8Fixture,
+        token_ids: &[u32],
+    ) -> Result<Vec<f32>, BackendError> {
+        let planner = planner_fixture(fixture);
+        let target = provider(backend)?;
+        let descriptor = target
+            .enumerate()?
+            .into_iter()
+            .next()
+            .ok_or(BackendError::BackendUnavailable { backend })?;
+        let mut planning_descriptor = descriptor.clone();
+        planning_descriptor.id = rust_model_inference::DeviceId::parse("cpu0").unwrap();
+        planning_descriptor.backend = BackendKind::Cpu;
+        planning_descriptor.physical_key = "planner-cpu0".into();
+        planning_descriptor
+            .capabilities
+            .tensor_types
+            .insert(GGMLType::F32);
+        let mut registry = DeviceRegistry::new();
+        registry.register_discovery(Arc::new(DescriptorDiscovery(planning_descriptor)))?;
+        registry.discover(&BTreeSet::from([BackendKind::Cpu]))?;
+        let mut plan = compile_row_plan(&planner, &registry, "llm:row=cpu0@1");
+        let binding = plan.components[&ComponentId::Llm]
+            .embedding
+            .clone()
+            .ok_or(BackendError::InvalidHandle)?;
+        let mut device_plan = plan
+            .devices
+            .remove(&rust_model_inference::DeviceId::parse("cpu0").unwrap())
+            .ok_or(BackendError::InvalidHandle)?;
+        device_plan.descriptor = descriptor.clone();
+        device_plan
+            .tensors
+            .retain(|resident| resident.tensor == planner.embedding);
+        device_plan
+            .slots
+            .retain(|slot| slot.id == binding.input || slot.id == binding.output);
+        device_plan
+            .programs
+            .retain(|program| program.id == binding.program);
+        let mut session = target.open(&descriptor, &device_plan, Arc::clone(&planner.catalog))?;
+        let fence = session.submit(
+            binding.program,
+            &RunParams {
+                token_count: token_ids.len() as u32,
+                position_start: 0,
+                mrope_positions: &[],
+                token_ids,
+            },
+        )?;
+        session.wait(fence)?;
+        let mut actual = vec![0.0; token_ids.len() * fixture.n_in];
+        session.read_f32(binding.output, &mut actual)?;
+        Ok(actual)
+    }
+
+    pub fn embedding_expected(fixture: &Q8Fixture, token_ids: &[u32]) -> Vec<f32> {
+        let blocks_per_row = fixture.n_in / 32;
+        let mut expected = vec![0.0; token_ids.len() * fixture.n_in];
+        for (item, &token) in token_ids.iter().enumerate() {
+            for column in 0..fixture.n_in {
+                let block = column / 32;
+                let lane = column % 32;
+                let weight = &fixture.weight_blocks[token as usize * blocks_per_row + block];
+                expected[item * fixture.n_in + column] = weight.scale * weight.qs[lane] as f32;
+            }
+        }
+        expected
+    }
+
+    fn backend_name(backend: BackendKind) -> &'static str {
+        match backend {
+            BackendKind::Cpu => "cpu0",
+            BackendKind::Vulkan => "vulkan0",
+            BackendKind::Metal => "metal0",
+            BackendKind::Npu => panic!("NPU is outside the GPU fixture"),
         }
     }
 
@@ -263,5 +572,7 @@ mod gpu {
     }
 }
 
+#[cfg(all(target_os = "macos", feature = "metal"))]
+pub use gpu::{embedding_expected, run_planner_embedding_backend};
 #[cfg(any(feature = "vulkan", all(target_os = "macos", feature = "metal")))]
-pub use gpu::{require_backend, run_q8_backend};
+pub use gpu::{require_backend, run_planner_q8_backend, run_q8_backend};

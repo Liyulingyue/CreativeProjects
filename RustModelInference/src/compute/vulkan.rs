@@ -4,7 +4,7 @@ use super::device::{
     SlotId,
 };
 use super::program::{
-    DevicePlan, ProgramKind, ProgramPlan, ResidentTensorPlan, SlotPlan, SlotStorage,
+    DevicePlan, ProgramKind, ProgramPlan, ResidentTensorPlan, SlotKind, SlotPlan, SlotStorage,
 };
 use crate::{ComponentId, DeviceId, GGMLType, PlacementMode, TensorCatalog};
 use ash::{vk, Entry, Instance};
@@ -1309,7 +1309,9 @@ fn validate_plan(
                     ..
                 } => {
                     *batch_capacity != 0
+                        && matches!(input.kind, SlotKind::Activation | SlotKind::Scratch)
                         && input.storage == SlotStorage::F32
+                        && output.kind == SlotKind::Result
                         && output.storage == SlotStorage::F32
                         && u64::from(*batch_capacity)
                             .checked_mul(u64::from(spec.n_in))
@@ -1322,8 +1324,11 @@ fn validate_plan(
                 }
                 ProgramKind::EmbeddingRows { row_count, .. } => {
                     *row_count != 0
+                        && input.kind == SlotKind::Scratch
+                        && input.storage == SlotStorage::I8
                         && input.byte_len >= 4
                         && output.storage == SlotStorage::F32
+                        && matches!(output.kind, SlotKind::Activation | SlotKind::Result)
                         && output.byte_len % (u64::from(spec.n_in) * 4) == 0
                 }
                 _ => false,
@@ -2061,6 +2066,21 @@ mod tests {
         plan.slots[1].arena_offset = plan.slots[0].byte_len - 16;
 
         assert!(validate_plan(&plan, &catalog, &adapter).is_err());
+    }
+
+    #[test]
+    fn q8_public_input_requires_writable_f32_activation_storage() {
+        let catalog = test_catalog();
+        let adapter = test_adapter();
+
+        let mut result_input = test_plan(adapter.descriptor.clone());
+        result_input.slots[0].kind = SlotKind::Result;
+        assert!(validate_plan(&result_input, &catalog, &adapter).is_err());
+
+        let mut i8_input = test_plan(adapter.descriptor.clone());
+        i8_input.slots[0].kind = SlotKind::Scratch;
+        i8_input.slots[0].storage = SlotStorage::I8;
+        assert!(validate_plan(&i8_input, &catalog, &adapter).is_err());
     }
 
     #[test]

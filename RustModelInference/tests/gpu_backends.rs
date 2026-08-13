@@ -14,6 +14,15 @@ fn q8_fixture_exercises_signed_bytes_scales_batch_offset_and_tail() {
     assert_eq!(fixture.expected.len(), 2 * 96);
 }
 
+#[cfg(any(feature = "vulkan", all(target_os = "macos", feature = "metal")))]
+#[test]
+fn cpu_planner_q8_row_matches_shared_fixture() {
+    let fixture = support::q8_fixture(2, 64, 129, 0..129);
+    let actual =
+        support::run_planner_q8_backend(rust_model_inference::BackendKind::Cpu, &fixture).unwrap();
+    support::assert_close(&actual, &fixture.expected, 1e-4, 1e-4);
+}
+
 #[cfg(feature = "vulkan")]
 #[test]
 #[ignore = "requires a Vulkan 1.1 compute adapter"]
@@ -39,6 +48,18 @@ fn vulkan_q8_row_tail_guard_matches_cpu() {
     assert!(actual.iter().all(|value| value.is_finite()));
 }
 
+#[cfg(feature = "vulkan")]
+#[test]
+#[ignore = "requires a Vulkan 1.1 compute adapter"]
+fn vulkan_planner_q8_row_matches_cpu() {
+    support::require_backend("vulkan");
+    let fixture = support::q8_fixture(2, 64, 129, 0..129);
+    let actual =
+        support::run_planner_q8_backend(rust_model_inference::BackendKind::Vulkan, &fixture)
+            .unwrap();
+    support::assert_close(&actual, &fixture.expected, 1e-4, 1e-4);
+}
+
 #[cfg(all(target_os = "macos", feature = "metal"))]
 #[test]
 #[ignore = "requires a Metal device"]
@@ -62,6 +83,39 @@ fn metal_q8_row_tail_guard_matches_cpu() {
         support::run_q8_backend(rust_model_inference::BackendKind::Metal, &fixture).unwrap();
     support::assert_close(&actual, &fixture.expected, 1e-4, 1e-4);
     assert!(actual.iter().all(|value| value.is_finite()));
+}
+
+#[cfg(all(target_os = "macos", feature = "metal"))]
+#[test]
+#[ignore = "requires a Metal device"]
+fn metal_planner_q8_row_matches_cpu() {
+    support::require_backend("metal");
+    let fixture = support::q8_fixture(2, 64, 129, 0..129);
+    let actual =
+        support::run_planner_q8_backend(rust_model_inference::BackendKind::Metal, &fixture)
+            .unwrap();
+    support::assert_close(&actual, &fixture.expected, 1e-4, 1e-4);
+}
+
+#[cfg(all(target_os = "macos", feature = "metal"))]
+#[test]
+#[ignore = "requires a Metal device"]
+fn metal_planner_embedding_rows_support_activation_output() {
+    support::require_backend("metal");
+    let fixture = support::q8_fixture(2, 64, 129, 0..129);
+    let tokens = [17, 112];
+    let actual = support::run_planner_embedding_backend(
+        rust_model_inference::BackendKind::Metal,
+        &fixture,
+        &tokens,
+    )
+    .unwrap();
+    support::assert_close(
+        &actual,
+        &support::embedding_expected(&fixture, &tokens),
+        1e-4,
+        1e-4,
+    );
 }
 
 #[cfg(all(not(target_os = "macos"), feature = "metal"))]

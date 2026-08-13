@@ -633,19 +633,13 @@ impl PlacementCompiler<'_> {
                     let builder = builders.get_mut(&device).unwrap();
                     builder.tensor(entry.id, rows.clone(), start..end)?;
                     let input_elements = *entry.shape.first().ok_or(PlanError::SizeOverflow)?;
-                    let blocks = input_elements
-                        .checked_add(31)
-                        .ok_or(PlanError::SizeOverflow)?
-                        / 32;
                     let input = builder.slot(
-                        SlotKind::Scratch,
-                        SlotStorage::I8,
-                        checked_mul(input_elements, u64::from(llm.max_batch_tokens))?,
-                    )?;
-                    let _scales = builder.slot(
-                        SlotKind::Scratch,
+                        SlotKind::Activation,
                         SlotStorage::F32,
-                        checked_mul(checked_mul(blocks, u64::from(llm.max_batch_tokens))?, 4)?,
+                        checked_mul(
+                            checked_mul(input_elements, u64::from(llm.max_batch_tokens))?,
+                            4,
+                        )?,
                     )?;
                     let output = builder.slot(
                         SlotKind::Result,
@@ -1936,7 +1930,7 @@ mod tests {
     }
 
     #[test]
-    fn row_q8_scratch_uses_each_matrix_input_width_and_block_count() {
+    fn row_q8_public_inputs_use_each_matrix_f32_activation_width() {
         let catalog = catalog_from_tensors(vec![
             (
                 "token_embd.weight".into(),
@@ -1963,16 +1957,27 @@ mod tests {
         )
         .unwrap();
         let device = &plan.devices[&id("cpu0")];
-        for (name, input_bytes, scale_bytes) in [("narrow.weight", 64, 8), ("wide.weight", 128, 16)]
-        {
+        for (name, input_bytes) in [("narrow.weight", 256), ("wide.weight", 512)] {
             let tensor = catalog.find(ComponentId::Llm, name).unwrap();
             let shard = &plan.components[&ComponentId::Llm].row_shards[&tensor][0];
-            assert_eq!(device.slots[shard.input.0 as usize].byte_len, input_bytes);
-            assert_eq!(
-                device.slots[shard.input.0 as usize + 1].byte_len,
-                scale_bytes
-            );
+            let input = &device.slots[shard.input.0 as usize];
+            assert_eq!(input.kind, SlotKind::Activation);
+            assert_eq!(input.storage, SlotStorage::F32);
+            assert_eq!(input.byte_len, input_bytes);
         }
+        assert!(device.slots.iter().all(|slot| {
+            device.programs.iter().any(|program| {
+                program.input == slot.id
+                    || program.output == slot.id
+                    || program.layer_ops.iter().any(|op| {
+                        matches!(
+                            op,
+                            LayerOp::Q8Matmul { input, output, .. }
+                                if *input == slot.id || *output == slot.id
+                        )
+                    })
+            })
+        }));
     }
 
     #[test]

@@ -3,7 +3,9 @@ use super::device::{
     DeviceProvider, DeviceSession, FenceId, LifecycleProbe, ProgramId, RunParams, SessionStats,
     SlotId,
 };
-use super::program::{DevicePlan, ProgramKind, ProgramPlan, ResidentTensorPlan, SlotStorage};
+use super::program::{
+    DevicePlan, ProgramKind, ProgramPlan, ResidentTensorPlan, SlotKind, SlotPlan, SlotStorage,
+};
 use crate::thread_pool::ComputePool;
 use crate::{ComponentId, DeviceId, GGMLType, PlacementMode, TensorCatalog};
 use std::collections::{BTreeMap, BTreeSet};
@@ -93,11 +95,32 @@ impl DeviceProvider for CpuProvider {
                     let entry = catalog.entry(*tensor).ok_or(BackendError::InvalidHandle)?;
                     let n_in =
                         usize::try_from(entry.shape[0]).map_err(|_| BackendError::InvalidHandle)?;
+                    let input = plan
+                        .slots
+                        .get(program.input.0 as usize)
+                        .filter(|slot| {
+                            slot.storage == SlotStorage::F32
+                                && matches!(slot.kind, SlotKind::Activation | SlotKind::Scratch)
+                        })
+                        .ok_or(BackendError::InvalidHandle)?;
+                    let output = plan
+                        .slots
+                        .get(program.output.0 as usize)
+                        .filter(|slot| {
+                            slot.storage == SlotStorage::F32 && slot.kind == SlotKind::Result
+                        })
+                        .ok_or(BackendError::InvalidHandle)?;
+                    let input_bytes = (*batch_capacity as u64)
+                        .checked_mul(n_in as u64)
+                        .and_then(|values| values.checked_mul(size_of::<f32>() as u64));
+                    let output_bytes = (*batch_capacity as u64)
+                        .checked_mul(rows.len() as u64)
+                        .and_then(|values| values.checked_mul(size_of::<f32>() as u64));
                     if entry.ggml_type != GGMLType::Q8_0
                         || n_in % 32 != 0
                         || program.input == program.output
-                        || program.input.0 as usize >= plan.slots.len()
-                        || program.output.0 as usize >= plan.slots.len()
+                        || input_bytes.is_none_or(|bytes| bytes > input.byte_len)
+                        || output_bytes.is_none_or(|bytes| bytes > output.byte_len)
                         || !plan
                             .tensors
                             .iter()
@@ -118,7 +141,17 @@ impl DeviceProvider for CpuProvider {
                     let output = plan
                         .slots
                         .get(program.output.0 as usize)
-                        .filter(|slot| slot.storage == SlotStorage::F32)
+                        .filter(|slot| {
+                            slot.storage == SlotStorage::F32
+                                && matches!(slot.kind, SlotKind::Activation | SlotKind::Result)
+                        })
+                        .ok_or(BackendError::InvalidHandle)?;
+                    let input = plan
+                        .slots
+                        .get(program.input.0 as usize)
+                        .filter(|slot| {
+                            slot.storage == SlotStorage::I8 && slot.kind == SlotKind::Scratch
+                        })
                         .ok_or(BackendError::InvalidHandle)?;
                     let capacity = usize::try_from(output.byte_len / size_of::<f32>() as u64)
                         .map_err(|_| BackendError::InvalidHandle)?
@@ -127,6 +160,9 @@ impl DeviceProvider for CpuProvider {
                     if *row_count as u64 != entry.row_count
                         || width == 0
                         || program.input == program.output
+                        || input.byte_len < 4
+                        || output.byte_len / (width as u64 * size_of::<f32>() as u64)
+                            > input.byte_len / size_of::<u32>() as u64
                         || !plan.tensors.iter().any(|resident| {
                             resident.tensor == *tensor && resident.rows == (0..*row_count)
                         })
@@ -180,6 +216,7 @@ impl DeviceProvider for CpuProvider {
             catalog,
             resident: plan.tensors.clone(),
             slots,
+            slot_plans: plan.slots.clone(),
             programs,
             worker,
             stats: SessionStats {
@@ -198,6 +235,7 @@ pub struct CpuSession {
     catalog: Arc<TensorCatalog>,
     resident: Vec<ResidentTensorPlan>,
     slots: Vec<Box<[f32]>>,
+    slot_plans: Vec<SlotPlan>,
     programs: BTreeMap<ProgramId, ProgramPlan>,
     worker: CpuWorker,
     stats: SessionStats,
@@ -210,6 +248,13 @@ impl DeviceSession for CpuSession {
 
     fn write_f32(&mut self, slot: SlotId, values: &[f32]) -> Result<(), BackendError> {
         self.require_idle("write while CPU work is pending")?;
+        self.slot_plans
+            .get(slot.0 as usize)
+            .filter(|plan| {
+                plan.storage == SlotStorage::F32
+                    && matches!(plan.kind, SlotKind::Activation | SlotKind::Scratch)
+            })
+            .ok_or(BackendError::InvalidHandle)?;
         let destination = self
             .slots
             .get_mut(slot.0 as usize)
@@ -246,6 +291,13 @@ impl DeviceSession for CpuSession {
 
     fn read_f32(&mut self, slot: SlotId, values: &mut [f32]) -> Result<(), BackendError> {
         self.require_idle("read while CPU work is pending")?;
+        self.slot_plans
+            .get(slot.0 as usize)
+            .filter(|plan| {
+                plan.storage == SlotStorage::F32
+                    && matches!(plan.kind, SlotKind::Activation | SlotKind::Result)
+            })
+            .ok_or(BackendError::InvalidHandle)?;
         let source = self
             .slots
             .get(slot.0 as usize)
@@ -828,9 +880,9 @@ mod tests {
         let slots = vec![
             SlotPlan {
                 id: SlotId(0),
-                kind: SlotKind::Scratch,
-                storage: SlotStorage::I8,
-                byte_len: (batch * n_in) as u64,
+                kind: SlotKind::Activation,
+                storage: SlotStorage::F32,
+                byte_len: (batch * n_in * size_of::<f32>()) as u64,
                 alignment: 16,
                 arena_offset: 0,
             },
@@ -840,7 +892,7 @@ mod tests {
                 storage: SlotStorage::F32,
                 byte_len: (batch * rows.len() * 4) as u64,
                 alignment: 16,
-                arena_offset: (batch * n_in) as u64,
+                arena_offset: (batch * n_in * size_of::<f32>()) as u64,
             },
         ];
         let scratch_bytes = slots.iter().map(|slot| slot.byte_len).sum::<u64>();
@@ -989,8 +1041,21 @@ mod tests {
     }
 
     #[test]
+    fn cpu_rejects_legacy_i8_q8_public_input() {
+        let (catalog, mut plan, _) = q8_program_fixture(2, 64, 129, 17..113);
+        plan.slots[0].kind = SlotKind::Scratch;
+        plan.slots[0].storage = SlotStorage::I8;
+
+        assert!(CpuProvider::new(2)
+            .open(&plan.descriptor, &plan, catalog)
+            .is_err());
+    }
+
+    #[test]
     fn compiled_embedding_rows_decode_requested_q8_tokens() {
         let (catalog, mut plan, _) = q8_program_fixture(2, 64, 129, 0..129);
+        plan.slots[0].kind = SlotKind::Scratch;
+        plan.slots[0].storage = SlotStorage::I8;
         plan.slots[0].byte_len = 2 * size_of::<u32>() as u64;
         plan.slots[1].byte_len = 2 * 64 * size_of::<f32>() as u64;
         plan.programs[0] = ProgramPlan {
