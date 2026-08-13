@@ -3,6 +3,7 @@ use std::fs::File;
 use memmap2::Mmap;
 
 use crate::quant::dequantize_q4_k_weight;
+use crate::tensor_catalog::{SourceFormat, SourceTensorRecord};
 use crate::traits::{ExecContext, Layer, ModelConfig};
 
 const GGUF_MAGIC: &[u8; 4] = b"GGUF";
@@ -591,6 +592,8 @@ pub trait TensorSource: Send + Sync {
     fn metadata(&self, key: &str) -> Option<&MetaValue>;
     fn tensor_info(&self, name: &str) -> Option<&TensorInfo>;
     fn tensor_slice(&self, name: &str) -> Option<&[u8]>;
+    fn source_format(&self) -> SourceFormat;
+    fn tensor_records(&self) -> Vec<SourceTensorRecord>;
 
     fn model_config(&self) -> Result<ModelConfig, String> {
         model_config_from_source(self)
@@ -667,6 +670,34 @@ impl TensorSource for GGUFLoader {
     fn tensor_slice(&self, name: &str) -> Option<&[u8]> {
         GGUFLoader::tensor_slice(self, name)
     }
+
+    fn source_format(&self) -> SourceFormat {
+        SourceFormat::Gguf
+    }
+
+    fn tensor_records(&self) -> Vec<SourceTensorRecord> {
+        self.tensors
+            .iter()
+            .map(|info| {
+                let byte_len = info
+                    .checked_nbytes()
+                    .expect("GGUF tensor layout was validated while loading");
+                SourceTensorRecord {
+                    info: info.clone(),
+                    segment_id: 0,
+                    segment_byte_range: info.offset..info.offset + byte_len,
+                    layer: tensor_layer(&info.name),
+                }
+            })
+            .collect()
+    }
+}
+
+fn tensor_layer(name: &str) -> Option<u32> {
+    let (layer, _) = name.strip_prefix("blk.")?.split_once('.')?;
+    (!layer.is_empty() && layer.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| layer.parse().ok())
+        .flatten()
 }
 
 pub struct QuantizedLinear<'a> {
@@ -1065,6 +1096,14 @@ mod tests {
 
         fn tensor_slice(&self, name: &str) -> Option<&[u8]> {
             self.0.tensor_slice(name)
+        }
+
+        fn source_format(&self) -> SourceFormat {
+            self.0.source_format()
+        }
+
+        fn tensor_records(&self) -> Vec<SourceTensorRecord> {
+            self.0.tensor_records()
         }
     }
 

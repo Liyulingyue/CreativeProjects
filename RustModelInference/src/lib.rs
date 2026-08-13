@@ -13,6 +13,7 @@ pub mod prompt;
 pub mod quant;
 pub mod qwen35;
 pub mod scratchpad;
+pub mod tensor_catalog;
 pub mod thread_pool;
 pub mod tokenizer;
 pub mod traits;
@@ -43,6 +44,9 @@ pub use prompt::{
 pub use quant::dequant_weight_q4k;
 pub use qwen35::{build_qwen35_positions, Qwen35Model};
 pub use scratchpad::{ExecutionScratchpad, KvCache, KvCacheF16, KvCacheF32};
+pub use tensor_catalog::{
+    CatalogError, SourceFormat, SourceTensorRecord, TensorCatalog, TensorCatalogEntry, TensorId,
+};
 pub use tokenizer::{BPETokenizer, EncodeOptions, StreamingDecoder};
 pub use traits::{ExecContext, Layer, ModelConfig};
 pub use vision::{qwen_smart_resize, VisionEncoder, VisionGrid, VisionScratchpad};

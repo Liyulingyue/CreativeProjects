@@ -83,6 +83,19 @@ mod cli_tests {
         fn tensor_slice(&self, name: &str) -> Option<&[u8]> {
             (name == self.info.name).then_some(&self.bytes)
         }
+
+        fn source_format(&self) -> SourceFormat {
+            SourceFormat::Gguf
+        }
+
+        fn tensor_records(&self) -> Vec<SourceTensorRecord> {
+            vec![SourceTensorRecord {
+                info: self.info.clone(),
+                segment_id: 0,
+                segment_byte_range: 0..self.bytes.len() as u64,
+                layer: None,
+            }]
+        }
     }
 
     #[test]
