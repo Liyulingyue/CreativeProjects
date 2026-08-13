@@ -9,6 +9,8 @@ interface FileListProps {
   onContextMenu: (e: MouseEvent, node: FileNode) => void;
   onDragStart: (e: DragEvent, node: FileNode) => void;
   onDrop: (e: DragEvent, targetFolder: string) => void;
+  onRename: (node: FileNode) => void;
+  onDelete: (node: FileNode) => void;
   dragOverFolder: string | null;
   setDragOverFolder: (folder: string | null) => void;
   onBack: () => void;
@@ -51,7 +53,7 @@ function getFileIcon(node: FileNode): string {
 
 export default function FileList({
   items, selectedPath, onSelect, onDoubleClick, onContextMenu,
-  onDragStart, onDrop, dragOverFolder, setDragOverFolder,
+  onDragStart, onDrop, onRename, onDelete, dragOverFolder, setDragOverFolder,
   onBack, hasParent
 }: FileListProps) {
   const folders = items.filter(i => i.is_dir);
@@ -127,14 +129,20 @@ export default function FileList({
           >
             <div className="flex-1 flex items-center">
               <span className="text-3xl mr-4 group-hover:scale-110 transition-transform">{getFileIcon(folder)}</span>
-              <span className="text-xs font-black text-slate-700 uppercase">{folder.name}</span>
+              <span className="text-xs font-black text-slate-700">{folder.name}</span>
             </div>
             <div className="w-24 text-[10px] font-black text-slate-500 uppercase">FOLDER</div>
             <div className="w-32 text-[10px] font-black text-slate-400">--</div>
             <div className="w-40 text-[10px] font-black text-slate-400">{formatDate(folder.modified)}</div>
             <div className="w-48 flex justify-end space-x-3">
-              <button className="w-9 h-9 flex items-center justify-center rounded-xl bg-slate-100 text-slate-600 hover:bg-slate-200 active:scale-90 transition-all">✏️</button>
-              <button className="w-9 h-9 flex items-center justify-center rounded-xl bg-red-100 text-red-600 hover:bg-red-200 active:scale-90 transition-all">✕</button>
+              <button
+                onClick={(e) => { e.stopPropagation(); onRename(folder); }}
+                className="w-9 h-9 flex items-center justify-center rounded-xl bg-slate-100 text-slate-600 hover:bg-slate-200 active:scale-90 transition-all"
+              >✏️</button>
+              <button
+                onClick={(e) => { e.stopPropagation(); onDelete(folder); }}
+                className="w-9 h-9 flex items-center justify-center rounded-xl bg-red-100 text-red-600 hover:bg-red-200 active:scale-90 transition-all"
+              >✕</button>
             </div>
           </div>
         );
@@ -160,15 +168,21 @@ export default function FileList({
           >
             <div className="flex-1 flex items-center">
               <span className="text-3xl mr-4 group-hover:scale-110 transition-transform">{getFileIcon(file)}</span>
-              <span className="text-xs font-black text-slate-800 uppercase">{file.name}</span>
+              <span className="text-xs font-black text-slate-800">{file.name}</span>
             </div>
             <div className="w-24 text-[10px] font-black text-slate-500 uppercase">{file.extension.slice(1) || 'FILE'}</div>
             <div className="w-32 text-[10px] font-black text-slate-500">{formatSize(file.size)}</div>
             <div className="w-40 text-[10px] font-black text-slate-500">{formatDate(file.modified)}</div>
             <div className="w-48 flex justify-end space-x-3">
               <button className="w-9 h-9 flex items-center justify-center rounded-xl bg-indigo-600 text-white shadow-lg hover:bg-indigo-700 active:scale-90 transition-all">⬇</button>
-              <button className="w-9 h-9 flex items-center justify-center rounded-xl bg-slate-100 text-slate-600 hover:bg-slate-200 active:scale-90 transition-all">✏️</button>
-              <button className="w-9 h-9 flex items-center justify-center rounded-xl bg-red-100 text-red-600 hover:bg-red-200 active:scale-90 transition-all">✕</button>
+              <button
+                onClick={(e) => { e.stopPropagation(); onRename(file); }}
+                className="w-9 h-9 flex items-center justify-center rounded-xl bg-slate-100 text-slate-600 hover:bg-slate-200 active:scale-90 transition-all"
+              >✏️</button>
+              <button
+                onClick={(e) => { e.stopPropagation(); onDelete(file); }}
+                className="w-9 h-9 flex items-center justify-center rounded-xl bg-red-100 text-red-600 hover:bg-red-200 active:scale-90 transition-all"
+              >✕</button>
             </div>
           </div>
         );

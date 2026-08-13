@@ -9,6 +9,8 @@ interface FileGridProps {
   onContextMenu: (e: MouseEvent, node: FileNode) => void;
   onDragStart: (e: DragEvent, node: FileNode) => void;
   onDrop: (e: DragEvent, targetFolder: string) => void;
+  onRename: (node: FileNode) => void;
+  onDelete: (node: FileNode) => void;
   dragOverFolder: string | null;
   setDragOverFolder: (folder: string | null) => void;
   isCreatingFolder: boolean;
@@ -48,7 +50,7 @@ function getFileIcon(node: FileNode): string {
 
 export default function FileGrid({
   items, selectedPath, onSelect, onDoubleClick, onContextMenu,
-  onDragStart, onDrop, dragOverFolder, setDragOverFolder,
+  onDragStart, onDrop, onRename, onDelete, dragOverFolder, setDragOverFolder,
   isCreatingFolder, newFolderName, setNewFolderName, onCreateFolder, onCancelCreateFolder,
   onBack, hasParent
 }: FileGridProps) {
@@ -130,7 +132,7 @@ export default function FileGrid({
             }`}
           >
             <div className="text-5xl mb-2 transition-transform duration-500 group-hover:rotate-12">{getFileIcon(folder)}</div>
-            <span className="text-[11px] font-black text-slate-700 truncate w-full text-center px-2 uppercase tracking-tight">
+            <span className="text-[11px] font-black text-slate-700 truncate w-full text-center px-2 tracking-tight">
               {folder.name}
             </span>
 
@@ -139,6 +141,7 @@ export default function FileGrid({
               <button
                 onClick={(e) => {
                   e.stopPropagation();
+                  onRename(folder);
                 }}
                 className="text-[10px] grayscale hover:grayscale-0 transition-all"
               >
@@ -147,6 +150,7 @@ export default function FileGrid({
               <button
                 onClick={(e) => {
                   e.stopPropagation();
+                  onDelete(folder);
                 }}
                 className="text-[10px] grayscale hover:grayscale-0 transition-all"
               >
@@ -176,7 +180,7 @@ export default function FileGrid({
             }`}
           >
             <div className="text-5xl mb-2 transition-transform duration-500 group-hover:-rotate-12">{getFileIcon(file)}</div>
-            <span className="text-[11px] font-black text-slate-800 truncate w-full text-center px-1 uppercase tracking-tight" title={file.name}>
+            <span className="text-[11px] font-black text-slate-800 truncate w-full text-center px-1 tracking-tight" title={file.name}>
               {file.name}
             </span>
             <span className="text-[9px] text-slate-300 font-bold uppercase mt-1">
@@ -188,6 +192,7 @@ export default function FileGrid({
               <button
                 onClick={(e) => {
                   e.stopPropagation();
+                  onRename(file);
                 }}
                 className="text-[10px] grayscale hover:grayscale-0 transition-all"
               >
@@ -196,6 +201,7 @@ export default function FileGrid({
               <button
                 onClick={(e) => {
                   e.stopPropagation();
+                  onDelete(file);
                 }}
                 className="text-[10px] grayscale hover:grayscale-0 transition-all"
               >
