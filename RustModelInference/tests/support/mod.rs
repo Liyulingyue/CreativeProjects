@@ -387,6 +387,101 @@ pub fn tiny_qwen35_hybrid() -> PlacementFixture {
 }
 
 pub fn tiny_qwen35_f32_dense() -> PlacementFixture {
+    tiny_qwen35_dense(GGMLType::F32, BTreeMap::new())
+}
+
+pub fn tiny_qwen35_f16_dense() -> PlacementFixture {
+    tiny_qwen35_dense(GGMLType::F16, BTreeMap::new())
+}
+
+pub fn tiny_qwen35_f32_dense_with_attention_gate(gate_value: f32) -> PlacementFixture {
+    let input_width = 64;
+    let attention_width = 64;
+    tiny_qwen35_dense(
+        GGMLType::F32,
+        BTreeMap::from([
+            (
+                "blk.0.attn_q.weight".into(),
+                f32_matrix_bytes(attention_width * 2, input_width, |row, _| {
+                    if row < attention_width {
+                        1.0
+                    } else {
+                        gate_value
+                    }
+                }),
+            ),
+            (
+                "blk.0.attn_v.weight".into(),
+                f32_matrix_bytes(32, input_width, |row, _| if row < 16 { 1.0 } else { 0.0 }),
+            ),
+            (
+                "blk.0.attn_output.weight".into(),
+                f32_matrix_bytes(64, 64, |row, column| f32::from(row == column)),
+            ),
+            (
+                "blk.0.ffn_gate.weight".into(),
+                f32_matrix_bytes(96, input_width, |_, _| 0.0),
+            ),
+            (
+                "blk.0.ffn_up.weight".into(),
+                f32_matrix_bytes(96, input_width, |_, _| 0.0),
+            ),
+            (
+                "blk.0.ffn_down.weight".into(),
+                f32_matrix_bytes(input_width, 96, |_, _| 0.0),
+            ),
+            (
+                "output.weight".into(),
+                q8_0_matrix_bytes(input_width, input_width, |row, column| {
+                    i8::from(row == column)
+                }),
+            ),
+        ]),
+    )
+}
+
+pub fn qwen3_metadata_layer_count_mismatch() -> String {
+    let catalog = fixture_catalog(
+        qwen3_tensors(),
+        model_metadata("qwen3", 17, 3, 4, 2, 96, 64),
+    );
+    rust_model_inference::Qwen3Model::from_catalog(&catalog)
+        .err()
+        .expect("Qwen3 layer-count mismatch must fail")
+}
+
+pub fn qwen35_metadata_layer_selection_mismatch() -> String {
+    let mut metadata = model_metadata("qwen35", 19, 1, 4, 2, 96, 64);
+    metadata.extend(qwen35_dense_metadata());
+    metadata.insert(
+        "tokenizer.ggml.tokens".into(),
+        rust_model_inference::MetaValue::Array(
+            rust_model_inference::MetaValueType::String,
+            (0..64)
+                .map(|index| rust_model_inference::MetaValue::String(format!("{index}")))
+                .collect(),
+        ),
+    );
+    metadata.insert(
+        "qwen35.attention.recurrent_layers".into(),
+        rust_model_inference::MetaValue::Array(
+            rust_model_inference::MetaValueType::Uint32,
+            vec![rust_model_inference::MetaValue::Uint32(1)],
+        ),
+    );
+    let catalog = fixture_catalog(
+        qwen35_dense_tensors_with_matrix_type(GGMLType::F32),
+        metadata,
+    );
+    rust_model_inference::Qwen35Model::from_catalog(&catalog)
+        .err()
+        .expect("Qwen3.5 recurrent metadata must reject dense tensors")
+}
+
+fn tiny_qwen35_dense(
+    matrix_type: GGMLType,
+    tensor_overrides: BTreeMap<String, Vec<u8>>,
+) -> PlacementFixture {
     let mut metadata = model_metadata("qwen35", 19, 1, 4, 2, 96, 64);
     metadata.insert(
         "qwen35.vocab_size".into(),
@@ -460,7 +555,11 @@ pub fn tiny_qwen35_f32_dense() -> PlacementFixture {
             ),
         ),
     ]));
-    let catalog = fixture_catalog(qwen35_f32_dense_tensors(), metadata);
+    let catalog = fixture_catalog_with_overrides(
+        qwen35_dense_tensors_with_matrix_type(matrix_type),
+        metadata,
+        tensor_overrides,
+    );
     let model = rust_model_inference::Qwen35Model::from_catalog(&catalog).unwrap();
     PlacementFixture {
         token_embedding: catalog.find(ComponentId::Llm, "token_embd.weight").unwrap(),
@@ -652,6 +751,14 @@ fn fixture_catalog(
     tensors: Vec<(String, Vec<u64>, GGMLType)>,
     metadata: BTreeMap<String, rust_model_inference::MetaValue>,
 ) -> Arc<TensorCatalog> {
+    fixture_catalog_with_overrides(tensors, metadata, BTreeMap::new())
+}
+
+fn fixture_catalog_with_overrides(
+    tensors: Vec<(String, Vec<u64>, GGMLType)>,
+    metadata: BTreeMap<String, rust_model_inference::MetaValue>,
+    tensor_overrides: BTreeMap<String, Vec<u8>>,
+) -> Arc<TensorCatalog> {
     let mut offset = 0_u64;
     let mut records = Vec::new();
     let mut bytes = BTreeMap::new();
@@ -673,6 +780,11 @@ fn fixture_catalog(
                     value.copy_from_slice(&1.0_f32.to_le_bytes());
                 }
             }
+            GGMLType::F16 => {
+                for value in tensor_bytes.chunks_exact_mut(2) {
+                    value.copy_from_slice(&half::f16::from_f32(1.0).to_bits().to_le_bytes());
+                }
+            }
             GGMLType::Q4K | GGMLType::Q5K | GGMLType::Q6K => {
                 for block in tensor_bytes.chunks_exact_mut(block_bytes) {
                     block[..2].copy_from_slice(&[0x00, 0x3c]);
@@ -680,6 +792,10 @@ fn fixture_catalog(
                 }
             }
             _ => {}
+        }
+        if let Some(overridden) = tensor_overrides.get(&name) {
+            assert_eq!(overridden.len(), tensor_bytes.len(), "{name}");
+            tensor_bytes.copy_from_slice(overridden);
         }
         records.push(SourceTensorRecord {
             info: TensorInfo {
@@ -706,6 +822,38 @@ fn fixture_catalog(
         )])
         .unwrap(),
     )
+}
+
+fn f32_matrix_bytes(
+    rows: usize,
+    input_width: usize,
+    values: impl Fn(usize, usize) -> f32,
+) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(rows * input_width * 4);
+    for row in 0..rows {
+        for column in 0..input_width {
+            bytes.extend(values(row, column).to_le_bytes());
+        }
+    }
+    bytes
+}
+
+fn q8_0_matrix_bytes(
+    rows: usize,
+    input_width: usize,
+    values: impl Fn(usize, usize) -> i8,
+) -> Vec<u8> {
+    assert_eq!(input_width % 32, 0);
+    let mut bytes = Vec::with_capacity(rows * input_width / 32 * 34);
+    for row in 0..rows {
+        for block in 0..input_width / 32 {
+            bytes.extend(half::f16::from_f32(1.0).to_bits().to_le_bytes());
+            for lane in 0..32 {
+                bytes.push(values(row, block * 32 + lane) as u8);
+            }
+        }
+    }
+    bytes
 }
 
 fn qwen3_tensors() -> Vec<(String, Vec<u64>, GGMLType)> {
@@ -924,19 +1072,21 @@ fn qwen35_recurrent_tensors(layer: usize) -> Vec<(String, Vec<u64>, GGMLType)> {
     ]
 }
 
-fn qwen35_f32_dense_tensors() -> Vec<(String, Vec<u64>, GGMLType)> {
+fn qwen35_dense_tensors_with_matrix_type(
+    matrix_type: GGMLType,
+) -> Vec<(String, Vec<u64>, GGMLType)> {
     let mut tensors = vec![
         ("token_embd.weight".into(), vec![64, 64], GGMLType::Q8_0),
         ("output_norm.weight".into(), vec![64], GGMLType::F32),
         ("output.weight".into(), vec![64, 64], GGMLType::Q8_0),
     ];
     for (name, dims, _) in qwen35_dense_tensors(0) {
-        let matrix = dims.len() >= 2;
-        tensors.push((
-            name,
-            dims,
-            if matrix { GGMLType::F32 } else { GGMLType::F32 },
-        ));
+        let ggml_type = if dims.len() >= 2 {
+            matrix_type
+        } else {
+            GGMLType::F32
+        };
+        tensors.push((name, dims, ggml_type));
     }
     tensors
 }

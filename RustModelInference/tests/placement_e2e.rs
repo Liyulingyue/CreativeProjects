@@ -91,23 +91,33 @@ fn public_row_forward_accepts_multiple_tokens() {
 }
 
 #[test]
-fn qwen35_cpu_row_fallback_matrix_types_remain_supported() {
-    let source = include_str!("../src/qwen35.rs");
-    for matrix_type in ["F32", "F16", "Q4K", "Q5K", "Q6K"] {
-        assert!(
-            source.contains(&format!("CpuRowMatrix::{matrix_type}")),
-            "missing Qwen3.5 CPU Row fallback for {matrix_type}",
-        );
+fn qwen35_f32_and_f16_cpu_row_matrices_produce_logits() {
+    for fixture in [
+        support::tiny_qwen35_f32_dense(),
+        support::tiny_qwen35_f16_dense(),
+    ] {
+        let logits = fixture.run_cpu_forward_two_tokens().unwrap();
+        assert!(logits.iter().all(|logit| logit.is_finite()));
+        assert!(logits.iter().any(|logit| *logit != 0.0));
     }
-    assert!(source.contains("primary.descriptor.backend != crate::BackendKind::Cpu"));
 }
 
 #[test]
-fn qwen35_f32_cpu_row_matrices_produce_logits() {
-    let logits = support::tiny_qwen35_f32_dense()
+fn qwen35_dense_row_uses_the_doubled_q_attention_gate() {
+    let open_gate = support::tiny_qwen35_f32_dense_with_attention_gate(20.0)
         .run_cpu_forward_two_tokens()
         .unwrap();
-    assert!(logits.iter().any(|logit| *logit != 0.0));
+    let closed_gate = support::tiny_qwen35_f32_dense_with_attention_gate(-20.0)
+        .run_cpu_forward_two_tokens()
+        .unwrap();
+    assert_ne!(open_gate, closed_gate);
+}
+
+#[test]
+fn catalog_models_reject_metadata_tensor_layout_mismatches() {
+    assert!(support::qwen3_metadata_layer_count_mismatch()
+        .contains("metadata/tensor layer count mismatch"));
+    assert!(support::qwen35_metadata_layer_selection_mismatch().contains("blk.0.attn_qkv.weight"));
 }
 
 #[test]
