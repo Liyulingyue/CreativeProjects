@@ -19,7 +19,7 @@ fn qwen3_layer_schedule_matches_cpu_for_two_tokens_and_carries_kv() {
         1e-3,
         1e-3,
     );
-    assert_ne!(expected.first_token_logits, expected.second_token_logits);
+    assert_ne!(actual.first_token_logits, actual.second_token_logits);
     assert_eq!(actual.same_device_internal_host_waits, 0);
     assert_eq!(actual.kv_transfer_bytes, 0);
 }
