@@ -8,7 +8,7 @@ use crate::{
     ComponentId, DeviceId, GGMLType, NormalizedTarget, PlacementMode, PlacementRule, TensorCatalog,
     TensorId,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -820,6 +820,18 @@ impl PlacementCompiler<'_> {
                     &mut ops,
                 )?;
                 layer_input = layer_output;
+            }
+            let referenced = ops
+                .iter()
+                .flat_map(LayerOp::referenced_tensors)
+                .collect::<BTreeSet<_>>();
+            for tensor in referenced {
+                let entry = self.ensure_tensor(tensor, &device)?;
+                builder.tensor(
+                    tensor,
+                    0..u32::try_from(entry.row_count).map_err(|_| PlanError::SizeOverflow)?,
+                    entry.segment_byte_range.clone(),
+                )?;
             }
             let output = layer_input;
             let families = llm.layers[layers.start as usize..layers.end as usize]
@@ -1920,6 +1932,58 @@ mod tests {
             program.layer_ops.last(),
             Some(LayerOp::Add { output, .. }) if *output == span.output
         ));
+    }
+
+    #[test]
+    fn layer_plan_resides_every_tensor_referenced_by_its_programs() {
+        let catalog = catalog_from_tensors(vec![
+            (
+                "token_embd.weight".into(),
+                vec![32, 16],
+                GGMLType::F32,
+                None,
+            ),
+            ("layer_norm".into(), vec![32], GGMLType::F32, None),
+            ("blk.0.weight".into(), vec![32, 10], GGMLType::Q8_0, Some(0)),
+            ("output_norm.weight".into(), vec![32], GGMLType::F32, None),
+            ("output.weight".into(), vec![32, 12], GGMLType::Q8_0, None),
+        ]);
+        let mut requirement = llm_requirements(&catalog, 1);
+        let norm = catalog.find(ComponentId::Llm, "layer_norm").unwrap();
+        let ComponentWorkload::Llm(llm) = &mut requirement.workload else {
+            unreachable!()
+        };
+        let LlmLayerSpec::Qwen3(layer) = &mut llm.layers[0] else {
+            unreachable!()
+        };
+        layer.attn_norm = norm;
+        layer.ffn_norm = norm;
+
+        let registry = registry(vec![descriptor("metal0", BackendKind::Metal, "metal")]);
+        let plan = compile(
+            &catalog,
+            &registry,
+            &requirement,
+            PlacementRule {
+                component: ComponentId::Llm,
+                mode: PlacementMode::Layer,
+                targets: targets(&[("metal0", 1.0)]),
+            },
+        )
+        .unwrap();
+        let device = &plan.devices[&id("metal0")];
+        let resident = device
+            .tensors
+            .iter()
+            .map(|tensor| tensor.tensor)
+            .collect::<BTreeSet<_>>();
+        for program in &device.programs {
+            for op in &program.layer_ops {
+                for tensor in op.referenced_tensors() {
+                    assert!(resident.contains(&tensor), "{tensor:?} from {op:?}");
+                }
+            }
+        }
     }
 
     #[test]

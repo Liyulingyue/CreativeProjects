@@ -4,22 +4,22 @@ use super::device::{
     SlotId,
 };
 use super::program::{
-    DevicePlan, ProgramKind, ProgramPlan, ResidentTensorPlan, SlotKind, SlotPlan, SlotStorage,
+    DevicePlan, LayerOp, ProgramKind, ProgramPlan, ResidentTensorPlan, SlotKind, SlotPlan,
+    SlotStorage,
 };
-use crate::{ComponentId, DeviceId, GGMLType, PlacementMode, TensorCatalog, TensorId};
+use crate::{ComponentId, DeviceId, GGMLType, LayerFamily, PlacementMode, TensorCatalog, TensorId};
 use metal::objc::{msg_send, rc::autoreleasepool, runtime::Object, sel, sel_impl};
 use metal::{
     Buffer, CommandBuffer, CommandBufferRef, CommandQueue, CompileOptions, ComputePipelineState,
     Device, Library, MTLCommandBufferStatus, MTLResourceOptions, MTLSize, NSRange,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::CStr;
 use std::mem::size_of;
 use std::ops::Range;
 use std::sync::Arc;
 
 const Q8_BLOCK_ELEMENTS: u64 = 32;
-const Q8_BLOCK_BYTES: u64 = 34;
 
 pub struct MetalProvider {
     adapters: Vec<AdapterInfo>,
@@ -106,9 +106,13 @@ fn enumerate_adapters() -> Vec<AdapterInfo> {
                     unified_memory: device.has_unified_memory(),
                     capabilities: DeviceCapabilities {
                         components: BTreeSet::from([ComponentId::Llm]),
-                        modes: BTreeSet::from([PlacementMode::Row]),
-                        layer_families: BTreeSet::new(),
-                        tensor_types: BTreeSet::from([GGMLType::Q8_0]),
+                        modes: BTreeSet::from([PlacementMode::Layer, PlacementMode::Row]),
+                        layer_families: BTreeSet::from([LayerFamily::Qwen3]),
+                        tensor_types: BTreeSet::from([
+                            GGMLType::F32,
+                            GGMLType::F16,
+                            GGMLType::Q8_0,
+                        ]),
                     },
                 },
                 registry_id,
@@ -166,18 +170,10 @@ struct ChunkSpec {
     global_row_start: u32,
 }
 
-struct ProgramSpec {
-    plan: ProgramPlan,
-    chunks: Vec<usize>,
-    n_in: u32,
-    output_stride: u32,
-    mode: u32,
-}
-
 struct ValidatedPlan {
     slots: BTreeMap<SlotId, SlotPlan>,
     chunks: Vec<ChunkSpec>,
-    programs: Vec<ProgramSpec>,
+    programs: Vec<ProgramResource>,
     runtime_bytes: u64,
 }
 
@@ -190,6 +186,7 @@ struct SlotResource {
     plan: SlotPlan,
     buffer: Buffer,
     staging: Option<Buffer>,
+    staging_dirty: bool,
     host_readable: bool,
     host_writable: bool,
 }
@@ -200,22 +197,97 @@ struct ProgramResource {
     n_in: u32,
     output_stride: u32,
     mode: u32,
+    layer_ops: Vec<BoundLayerOp>,
 }
 
-struct Pending {
-    id: FenceId,
-    command: CommandBuffer,
+enum BoundLayerOp {
+    RmsNorm {
+        input: SlotId,
+        weight: usize,
+        output: SlotId,
+        elements: u32,
+        groups: u32,
+        epsilon_bits: u32,
+        weight_f16: bool,
+    },
+    Q8Matmul {
+        input: SlotId,
+        chunks: Vec<usize>,
+        output: SlotId,
+        n_in: u32,
+        rows: u32,
+    },
+    Rope {
+        q: SlotId,
+        k: SlotId,
+        q_width: u32,
+        k_width: u32,
+        key_head_dim: u32,
+        freq_base_bits: u32,
+    },
+    KvAppend {
+        k: SlotId,
+        v: SlotId,
+        key_state: SlotId,
+        value_state: SlotId,
+        key_width: u32,
+        value_width: u32,
+    },
+    Attention {
+        q: SlotId,
+        output: SlotId,
+        head_count: u32,
+        kv_head_count: u32,
+        key_state: SlotId,
+        value_state: SlotId,
+        key_head_dim: u32,
+        value_head_dim: u32,
+        context_capacity: u32,
+    },
+    SiluMul {
+        gate: SlotId,
+        up: SlotId,
+        elements: u32,
+    },
+    Add {
+        left: SlotId,
+        right: SlotId,
+        output: SlotId,
+        elements: u32,
+    },
+}
+
+fn drain_pending<T>(
+    pending: &mut VecDeque<(FenceId, T)>,
+    target: FenceId,
+    poisoned: &mut bool,
+    mut finish: impl FnMut(T) -> Result<(), BackendError>,
+) -> Result<(), BackendError> {
+    if !pending.iter().any(|(id, _)| *id == target) {
+        return Err(BackendError::InvalidHandle);
+    }
+    loop {
+        let (id, command) = pending.pop_front().expect("validated pending command");
+        if let Err(error) = finish(command) {
+            *poisoned = true;
+            pending.clear();
+            return Err(error);
+        }
+        if id == target {
+            return Ok(());
+        }
+    }
 }
 
 pub struct MetalSession {
     descriptor: DeviceDescriptor,
     queue: CommandQueue,
     _library: Library,
-    pipeline: ComputePipelineState,
+    pipelines: BTreeMap<&'static str, ComputePipelineState>,
     resident: Vec<ResidentChunk>,
     slots: BTreeMap<SlotId, SlotResource>,
     programs: BTreeMap<ProgramId, ProgramResource>,
-    pending: Option<Pending>,
+    pending: VecDeque<(FenceId, CommandBuffer)>,
     next_fence: u64,
     poisoned: bool,
     stats: SessionStats,
@@ -232,7 +304,7 @@ impl MetalSession {
     ) -> Result<Self, BackendError> {
         let device = adapter.device;
         let queue = device.new_command_queue();
-        let (library, pipeline) = autoreleasepool(|| {
+        let (library, pipelines) = autoreleasepool(|| {
             let source = include_str!("metal/kernels.metal");
             let options = CompileOptions::new();
             options.set_fast_math_enabled(false);
@@ -243,19 +315,34 @@ impl MetalSession {
                     device: adapter.descriptor.id.clone(),
                     message,
                 })?;
-            let function = library.get_function("q8_rows", None).map_err(|message| {
-                BackendError::Pipeline {
-                    device: adapter.descriptor.id.clone(),
-                    message,
-                }
-            })?;
-            let pipeline = device
-                .new_compute_pipeline_state_with_function(&function)
-                .map_err(|message| BackendError::Pipeline {
-                    device: adapter.descriptor.id.clone(),
-                    message,
-                })?;
-            Ok((library, pipeline))
+            let pipelines = [
+                "q8_rows",
+                "rms_norm",
+                "rope",
+                "kv_append",
+                "attention",
+                "silu_mul",
+                "add",
+            ]
+            .into_iter()
+            .map(|name| {
+                let function =
+                    library
+                        .get_function(name, None)
+                        .map_err(|message| BackendError::Pipeline {
+                            device: adapter.descriptor.id.clone(),
+                            message,
+                        })?;
+                let pipeline = device
+                    .new_compute_pipeline_state_with_function(&function)
+                    .map_err(|message| BackendError::Pipeline {
+                        device: adapter.descriptor.id.clone(),
+                        message,
+                    })?;
+                Ok((name, pipeline))
+            })
+            .collect::<Result<_, BackendError>>()?;
+            Ok((library, pipelines))
         })?;
 
         let mut resident = Vec::with_capacity(validated.chunks.len());
@@ -308,6 +395,7 @@ impl MetalSession {
                     plan,
                     buffer,
                     staging,
+                    staging_dirty: false,
                     host_readable,
                     host_writable,
                 },
@@ -316,18 +404,7 @@ impl MetalSession {
         let programs = validated
             .programs
             .into_iter()
-            .map(|spec| {
-                (
-                    spec.plan.id,
-                    ProgramResource {
-                        plan: spec.plan,
-                        chunks: spec.chunks,
-                        n_in: spec.n_in,
-                        output_stride: spec.output_stride,
-                        mode: spec.mode,
-                    },
-                )
-            })
+            .map(|program| (program.plan.id, program))
             .collect();
         let allocation_count = resident.len() as u64
             + slots
@@ -345,11 +422,11 @@ impl MetalSession {
             descriptor: adapter.descriptor,
             queue,
             _library: library,
-            pipeline,
+            pipelines,
             resident,
             slots,
             programs,
-            pending: None,
+            pending: VecDeque::new(),
             next_fence: 1,
             poisoned: false,
             stats: SessionStats {
@@ -367,7 +444,7 @@ impl MetalSession {
     fn require_idle(&self) -> Result<(), BackendError> {
         if self.poisoned {
             Err(BackendError::PoisonedRun)
-        } else if self.pending.is_some() {
+        } else if !self.pending.is_empty() {
             Err(submission(&self.descriptor, "Metal work is pending"))
         } else {
             Ok(())
@@ -376,7 +453,6 @@ impl MetalSession {
 
     fn finish_command(&mut self, command: &CommandBufferRef) -> Result<(), BackendError> {
         command.wait_until_completed();
-        self.stats.host_waits += 1;
         if command.status() == MTLCommandBufferStatus::Completed {
             Ok(())
         } else {
@@ -388,6 +464,322 @@ impl MetalSession {
                 }),
             ))
         }
+    }
+
+    fn commit_command(&mut self, command: CommandBuffer) -> FenceId {
+        command.commit();
+        let id = FenceId(self.next_fence);
+        self.pending.push_back((id, command));
+        self.next_fence += 1;
+        self.stats.submissions += 1;
+        id
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn encode_q8_rows(
+        &self,
+        command: &CommandBufferRef,
+        chunks: &[usize],
+        input: SlotId,
+        output: SlotId,
+        batch: u32,
+        n_in: u32,
+        output_stride: u32,
+        mode: u32,
+        first_row: u32,
+    ) -> Result<(), BackendError> {
+        let pipeline = &self.pipelines["q8_rows"];
+        for &chunk_index in chunks {
+            let chunk = &self.resident[chunk_index];
+            let encoder = command.new_compute_command_encoder();
+            encoder.set_compute_pipeline_state(pipeline);
+            encoder.set_buffer(0, Some(&chunk.buffer), 0);
+            encoder.set_buffer(1, Some(&self.slots[&input].buffer), 0);
+            encoder.set_buffer(2, Some(&self.slots[&output].buffer), 0);
+            let push = [
+                batch,
+                n_in,
+                chunk.spec.local_rows,
+                chunk.spec.global_row_start,
+                output_stride,
+                mode,
+                0,
+                chunk.spec.global_row_start.saturating_sub(first_row),
+            ];
+            encoder.set_bytes(3, 32, push.as_ptr().cast());
+            let work = if mode == 0 {
+                batch.checked_mul(chunk.spec.local_rows)
+            } else {
+                batch.checked_mul(n_in)
+            }
+            .ok_or(BackendError::InvalidHandle)?;
+            encoder.dispatch_threads(
+                MTLSize::new(u64::from(work), 1, 1),
+                MTLSize::new(pipeline.thread_execution_width(), 1, 1),
+            );
+            encoder.end_encoding();
+        }
+        Ok(())
+    }
+
+    fn encode_layer_op(
+        &self,
+        command: &CommandBufferRef,
+        op: &BoundLayerOp,
+        params: &RunParams<'_>,
+    ) -> Result<(), BackendError> {
+        let batch = params.token_count;
+        let fits_f32 = |slot: SlotId, width: u32| {
+            u64::from(batch)
+                .checked_mul(u64::from(width))
+                .and_then(|values| values.checked_mul(4))
+                .is_some_and(|bytes| bytes <= self.slots[&slot].plan.byte_len)
+        };
+        let dispatch =
+            |name: &'static str, work: u32, buffers: &[(&Buffer, u64)], push: &[u32; 8]| {
+                let pipeline = &self.pipelines[name];
+                let encoder = command.new_compute_command_encoder();
+                encoder.set_compute_pipeline_state(pipeline);
+                for (index, (buffer, offset)) in buffers.iter().enumerate() {
+                    encoder.set_buffer(index as u64, Some(buffer), *offset);
+                }
+                encoder.set_bytes(buffers.len() as u64, 32, push.as_ptr().cast());
+                encoder.dispatch_threads(
+                    MTLSize::new(u64::from(work), 1, 1),
+                    MTLSize::new(pipeline.thread_execution_width(), 1, 1),
+                );
+                encoder.end_encoding();
+            };
+        match op {
+            BoundLayerOp::RmsNorm {
+                input,
+                weight,
+                output,
+                elements,
+                groups,
+                epsilon_bits,
+                weight_f16,
+            } => {
+                let width = elements
+                    .checked_mul(*groups)
+                    .ok_or(BackendError::InvalidHandle)?;
+                if !fits_f32(*input, width) || !fits_f32(*output, width) {
+                    return Err(BackendError::InvalidHandle);
+                }
+                let work = batch
+                    .checked_mul(*groups)
+                    .ok_or(BackendError::InvalidHandle)?;
+                let push = [
+                    batch,
+                    *elements,
+                    *groups,
+                    *epsilon_bits,
+                    u32::from(*weight_f16),
+                    0,
+                    0,
+                    0,
+                ];
+                dispatch(
+                    "rms_norm",
+                    work,
+                    &[
+                        (&self.resident[*weight].buffer, 0),
+                        (&self.slots[input].buffer, 0),
+                        (&self.slots[output].buffer, 0),
+                    ],
+                    &push,
+                );
+            }
+            BoundLayerOp::Q8Matmul {
+                input,
+                chunks,
+                output,
+                n_in,
+                rows,
+            } => {
+                if !fits_f32(*input, *n_in) || !fits_f32(*output, *rows) {
+                    return Err(BackendError::InvalidHandle);
+                }
+                self.encode_q8_rows(command, chunks, *input, *output, batch, *n_in, *rows, 0, 0)?;
+            }
+            BoundLayerOp::Rope {
+                q,
+                k,
+                q_width,
+                k_width,
+                key_head_dim,
+                freq_base_bits,
+            } => {
+                if !fits_f32(*q, *q_width) || !fits_f32(*k, *k_width) {
+                    return Err(BackendError::InvalidHandle);
+                }
+                let work = batch
+                    .checked_mul((q_width + k_width) / 2)
+                    .ok_or(BackendError::InvalidHandle)?;
+                let push = [
+                    batch,
+                    *q_width,
+                    *k_width,
+                    *key_head_dim,
+                    params.position_start,
+                    *freq_base_bits,
+                    0,
+                    0,
+                ];
+                dispatch(
+                    "rope",
+                    work,
+                    &[(&self.slots[q].buffer, 0), (&self.slots[k].buffer, 0)],
+                    &push,
+                );
+            }
+            BoundLayerOp::KvAppend {
+                k,
+                v,
+                key_state,
+                value_state,
+                key_width,
+                value_width,
+            } => {
+                let end = params
+                    .position_start
+                    .checked_add(batch)
+                    .ok_or(BackendError::InvalidHandle)?;
+                let state_fits = |slot: SlotId, width: u32| {
+                    u64::from(end)
+                        .checked_mul(u64::from(width))
+                        .and_then(|values| values.checked_mul(2))
+                        .is_some_and(|bytes| bytes <= self.slots[&slot].plan.byte_len)
+                };
+                if !fits_f32(*k, *key_width)
+                    || !fits_f32(*v, *value_width)
+                    || !state_fits(*key_state, *key_width)
+                    || !state_fits(*value_state, *value_width)
+                {
+                    return Err(BackendError::InvalidHandle);
+                }
+                let work = batch
+                    .checked_mul(key_width + value_width)
+                    .ok_or(BackendError::InvalidHandle)?;
+                let push = [
+                    batch,
+                    *key_width,
+                    *value_width,
+                    params.position_start,
+                    0,
+                    0,
+                    0,
+                    0,
+                ];
+                dispatch(
+                    "kv_append",
+                    work,
+                    &[
+                        (&self.slots[k].buffer, 0),
+                        (&self.slots[v].buffer, 0),
+                        (&self.slots[key_state].buffer, 0),
+                        (&self.slots[value_state].buffer, 0),
+                    ],
+                    &push,
+                );
+            }
+            BoundLayerOp::Attention {
+                q,
+                output,
+                head_count,
+                kv_head_count,
+                key_state,
+                value_state,
+                key_head_dim,
+                value_head_dim,
+                context_capacity,
+            } => {
+                if params
+                    .position_start
+                    .checked_add(batch)
+                    .is_none_or(|end| end > *context_capacity)
+                {
+                    return Err(BackendError::InvalidHandle);
+                }
+                let q_width = head_count
+                    .checked_mul(*key_head_dim)
+                    .ok_or(BackendError::InvalidHandle)?;
+                let output_width = head_count
+                    .checked_mul(*value_head_dim)
+                    .ok_or(BackendError::InvalidHandle)?;
+                if !fits_f32(*q, q_width) || !fits_f32(*output, output_width) {
+                    return Err(BackendError::InvalidHandle);
+                }
+                let work = batch
+                    .checked_mul(*head_count)
+                    .and_then(|items| items.checked_mul(*value_head_dim))
+                    .ok_or(BackendError::InvalidHandle)?;
+                let push = [
+                    batch,
+                    *head_count,
+                    *kv_head_count,
+                    0,
+                    *key_head_dim,
+                    *value_head_dim,
+                    params.position_start,
+                    0,
+                ];
+                dispatch(
+                    "attention",
+                    work,
+                    &[
+                        (&self.slots[q].buffer, 0),
+                        (&self.slots[key_state].buffer, 0),
+                        (&self.slots[value_state].buffer, 0),
+                        (&self.slots[output].buffer, 0),
+                    ],
+                    &push,
+                );
+            }
+            BoundLayerOp::SiluMul { gate, up, elements } => {
+                if !fits_f32(*gate, *elements) || !fits_f32(*up, *elements) {
+                    return Err(BackendError::InvalidHandle);
+                }
+                let work = batch
+                    .checked_mul(*elements)
+                    .ok_or(BackendError::InvalidHandle)?;
+                let push = [batch, *elements, 0, 0, 0, 0, 0, 0];
+                dispatch(
+                    "silu_mul",
+                    work,
+                    &[(&self.slots[gate].buffer, 0), (&self.slots[up].buffer, 0)],
+                    &push,
+                );
+            }
+            BoundLayerOp::Add {
+                left,
+                right,
+                output,
+                elements,
+            } => {
+                if !fits_f32(*left, *elements)
+                    || !fits_f32(*right, *elements)
+                    || !fits_f32(*output, *elements)
+                {
+                    return Err(BackendError::InvalidHandle);
+                }
+                let work = batch
+                    .checked_mul(*elements)
+                    .ok_or(BackendError::InvalidHandle)?;
+                let push = [batch, *elements, 0, 0, 0, 0, 0, 0];
+                dispatch(
+                    "add",
+                    work,
+                    &[
+                        (&self.slots[left].buffer, 0),
+                        (&self.slots[right].buffer, 0),
+                        (&self.slots[output].buffer, 0),
+                    ],
+                    &push,
+                );
+            }
+        }
+        Ok(())
     }
 }
 
@@ -423,6 +815,7 @@ impl DeviceSession for MetalSession {
                 byte_len as usize,
             );
         }
+        self.slots.get_mut(&slot).unwrap().staging_dirty = true;
         self.stats.activation_h2d_bytes += byte_len;
         Ok(())
     }
@@ -432,11 +825,46 @@ impl DeviceSession for MetalSession {
         program: ProgramId,
         params: &RunParams<'_>,
     ) -> Result<FenceId, BackendError> {
-        self.require_idle()?;
+        if self.poisoned {
+            return Err(BackendError::PoisonedRun);
+        }
         let resource = self
             .programs
             .get(&program)
             .ok_or(BackendError::InvalidHandle)?;
+        if matches!(
+            resource.plan.kind,
+            ProgramKind::LayerSegment { .. } | ProgramKind::FinalNormQ8Logits { .. }
+        ) {
+            if params.token_count == 0 {
+                return Err(BackendError::InvalidHandle);
+            }
+            let input = resource.plan.input;
+            let copy_input = self.slots[&input].staging_dirty;
+            let command = autoreleasepool(|| -> Result<CommandBuffer, BackendError> {
+                let command = self.queue.new_command_buffer().to_owned();
+                if copy_input {
+                    let slot = &self.slots[&input];
+                    let blit = command.new_blit_command_encoder();
+                    blit.copy_from_buffer(
+                        slot.staging.as_ref().ok_or(BackendError::InvalidHandle)?,
+                        0,
+                        &slot.buffer,
+                        0,
+                        slot.plan.byte_len,
+                    );
+                    blit.end_encoding();
+                }
+                for op in &resource.layer_ops {
+                    self.encode_layer_op(&command, op, params)?;
+                }
+                Ok(command)
+            })?;
+            if copy_input {
+                self.slots.get_mut(&input).unwrap().staging_dirty = false;
+            }
+            return Ok(self.commit_command(command));
+        }
         let batch_capacity = match &resource.plan.kind {
             ProgramKind::Q8Rows { batch_capacity, .. } => *batch_capacity,
             ProgramKind::EmbeddingRows { row_count, .. } => {
@@ -491,71 +919,50 @@ impl DeviceSession for MetalSession {
         }
 
         let input_staging = input.staging.as_ref().ok_or(BackendError::InvalidHandle)?;
-        let id = FenceId(self.next_fence);
         let command = autoreleasepool(|| {
             let command = self.queue.new_command_buffer().to_owned();
             let blit = command.new_blit_command_encoder();
             blit.copy_from_buffer(input_staging, 0, &input.buffer, 0, input_bytes);
             blit.end_encoding();
 
-            for &chunk_index in &resource.chunks {
-                let chunk = &self.resident[chunk_index];
-                let encoder = command.new_compute_command_encoder();
-                encoder.set_compute_pipeline_state(&self.pipeline);
-                encoder.set_buffer(0, Some(&chunk.buffer), 0);
-                encoder.set_buffer(1, Some(&input.buffer), 0);
-                encoder.set_buffer(2, Some(&output.buffer), 0);
-                let output_row_start = chunk.spec.global_row_start.saturating_sub(match &resource
-                    .plan
-                    .kind
-                {
-                    ProgramKind::Q8Rows { rows, .. } => rows.start,
-                    ProgramKind::EmbeddingRows { .. } => 0,
-                    _ => 0,
-                });
-                let push = [
-                    params.token_count,
-                    resource.n_in,
-                    chunk.spec.local_rows,
-                    chunk.spec.global_row_start,
-                    resource.output_stride,
-                    resource.mode,
-                    0,
-                    output_row_start,
-                ];
-                encoder.set_bytes(3, 32, push.as_ptr().cast());
-                let work = if resource.mode == 0 {
-                    params.token_count.checked_mul(chunk.spec.local_rows)
-                } else {
-                    params.token_count.checked_mul(resource.n_in)
-                }
-                .expect("validated Metal dispatch size");
-                let width = self.pipeline.thread_execution_width();
-                encoder.dispatch_threads(
-                    MTLSize::new(u64::from(work), 1, 1),
-                    MTLSize::new(width, 1, 1),
-                );
-                encoder.end_encoding();
-            }
-            command.commit();
+            let first_row = match &resource.plan.kind {
+                ProgramKind::Q8Rows { rows, .. } => rows.start,
+                ProgramKind::EmbeddingRows { .. } => 0,
+                _ => 0,
+            };
+            self.encode_q8_rows(
+                &command,
+                &resource.chunks,
+                resource.plan.input,
+                resource.plan.output,
+                params.token_count,
+                resource.n_in,
+                resource.output_stride,
+                resource.mode,
+                first_row,
+            )
+            .expect("validated Metal Q8 dispatch");
             command
         });
-        self.pending = Some(Pending { id, command });
-        self.next_fence += 1;
-        self.stats.submissions += 1;
-        Ok(id)
+        Ok(self.commit_command(command))
     }
 
     fn wait(&mut self, fence: FenceId) -> Result<(), BackendError> {
-        self.pending
-            .as_ref()
-            .filter(|pending| pending.id == fence)
-            .ok_or(BackendError::InvalidHandle)?;
-        let pending = self
-            .pending
-            .take()
-            .expect("validated pending Metal command");
-        self.finish_command(&pending.command)
+        self.stats.host_waits += 1;
+        let descriptor = self.descriptor.clone();
+        drain_pending(&mut self.pending, fence, &mut self.poisoned, |command| {
+            command.wait_until_completed();
+            if command.status() == MTLCommandBufferStatus::Completed {
+                Ok(())
+            } else {
+                Err(submission(
+                    &descriptor,
+                    command_error(&command).unwrap_or_else(|| {
+                        format!("Metal command ended with status {:?}", command.status())
+                    }),
+                ))
+            }
+        })
     }
 
     fn read_f32(&mut self, slot: SlotId, values: &mut [f32]) -> Result<(), BackendError> {
@@ -623,8 +1030,8 @@ impl DeviceSession for MetalSession {
 
 impl Drop for MetalSession {
     fn drop(&mut self) {
-        if let Some(pending) = self.pending.take() {
-            pending.command.wait_until_completed();
+        while let Some((_, command)) = self.pending.pop_front() {
+            command.wait_until_completed();
         }
         self.stats.resident_frees = self.stats.resident_allocations;
     }
@@ -656,12 +1063,12 @@ fn validate_plan(
             .entry(resident.tensor)
             .ok_or(BackendError::InvalidHandle)?;
         let n_in = u32::try_from(entry.shape[0]).map_err(|_| BackendError::InvalidHandle)?;
-        if entry.ggml_type != GGMLType::Q8_0 || n_in == 0 || n_in % Q8_BLOCK_ELEMENTS as u32 != 0 {
+        if n_in == 0 || (entry.ggml_type == GGMLType::Q8_0 && n_in % Q8_BLOCK_ELEMENTS as u32 != 0)
+        {
             return Err(BackendError::InvalidHandle);
         }
-        let row_bytes = u64::from(n_in) / Q8_BLOCK_ELEMENTS * Q8_BLOCK_BYTES;
         let start = chunks.len();
-        let resident_chunks = row_chunks(resident, row_bytes, adapter.max_buffer_length)?;
+        let resident_chunks = row_chunks(resident, entry.row_bytes, adapter.max_buffer_length)?;
         for chunk in &resident_chunks {
             source_bytes(catalog, chunk.tensor, chunk.source_bytes.clone())?;
         }
@@ -675,8 +1082,29 @@ fn validate_plan(
     let mut ids = BTreeSet::new();
     let mut programs = Vec::with_capacity(plan.programs.len());
     for program in &plan.programs {
-        if !ids.insert(program.id) || program.input == program.output {
+        if !ids.insert(program.id)
+            || (program.input == program.output
+                && !matches!(program.kind, ProgramKind::LayerSegment { .. }))
+        {
             return Err(BackendError::InvalidHandle);
+        }
+        if matches!(
+            program.kind,
+            ProgramKind::LayerSegment { .. } | ProgramKind::FinalNormQ8Logits { .. }
+        ) {
+            if !slots.contains_key(&program.input) || !slots.contains_key(&program.output) {
+                return Err(BackendError::InvalidHandle);
+            }
+            let layer_ops = bind_layer_ops(program, catalog, &slots, &chunk_ranges)?;
+            programs.push(ProgramResource {
+                plan: program.clone(),
+                chunks: Vec::new(),
+                n_in: 0,
+                output_stride: 0,
+                mode: 2,
+                layer_ops,
+            });
+            continue;
         }
         let (tensor, rows, batch_capacity, mode) = match &program.kind {
             ProgramKind::Q8Rows {
@@ -760,12 +1188,13 @@ fn validate_plan(
         {
             return Err(BackendError::InvalidHandle);
         }
-        programs.push(ProgramSpec {
+        programs.push(ProgramResource {
             plan: program.clone(),
             chunks,
             n_in,
             output_stride,
             mode,
+            layer_ops: Vec::new(),
         });
     }
     if programs.is_empty() {
@@ -806,6 +1235,208 @@ fn validate_plan(
         programs,
         runtime_bytes,
     })
+}
+
+fn bind_layer_ops(
+    program: &ProgramPlan,
+    catalog: &TensorCatalog,
+    slots: &BTreeMap<SlotId, SlotPlan>,
+    chunk_ranges: &BTreeMap<(TensorId, u32, u32), Range<usize>>,
+) -> Result<Vec<BoundLayerOp>, BackendError> {
+    if let ProgramKind::LayerSegment { families, .. } = &program.kind {
+        if families.iter().any(|family| *family != LayerFamily::Qwen3) {
+            return Err(BackendError::InvalidHandle);
+        }
+    }
+    let f32_slot = |id| {
+        slots
+            .get(&id)
+            .is_some_and(|slot| slot.storage == SlotStorage::F32)
+    };
+    let tensor_chunks = |tensor| -> Result<Vec<usize>, BackendError> {
+        let entry = catalog.entry(tensor).ok_or(BackendError::InvalidHandle)?;
+        Ok(chunk_ranges
+            .get(&(tensor, 0, entry.row_count as u32))
+            .ok_or(BackendError::InvalidHandle)?
+            .clone()
+            .collect())
+    };
+    let mut widths = BTreeMap::new();
+    let mut bound = Vec::with_capacity(program.layer_ops.len());
+    for op in &program.layer_ops {
+        match *op {
+            LayerOp::RmsNorm {
+                input,
+                weight,
+                output,
+                epsilon_bits,
+            } => {
+                let entry = catalog.entry(weight).ok_or(BackendError::InvalidHandle)?;
+                let elements =
+                    u32::try_from(entry.shape[0]).map_err(|_| BackendError::InvalidHandle)?;
+                let chunks = tensor_chunks(weight)?;
+                let groups = u32::try_from(slots[&input].byte_len / 4 / u64::from(elements))
+                    .map_err(|_| BackendError::InvalidHandle)?;
+                if !matches!(entry.ggml_type, GGMLType::F32 | GGMLType::F16)
+                    || chunks.len() != 1
+                    || groups == 0
+                    || !f32_slot(input)
+                    || !f32_slot(output)
+                {
+                    return Err(BackendError::InvalidHandle);
+                }
+                widths.insert(input, elements);
+                widths.insert(output, elements);
+                bound.push(BoundLayerOp::RmsNorm {
+                    input,
+                    weight: chunks[0],
+                    output,
+                    elements,
+                    groups,
+                    epsilon_bits,
+                    weight_f16: entry.ggml_type == GGMLType::F16,
+                });
+            }
+            LayerOp::Q8Matmul {
+                input,
+                weight,
+                output,
+            } => {
+                let entry = catalog.entry(weight).ok_or(BackendError::InvalidHandle)?;
+                let n_in =
+                    u32::try_from(entry.shape[0]).map_err(|_| BackendError::InvalidHandle)?;
+                let rows =
+                    u32::try_from(entry.row_count).map_err(|_| BackendError::InvalidHandle)?;
+                if entry.ggml_type != GGMLType::Q8_0
+                    || !f32_slot(input)
+                    || !f32_slot(output)
+                    || widths.get(&input).is_some_and(|width| *width != n_in)
+                {
+                    return Err(BackendError::InvalidHandle);
+                }
+                widths.insert(input, n_in);
+                widths.insert(output, rows);
+                bound.push(BoundLayerOp::Q8Matmul {
+                    input,
+                    chunks: tensor_chunks(weight)?,
+                    output,
+                    n_in,
+                    rows,
+                });
+            }
+            LayerOp::Rope {
+                q,
+                k,
+                key_head_dim,
+                rope_dims,
+                freq_base_bits,
+            } if f32_slot(q) && f32_slot(k) && key_head_dim == rope_dims => {
+                let q_width = *widths.get(&q).ok_or(BackendError::InvalidHandle)?;
+                let k_width = *widths.get(&k).ok_or(BackendError::InvalidHandle)?;
+                bound.push(BoundLayerOp::Rope {
+                    q,
+                    k,
+                    q_width,
+                    k_width,
+                    key_head_dim,
+                    freq_base_bits,
+                });
+            }
+            LayerOp::KvAppend {
+                k,
+                v,
+                key_state,
+                value_state,
+                ..
+            } => {
+                let attention = program.layer_ops.iter().find_map(|op| match op {
+                    LayerOp::Attention {
+                        kv_head_count,
+                        key_state: keys,
+                        value_state: values,
+                        key_head_dim,
+                        value_head_dim,
+                        ..
+                    } if *keys == key_state && *values == value_state => {
+                        Some((kv_head_count * key_head_dim, kv_head_count * value_head_dim))
+                    }
+                    _ => None,
+                });
+                let Some((key_width, value_width)) = attention else {
+                    return Err(BackendError::InvalidHandle);
+                };
+                if !f32_slot(k)
+                    || !f32_slot(v)
+                    || !matches!(slots.get(&key_state), Some(slot) if slot.storage == SlotStorage::F16)
+                    || !matches!(slots.get(&value_state), Some(slot) if slot.storage == SlotStorage::F16)
+                {
+                    return Err(BackendError::InvalidHandle);
+                }
+                bound.push(BoundLayerOp::KvAppend {
+                    k,
+                    v,
+                    key_state,
+                    value_state,
+                    key_width,
+                    value_width,
+                });
+            }
+            LayerOp::Attention {
+                q,
+                output,
+                head_count,
+                kv_head_count,
+                key_state,
+                value_state,
+                key_head_dim,
+                value_head_dim,
+                context_capacity,
+                ..
+            } if f32_slot(q) && f32_slot(output) && kv_head_count != 0 => {
+                widths.insert(output, head_count * value_head_dim);
+                bound.push(BoundLayerOp::Attention {
+                    q,
+                    output,
+                    head_count,
+                    kv_head_count,
+                    key_state,
+                    value_state,
+                    key_head_dim,
+                    value_head_dim,
+                    context_capacity,
+                });
+            }
+            LayerOp::SiluMul { gate, up } if f32_slot(gate) && f32_slot(up) => {
+                let elements = *widths.get(&up).ok_or(BackendError::InvalidHandle)?;
+                if widths.get(&gate) != Some(&elements) {
+                    return Err(BackendError::InvalidHandle);
+                }
+                bound.push(BoundLayerOp::SiluMul { gate, up, elements });
+            }
+            LayerOp::Add {
+                left,
+                right,
+                output,
+            } if f32_slot(left) && f32_slot(right) && f32_slot(output) => {
+                let elements = *widths
+                    .get(&left)
+                    .or_else(|| widths.get(&right))
+                    .ok_or(BackendError::InvalidHandle)?;
+                widths.insert(output, elements);
+                bound.push(BoundLayerOp::Add {
+                    left,
+                    right,
+                    output,
+                    elements,
+                });
+            }
+            _ => return Err(BackendError::InvalidHandle),
+        }
+    }
+    if bound.is_empty() {
+        return Err(BackendError::InvalidHandle);
+    }
+    Ok(bound)
 }
 
 fn validate_slots(
@@ -1205,5 +1836,113 @@ mod tests {
         };
 
         assert!(validate_plan(&plan, &catalog, &adapter).is_err());
+    }
+
+    #[test]
+    fn final_fence_drains_predecessors_with_one_host_wait_boundary() {
+        let provider = MetalProvider::new().unwrap();
+        let descriptor = provider.enumerate().unwrap().remove(0);
+        let catalog = Arc::new(
+            TensorCatalog::from_sources(vec![(
+                ComponentId::Llm,
+                Arc::new(TestSource {
+                    info: TensorInfo {
+                        name: "weight".into(),
+                        dims: vec![32, 1],
+                        ggml_type: GGMLType::Q8_0,
+                        offset: 0,
+                    },
+                    bytes: vec![0; 34],
+                }),
+            )])
+            .unwrap(),
+        );
+        let plan = DevicePlan {
+            descriptor: descriptor.clone(),
+            tensors: vec![ResidentTensorPlan {
+                tensor: TensorId(0),
+                rows: 0..1,
+                source_bytes: 0..34,
+                arena_offset: 0,
+            }],
+            slots: vec![
+                SlotPlan {
+                    id: SlotId(0),
+                    kind: SlotKind::Activation,
+                    storage: SlotStorage::F32,
+                    byte_len: 128,
+                    alignment: descriptor.buffer_alignment,
+                    arena_offset: 0,
+                },
+                SlotPlan {
+                    id: SlotId(1),
+                    kind: SlotKind::Result,
+                    storage: SlotStorage::F32,
+                    byte_len: 4,
+                    alignment: descriptor.buffer_alignment,
+                    arena_offset: 128,
+                },
+            ],
+            programs: vec![ProgramPlan {
+                id: ProgramId(0),
+                kind: ProgramKind::Q8Rows {
+                    tensor: TensorId(0),
+                    rows: 0..1,
+                    batch_capacity: 1,
+                },
+                input: SlotId(0),
+                output: SlotId(1),
+                layer_ops: vec![LayerOp::Q8Matmul {
+                    input: SlotId(0),
+                    weight: TensorId(0),
+                    output: SlotId(1),
+                }],
+            }],
+            memory: super::super::MemoryPlan {
+                resident_bytes: 34,
+                scratch_bytes: 132,
+                staging_bytes: 128,
+                required_bytes: 294,
+                largest_allocation_bytes: 132,
+                ..super::super::MemoryPlan::default()
+            },
+        };
+        let mut session = provider.open(&descriptor, &plan, catalog).unwrap();
+        session.write_f32(SlotId(0), &[1.0; 32]).unwrap();
+        let params = RunParams {
+            token_count: 1,
+            position_start: 0,
+            mrope_positions: &[],
+            token_ids: &[],
+        };
+        session.submit(ProgramId(0), &params).unwrap();
+        session.submit(ProgramId(0), &params).unwrap();
+        let final_fence = session.submit(ProgramId(0), &params).unwrap();
+        session.wait(final_fence).unwrap();
+        assert_eq!(session.stats().host_waits, 1);
+    }
+
+    #[test]
+    fn predecessor_failure_clears_pending_and_poisons_future_work() {
+        let mut pending = VecDeque::from([(FenceId(1), "fails"), (FenceId(2), "must not run")]);
+        let mut poisoned = false;
+        let error = drain_pending(&mut pending, FenceId(2), &mut poisoned, |command| {
+            if command == "fails" {
+                Err(BackendError::Submission {
+                    device: DeviceId::parse("metal0").unwrap(),
+                    message: "injected predecessor failure".into(),
+                })
+            } else {
+                panic!("successor ran after predecessor failure")
+            }
+        })
+        .unwrap_err();
+        assert!(matches!(error, BackendError::Submission { .. }));
+        assert!(poisoned);
+        assert!(pending.is_empty());
+        assert!(matches!(
+            poisoned.then_some(BackendError::PoisonedRun),
+            Some(BackendError::PoisonedRun)
+        ));
     }
 }

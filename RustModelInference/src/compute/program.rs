@@ -232,6 +232,19 @@ pub enum LayerOp {
     },
 }
 
+impl LayerOp {
+    pub(crate) fn referenced_tensors(&self) -> impl Iterator<Item = TensorId> {
+        let tensors = match *self {
+            Self::RmsNorm { weight, .. }
+            | Self::Q8Matmul { weight, .. }
+            | Self::DepthwiseCausalConv { weight, .. } => [Some(weight), None],
+            Self::SoftplusAffine { bias, scale, .. } => [Some(bias), Some(scale)],
+            _ => [None, None],
+        };
+        tensors.into_iter().flatten()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProgramPlan {
     pub id: ProgramId,
