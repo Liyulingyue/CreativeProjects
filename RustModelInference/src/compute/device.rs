@@ -1,4 +1,5 @@
-use crate::{ComponentId, DeviceId, GGMLType, PlacementMode, TensorId};
+use super::program::DevicePlan;
+use crate::{ComponentId, DeviceId, GGMLType, PlacementMode, TensorCatalog, TensorId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -157,8 +158,30 @@ pub trait DeviceDiscovery: Send + Sync {
     fn enumerate(&self) -> Result<Vec<DeviceDescriptor>, BackendError>;
 }
 
+pub trait DeviceProvider: DeviceDiscovery {
+    fn open(
+        &self,
+        descriptor: &DeviceDescriptor,
+        plan: &DevicePlan,
+        catalog: Arc<TensorCatalog>,
+    ) -> Result<Box<dyn DeviceSession>, BackendError>;
+}
+
+struct ProviderDiscovery(Arc<dyn DeviceProvider>);
+
+impl DeviceDiscovery for ProviderDiscovery {
+    fn backend(&self) -> BackendKind {
+        self.0.backend()
+    }
+
+    fn enumerate(&self) -> Result<Vec<DeviceDescriptor>, BackendError> {
+        self.0.enumerate()
+    }
+}
+
 pub struct DeviceRegistry {
     discoveries: BTreeMap<BackendKind, Arc<dyn DeviceDiscovery>>,
+    providers: BTreeMap<BackendKind, Arc<dyn DeviceProvider>>,
     descriptors: BTreeMap<DeviceId, DeviceDescriptor>,
 }
 
@@ -166,8 +189,30 @@ impl DeviceRegistry {
     pub fn new() -> Self {
         Self {
             discoveries: BTreeMap::new(),
+            providers: BTreeMap::new(),
             descriptors: BTreeMap::new(),
         }
+    }
+
+    pub fn register_provider(
+        &mut self,
+        provider: Arc<dyn DeviceProvider>,
+    ) -> Result<(), BackendError> {
+        let backend = provider.backend();
+        if self.discoveries.contains_key(&backend) || self.providers.contains_key(&backend) {
+            return Err(BackendError::DuplicateBackend { backend });
+        }
+        self.discoveries
+            .insert(backend, Arc::new(ProviderDiscovery(provider.clone())));
+        self.providers.insert(backend, provider);
+        Ok(())
+    }
+
+    pub fn provider(&self, backend: BackendKind) -> Result<Arc<dyn DeviceProvider>, BackendError> {
+        self.providers
+            .get(&backend)
+            .cloned()
+            .ok_or(BackendError::BackendUnavailable { backend })
     }
 
     pub fn register_discovery(
