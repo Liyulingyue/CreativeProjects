@@ -22,6 +22,7 @@ fn parse_embedding_output(value: Option<&str>) -> Result<EmbeddingOutput, String
     }
 }
 
+#[derive(Debug)]
 struct Cli {
     model_path: String,
     prompt: String,
@@ -31,6 +32,7 @@ struct Cli {
     embedding: bool,
     embedding_output: EmbeddingOutput,
     placements: Vec<String>,
+    kv_cache: KvCacheType,
     has_multimodal_input: bool,
 }
 
@@ -77,6 +79,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
         embedding: false,
         embedding_output: EmbeddingOutput::Summary,
         placements: Vec::new(),
+        kv_cache: KvCacheType::F16,
         has_multimodal_input: false,
     };
     let mut args = args.into_iter();
@@ -114,10 +117,12 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
                     "{flag} is not supported by the compiled execution path"
                 ));
             }
-            "--kv-cache" => {
-                let _ = next_value(&mut args, "--kv-cache")?;
-                return Err("--kv-cache is not supported by the compiled execution path".into());
-            }
+            "--kv-cache" => match next_value(&mut args, "--kv-cache")?.as_str() {
+                "f16" => cli.kv_cache = KvCacheType::F16,
+                "f32" => cli.kv_cache = KvCacheType::F32,
+                value => return Err(format!("Invalid --kv-cache {value:?}; expected f16 or f32")),
+            },
+            "--gpu-ratio" => return Err("--gpu-ratio was removed; use --placement".into()),
             _ => return Err(format!("Unknown option: {flag}")),
         }
     }
@@ -138,7 +143,11 @@ mod tests {
         for flag in ["--dump-logits", "--bench", "--profile"] {
             assert!(parse_args([flag.to_owned()]).is_err(), "{flag}");
         }
-        assert!(parse_args(["--kv-cache".to_owned(), "f16".to_owned()]).is_err());
+        let cli = parse_args(["--kv-cache".to_owned(), "f16".to_owned()]).unwrap();
+        assert_eq!(cli.kv_cache, KvCacheType::F16);
+        assert!(parse_args(["--gpu-ratio".to_owned(), "1".to_owned()])
+            .unwrap_err()
+            .contains("use --placement"));
     }
 
     #[test]
@@ -203,24 +212,24 @@ fn compile_model(
     requirements: ComponentRequirements,
     threads: usize,
     placements: &[String],
+    kv_cache: KvCacheType,
 ) -> Result<CompiledModel, String> {
-    let (rules, backends) =
-        parse_requested_placements(placements).map_err(|error| error.to_string())?;
-    let mut registry = DeviceRegistry::new();
-    compute::register_requested_providers(&mut registry, &backends, thread_count(threads))
-        .map_err(|error| error.to_string())?;
-    registry
-        .discover(&backends)
-        .map_err(|error| error.to_string())?;
-    let registry = Arc::new(registry);
-    let plan = PlacementCompiler {
-        catalog: &catalog,
-        registry: &registry,
-        requirements: std::slice::from_ref(&requirements),
-    }
-    .compile(&rules)
-    .map_err(|error| error.to_string())?;
-    CompiledModel::compile(catalog, plan, registry).map_err(|error| error.to_string())
+    let source = catalog
+        .source(ComponentId::Llm)
+        .ok_or("Missing LLM source")?
+        .clone();
+    let options = ExecutionOptions {
+        placements: placements.to_vec(),
+        thread_count: thread_count(threads),
+        max_batch_tokens: match requirements.workload {
+            ComponentWorkload::Llm(ref llm) => llm.max_batch_tokens,
+            ComponentWorkload::VisionCpu { .. } => 1,
+        },
+        kv_cache,
+    };
+    rust_model_inference::compile_model(vec![(ComponentId::Llm, source)], &options)
+        .map(|(compiled, _)| compiled)
+        .map_err(|error| error.to_string())
 }
 
 fn catalog(source: &Arc<dyn TensorSource>) -> Result<Arc<TensorCatalog>, String> {
@@ -248,6 +257,7 @@ fn run_embedding(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), String
         model.requirements(),
         cli.threads,
         &cli.placements,
+        cli.kv_cache,
     )?;
     let config = Qwen3EmbeddingConfig::from_metadata(|key| source.metadata(key).cloned())?;
     let mut run = compiled.start_run().map_err(|error| error.to_string())?;
@@ -292,6 +302,7 @@ fn run_qwen3(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), String> {
         model.requirements(),
         cli.threads,
         &cli.placements,
+        cli.kv_cache,
     )?;
     let mut run = compiled.start_run().map_err(|error| error.to_string())?;
     let mut previous = None;
@@ -368,6 +379,7 @@ fn run_qwen35(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), String> {
         model.requirements(),
         cli.threads,
         &cli.placements,
+        cli.kv_cache,
     )?;
     let mut run = compiled.start_run().map_err(|error| error.to_string())?;
     let mut logits = None;
@@ -447,6 +459,7 @@ fn run_interactive(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), Stri
             embedding: false,
             embedding_output: cli.embedding_output,
             placements: cli.placements.clone(),
+            kv_cache: cli.kv_cache,
             has_multimodal_input: false,
         };
         run_inference(source, &interactive_cli)?;

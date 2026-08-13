@@ -143,6 +143,13 @@ impl PlacementFixture {
         &self.catalog
     }
 
+    pub fn llm_source(&self) -> Arc<dyn TensorSource> {
+        self.catalog
+            .source(ComponentId::Llm)
+            .expect("fixture always has an LLM source")
+            .clone()
+    }
+
     pub fn token_embedding_id(&self) -> TensorId {
         self.token_embedding
     }

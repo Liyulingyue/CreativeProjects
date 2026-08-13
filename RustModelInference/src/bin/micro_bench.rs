@@ -2,6 +2,8 @@ use half::f16;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rust_model_inference::*;
+use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
 
 #[cfg(test)]
@@ -27,6 +29,152 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn model_bench_parser_preserves_repeatable_placement() {
+        let options = parse_model_bench_options(&[
+            "--model".into(),
+            "model.gguf".into(),
+            "--placement".into(),
+            "llm:layer=cpu0@1".into(),
+            "--placement".into(),
+            "vision:layer=cpu0@1".into(),
+            "--prompt".into(),
+            "2 + 3 =".into(),
+            "--samples".into(),
+            "5".into(),
+        ])
+        .unwrap();
+        assert_eq!(options.execution.placements.len(), 2);
+        assert_eq!(options.samples, 5);
+    }
+}
+
+struct ModelBenchOptions {
+    model: String,
+    prompt: String,
+    max_tokens: usize,
+    samples: usize,
+    execution: ExecutionOptions,
+}
+
+fn parse_model_bench_options(args: &[String]) -> Result<ModelBenchOptions, String> {
+    let mut options = ModelBenchOptions {
+        model: String::new(),
+        prompt: String::new(),
+        max_tokens: 32,
+        samples: 5,
+        execution: ExecutionOptions::default(),
+    };
+    let mut args = args.iter();
+    while let Some(flag) = args.next() {
+        let value = |args: &mut std::slice::Iter<'_, String>| {
+            args.next().cloned().ok_or_else(|| format!("Missing value for {flag}"))
+        };
+        match flag.as_str() {
+            "--model" => options.model = value(&mut args)?,
+            "--placement" => options.execution.placements.push(value(&mut args)?),
+            "--prompt" => options.prompt = value(&mut args)?,
+            "--max-tokens" => options.max_tokens = value(&mut args)?.parse().map_err(|_| "Invalid --max-tokens value")?,
+            "--samples" => options.samples = value(&mut args)?.parse().map_err(|_| "Invalid --samples value")?,
+            "--kv-cache" => options.execution.kv_cache = match value(&mut args)?.as_str() {
+                "f16" => KvCacheType::F16,
+                "f32" => KvCacheType::F32,
+                value => return Err(format!("Invalid --kv-cache {value:?}; expected f16 or f32")),
+            },
+            "--threads" => options.execution.thread_count = value(&mut args)?.parse().map_err(|_| "Invalid --threads value")?,
+            "--gpu-ratio" => return Err("--gpu-ratio was removed; use --placement".into()),
+            _ => return Err(format!("Unknown option: {flag}")),
+        }
+    }
+    if options.model.is_empty() || options.prompt.is_empty() || options.samples == 0 {
+        return Err("--model, --prompt, and a non-zero --samples are required".into());
+    }
+    Ok(options)
+}
+
+fn bench_token(logits: &[f32]) -> u32 {
+    logits
+        .iter()
+        .enumerate()
+        .max_by(|left, right| left.1.total_cmp(right.1))
+        .map(|(index, _)| index as u32)
+        .unwrap_or(0)
+}
+
+fn run_model_bench(options: ModelBenchOptions) -> Result<(), String> {
+    let source: Arc<dyn TensorSource> = Arc::from(
+        open_model_source(Path::new(&options.model), ComponentRole::Llm).map_err(|error| error.to_string())?,
+    );
+    let tokenizer = BPETokenizer::from_gguf_metadata(|key| source.metadata(key).cloned())?;
+    let tokens = tokenizer.encode(&options.prompt, EncodeOptions::default());
+    if tokens.is_empty() {
+        return Err("prompt produced no tokens".into());
+    }
+    let (compiled, runner) = compile_model(vec![(ComponentId::Llm, source)], &options.execution)
+        .map_err(|error| error.to_string())?;
+    let mut prefills = Vec::with_capacity(options.samples);
+    let mut decodes = Vec::with_capacity(options.samples);
+    for sample in 0..options.samples {
+        let mut run = compiled.start_run().map_err(|error| error.to_string())?;
+        let before = run.stats();
+        let prefill_start = Instant::now();
+        let mut next: u32;
+        match &runner {
+            QwenRunner::Qwen3(model) => {
+                let mut logits = vec![0.0; model.config.vocab];
+                for (position, token) in tokens.iter().enumerate() {
+                    let position = position as u32;
+                    model.forward(&mut run, &[*token], &[[position, position, position, 0]], &mut logits)?;
+                }
+                next = bench_token(&logits);
+                let prefill_seconds = prefill_start.elapsed().as_secs_f64();
+                let decode_start = Instant::now();
+                for position in tokens.len()..tokens.len() + options.max_tokens {
+                    let position = position as u32;
+                    model.forward(&mut run, &[next], &[[position, position, position, 0]], &mut logits)?;
+                    next = bench_token(&logits);
+                }
+                let decode_seconds = decode_start.elapsed().as_secs_f64();
+                prefills.push(tokens.len() as f64 / prefill_seconds.max(f64::MIN_POSITIVE));
+                decodes.push(options.max_tokens as f64 / decode_seconds.max(f64::MIN_POSITIVE));
+            }
+            QwenRunner::Qwen35(model) => {
+                let (positions, mut next_position) = build_qwen35_positions(&tokens, None, &[])?;
+                let mut logits = vec![0.0; model.config.vocab_size];
+                for (token, position) in tokens.iter().zip(&positions) {
+                    model.forward_compiled(&mut run, &[*token], &[[position[0] as u32, position[1] as u32, position[2] as u32, position[3] as u32]], &mut logits)?;
+                }
+                next = bench_token(&logits);
+                let prefill_seconds = prefill_start.elapsed().as_secs_f64();
+                let decode_start = Instant::now();
+                for _ in 0..options.max_tokens {
+                    let position = u32::try_from(next_position).map_err(|_| "position overflow")?;
+                    model.forward_compiled(&mut run, &[next], &[[position, position, position, 0]], &mut logits)?;
+                    next = bench_token(&logits);
+                    next_position += 1;
+                }
+                let decode_seconds = decode_start.elapsed().as_secs_f64();
+                prefills.push(tokens.len() as f64 / prefill_seconds.max(f64::MIN_POSITIVE));
+                decodes.push(options.max_tokens as f64 / decode_seconds.max(f64::MIN_POSITIVE));
+            }
+        }
+        let after = run.stats();
+        let totals = after.values().fold(SessionStats::default(), |mut total, stats| {
+            total.resident_bytes += stats.resident_bytes;
+            total.weight_uploads += stats.weight_uploads;
+            total.weight_upload_bytes += stats.weight_upload_bytes;
+            total.activation_h2d_bytes += stats.activation_h2d_bytes;
+            total.activation_d2h_bytes += stats.activation_d2h_bytes;
+            total.submissions += stats.submissions;
+            total.host_waits += stats.host_waits;
+            total
+        });
+        let _ = before;
+        println!("BENCH: sample={sample} prefill_tokens_s={:.3} decode_tokens_s={:.3} resident_bytes={} weight_upload_count={} weight_upload_bytes={} activation_h2d_bytes={} activation_d2h_bytes={} submissions={} host_waits={}", prefills[sample], decodes[sample], totals.resident_bytes, totals.weight_uploads, totals.weight_upload_bytes, totals.activation_h2d_bytes, totals.activation_d2h_bytes, totals.submissions, totals.host_waits);
+    }
+    println!("BENCH: median prefill_tokens_s={:.3} decode_tokens_s={:.3}", median(&prefills), median(&decodes));
+    Ok(())
 }
 
 const WARMUP: usize = 10;
@@ -174,7 +322,19 @@ fn bench(n_in: usize, n_out: usize, iterations: usize, seed: u64) {
 }
 
 fn main() {
-    let check = std::env::args().skip(1).any(|arg| arg == "--check");
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.iter().any(|arg| arg == "--model") {
+        run_model_bench(parse_model_bench_options(&args).unwrap_or_else(|error| {
+            eprintln!("{error}");
+            std::process::exit(2);
+        }))
+        .unwrap_or_else(|error| {
+            eprintln!("Benchmark error: {error}");
+            std::process::exit(1);
+        });
+        return;
+    }
+    let check = args.iter().any(|arg| arg == "--check");
     if check && !cfg!(all(target_arch = "aarch64", target_os = "macos")) {
         eprintln!("--check requires a fixed aarch64-apple-darwin machine");
         std::process::exit(2);

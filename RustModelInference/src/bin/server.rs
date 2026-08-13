@@ -33,7 +33,7 @@ mod tests {
         .unwrap();
         assert_eq!(cli.model_path, "model.gguf");
         assert_eq!(cli.port, 9000);
-        assert_eq!(cli.placements, ["llm:row=metal0@1"]);
+        assert_eq!(cli.execution.placements, ["llm:row=metal0@1"]);
         assert!(parse_server_args(["--unknown".to_owned()]).is_err());
     }
 }
@@ -182,8 +182,7 @@ struct ServerCli {
     model_path: String,
     host: String,
     port: u16,
-    threads: usize,
-    placements: Vec<String>,
+    execution: ExecutionOptions,
 }
 
 fn parse_server_args(args: impl IntoIterator<Item = String>) -> Result<ServerCli, String> {
@@ -191,8 +190,7 @@ fn parse_server_args(args: impl IntoIterator<Item = String>) -> Result<ServerCli
         model_path: String::new(),
         host: "0.0.0.0".to_owned(),
         port: 8080,
-        threads: 0,
-        placements: Vec::new(),
+        execution: ExecutionOptions::default(),
     };
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
@@ -205,13 +203,20 @@ fn parse_server_args(args: impl IntoIterator<Item = String>) -> Result<ServerCli
                     .map_err(|_| "Invalid --port value")?
             }
             "--threads" => {
-                cli.threads = next_server_value(&mut args, "--threads")?
+                cli.execution.thread_count = next_server_value(&mut args, "--threads")?
                     .parse()
                     .map_err(|_| "Invalid --threads value")?
             }
             "--placement" => cli
+                .execution
                 .placements
                 .push(next_server_value(&mut args, "--placement")?),
+            "--kv-cache" => match next_server_value(&mut args, "--kv-cache")?.as_str() {
+                "f16" => cli.execution.kv_cache = KvCacheType::F16,
+                "f32" => cli.execution.kv_cache = KvCacheType::F32,
+                value => return Err(format!("Invalid --kv-cache {value:?}; expected f16 or f32")),
+            },
+            "--gpu-ratio" => return Err("--gpu-ratio was removed; use --placement".into()),
             _ => return Err(format!("Unknown option: {flag}")),
         }
     }
@@ -224,31 +229,6 @@ fn next_server_value(
 ) -> Result<String, String> {
     args.next()
         .ok_or_else(|| format!("Missing value for {flag}"))
-}
-
-fn compile_model(
-    catalog: Arc<TensorCatalog>,
-    requirements: ComponentRequirements,
-    n_threads: usize,
-    placements: &[String],
-) -> Result<CompiledModel, String> {
-    let (rules, backends) =
-        parse_requested_placements(placements).map_err(|error| error.to_string())?;
-    let mut registry = DeviceRegistry::new();
-    compute::register_requested_providers(&mut registry, &backends, n_threads)
-        .map_err(|error| error.to_string())?;
-    registry
-        .discover(&backends)
-        .map_err(|error| error.to_string())?;
-    let registry = Arc::new(registry);
-    let plan = PlacementCompiler {
-        catalog: &catalog,
-        registry: &registry,
-        requirements: std::slice::from_ref(&requirements),
-    }
-    .compile(&rules)
-    .map_err(|error| error.to_string())?;
-    CompiledModel::compile(catalog, plan, registry).map_err(|error| error.to_string())
 }
 
 async fn health() -> &'static str {
@@ -604,7 +584,7 @@ async fn main() {
         std::process::exit(1);
     }
 
-    let n_threads = if cli.threads > 0 { cli.threads } else { 4 };
+    let n_threads = cli.execution.thread_count;
     eprintln!("Loading model: {} ...", cli.model_path);
 
     let source: Arc<dyn TensorSource> = Arc::from(
@@ -623,54 +603,25 @@ async fn main() {
             std::process::exit(1);
         });
 
-    let catalog = Arc::new(
-        TensorCatalog::from_sources(vec![(ComponentId::Llm, Arc::clone(&source))]).unwrap_or_else(
-            |error| {
-                eprintln!("Failed to catalog model tensors: {error}");
-                std::process::exit(1);
-            },
-        ),
-    );
-    let model: ModelBackend = if arch == "qwen35" {
-        let model = Qwen35Model::from_catalog(&catalog).unwrap_or_else(|e| {
-            eprintln!("Failed to parse Qwen3.5 model: {}", e);
-            std::process::exit(1);
-        });
-        let compiled = compile_model(
-            Arc::clone(&catalog),
-            model.requirements(),
-            n_threads,
-            &cli.placements,
-        )
-        .unwrap_or_else(|error| {
-            eprintln!("Failed to compile Qwen3.5 plan: {error}");
-            std::process::exit(1);
-        });
-        ModelBackend::Qwen35(Qwen35State {
+    let (compiled, runner) = rust_model_inference::compile_model(
+        vec![(ComponentId::Llm, Arc::clone(&source))],
+        &cli.execution,
+    )
+    .unwrap_or_else(|error| {
+        eprintln!("Failed to compile model: {error}");
+        std::process::exit(1);
+    });
+    let model = match runner {
+        QwenRunner::Qwen3(model) => ModelBackend::Qwen3(Qwen3State {
             model,
             compiled,
             tokenizer: Arc::new(tokenizer),
-        })
-    } else {
-        let model = Qwen3Model::from_catalog(&catalog).unwrap_or_else(|error| {
-            eprintln!("Failed to parse Qwen3 model: {error}");
-            std::process::exit(1);
-        });
-        let compiled = compile_model(
-            Arc::clone(&catalog),
-            model.requirements(),
-            n_threads,
-            &cli.placements,
-        )
-        .unwrap_or_else(|error| {
-            eprintln!("Failed to compile Qwen3 plan: {error}");
-            std::process::exit(1);
-        });
-        ModelBackend::Qwen3(Qwen3State {
+        }),
+        QwenRunner::Qwen35(model) => ModelBackend::Qwen35(Qwen35State {
             model,
             compiled,
             tokenizer: Arc::new(tokenizer),
-        })
+        }),
     };
 
     let model_name = std::path::Path::new(&cli.model_path)

@@ -129,4 +129,9 @@ cargo run --release --bin ggufrs -- \
 
 `LayerSplit` keeps each layer segment whole and assigns contiguous layer ranges to caller-provided logical devices. Shared and mmproj tensors stay on the declared primary device. `TensorSplit` may divide a tensor only between complete rows; quantized rows must contain complete quantization blocks. Capacity counts tensor payload, not table or padding bytes.
 
-V1 executes a plan only against logical CPU devices to verify deterministic placement and mapping lifetimes. Metal, CUDA, NPU, transfers, and execution scheduling are future backends; they do not change this file format.
+GGUF and GGUFRS expose the same logical `TensorSource` contract. `compile_model`
+routes the LLM component and an optional bundled mmproj component into one
+catalog, then applies the same placement rules to either source format. An
+explicit standalone `--mmproj` is a vision source; a package supplies it when
+present. Vision is currently CPU-only, so explicit Metal/Vulkan/NPU vision
+placement fails during planning before a device session opens.

@@ -1,5 +1,25 @@
 mod support;
 
+#[test]
+fn shared_compile_defaults_to_cpu_layer_plan() {
+    let fixture = support::tiny_qwen3();
+    let (compiled, _) = rust_model_inference::compile_model(
+        vec![(rust_model_inference::ComponentId::Llm, fixture.llm_source())],
+        &rust_model_inference::ExecutionOptions {
+            thread_count: 1,
+            max_batch_tokens: 1,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        compiled.plan().components[&rust_model_inference::ComponentId::Llm]
+            .primary
+            .as_str(),
+        "cpu0"
+    );
+}
+
 use std::collections::BTreeSet;
 
 use rust_model_inference::{

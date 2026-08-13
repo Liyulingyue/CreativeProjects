@@ -1,5 +1,14 @@
 # Rust LLM Inference Engine — 优化记录
 
+## Compiled execution benchmark contract
+
+Use five samples and report their median; do not compare runs with different
+placement, KV type, prompt, token count, or hardware. `micro-bench --model`
+prints machine-readable `BENCH:` rows with prefill/decode tokens per second,
+resident bytes, weight uploads/bytes, activation H2D/D2H bytes, submissions,
+and host waits. These counters distinguish one-time compile residency from
+token-time work; machine-specific output is evidence, not a universal baseline.
+
 ## 历史性能基线（2025-07-31，llama-bench 校正）
 
 | 模型 | 线程 | Rust | llama.cpp | 差距 |
