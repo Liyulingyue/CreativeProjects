@@ -651,6 +651,33 @@ pub fn tiny_qwen3() -> PlacementFixture {
     }
 }
 
+pub fn tiny_qwen3_source_with_architecture(architecture: Option<&str>) -> Arc<dyn TensorSource> {
+    let mut metadata = model_metadata("qwen3", 17, 2, 4, 2, 96, 64);
+    match architecture {
+        Some(architecture) => {
+            metadata.insert(
+                "general.architecture".into(),
+                rust_model_inference::MetaValue::String(architecture.into()),
+            );
+        }
+        None => {
+            metadata.remove("general.architecture");
+        }
+    }
+    fixture_catalog(qwen3_tensors(), metadata)
+        .source(ComponentId::Llm)
+        .unwrap()
+        .clone()
+}
+
+pub fn empty_vision_source() -> Arc<dyn TensorSource> {
+    Arc::new(FixtureSource {
+        metadata: BTreeMap::new(),
+        records: Vec::new(),
+        bytes: BTreeMap::new(),
+    })
+}
+
 pub fn tiny_qwen3_tied() -> PlacementFixture {
     let catalog = fixture_catalog(
         qwen3_tied_tensors(),

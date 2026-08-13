@@ -48,8 +48,23 @@ mod tests {
         assert_eq!(options.execution.placements.len(), 2);
         assert_eq!(options.samples, 5);
     }
+
+    #[test]
+    fn model_bench_requires_at_least_five_samples() {
+        let error = parse_model_bench_options(&[
+            "--model".into(),
+            "model.gguf".into(),
+            "--prompt".into(),
+            "2 + 3 =".into(),
+            "--samples".into(),
+            "4".into(),
+        ])
+        .unwrap_err();
+        assert!(error.contains("at least 5"));
+    }
 }
 
+#[derive(Debug)]
 struct ModelBenchOptions {
     model: String,
     prompt: String,
@@ -66,29 +81,29 @@ fn parse_model_bench_options(args: &[String]) -> Result<ModelBenchOptions, Strin
         samples: 5,
         execution: ExecutionOptions::default(),
     };
-    let mut args = args.iter();
+    let mut args = args.iter().cloned();
     while let Some(flag) = args.next() {
-        let value = |args: &mut std::slice::Iter<'_, String>| {
-            args.next().cloned().ok_or_else(|| format!("Missing value for {flag}"))
+        if parse_execution_flag(&flag, &mut args, &mut options.execution)? {
+            continue;
+        }
+        let mut value = || {
+            args.next()
+                .ok_or_else(|| format!("Missing value for {flag}"))
         };
         match flag.as_str() {
-            "--model" => options.model = value(&mut args)?,
-            "--placement" => options.execution.placements.push(value(&mut args)?),
-            "--prompt" => options.prompt = value(&mut args)?,
-            "--max-tokens" => options.max_tokens = value(&mut args)?.parse().map_err(|_| "Invalid --max-tokens value")?,
-            "--samples" => options.samples = value(&mut args)?.parse().map_err(|_| "Invalid --samples value")?,
-            "--kv-cache" => options.execution.kv_cache = match value(&mut args)?.as_str() {
-                "f16" => KvCacheType::F16,
-                "f32" => KvCacheType::F32,
-                value => return Err(format!("Invalid --kv-cache {value:?}; expected f16 or f32")),
-            },
-            "--threads" => options.execution.thread_count = value(&mut args)?.parse().map_err(|_| "Invalid --threads value")?,
-            "--gpu-ratio" => return Err("--gpu-ratio was removed; use --placement".into()),
+            "--model" => options.model = value()?,
+            "--prompt" => options.prompt = value()?,
+            "--max-tokens" => {
+                options.max_tokens = value()?.parse().map_err(|_| "Invalid --max-tokens value")?
+            }
+            "--samples" => {
+                options.samples = value()?.parse().map_err(|_| "Invalid --samples value")?
+            }
             _ => return Err(format!("Unknown option: {flag}")),
         }
     }
-    if options.model.is_empty() || options.prompt.is_empty() || options.samples == 0 {
-        return Err("--model, --prompt, and a non-zero --samples are required".into());
+    if options.model.is_empty() || options.prompt.is_empty() || options.samples < 5 {
+        return Err("--model, --prompt, and at least 5 --samples are required".into());
     }
     Ok(options)
 }
@@ -104,7 +119,8 @@ fn bench_token(logits: &[f32]) -> u32 {
 
 fn run_model_bench(options: ModelBenchOptions) -> Result<(), String> {
     let source: Arc<dyn TensorSource> = Arc::from(
-        open_model_source(Path::new(&options.model), ComponentRole::Llm).map_err(|error| error.to_string())?,
+        open_model_source(Path::new(&options.model), ComponentRole::Llm)
+            .map_err(|error| error.to_string())?,
     );
     let tokenizer = BPETokenizer::from_gguf_metadata(|key| source.metadata(key).cloned())?;
     let tokens = tokenizer.encode(&options.prompt, EncodeOptions::default());
@@ -125,14 +141,24 @@ fn run_model_bench(options: ModelBenchOptions) -> Result<(), String> {
                 let mut logits = vec![0.0; model.config.vocab];
                 for (position, token) in tokens.iter().enumerate() {
                     let position = position as u32;
-                    model.forward(&mut run, &[*token], &[[position, position, position, 0]], &mut logits)?;
+                    model.forward(
+                        &mut run,
+                        &[*token],
+                        &[[position, position, position, 0]],
+                        &mut logits,
+                    )?;
                 }
                 next = bench_token(&logits);
                 let prefill_seconds = prefill_start.elapsed().as_secs_f64();
                 let decode_start = Instant::now();
                 for position in tokens.len()..tokens.len() + options.max_tokens {
                     let position = position as u32;
-                    model.forward(&mut run, &[next], &[[position, position, position, 0]], &mut logits)?;
+                    model.forward(
+                        &mut run,
+                        &[next],
+                        &[[position, position, position, 0]],
+                        &mut logits,
+                    )?;
                     next = bench_token(&logits);
                 }
                 let decode_seconds = decode_start.elapsed().as_secs_f64();
@@ -143,14 +169,29 @@ fn run_model_bench(options: ModelBenchOptions) -> Result<(), String> {
                 let (positions, mut next_position) = build_qwen35_positions(&tokens, None, &[])?;
                 let mut logits = vec![0.0; model.config.vocab_size];
                 for (token, position) in tokens.iter().zip(&positions) {
-                    model.forward_compiled(&mut run, &[*token], &[[position[0] as u32, position[1] as u32, position[2] as u32, position[3] as u32]], &mut logits)?;
+                    model.forward_compiled(
+                        &mut run,
+                        &[*token],
+                        &[[
+                            position[0] as u32,
+                            position[1] as u32,
+                            position[2] as u32,
+                            position[3] as u32,
+                        ]],
+                        &mut logits,
+                    )?;
                 }
                 next = bench_token(&logits);
                 let prefill_seconds = prefill_start.elapsed().as_secs_f64();
                 let decode_start = Instant::now();
                 for _ in 0..options.max_tokens {
                     let position = u32::try_from(next_position).map_err(|_| "position overflow")?;
-                    model.forward_compiled(&mut run, &[next], &[[position, position, position, 0]], &mut logits)?;
+                    model.forward_compiled(
+                        &mut run,
+                        &[next],
+                        &[[position, position, position, 0]],
+                        &mut logits,
+                    )?;
                     next = bench_token(&logits);
                     next_position += 1;
                 }
@@ -160,20 +201,30 @@ fn run_model_bench(options: ModelBenchOptions) -> Result<(), String> {
             }
         }
         let after = run.stats();
-        let totals = after.values().fold(SessionStats::default(), |mut total, stats| {
-            total.resident_bytes += stats.resident_bytes;
-            total.weight_uploads += stats.weight_uploads;
-            total.weight_upload_bytes += stats.weight_upload_bytes;
-            total.activation_h2d_bytes += stats.activation_h2d_bytes;
-            total.activation_d2h_bytes += stats.activation_d2h_bytes;
-            total.submissions += stats.submissions;
-            total.host_waits += stats.host_waits;
-            total
-        });
-        let _ = before;
-        println!("BENCH: sample={sample} prefill_tokens_s={:.3} decode_tokens_s={:.3} resident_bytes={} weight_upload_count={} weight_upload_bytes={} activation_h2d_bytes={} activation_d2h_bytes={} submissions={} host_waits={}", prefills[sample], decodes[sample], totals.resident_bytes, totals.weight_uploads, totals.weight_upload_bytes, totals.activation_h2d_bytes, totals.activation_d2h_bytes, totals.submissions, totals.host_waits);
+        let totals = after
+            .values()
+            .fold(SessionStats::default(), |mut total, stats| {
+                total.resident_bytes += stats.resident_bytes;
+                total.weight_uploads += stats.weight_uploads;
+                total.weight_upload_bytes += stats.weight_upload_bytes;
+                total.activation_h2d_bytes += stats.activation_h2d_bytes;
+                total.activation_d2h_bytes += stats.activation_d2h_bytes;
+                total.submissions += stats.submissions;
+                total.host_waits += stats.host_waits;
+                total
+            });
+        let before_uploads: u64 = before.values().map(|stats| stats.weight_uploads).sum();
+        let upload_delta = totals.weight_uploads.saturating_sub(before_uploads);
+        if upload_delta != 0 {
+            return Err(format!("inference uploaded {upload_delta} weight buffers"));
+        }
+        println!("BENCH: sample={sample} prefill_tokens_s={:.3} decode_tokens_s={:.3} resident_bytes={} weight_upload_count={} weight_upload_bytes={} weight_upload_delta={} activation_h2d_bytes={} activation_d2h_bytes={} submissions={} host_waits={}", prefills[sample], decodes[sample], totals.resident_bytes, totals.weight_uploads, totals.weight_upload_bytes, upload_delta, totals.activation_h2d_bytes, totals.activation_d2h_bytes, totals.submissions, totals.host_waits);
     }
-    println!("BENCH: median prefill_tokens_s={:.3} decode_tokens_s={:.3}", median(&prefills), median(&decodes));
+    println!(
+        "BENCH: median prefill_tokens_s={:.3} decode_tokens_s={:.3}",
+        median(&prefills),
+        median(&decodes)
+    );
     Ok(())
 }
 
@@ -257,19 +308,50 @@ fn compare_backends(
 ) -> (f64, f64) {
     let mut scalar_output = vec![0.0f32; n_out];
     let mut auto_output = vec![0.0f32; n_out];
-    scalar_q8_matmul(weight, input_q8, input_scales, &mut scalar_output, n_in, n_out);
-    matmul_q8_0_quantized(weight, input_q8, input_scales, &mut auto_output, n_in, n_out);
+    scalar_q8_matmul(
+        weight,
+        input_q8,
+        input_scales,
+        &mut scalar_output,
+        n_in,
+        n_out,
+    );
+    matmul_q8_0_quantized(
+        weight,
+        input_q8,
+        input_scales,
+        &mut auto_output,
+        n_in,
+        n_out,
+    );
     for i in 0..n_out {
         let tolerance = 1e-4 + 1e-4 * scalar_output[i].abs();
         if (auto_output[i] - scalar_output[i]).abs() > tolerance {
-            eprintln!("backend mismatch at row {i}: auto={} scalar={}", auto_output[i], scalar_output[i]);
+            eprintln!(
+                "backend mismatch at row {i}: auto={} scalar={}",
+                auto_output[i], scalar_output[i]
+            );
             std::process::exit(3);
         }
     }
 
     for _ in 0..WARMUP {
-        scalar_q8_matmul(weight, input_q8, input_scales, &mut scalar_output, n_in, n_out);
-        matmul_q8_0_quantized(weight, input_q8, input_scales, &mut auto_output, n_in, n_out);
+        scalar_q8_matmul(
+            weight,
+            input_q8,
+            input_scales,
+            &mut scalar_output,
+            n_in,
+            n_out,
+        );
+        matmul_q8_0_quantized(
+            weight,
+            input_q8,
+            input_scales,
+            &mut auto_output,
+            n_in,
+            n_out,
+        );
     }
 
     let mut scalar_times = Vec::with_capacity(SAMPLES);
@@ -277,20 +359,56 @@ fn compare_backends(
     for sample in 0..SAMPLES {
         if sample % 2 == 0 {
             scalar_times.push(measure_once(
-                || scalar_q8_matmul(weight, input_q8, input_scales, &mut scalar_output, n_in, n_out),
+                || {
+                    scalar_q8_matmul(
+                        weight,
+                        input_q8,
+                        input_scales,
+                        &mut scalar_output,
+                        n_in,
+                        n_out,
+                    )
+                },
                 iterations,
             ));
             auto_times.push(measure_once(
-                || matmul_q8_0_quantized(weight, input_q8, input_scales, &mut auto_output, n_in, n_out),
+                || {
+                    matmul_q8_0_quantized(
+                        weight,
+                        input_q8,
+                        input_scales,
+                        &mut auto_output,
+                        n_in,
+                        n_out,
+                    )
+                },
                 iterations,
             ));
         } else {
             auto_times.push(measure_once(
-                || matmul_q8_0_quantized(weight, input_q8, input_scales, &mut auto_output, n_in, n_out),
+                || {
+                    matmul_q8_0_quantized(
+                        weight,
+                        input_q8,
+                        input_scales,
+                        &mut auto_output,
+                        n_in,
+                        n_out,
+                    )
+                },
                 iterations,
             ));
             scalar_times.push(measure_once(
-                || scalar_q8_matmul(weight, input_q8, input_scales, &mut scalar_output, n_in, n_out),
+                || {
+                    scalar_q8_matmul(
+                        weight,
+                        input_q8,
+                        input_scales,
+                        &mut scalar_output,
+                        n_in,
+                        n_out,
+                    )
+                },
                 iterations,
             ));
         }
@@ -317,8 +435,14 @@ fn bench(n_in: usize, n_out: usize, iterations: usize, seed: u64) {
     std::hint::black_box(&output);
     let gflops = (n_in as f64 * n_out as f64 * 2.0) / elapsed / 1e9;
     let bw = (n_out as f64 * row_stride as f64 + n_in as f64 * 4.0 + n_in as f64) / elapsed / 1e9;
-    println!("{:7} x {:7} | {:7.2}ms | {:7.2}GF | {:7.2}GB",
-        n_in, n_out, elapsed * 1000.0, gflops, bw);
+    println!(
+        "{:7} x {:7} | {:7.2}ms | {:7.2}GF | {:7.2}GB",
+        n_in,
+        n_out,
+        elapsed * 1000.0,
+        gflops,
+        bw
+    );
 }
 
 fn main() {
@@ -351,14 +475,8 @@ fn main() {
 
     let weight = valid_q8_weights(GATE_N_IN, GATE_N_OUT, 42);
     let (input_q8, input_scales) = valid_q8_input(GATE_N_IN, 43);
-    let (scalar_median, auto_median) = compare_backends(
-        &weight,
-        &input_q8,
-        &input_scales,
-        GATE_N_IN,
-        GATE_N_OUT,
-        20,
-    );
+    let (scalar_median, auto_median) =
+        compare_backends(&weight, &input_q8, &input_scales, GATE_N_IN, GATE_N_OUT, 20);
     let speedup = scalar_median / auto_median;
     let operations = (GATE_N_IN * GATE_N_OUT * 2) as f64;
     let bytes = (GATE_N_OUT * (GATE_N_IN / 32 * 34) + GATE_N_IN * 5) as f64;
@@ -381,7 +499,10 @@ fn main() {
     }
 
     println!("\n=== Q8_0 Matmul Auto-backend Report (deterministic data) ===");
-    println!("{:>26} | {:>8} | {:>7} | {:>7}", "n_in x n_out", "time", "GFLOPS", "GB/s");
+    println!(
+        "{:>26} | {:>8} | {:>7} | {:>7}",
+        "n_in x n_out", "time", "GFLOPS", "GB/s"
+    );
     println!("{}", "=".repeat(65));
 
     println!("\n-- Qwen3-0.6B --");

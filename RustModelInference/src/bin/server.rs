@@ -27,14 +27,22 @@ mod tests {
             "model.gguf".to_owned(),
             "--placement".to_owned(),
             "llm:row=metal0@1".to_owned(),
+            "--placement".to_owned(),
+            "vision:layer=cpu0@1".to_owned(),
             "--port".to_owned(),
             "9000".to_owned(),
         ])
         .unwrap();
         assert_eq!(cli.model_path, "model.gguf");
         assert_eq!(cli.port, 9000);
-        assert_eq!(cli.execution.placements, ["llm:row=metal0@1"]);
+        assert_eq!(
+            cli.execution.placements,
+            ["llm:row=metal0@1", "vision:layer=cpu0@1"]
+        );
         assert!(parse_server_args(["--unknown".to_owned()]).is_err());
+        assert!(parse_server_args(["--gpu-ratio".to_owned()])
+            .unwrap_err()
+            .contains("use --placement"));
     }
 }
 
@@ -178,8 +186,10 @@ fn sample_token_from_logits(logits: &[f32], temperature: f32) -> i32 {
     (logits.len() - 1) as i32
 }
 
+#[derive(Debug)]
 struct ServerCli {
     model_path: String,
+    mmproj_path: Option<String>,
     host: String,
     port: u16,
     execution: ExecutionOptions,
@@ -188,35 +198,25 @@ struct ServerCli {
 fn parse_server_args(args: impl IntoIterator<Item = String>) -> Result<ServerCli, String> {
     let mut cli = ServerCli {
         model_path: String::new(),
+        mmproj_path: None,
         host: "0.0.0.0".to_owned(),
         port: 8080,
         execution: ExecutionOptions::default(),
     };
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
+        if parse_execution_flag(&flag, &mut args, &mut cli.execution)? {
+            continue;
+        }
         match flag.as_str() {
             "--model" => cli.model_path = next_server_value(&mut args, "--model")?,
+            "--mmproj" => cli.mmproj_path = Some(next_server_value(&mut args, "--mmproj")?),
             "--host" => cli.host = next_server_value(&mut args, "--host")?,
             "--port" => {
                 cli.port = next_server_value(&mut args, "--port")?
                     .parse()
                     .map_err(|_| "Invalid --port value")?
             }
-            "--threads" => {
-                cli.execution.thread_count = next_server_value(&mut args, "--threads")?
-                    .parse()
-                    .map_err(|_| "Invalid --threads value")?
-            }
-            "--placement" => cli
-                .execution
-                .placements
-                .push(next_server_value(&mut args, "--placement")?),
-            "--kv-cache" => match next_server_value(&mut args, "--kv-cache")?.as_str() {
-                "f16" => cli.execution.kv_cache = KvCacheType::F16,
-                "f32" => cli.execution.kv_cache = KvCacheType::F32,
-                value => return Err(format!("Invalid --kv-cache {value:?}; expected f16 or f32")),
-            },
-            "--gpu-ratio" => return Err("--gpu-ratio was removed; use --placement".into()),
             _ => return Err(format!("Unknown option: {flag}")),
         }
     }
@@ -587,12 +587,20 @@ async fn main() {
     let n_threads = cli.execution.thread_count;
     eprintln!("Loading model: {} ...", cli.model_path);
 
-    let source: Arc<dyn TensorSource> = Arc::from(
-        open_model_source(Path::new(&cli.model_path), ComponentRole::Llm).unwrap_or_else(|error| {
-            eprintln!("Failed to load model: {error}");
-            std::process::exit(1);
-        }),
-    );
+    let sources = load_model_sources(
+        Path::new(&cli.model_path),
+        cli.mmproj_path.as_deref().map(Path::new),
+    )
+    .unwrap_or_else(|error| {
+        eprintln!("Failed to load model: {error}");
+        std::process::exit(1);
+    });
+    let source = sources
+        .iter()
+        .find(|(component, _)| *component == ComponentId::Llm)
+        .expect("load_model_sources always returns LLM")
+        .1
+        .clone();
     let arch = source
         .metadata("general.architecture")
         .and_then(|v| v.to_string_val())
@@ -603,14 +611,11 @@ async fn main() {
             std::process::exit(1);
         });
 
-    let (compiled, runner) = rust_model_inference::compile_model(
-        vec![(ComponentId::Llm, Arc::clone(&source))],
-        &cli.execution,
-    )
-    .unwrap_or_else(|error| {
-        eprintln!("Failed to compile model: {error}");
-        std::process::exit(1);
-    });
+    let (compiled, runner) = rust_model_inference::compile_model(sources, &cli.execution)
+        .unwrap_or_else(|error| {
+            eprintln!("Failed to compile model: {error}");
+            std::process::exit(1);
+        });
     let model = match runner {
         QwenRunner::Qwen3(model) => ModelBackend::Qwen3(Qwen3State {
             model,

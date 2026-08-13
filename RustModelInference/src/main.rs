@@ -28,12 +28,10 @@ struct Cli {
     prompt: String,
     max_tokens: usize,
     temperature: f32,
-    threads: usize,
+    execution: ExecutionOptions,
     embedding: bool,
     embedding_output: EmbeddingOutput,
-    placements: Vec<String>,
-    kv_cache: KvCacheType,
-    has_multimodal_input: bool,
+    mmproj_path: Option<String>,
 }
 
 fn main() {
@@ -45,23 +43,40 @@ fn main() {
         print_usage();
         return;
     }
-    if cli.has_multimodal_input {
-        eprintln!("multimodal input requires a compiled vision program");
-        std::process::exit(2);
-    }
-
-    let source: Arc<dyn TensorSource> = Arc::from(
-        open_model_source(Path::new(&cli.model_path), ComponentRole::Llm).unwrap_or_else(|error| {
-            eprintln!("Failed to load model {}: {error}", cli.model_path);
+    let sources = load_model_sources(
+        Path::new(&cli.model_path),
+        cli.mmproj_path.as_deref().map(Path::new),
+    )
+    .unwrap_or_else(|error| {
+        eprintln!("Failed to load model {}: {error}", cli.model_path);
+        std::process::exit(1);
+    });
+    let source = sources
+        .iter()
+        .find(|(component, _)| *component == ComponentId::Llm)
+        .expect("load_model_sources always returns LLM")
+        .1
+        .clone();
+    let tokenizer = BPETokenizer::from_gguf_metadata(|key| source.metadata(key).cloned())
+        .unwrap_or_else(|error| {
+            eprintln!("Failed to initialize tokenizer: {error}");
             std::process::exit(1);
-        }),
-    );
+        });
+    let (compiled, runner) = rust_model_inference::compile_model(sources, &cli.execution)
+        .unwrap_or_else(|error| {
+            eprintln!("Failed to compile model: {error}");
+            std::process::exit(1);
+        });
+    let mut run = compiled.start_run().unwrap_or_else(|error| {
+        eprintln!("Failed to start compiled run: {error}");
+        std::process::exit(1);
+    });
     let result = if cli.prompt.is_empty() {
-        run_interactive(&source, &cli)
+        run_interactive(&runner, &tokenizer, &mut run, &cli)
     } else if cli.embedding {
-        run_embedding(&source, &cli)
+        run_embedding(&source, &runner, &mut run, &cli)
     } else {
-        run_inference(&source, &cli)
+        run_inference(&runner, &tokenizer, &mut run, &cli)
     };
     if let Err(error) = result {
         eprintln!("Inference error: {error}");
@@ -75,15 +90,16 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
         prompt: String::new(),
         max_tokens: 128,
         temperature: 0.6,
-        threads: 0,
+        execution: ExecutionOptions::default(),
         embedding: false,
         embedding_output: EmbeddingOutput::Summary,
-        placements: Vec::new(),
-        kv_cache: KvCacheType::F16,
-        has_multimodal_input: false,
+        mmproj_path: None,
     };
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
+        if parse_execution_flag(&flag, &mut args, &mut cli.execution)? {
+            continue;
+        }
         match flag.as_str() {
             "--model" => cli.model_path = next_value(&mut args, "--model")?,
             "--prompt" => cli.prompt = next_value(&mut args, "--prompt")?,
@@ -97,32 +113,18 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
                     .parse()
                     .map_err(|_| "Invalid --temp value")?;
             }
-            "--threads" => {
-                cli.threads = next_value(&mut args, "--threads")?
-                    .parse()
-                    .map_err(|_| "Invalid --threads value")?;
-            }
-            "--placement" => cli.placements.push(next_value(&mut args, "--placement")?),
             "--embedding" => cli.embedding = true,
             "--embedding-output" => {
                 cli.embedding_output =
                     parse_embedding_output(Some(&next_value(&mut args, "--embedding-output")?))?;
             }
-            "--mmproj" | "--image" => {
-                let _ = next_value(&mut args, &flag)?;
-                cli.has_multimodal_input = true;
-            }
+            "--mmproj" => cli.mmproj_path = Some(next_value(&mut args, "--mmproj")?),
+            "--image" => return Err("--image is not supported by the compiled vision path".into()),
             "--dump-logits" | "--bench" | "--profile" => {
                 return Err(format!(
                     "{flag} is not supported by the compiled execution path"
                 ));
             }
-            "--kv-cache" => match next_value(&mut args, "--kv-cache")?.as_str() {
-                "f16" => cli.kv_cache = KvCacheType::F16,
-                "f32" => cli.kv_cache = KvCacheType::F32,
-                value => return Err(format!("Invalid --kv-cache {value:?}; expected f16 or f32")),
-            },
-            "--gpu-ratio" => return Err("--gpu-ratio was removed; use --placement".into()),
             _ => return Err(format!("Unknown option: {flag}")),
         }
     }
@@ -144,10 +146,27 @@ mod tests {
             assert!(parse_args([flag.to_owned()]).is_err(), "{flag}");
         }
         let cli = parse_args(["--kv-cache".to_owned(), "f16".to_owned()]).unwrap();
-        assert_eq!(cli.kv_cache, KvCacheType::F16);
+        assert_eq!(cli.execution.kv_cache, KvCacheType::F16);
         assert!(parse_args(["--gpu-ratio".to_owned(), "1".to_owned()])
             .unwrap_err()
             .contains("use --placement"));
+    }
+
+    #[test]
+    fn inference_parser_preserves_mmproj_and_repeatable_placements() {
+        let cli = parse_args([
+            "--model".into(),
+            "model.gguf".into(),
+            "--mmproj".into(),
+            "vision.gguf".into(),
+            "--placement".into(),
+            "llm:layer=cpu0@1".into(),
+            "--placement".into(),
+            "vision:layer=cpu0@1".into(),
+        ])
+        .unwrap();
+        assert_eq!(cli.mmproj_path.as_deref(), Some("vision.gguf"));
+        assert_eq!(cli.execution.placements.len(), 2);
     }
 
     #[test]
@@ -197,50 +216,15 @@ mod tests {
     }
 }
 
-fn thread_count(requested: usize) -> usize {
-    if requested != 0 {
-        requested
-    } else {
-        std::thread::available_parallelism()
-            .map(|count| count.get().min(8))
-            .unwrap_or(1)
-    }
-}
-
-fn compile_model(
-    catalog: Arc<TensorCatalog>,
-    requirements: ComponentRequirements,
-    threads: usize,
-    placements: &[String],
-    kv_cache: KvCacheType,
-) -> Result<CompiledModel, String> {
-    let source = catalog
-        .source(ComponentId::Llm)
-        .ok_or("Missing LLM source")?
-        .clone();
-    let options = ExecutionOptions {
-        placements: placements.to_vec(),
-        thread_count: thread_count(threads),
-        max_batch_tokens: match requirements.workload {
-            ComponentWorkload::Llm(ref llm) => llm.max_batch_tokens,
-            ComponentWorkload::VisionCpu { .. } => 1,
-        },
-        kv_cache,
+fn run_embedding(
+    source: &Arc<dyn TensorSource>,
+    runner: &QwenRunner,
+    run: &mut ExecutionRun<'_>,
+    cli: &Cli,
+) -> Result<(), String> {
+    let QwenRunner::Qwen3(model) = runner else {
+        return Err("Qwen3 embedding is unavailable for this architecture".into());
     };
-    rust_model_inference::compile_model(vec![(ComponentId::Llm, source)], &options)
-        .map(|(compiled, _)| compiled)
-        .map_err(|error| error.to_string())
-}
-
-fn catalog(source: &Arc<dyn TensorSource>) -> Result<Arc<TensorCatalog>, String> {
-    TensorCatalog::from_sources(vec![(ComponentId::Llm, Arc::clone(source))])
-        .map(Arc::new)
-        .map_err(|error| error.to_string())
-}
-
-fn run_embedding(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), String> {
-    let catalog = catalog(source)?;
-    let model = Qwen3Model::from_catalog(&catalog)?;
     let tokenizer = BPETokenizer::from_gguf_metadata(|key| source.metadata(key).cloned())?;
     let tokens = tokenizer.encode(
         &cli.prompt,
@@ -252,16 +236,8 @@ fn run_embedding(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), String
     if tokens.is_empty() {
         return Err("Embedding input produced no tokens".into());
     }
-    let compiled = compile_model(
-        Arc::clone(&catalog),
-        model.requirements(),
-        cli.threads,
-        &cli.placements,
-        cli.kv_cache,
-    )?;
     let config = Qwen3EmbeddingConfig::from_metadata(|key| source.metadata(key).cloned())?;
-    let mut run = compiled.start_run().map_err(|error| error.to_string())?;
-    let embedding = model.embed(&mut run, &tokens, config)?;
+    let embedding = model.embed(run, &tokens, config)?;
     match cli.embedding_output {
         EmbeddingOutput::Summary => println!(
             "Embedding ({} dims): {:?}",
@@ -280,31 +256,25 @@ fn run_embedding(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), String
     Ok(())
 }
 
-fn run_inference(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), String> {
-    let architecture = source
-        .metadata("general.architecture")
-        .and_then(MetaValue::to_string_val)
-        .unwrap_or_default();
-    if architecture == "qwen35" {
-        run_qwen35(source, cli)
-    } else {
-        run_qwen3(source, cli)
+fn run_inference(
+    runner: &QwenRunner,
+    tokenizer: &BPETokenizer,
+    run: &mut ExecutionRun<'_>,
+    cli: &Cli,
+) -> Result<(), String> {
+    match runner {
+        QwenRunner::Qwen3(model) => run_qwen3(model, tokenizer, run, cli),
+        QwenRunner::Qwen35(model) => run_qwen35(model, tokenizer, run, cli),
     }
 }
 
-fn run_qwen3(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), String> {
-    let catalog = catalog(source)?;
-    let model = Qwen3Model::from_catalog(&catalog)?;
-    let tokenizer = BPETokenizer::from_gguf_metadata(|key| source.metadata(key).cloned())?;
+fn run_qwen3(
+    model: &Qwen3Model,
+    tokenizer: &BPETokenizer,
+    run: &mut ExecutionRun<'_>,
+    cli: &Cli,
+) -> Result<(), String> {
     let prompt_tokens = tokenizer.encode(&cli.prompt, EncodeOptions::default());
-    let compiled = compile_model(
-        Arc::clone(&catalog),
-        model.requirements(),
-        cli.threads,
-        &cli.placements,
-        cli.kv_cache,
-    )?;
-    let mut run = compiled.start_run().map_err(|error| error.to_string())?;
     let mut previous = None;
     let mut decoder = tokenizer.streaming_decoder(false);
     for step in 0..prompt_tokens.len() {
@@ -312,7 +282,7 @@ fn run_qwen3(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), String> {
         let position = u32::try_from(step).map_err(|_| "Qwen3 position does not fit u32")?;
         let mut logits = vec![0.0; model.config.vocab];
         model.forward(
-            &mut run,
+            run,
             &[token],
             &[[position, position, position, 0]],
             &mut logits,
@@ -340,7 +310,7 @@ fn run_qwen3(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), String> {
             .map_err(|_| "Qwen3 position does not fit u32")?;
         let mut logits = vec![0.0; model.config.vocab];
         model.forward(
-            &mut run,
+            run,
             &[next],
             &[[position, position, position, 0]],
             &mut logits,
@@ -357,10 +327,12 @@ fn run_qwen3(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), String> {
     Ok(())
 }
 
-fn run_qwen35(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), String> {
-    let catalog = catalog(source)?;
-    let model = Qwen35Model::from_catalog(&catalog)?;
-    let tokenizer = BPETokenizer::from_gguf_metadata(|key| source.metadata(key).cloned())?;
+fn run_qwen35(
+    model: &Qwen35Model,
+    tokenizer: &BPETokenizer,
+    run: &mut ExecutionRun<'_>,
+    cli: &Cli,
+) -> Result<(), String> {
     let prompt_tokens = tokenizer.encode(&cli.prompt, EncodeOptions::default());
     let (prompt_positions, mut next_position) = build_qwen35_positions(&prompt_tokens, None, &[])?;
     let prompt_positions = prompt_positions
@@ -374,14 +346,6 @@ fn run_qwen35(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), String> {
             ])
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let compiled = compile_model(
-        Arc::clone(&catalog),
-        model.requirements(),
-        cli.threads,
-        &cli.placements,
-        cli.kv_cache,
-    )?;
-    let mut run = compiled.start_run().map_err(|error| error.to_string())?;
     let mut logits = None;
     for (token, position) in prompt_tokens
         .iter()
@@ -389,7 +353,7 @@ fn run_qwen35(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), String> {
         .zip(prompt_positions.iter().copied())
     {
         let mut current_logits = vec![0.0; model.config.vocab_size];
-        model.forward_compiled(&mut run, &[token], &[position], &mut current_logits)?;
+        model.forward_compiled(run, &[token], &[position], &mut current_logits)?;
         logits = Some(current_logits);
     }
     let mut logits = logits.ok_or("Qwen3.5 prompt produced no tokens")?;
@@ -413,7 +377,7 @@ fn run_qwen35(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), String> {
             u32::try_from(next_position).map_err(|_| "Qwen3.5 position does not fit u32")?;
         let mut next_logits = vec![0.0; model.config.vocab_size];
         model.forward_compiled(
-            &mut run,
+            run,
             &[next],
             &[[position, position, position, 0]],
             &mut next_logits,
@@ -433,7 +397,12 @@ fn run_qwen35(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), String> {
     Ok(())
 }
 
-fn run_interactive(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), String> {
+fn run_interactive(
+    runner: &QwenRunner,
+    tokenizer: &BPETokenizer,
+    run: &mut ExecutionRun<'_>,
+    cli: &Cli,
+) -> Result<(), String> {
     loop {
         print!("> ");
         io::stdout()
@@ -450,19 +419,18 @@ fn run_interactive(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), Stri
         if prompt.trim().is_empty() {
             continue;
         }
+        run.reset_state().map_err(|error| error.to_string())?;
         let interactive_cli = Cli {
             model_path: cli.model_path.clone(),
             prompt: prompt.trim().to_owned(),
             max_tokens: cli.max_tokens,
             temperature: cli.temperature,
-            threads: cli.threads,
+            execution: cli.execution.clone(),
             embedding: false,
             embedding_output: cli.embedding_output,
-            placements: cli.placements.clone(),
-            kv_cache: cli.kv_cache,
-            has_multimodal_input: false,
+            mmproj_path: cli.mmproj_path.clone(),
         };
-        run_inference(source, &interactive_cli)?;
+        run_inference(runner, tokenizer, run, &interactive_cli)?;
     }
 }
 

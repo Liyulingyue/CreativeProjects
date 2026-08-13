@@ -1,5 +1,138 @@
 mod support;
 
+use std::path::Path;
+
+use rust_model_inference::{
+    build_qwen35_positions, compile_model, load_model_sources, BPETokenizer, ComponentId,
+    EncodeOptions, ExecutionOptions, QwenRunner,
+};
+
+struct ShortPromptRun {
+    logits: Vec<f32>,
+    tokens: Vec<u32>,
+}
+
+fn highest_logit_token(logits: &[f32]) -> u32 {
+    logits
+        .iter()
+        .enumerate()
+        .max_by(|left, right| left.1.total_cmp(right.1))
+        .map(|(index, _)| index as u32)
+        .expect("model has a vocabulary")
+}
+
+fn run_short_prompt(path: &Path, placement: String) -> Result<ShortPromptRun, String> {
+    let sources = load_model_sources(path, None).map_err(|error| error.to_string())?;
+    let llm = sources
+        .iter()
+        .find(|(component, _)| *component == ComponentId::Llm)
+        .ok_or("model source did not contain an LLM")?
+        .1
+        .clone();
+    let tokenizer = BPETokenizer::from_gguf_metadata(|key| llm.metadata(key).cloned())?;
+    let prompt = tokenizer.encode("2 + 3 =", EncodeOptions::default());
+    let (compiled, runner) = compile_model(
+        sources,
+        &ExecutionOptions {
+            placements: vec![placement],
+            thread_count: 1,
+            max_batch_tokens: 1,
+            ..Default::default()
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    let mut run = compiled.start_run().map_err(|error| error.to_string())?;
+    let uploads_before: u64 = run.stats().values().map(|stats| stats.weight_uploads).sum();
+    let (logits, tokens) = match runner {
+        QwenRunner::Qwen3(model) => {
+            let mut logits = vec![0.0; model.config.vocab];
+            for (position, token) in prompt.iter().enumerate() {
+                let position = position as u32;
+                model
+                    .forward(
+                        &mut run,
+                        &[*token],
+                        &[[position, position, position, 0]],
+                        &mut logits,
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+            let first = highest_logit_token(&logits);
+            let position = prompt.len() as u32;
+            model
+                .forward(
+                    &mut run,
+                    &[first],
+                    &[[position, position, position, 0]],
+                    &mut logits,
+                )
+                .map_err(|error| error.to_string())?;
+            let second = highest_logit_token(&logits);
+            (logits, vec![first, second])
+        }
+        QwenRunner::Qwen35(model) => {
+            let (positions, next_position) = build_qwen35_positions(&prompt, None, &[])?;
+            let mut logits = vec![0.0; model.config.vocab_size];
+            for (token, position) in prompt.iter().zip(positions) {
+                model
+                    .forward_compiled(
+                        &mut run,
+                        &[*token],
+                        &[[
+                            position[0] as u32,
+                            position[1] as u32,
+                            position[2] as u32,
+                            position[3] as u32,
+                        ]],
+                        &mut logits,
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+            let first = highest_logit_token(&logits);
+            let position = u32::try_from(next_position).map_err(|_| "position overflow")?;
+            model
+                .forward_compiled(
+                    &mut run,
+                    &[first],
+                    &[[position, position, position, 0]],
+                    &mut logits,
+                )
+                .map_err(|error| error.to_string())?;
+            let second = highest_logit_token(&logits);
+            (logits, vec![first, second])
+        }
+    };
+    let uploads_after: u64 = run.stats().values().map(|stats| stats.weight_uploads).sum();
+    if uploads_after != uploads_before {
+        return Err(format!(
+            "inference uploaded {} additional weight buffers",
+            uploads_after - uploads_before
+        ));
+    }
+    Ok(ShortPromptRun { logits, tokens })
+}
+
+#[test]
+#[ignore = "requires four local real-model files and RMI_REQUIRE_BACKEND"]
+fn explicit_layer_backend_matches_cpu_for_all_model_sources() {
+    let backend =
+        std::env::var("RMI_REQUIRE_BACKEND").expect("RMI_REQUIRE_BACKEND=vulkan|metal is required");
+    assert!(matches!(backend.as_str(), "vulkan" | "metal"));
+    for variable in [
+        "RMI_QWEN3_GGUF",
+        "RMI_QWEN3_GGUFRS",
+        "RMI_QWEN35_GGUF",
+        "RMI_QWEN35_GGUFRS",
+    ] {
+        let path = std::env::var(variable).unwrap_or_else(|_| panic!("{variable} is required"));
+        let cpu = run_short_prompt(Path::new(&path), "llm:layer=cpu0@1".into()).unwrap();
+        let accelerated =
+            run_short_prompt(Path::new(&path), format!("llm:layer={backend}0@1")).unwrap();
+        assert_eq!(accelerated.tokens, cpu.tokens, "{variable}");
+        support::assert_close(&accelerated.logits, &cpu.logits, 1e-3, 1e-3);
+    }
+}
+
 #[test]
 fn shared_compile_defaults_to_cpu_layer_plan() {
     let fixture = support::tiny_qwen3();
@@ -20,11 +153,59 @@ fn shared_compile_defaults_to_cpu_layer_plan() {
     );
 }
 
+#[test]
+fn compile_model_rejects_missing_and_unknown_architecture_metadata() {
+    for architecture in [None, Some("not-qwen")] {
+        let result = rust_model_inference::compile_model(
+            vec![(
+                rust_model_inference::ComponentId::Llm,
+                support::tiny_qwen3_source_with_architecture(architecture),
+            )],
+            &rust_model_inference::ExecutionOptions {
+                thread_count: 1,
+                max_batch_tokens: 1,
+                ..Default::default()
+            },
+        );
+        let error = match result {
+            Ok(_) => panic!("{architecture:?} architecture metadata unexpectedly compiled"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("architecture"));
+    }
+}
+
+#[test]
+fn bundled_or_standalone_vision_defaults_to_cpu_before_opening_sessions() {
+    let fixture = support::tiny_qwen3();
+    let (compiled, _) = rust_model_inference::compile_model(
+        vec![
+            (rust_model_inference::ComponentId::Llm, fixture.llm_source()),
+            (
+                rust_model_inference::ComponentId::Vision,
+                support::empty_vision_source(),
+            ),
+        ],
+        &rust_model_inference::ExecutionOptions {
+            thread_count: 1,
+            max_batch_tokens: 1,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        compiled.plan().components[&rust_model_inference::ComponentId::Vision]
+            .primary
+            .as_str(),
+        "cpu0"
+    );
+}
+
 use std::collections::BTreeSet;
 
 use rust_model_inference::{
-    ComponentId, ComponentWorkload, GGMLType, LayerOp, MetaValue, ProgramKind,
-    Qwen3EmbeddingConfig, Qwen3EmbeddingPooling,
+    ComponentWorkload, GGMLType, LayerOp, MetaValue, ProgramKind, Qwen3EmbeddingConfig,
+    Qwen3EmbeddingPooling,
 };
 
 #[test]
