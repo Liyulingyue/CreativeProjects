@@ -1351,6 +1351,21 @@ fn append_layer_ops(
                     weight: spec.qkv,
                     output: qkv,
                 },
+                LayerOp::Q8Matmul {
+                    input: norm,
+                    weight: spec.gate,
+                    output: gate,
+                },
+                LayerOp::Q8Matmul {
+                    input: norm,
+                    weight: spec.beta,
+                    output: beta,
+                },
+                LayerOp::Q8Matmul {
+                    input: norm,
+                    weight: spec.alpha,
+                    output: alpha,
+                },
                 LayerOp::DepthwiseCausalConv {
                     input: qkv,
                     weight: spec.conv_weight,
@@ -1359,11 +1374,6 @@ fn append_layer_ops(
                     output: qkv,
                 },
                 LayerOp::Silu { values: qkv },
-                LayerOp::Q8Matmul {
-                    input: norm,
-                    weight: spec.gate,
-                    output: gate,
-                },
                 LayerOp::Slice {
                     input: qkv,
                     offset: 0,
@@ -1385,17 +1395,7 @@ fn append_layer_ops(
                     elements: spec.inner_size,
                     output: v,
                 },
-                LayerOp::Q8Matmul {
-                    input: norm,
-                    weight: spec.beta,
-                    output: beta,
-                },
                 LayerOp::Sigmoid { values: beta },
-                LayerOp::Q8Matmul {
-                    input: norm,
-                    weight: spec.alpha,
-                    output: alpha,
-                },
                 LayerOp::L2Norm {
                     values: q,
                     epsilon_bits: spec.norm_epsilon_bits,

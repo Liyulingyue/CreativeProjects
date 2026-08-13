@@ -95,6 +95,37 @@ fn qwen35_recurrent_layer_convolves_full_qkv_before_slicing() {
 }
 
 #[test]
+fn qwen35_recurrent_projections_precede_stateful_convolution() {
+    let fixture = support::tiny_qwen35_hybrid();
+    let (_, trace) = fixture
+        .run_recording_forward("llm:layer=cpu0@1", &[1], &[[0, 0, 0, 0]])
+        .unwrap();
+    let conv_index = trace
+        .layer_ops
+        .iter()
+        .position(|op| matches!(op, LayerOp::DepthwiseCausalConv { .. }))
+        .unwrap();
+
+    for name in [
+        "blk.1.attn_qkv.weight",
+        "blk.1.attn_gate.weight",
+        "blk.1.ssm_beta.weight",
+        "blk.1.ssm_alpha.weight",
+    ] {
+        let weight = fixture.catalog().find(ComponentId::Llm, name).unwrap();
+        let projection_index = trace
+            .layer_ops
+            .iter()
+            .position(|op| matches!(op, LayerOp::Q8Matmul { weight: candidate, .. } if *candidate == weight))
+            .unwrap();
+        assert!(
+            projection_index < conv_index,
+            "{name} projection must precede the stateful convolution"
+        );
+    }
+}
+
+#[test]
 fn model_requirements_use_catalog_metadata() {
     for (fixture, expected_context) in [
         (support::tiny_qwen3(), 17),
