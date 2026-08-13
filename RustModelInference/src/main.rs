@@ -140,6 +140,61 @@ mod tests {
         }
         assert!(parse_args(["--kv-cache".to_owned(), "f16".to_owned()]).is_err());
     }
+
+    #[test]
+    fn embedding_l2_matches_llama_f32_product_and_scale_bits() {
+        let mut values = [f32::from_bits(1)];
+
+        l2_normalize(&mut values).unwrap();
+
+        assert_eq!(values, [0.0]);
+    }
+
+    #[test]
+    fn generation_decodes_only_the_requested_token_budget() {
+        let metadata: std::collections::HashMap<String, MetaValue> =
+            std::collections::HashMap::from([
+                (
+                    "tokenizer.ggml.model".into(),
+                    MetaValue::String("gpt2".into()),
+                ),
+                (
+                    "tokenizer.ggml.pre".into(),
+                    MetaValue::String("qwen2".into()),
+                ),
+                (
+                    "tokenizer.ggml.tokens".into(),
+                    MetaValue::Array(
+                        MetaValueType::String,
+                        ["A", "B", "C", "<|endoftext|>"]
+                            .into_iter()
+                            .map(|value| MetaValue::String(value.into()))
+                            .collect(),
+                    ),
+                ),
+                (
+                    "tokenizer.ggml.token_type".into(),
+                    MetaValue::Array(
+                        MetaValueType::Uint32,
+                        [1, 1, 1, 3].into_iter().map(MetaValue::Uint32).collect(),
+                    ),
+                ),
+                (
+                    "tokenizer.ggml.merges".into(),
+                    MetaValue::Array(MetaValueType::String, vec![]),
+                ),
+            ]);
+        let tokenizer = BPETokenizer::from_gguf_metadata(|key| metadata.get(key).cloned()).unwrap();
+        let mut decoder = tokenizer.streaming_decoder(false);
+        let text = [0, 1, 2]
+            .into_iter()
+            .take(2)
+            .map(|token| decoder.push(token))
+            .collect::<String>();
+
+        assert_eq!(text, "AB");
+        assert_eq!(decoder.finish(), "");
+    }
 }
 
 fn thread_count(requested: usize) -> usize {
@@ -152,26 +207,21 @@ fn thread_count(requested: usize) -> usize {
     }
 }
 
-fn compile_cpu_model(
+fn compile_model(
     catalog: Arc<TensorCatalog>,
     requirements: ComponentRequirements,
     threads: usize,
     placements: &[String],
 ) -> Result<CompiledModel, String> {
+    let (rules, backends) =
+        parse_requested_placements(placements).map_err(|error| error.to_string())?;
     let mut registry = DeviceRegistry::new();
-    registry
-        .register_provider(Arc::new(compute::CpuProvider::new(thread_count(threads))))
+    compute::register_requested_providers(&mut registry, &backends, thread_count(threads))
         .map_err(|error| error.to_string())?;
     registry
-        .discover(&std::collections::BTreeSet::from([BackendKind::Cpu]))
+        .discover(&backends)
         .map_err(|error| error.to_string())?;
     let registry = Arc::new(registry);
-    let requested = if placements.is_empty() {
-        vec!["llm:row=cpu0@1".to_owned()]
-    } else {
-        placements.to_vec()
-    };
-    let rules = parse_placements(&requested).map_err(|error| error.to_string())?;
     let plan = PlacementCompiler {
         catalog: &catalog,
         registry: &registry,
@@ -202,7 +252,7 @@ fn run_embedding(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), String
     if tokens.is_empty() {
         return Err("Embedding input produced no tokens".into());
     }
-    let compiled = compile_cpu_model(
+    let compiled = compile_model(
         Arc::clone(&catalog),
         model.requirements(),
         cli.threads,
@@ -259,7 +309,7 @@ fn run_qwen3(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), String> {
     let model = Qwen3Model::from_catalog(&catalog)?;
     let tokenizer = BPETokenizer::from_gguf_metadata(|key| source.metadata(key).cloned())?;
     let prompt_tokens = tokenizer.encode(&cli.prompt, EncodeOptions::default());
-    let compiled = compile_cpu_model(
+    let compiled = compile_model(
         Arc::clone(&catalog),
         model.requirements(),
         cli.threads,
@@ -267,8 +317,9 @@ fn run_qwen3(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), String> {
     )?;
     let mut run = compiled.start_run().map_err(|error| error.to_string())?;
     let mut previous = None;
-    for step in 0..prompt_tokens.len().saturating_add(cli.max_tokens) {
-        let token = prompt_tokens.get(step).copied().or(previous).unwrap_or(0);
+    let mut decoder = tokenizer.streaming_decoder(false);
+    for step in 0..prompt_tokens.len() {
+        let token = prompt_tokens[step];
         let position = u32::try_from(step).map_err(|_| "Qwen3 position does not fit u32")?;
         let mut logits = vec![0.0; model.config.vocab];
         model.forward(
@@ -277,13 +328,42 @@ fn run_qwen3(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), String> {
             &[[position, position, position, 0]],
             &mut logits,
         )?;
-        if step >= prompt_tokens.len().saturating_sub(1) {
-            let next = sample_token(&logits, cli.temperature)?;
-            previous = Some(next);
-            if tokenizer.eos_id() == Some(next) {
-                break;
-            }
+        if step + 1 == prompt_tokens.len() {
+            previous = Some(sample_token(&logits, cli.temperature)?);
         }
+    }
+    let mut next = previous.ok_or("Qwen3 prompt produced no tokens")?;
+    for generated in 0..cli.max_tokens {
+        if tokenizer.eos_id() == Some(next) || tokenizer.special_token_id("im_end") == Some(next) {
+            break;
+        }
+        let text = decoder.push(next);
+        if !text.is_empty() {
+            print!("{text}");
+            io::stdout()
+                .flush()
+                .map_err(|error| format!("Failed to flush generated text: {error}"))?;
+        }
+        if generated + 1 == cli.max_tokens {
+            break;
+        }
+        let position = u32::try_from(prompt_tokens.len() + generated)
+            .map_err(|_| "Qwen3 position does not fit u32")?;
+        let mut logits = vec![0.0; model.config.vocab];
+        model.forward(
+            &mut run,
+            &[next],
+            &[[position, position, position, 0]],
+            &mut logits,
+        )?;
+        next = sample_token(&logits, cli.temperature)?;
+    }
+    let tail = decoder.finish();
+    if !tail.is_empty() {
+        print!("{tail}");
+        io::stdout()
+            .flush()
+            .map_err(|error| format!("Failed to flush generated text: {error}"))?;
     }
     Ok(())
 }
@@ -305,7 +385,7 @@ fn run_qwen35(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), String> {
             ])
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let compiled = compile_cpu_model(
+    let compiled = compile_model(
         Arc::clone(&catalog),
         model.requirements(),
         cli.threads,
@@ -323,10 +403,18 @@ fn run_qwen35(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), String> {
         logits = Some(current_logits);
     }
     let mut logits = logits.ok_or("Qwen3.5 prompt produced no tokens")?;
+    let mut decoder = tokenizer.streaming_decoder(false);
     for generated in 0..cli.max_tokens {
         let next = sample_token(&logits, cli.temperature)?;
         if tokenizer.eos_id() == Some(next) || tokenizer.special_token_id("im_end") == Some(next) {
             break;
+        }
+        let text = decoder.push(next);
+        if !text.is_empty() {
+            print!("{text}");
+            io::stdout()
+                .flush()
+                .map_err(|error| format!("Failed to flush generated text: {error}"))?;
         }
         if generated + 1 == cli.max_tokens {
             break;
@@ -344,6 +432,13 @@ fn run_qwen35(source: &Arc<dyn TensorSource>, cli: &Cli) -> Result<(), String> {
         next_position = next_position
             .checked_add(1)
             .ok_or("Qwen3.5 decode position overflow")?;
+    }
+    let tail = decoder.finish();
+    if !tail.is_empty() {
+        print!("{tail}");
+        io::stdout()
+            .flush()
+            .map_err(|error| format!("Failed to flush generated text: {error}"))?;
     }
     Ok(())
 }
@@ -400,15 +495,17 @@ fn l2_normalize(values: &mut [f32]) -> Result<(), String> {
     if values.iter().any(|value| !value.is_finite()) {
         return Err("Embedding contains a non-finite value".into());
     }
-    let norm = values
+    let sum = values
         .iter()
-        .map(|value| f64::from(*value) * f64::from(*value))
-        .sum::<f64>()
-        .sqrt();
-    if norm != 0.0 {
-        for value in values {
-            *value /= norm as f32;
-        }
+        .map(|&value| f64::from(value * value))
+        .sum::<f64>();
+    let scale = if sum > 0.0 {
+        (1.0 / sum.sqrt()) as f32
+    } else {
+        0.0
+    };
+    for value in values {
+        *value *= scale;
     }
     Ok(())
 }

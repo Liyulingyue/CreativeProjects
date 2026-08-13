@@ -16,6 +16,28 @@ use tower_http::cors::CorsLayer;
 
 use rust_model_inference::*;
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn server_parses_placement_and_rejects_unknown_flags() {
+        let cli = parse_server_args([
+            "--model".to_owned(),
+            "model.gguf".to_owned(),
+            "--placement".to_owned(),
+            "llm:row=metal0@1".to_owned(),
+            "--port".to_owned(),
+            "9000".to_owned(),
+        ])
+        .unwrap();
+        assert_eq!(cli.model_path, "model.gguf");
+        assert_eq!(cli.port, 9000);
+        assert_eq!(cli.placements, ["llm:row=metal0@1"]);
+        assert!(parse_server_args(["--unknown".to_owned()]).is_err());
+    }
+}
+
 struct Qwen3State {
     model: Qwen3Model,
     compiled: CompiledModel,
@@ -156,17 +178,67 @@ fn sample_token_from_logits(logits: &[f32], temperature: f32) -> i32 {
     (logits.len() - 1) as i32
 }
 
-fn compile_cpu_model(
+struct ServerCli {
+    model_path: String,
+    host: String,
+    port: u16,
+    threads: usize,
+    placements: Vec<String>,
+}
+
+fn parse_server_args(args: impl IntoIterator<Item = String>) -> Result<ServerCli, String> {
+    let mut cli = ServerCli {
+        model_path: String::new(),
+        host: "0.0.0.0".to_owned(),
+        port: 8080,
+        threads: 0,
+        placements: Vec::new(),
+    };
+    let mut args = args.into_iter();
+    while let Some(flag) = args.next() {
+        match flag.as_str() {
+            "--model" => cli.model_path = next_server_value(&mut args, "--model")?,
+            "--host" => cli.host = next_server_value(&mut args, "--host")?,
+            "--port" => {
+                cli.port = next_server_value(&mut args, "--port")?
+                    .parse()
+                    .map_err(|_| "Invalid --port value")?
+            }
+            "--threads" => {
+                cli.threads = next_server_value(&mut args, "--threads")?
+                    .parse()
+                    .map_err(|_| "Invalid --threads value")?
+            }
+            "--placement" => cli
+                .placements
+                .push(next_server_value(&mut args, "--placement")?),
+            _ => return Err(format!("Unknown option: {flag}")),
+        }
+    }
+    Ok(cli)
+}
+
+fn next_server_value(
+    args: &mut impl Iterator<Item = String>,
+    flag: &str,
+) -> Result<String, String> {
+    args.next()
+        .ok_or_else(|| format!("Missing value for {flag}"))
+}
+
+fn compile_model(
     catalog: Arc<TensorCatalog>,
     requirements: ComponentRequirements,
     n_threads: usize,
+    placements: &[String],
 ) -> Result<CompiledModel, String> {
+    let (rules, backends) =
+        parse_requested_placements(placements).map_err(|error| error.to_string())?;
     let mut registry = DeviceRegistry::new();
-    registry
-        .register_provider(Arc::new(compute::CpuProvider::new(n_threads)))
+    compute::register_requested_providers(&mut registry, &backends, n_threads)
         .map_err(|error| error.to_string())?;
     registry
-        .discover(&std::collections::BTreeSet::from([BackendKind::Cpu]))
+        .discover(&backends)
         .map_err(|error| error.to_string())?;
     let registry = Arc::new(registry);
     let plan = PlacementCompiler {
@@ -174,10 +246,7 @@ fn compile_cpu_model(
         registry: &registry,
         requirements: std::slice::from_ref(&requirements),
     }
-    .compile(&std::collections::BTreeMap::from([(
-        ComponentId::Llm,
-        parse_placement("llm:row=cpu0@1").map_err(|error| error.to_string())?,
-    )]))
+    .compile(&rules)
     .map_err(|error| error.to_string())?;
     CompiledModel::compile(catalog, plan, registry).map_err(|error| error.to_string())
 }
@@ -525,54 +594,21 @@ fn generate_qwen35(
 
 #[tokio::main]
 async fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let mut model_path = String::new();
-    let mut host = "0.0.0.0".to_string();
-    let mut port = 8080u16;
-    let mut n_threads = 0usize;
+    let cli = parse_server_args(std::env::args().skip(1)).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(2);
+    });
 
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--model" => {
-                if i + 1 < args.len() {
-                    model_path = args[i + 1].clone();
-                    i += 1;
-                }
-            }
-            "--host" => {
-                if i + 1 < args.len() {
-                    host = args[i + 1].clone();
-                    i += 1;
-                }
-            }
-            "--port" => {
-                if i + 1 < args.len() {
-                    port = args[i + 1].parse().unwrap_or(8080);
-                    i += 1;
-                }
-            }
-            "--threads" => {
-                if i + 1 < args.len() {
-                    n_threads = args[i + 1].parse().unwrap_or(0);
-                    i += 1;
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-
-    if model_path.is_empty() {
-        eprintln!("Usage: rust-model-server --model <path.gguf-or-ggufrs> [--host 0.0.0.0] [--port 8080] [--threads 4]");
+    if cli.model_path.is_empty() {
+        eprintln!("Usage: rust-model-server --model <path.gguf-or-ggufrs> [--host 0.0.0.0] [--port 8080] [--threads 4] [--placement llm:row=cpu0@1]");
         std::process::exit(1);
     }
 
-    let n_threads = if n_threads > 0 { n_threads } else { 4 };
-    eprintln!("Loading model: {} ...", model_path);
+    let n_threads = if cli.threads > 0 { cli.threads } else { 4 };
+    eprintln!("Loading model: {} ...", cli.model_path);
 
     let source: Arc<dyn TensorSource> = Arc::from(
-        open_model_source(Path::new(&model_path), ComponentRole::Llm).unwrap_or_else(|error| {
+        open_model_source(Path::new(&cli.model_path), ComponentRole::Llm).unwrap_or_else(|error| {
             eprintln!("Failed to load model: {error}");
             std::process::exit(1);
         }),
@@ -600,11 +636,16 @@ async fn main() {
             eprintln!("Failed to parse Qwen3.5 model: {}", e);
             std::process::exit(1);
         });
-        let compiled = compile_cpu_model(Arc::clone(&catalog), model.requirements(), n_threads)
-            .unwrap_or_else(|error| {
-                eprintln!("Failed to compile Qwen3.5 plan: {error}");
-                std::process::exit(1);
-            });
+        let compiled = compile_model(
+            Arc::clone(&catalog),
+            model.requirements(),
+            n_threads,
+            &cli.placements,
+        )
+        .unwrap_or_else(|error| {
+            eprintln!("Failed to compile Qwen3.5 plan: {error}");
+            std::process::exit(1);
+        });
         ModelBackend::Qwen35(Qwen35State {
             model,
             compiled,
@@ -615,11 +656,16 @@ async fn main() {
             eprintln!("Failed to parse Qwen3 model: {error}");
             std::process::exit(1);
         });
-        let compiled = compile_cpu_model(Arc::clone(&catalog), model.requirements(), n_threads)
-            .unwrap_or_else(|error| {
-                eprintln!("Failed to compile Qwen3 plan: {error}");
-                std::process::exit(1);
-            });
+        let compiled = compile_model(
+            Arc::clone(&catalog),
+            model.requirements(),
+            n_threads,
+            &cli.placements,
+        )
+        .unwrap_or_else(|error| {
+            eprintln!("Failed to compile Qwen3 plan: {error}");
+            std::process::exit(1);
+        });
         ModelBackend::Qwen3(Qwen3State {
             model,
             compiled,
@@ -627,7 +673,7 @@ async fn main() {
         })
     };
 
-    let model_name = std::path::Path::new(&model_path)
+    let model_name = std::path::Path::new(&cli.model_path)
         .file_stem()
         .unwrap_or_default()
         .to_string_lossy()
@@ -650,7 +696,7 @@ async fn main() {
         .layer(CorsLayer::permissive())
         .with_state(state);
 
-    let addr = format!("{}:{}", host, port);
+    let addr = format!("{}:{}", cli.host, cli.port);
     eprintln!("Server listening on http://{}", addr);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();

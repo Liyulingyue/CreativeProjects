@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::compute::BackendKind;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ComponentId {
     Llm,
@@ -154,6 +156,29 @@ pub fn parse_placements(
     Ok(rules)
 }
 
+pub fn parse_requested_placements(
+    values: &[String],
+) -> Result<(BTreeMap<ComponentId, PlacementRule>, BTreeSet<BackendKind>), PlacementError> {
+    let defaults = ["llm:row=cpu0@1".to_owned()];
+    let rules = parse_placements(if values.is_empty() { &defaults } else { values })?;
+    let backends = rules
+        .values()
+        .flat_map(|rule| &rule.targets)
+        .map(|target| {
+            if target.device.as_str().starts_with("cpu") {
+                BackendKind::Cpu
+            } else if target.device.as_str().starts_with("vulkan") {
+                BackendKind::Vulkan
+            } else if target.device.as_str().starts_with("metal") {
+                BackendKind::Metal
+            } else {
+                BackendKind::Npu
+            }
+        })
+        .collect();
+    Ok((rules, backends))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,5 +216,22 @@ mod tests {
             "llm:layer=metal0@1".to_string(),
         ];
         assert!(parse_placements(&duplicate_components).is_err());
+    }
+
+    #[test]
+    fn requested_placements_default_to_cpu_and_collect_backends() {
+        assert_eq!(
+            parse_requested_placements(&[]).unwrap().1,
+            BTreeSet::from([BackendKind::Cpu])
+        );
+        assert_eq!(
+            parse_requested_placements(&[
+                "llm:row=metal0@1".to_owned(),
+                "vision:row=vulkan0@1".to_owned(),
+            ])
+            .unwrap()
+            .1,
+            BTreeSet::from([BackendKind::Metal, BackendKind::Vulkan])
+        );
     }
 }
