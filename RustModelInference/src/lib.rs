@@ -11,6 +11,7 @@ pub mod parity_trace;
 pub mod placement;
 pub mod prompt;
 pub mod quant;
+pub mod qwen3;
 pub mod qwen35;
 pub mod scratchpad;
 pub mod tensor_catalog;
@@ -51,6 +52,9 @@ pub use prompt::{
     append_qwen_assistant_prefix, append_qwen_message_tokens, build_qwen_chat_prompt, QwenMessage,
 };
 pub use quant::dequant_weight_q4k;
+pub use qwen3::{
+    Qwen3AuxiliaryWeights, Qwen3Config, Qwen3LayerTensorIds, Qwen3Model, Qwen3TensorIds,
+};
 pub use qwen35::{build_qwen35_positions, Qwen35Model};
 pub use scratchpad::{ExecutionScratchpad, KvCache, KvCacheF16, KvCacheF32};
 pub use tensor_catalog::{

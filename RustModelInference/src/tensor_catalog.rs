@@ -144,6 +144,10 @@ impl TensorCatalog {
         &self.entries
     }
 
+    pub fn source(&self, component: ComponentId) -> Option<&Arc<dyn TensorSource>> {
+        self.sources.get(&component)
+    }
+
     pub fn entry(&self, id: TensorId) -> Option<&TensorCatalogEntry> {
         self.entries
             .get(id.0 as usize)

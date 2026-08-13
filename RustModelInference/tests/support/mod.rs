@@ -88,6 +88,1076 @@ pub fn assert_close(actual: &[f32], expected: &[f32], atol: f32, rtol: f32) {
     }
 }
 
+use rust_model_inference::{
+    parse_placement, BackendError, BackendKind, CompiledModel, ComponentId, DeviceCapabilities,
+    DeviceDescriptor, DeviceDiscovery, DeviceId, DevicePlan, DeviceProvider, DeviceRegistry,
+    DeviceSession, FenceId, GGMLType, LifecycleProbe, PlacementCompiler, ProgramId, ProgramKind,
+    RunParams, SessionStats, SlotId, SourceFormat, SourceTensorRecord, TensorCatalog, TensorId,
+    TensorInfo, TensorSource,
+};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex};
+
+pub struct PlacementFixture {
+    catalog: Arc<TensorCatalog>,
+    token_embedding: TensorId,
+    output: TensorId,
+    model: PlacementModel,
+}
+
+enum PlacementModel {
+    Qwen3(rust_model_inference::Qwen3Model),
+    Qwen35(rust_model_inference::Qwen35Model),
+}
+
+#[derive(Clone, Default)]
+pub struct PlacementTrace {
+    pub q8_matrix_tensor_ids: BTreeSet<TensorId>,
+    pub embedding_tensor_ids: BTreeSet<TensorId>,
+}
+
+impl PlacementFixture {
+    pub fn catalog(&self) -> &TensorCatalog {
+        &self.catalog
+    }
+
+    pub fn token_embedding_id(&self) -> TensorId {
+        self.token_embedding
+    }
+
+    pub fn output_id(&self) -> TensorId {
+        self.output
+    }
+
+    pub fn requirements(&self) -> rust_model_inference::ComponentRequirements {
+        match &self.model {
+            PlacementModel::Qwen3(model) => model.requirements(),
+            PlacementModel::Qwen35(model) => model.requirements(),
+        }
+    }
+
+    pub fn run_recording_forward_two_tokens(&self) -> Result<PlacementTrace, String> {
+        let requirements = match &self.model {
+            PlacementModel::Qwen3(model) => model.requirements(),
+            PlacementModel::Qwen35(model) => model.requirements(),
+        };
+        let trace = Arc::new(Mutex::new(PlacementTrace::default()));
+        let mut registry = DeviceRegistry::new();
+        registry
+            .register_provider(Arc::new(RecordingProvider {
+                descriptor: recording_descriptor(),
+                trace: Arc::clone(&trace),
+            }))
+            .map_err(|error| error.to_string())?;
+        registry
+            .discover(&BTreeSet::from([BackendKind::Cpu]))
+            .map_err(|error| error.to_string())?;
+        let registry = Arc::new(registry);
+        let plan = PlacementCompiler {
+            catalog: &self.catalog,
+            registry: &registry,
+            requirements: std::slice::from_ref(&requirements),
+        }
+        .compile(&BTreeMap::from([(
+            ComponentId::Llm,
+            parse_placement("llm:row=cpu0@1").map_err(|error| error.to_string())?,
+        )]))
+        .map_err(|error| error.to_string())?;
+        let model = CompiledModel::compile(Arc::clone(&self.catalog), plan, registry)
+            .map_err(|error| error.to_string())?;
+        let mut run = model.start_run().map_err(|error| error.to_string())?;
+        let tokens = [1, 2];
+        let positions = [[0, 0, 0, 0], [1, 1, 1, 0]];
+        let mut logits = vec![0.0; 64];
+        let result: Result<(), String> = match &self.model {
+            PlacementModel::Qwen3(model) => {
+                for (&token, &position) in tokens.iter().zip(&positions) {
+                    model.forward(&mut run, &[token], &[position], &mut logits)?;
+                }
+                Ok(())
+            }
+            PlacementModel::Qwen35(model) => {
+                for (&token, &position) in tokens.iter().zip(&positions) {
+                    model.forward_compiled(&mut run, &[token], &[position], &mut logits)?;
+                }
+                Ok(())
+            }
+        };
+        result?;
+        drop(run);
+        trace
+            .lock()
+            .map_err(|_| "recording trace poisoned".to_string())
+            .map(|trace| trace.clone())
+    }
+
+    pub fn run_cpu_forward_two_tokens(&self) -> Result<Vec<f32>, String> {
+        let requirements = self.requirements();
+        let mut registry = DeviceRegistry::new();
+        registry
+            .register_provider(Arc::new(rust_model_inference::compute::CpuProvider::new(1)))
+            .map_err(|error| error.to_string())?;
+        registry
+            .discover(&BTreeSet::from([BackendKind::Cpu]))
+            .map_err(|error| error.to_string())?;
+        let registry = Arc::new(registry);
+        let plan = PlacementCompiler {
+            catalog: &self.catalog,
+            registry: &registry,
+            requirements: std::slice::from_ref(&requirements),
+        }
+        .compile(&BTreeMap::from([(
+            ComponentId::Llm,
+            parse_placement("llm:row=cpu0@1").map_err(|error| error.to_string())?,
+        )]))
+        .map_err(|error| error.to_string())?;
+        let model = CompiledModel::compile(Arc::clone(&self.catalog), plan, registry)
+            .map_err(|error| error.to_string())?;
+        let mut run = model.start_run().map_err(|error| error.to_string())?;
+        let tokens = [1, 2];
+        let positions = [[0, 0, 0, 0], [1, 1, 1, 0]];
+        let mut logits = vec![0.0; 64];
+        let result: Result<(), String> = match &self.model {
+            PlacementModel::Qwen3(model) => {
+                for (&token, &position) in tokens.iter().zip(&positions) {
+                    model.forward(&mut run, &[token], &[position], &mut logits)?;
+                }
+                Ok(())
+            }
+            PlacementModel::Qwen35(model) => {
+                for (&token, &position) in tokens.iter().zip(&positions) {
+                    model.forward_compiled(&mut run, &[token], &[position], &mut logits)?;
+                }
+                Ok(())
+            }
+        };
+        result?;
+        Ok(logits)
+    }
+
+    pub fn run_cpu_forward_two_tokens_in_one_call(&self) -> Result<Vec<f32>, String> {
+        let requirements = self.requirements();
+        let mut registry = DeviceRegistry::new();
+        registry
+            .register_provider(Arc::new(rust_model_inference::compute::CpuProvider::new(1)))
+            .map_err(|error| error.to_string())?;
+        registry
+            .discover(&BTreeSet::from([BackendKind::Cpu]))
+            .map_err(|error| error.to_string())?;
+        let registry = Arc::new(registry);
+        let plan = PlacementCompiler {
+            catalog: &self.catalog,
+            registry: &registry,
+            requirements: std::slice::from_ref(&requirements),
+        }
+        .compile(&BTreeMap::from([(
+            ComponentId::Llm,
+            parse_placement("llm:row=cpu0@1").map_err(|error| error.to_string())?,
+        )]))
+        .map_err(|error| error.to_string())?;
+        let model = CompiledModel::compile(Arc::clone(&self.catalog), plan, registry)
+            .map_err(|error| error.to_string())?;
+        let mut run = model.start_run().map_err(|error| error.to_string())?;
+        let tokens = [1, 2];
+        let positions = [[0, 0, 0, 0], [1, 1, 1, 0]];
+        let mut logits = vec![0.0; 64];
+        match &self.model {
+            PlacementModel::Qwen3(model) => {
+                model.forward(&mut run, &tokens, &positions, &mut logits)?
+            }
+            PlacementModel::Qwen35(model) => {
+                model.forward_compiled(&mut run, &tokens, &positions, &mut logits)?
+            }
+        }
+        Ok(logits)
+    }
+}
+
+pub fn tiny_qwen3() -> PlacementFixture {
+    let catalog = fixture_catalog(
+        qwen3_tensors(),
+        model_metadata("qwen3", 17, 2, 4, 2, 96, 64),
+    );
+    let model = rust_model_inference::Qwen3Model::from_catalog(&catalog).unwrap();
+    PlacementFixture {
+        token_embedding: model.tensors.token_embedding,
+        output: model.tensors.output,
+        catalog,
+        model: PlacementModel::Qwen3(model),
+    }
+}
+
+pub fn tiny_qwen3_tied() -> PlacementFixture {
+    let catalog = fixture_catalog(
+        qwen3_tied_tensors(),
+        model_metadata("qwen3", 17, 2, 4, 2, 96, 64),
+    );
+    let model = rust_model_inference::Qwen3Model::from_catalog(&catalog).unwrap();
+    PlacementFixture {
+        token_embedding: model.tensors.token_embedding,
+        output: model.tensors.output,
+        catalog,
+        model: PlacementModel::Qwen3(model),
+    }
+}
+
+pub fn tiny_qwen35_hybrid() -> PlacementFixture {
+    let mut metadata = model_metadata("qwen35", 19, 2, 4, 2, 96, 64);
+    metadata.insert(
+        "qwen35.vocab_size".into(),
+        rust_model_inference::MetaValue::Uint32(0),
+    );
+    metadata.insert(
+        "tokenizer.ggml.tokens".into(),
+        rust_model_inference::MetaValue::Array(
+            rust_model_inference::MetaValueType::String,
+            (0..64)
+                .map(|index| rust_model_inference::MetaValue::String(format!("{index}")))
+                .collect(),
+        ),
+    );
+    metadata.extend(BTreeMap::from([
+        (
+            "qwen35.attention.key_length".into(),
+            rust_model_inference::MetaValue::Uint32(16),
+        ),
+        (
+            "qwen35.attention.value_length".into(),
+            rust_model_inference::MetaValue::Uint32(16),
+        ),
+        (
+            "qwen35.rope.dimension_count".into(),
+            rust_model_inference::MetaValue::Uint32(16),
+        ),
+        (
+            "qwen35.rope.dimension_sections".into(),
+            rust_model_inference::MetaValue::Array(
+                rust_model_inference::MetaValueType::Uint32,
+                vec![
+                    rust_model_inference::MetaValue::Uint32(4),
+                    rust_model_inference::MetaValue::Uint32(4),
+                    rust_model_inference::MetaValue::Uint32(4),
+                    rust_model_inference::MetaValue::Uint32(4),
+                ],
+            ),
+        ),
+        (
+            "qwen35.ssm.conv_kernel".into(),
+            rust_model_inference::MetaValue::Uint32(4),
+        ),
+        (
+            "qwen35.ssm.state_size".into(),
+            rust_model_inference::MetaValue::Uint32(32),
+        ),
+        (
+            "qwen35.ssm.group_count".into(),
+            rust_model_inference::MetaValue::Uint32(1),
+        ),
+        (
+            "qwen35.ssm.time_step_rank".into(),
+            rust_model_inference::MetaValue::Uint32(1),
+        ),
+        (
+            "qwen35.ssm.inner_size".into(),
+            rust_model_inference::MetaValue::Uint32(32),
+        ),
+        (
+            "qwen35.full_attention_interval".into(),
+            rust_model_inference::MetaValue::Uint32(4),
+        ),
+        (
+            "qwen35.attention.recurrent_layers".into(),
+            rust_model_inference::MetaValue::Array(
+                rust_model_inference::MetaValueType::Uint32,
+                vec![
+                    rust_model_inference::MetaValue::Uint32(0),
+                    rust_model_inference::MetaValue::Uint32(1),
+                ],
+            ),
+        ),
+    ]));
+    let catalog = fixture_catalog(qwen35_tensors(), metadata);
+    let model = rust_model_inference::Qwen35Model::from_catalog(&catalog).unwrap();
+    PlacementFixture {
+        token_embedding: catalog.find(ComponentId::Llm, "token_embd.weight").unwrap(),
+        output: catalog.find(ComponentId::Llm, "output.weight").unwrap(),
+        catalog,
+        model: PlacementModel::Qwen35(model),
+    }
+}
+
+pub fn tiny_qwen35_f32_dense() -> PlacementFixture {
+    let mut metadata = model_metadata("qwen35", 19, 1, 4, 2, 96, 64);
+    metadata.insert(
+        "qwen35.vocab_size".into(),
+        rust_model_inference::MetaValue::Uint32(0),
+    );
+    metadata.insert(
+        "tokenizer.ggml.tokens".into(),
+        rust_model_inference::MetaValue::Array(
+            rust_model_inference::MetaValueType::String,
+            (0..64)
+                .map(|index| rust_model_inference::MetaValue::String(format!("{index}")))
+                .collect(),
+        ),
+    );
+    metadata.extend(BTreeMap::from([
+        (
+            "qwen35.attention.key_length".into(),
+            rust_model_inference::MetaValue::Uint32(16),
+        ),
+        (
+            "qwen35.attention.value_length".into(),
+            rust_model_inference::MetaValue::Uint32(16),
+        ),
+        (
+            "qwen35.rope.dimension_count".into(),
+            rust_model_inference::MetaValue::Uint32(16),
+        ),
+        (
+            "qwen35.rope.dimension_sections".into(),
+            rust_model_inference::MetaValue::Array(
+                rust_model_inference::MetaValueType::Uint32,
+                vec![
+                    rust_model_inference::MetaValue::Uint32(4),
+                    rust_model_inference::MetaValue::Uint32(4),
+                    rust_model_inference::MetaValue::Uint32(4),
+                    rust_model_inference::MetaValue::Uint32(4),
+                ],
+            ),
+        ),
+    ]));
+    metadata.extend(BTreeMap::from([
+        (
+            "qwen35.ssm.conv_kernel".into(),
+            rust_model_inference::MetaValue::Uint32(4),
+        ),
+        (
+            "qwen35.ssm.state_size".into(),
+            rust_model_inference::MetaValue::Uint32(32),
+        ),
+        (
+            "qwen35.ssm.group_count".into(),
+            rust_model_inference::MetaValue::Uint32(1),
+        ),
+        (
+            "qwen35.ssm.time_step_rank".into(),
+            rust_model_inference::MetaValue::Uint32(1),
+        ),
+        (
+            "qwen35.ssm.inner_size".into(),
+            rust_model_inference::MetaValue::Uint32(32),
+        ),
+        (
+            "qwen35.full_attention_interval".into(),
+            rust_model_inference::MetaValue::Uint32(4),
+        ),
+        (
+            "qwen35.attention.recurrent_layers".into(),
+            rust_model_inference::MetaValue::Array(
+                rust_model_inference::MetaValueType::Uint32,
+                vec![rust_model_inference::MetaValue::Uint32(0)],
+            ),
+        ),
+    ]));
+    let catalog = fixture_catalog(qwen35_f32_dense_tensors(), metadata);
+    let model = rust_model_inference::Qwen35Model::from_catalog(&catalog).unwrap();
+    PlacementFixture {
+        token_embedding: catalog.find(ComponentId::Llm, "token_embd.weight").unwrap(),
+        output: catalog.find(ComponentId::Llm, "output.weight").unwrap(),
+        catalog,
+        model: PlacementModel::Qwen35(model),
+    }
+}
+
+pub fn tiny_qwen35_quantized_dense(matrix_type: GGMLType) -> PlacementFixture {
+    assert!(matches!(
+        matrix_type,
+        GGMLType::Q4K | GGMLType::Q5K | GGMLType::Q6K
+    ));
+    let mut metadata = model_metadata("qwen35", 19, 1, 4, 2, 256, 64);
+    metadata.insert(
+        "qwen35.embedding_length".into(),
+        rust_model_inference::MetaValue::Uint32(256),
+    );
+    metadata.insert(
+        "qwen35.vocab_size".into(),
+        rust_model_inference::MetaValue::Uint32(0),
+    );
+    metadata.insert(
+        "tokenizer.ggml.tokens".into(),
+        rust_model_inference::MetaValue::Array(
+            rust_model_inference::MetaValueType::String,
+            (0..64)
+                .map(|index| rust_model_inference::MetaValue::String(format!("{index}")))
+                .collect(),
+        ),
+    );
+    metadata.extend(qwen35_dense_metadata());
+    let catalog = fixture_catalog(qwen35_quantized_dense_tensors(matrix_type), metadata);
+    let model = rust_model_inference::Qwen35Model::from_catalog(&catalog).unwrap();
+    PlacementFixture {
+        token_embedding: catalog.find(ComponentId::Llm, "token_embd.weight").unwrap(),
+        output: catalog.find(ComponentId::Llm, "output.weight").unwrap(),
+        catalog,
+        model: PlacementModel::Qwen35(model),
+    }
+}
+
+fn qwen35_dense_metadata() -> BTreeMap<String, rust_model_inference::MetaValue> {
+    BTreeMap::from([
+        (
+            "qwen35.attention.key_length".into(),
+            rust_model_inference::MetaValue::Uint32(64),
+        ),
+        (
+            "qwen35.attention.value_length".into(),
+            rust_model_inference::MetaValue::Uint32(64),
+        ),
+        (
+            "qwen35.rope.dimension_count".into(),
+            rust_model_inference::MetaValue::Uint32(64),
+        ),
+        (
+            "qwen35.rope.dimension_sections".into(),
+            rust_model_inference::MetaValue::Array(
+                rust_model_inference::MetaValueType::Uint32,
+                vec![
+                    rust_model_inference::MetaValue::Uint32(16),
+                    rust_model_inference::MetaValue::Uint32(16),
+                    rust_model_inference::MetaValue::Uint32(16),
+                    rust_model_inference::MetaValue::Uint32(16),
+                ],
+            ),
+        ),
+        (
+            "qwen35.ssm.conv_kernel".into(),
+            rust_model_inference::MetaValue::Uint32(4),
+        ),
+        (
+            "qwen35.ssm.state_size".into(),
+            rust_model_inference::MetaValue::Uint32(32),
+        ),
+        (
+            "qwen35.ssm.group_count".into(),
+            rust_model_inference::MetaValue::Uint32(1),
+        ),
+        (
+            "qwen35.ssm.time_step_rank".into(),
+            rust_model_inference::MetaValue::Uint32(1),
+        ),
+        (
+            "qwen35.ssm.inner_size".into(),
+            rust_model_inference::MetaValue::Uint32(32),
+        ),
+        (
+            "qwen35.full_attention_interval".into(),
+            rust_model_inference::MetaValue::Uint32(4),
+        ),
+        (
+            "qwen35.attention.recurrent_layers".into(),
+            rust_model_inference::MetaValue::Array(
+                rust_model_inference::MetaValueType::Uint32,
+                vec![rust_model_inference::MetaValue::Uint32(0)],
+            ),
+        ),
+    ])
+}
+
+fn model_metadata(
+    arch: &str,
+    n_ctx: u32,
+    n_layer: u32,
+    n_head: u32,
+    n_head_kv: u32,
+    n_ff: u32,
+    vocab: u32,
+) -> BTreeMap<String, rust_model_inference::MetaValue> {
+    BTreeMap::from([
+        (
+            "general.architecture".into(),
+            rust_model_inference::MetaValue::String(arch.into()),
+        ),
+        (
+            format!("{arch}.embedding_length"),
+            rust_model_inference::MetaValue::Uint32(64),
+        ),
+        (
+            format!("{arch}.block_count"),
+            rust_model_inference::MetaValue::Uint32(n_layer),
+        ),
+        (
+            format!("{arch}.attention.head_count"),
+            rust_model_inference::MetaValue::Uint32(n_head),
+        ),
+        (
+            format!("{arch}.attention.head_count_kv"),
+            rust_model_inference::MetaValue::Uint32(n_head_kv),
+        ),
+        (
+            format!("{arch}.feed_forward_length"),
+            rust_model_inference::MetaValue::Uint32(n_ff),
+        ),
+        (
+            format!("{arch}.context_length"),
+            rust_model_inference::MetaValue::Uint32(n_ctx),
+        ),
+        (
+            format!("{arch}.vocab_size"),
+            rust_model_inference::MetaValue::Uint32(vocab),
+        ),
+        (
+            format!("{arch}.rope.freq_base"),
+            rust_model_inference::MetaValue::Float32(1_000_000.0),
+        ),
+        (
+            format!("{arch}.attention.layer_norm_rms_epsilon"),
+            rust_model_inference::MetaValue::Float32(1e-6),
+        ),
+    ])
+}
+
+struct FixtureSource {
+    metadata: BTreeMap<String, rust_model_inference::MetaValue>,
+    records: Vec<SourceTensorRecord>,
+    bytes: BTreeMap<String, Vec<u8>>,
+}
+
+impl TensorSource for FixtureSource {
+    fn metadata(&self, key: &str) -> Option<&rust_model_inference::MetaValue> {
+        self.metadata.get(key)
+    }
+
+    fn tensor_info(&self, name: &str) -> Option<&TensorInfo> {
+        self.records
+            .iter()
+            .find(|record| record.info.name == name)
+            .map(|record| &record.info)
+    }
+
+    fn tensor_slice(&self, name: &str) -> Option<&[u8]> {
+        self.bytes.get(name).map(Vec::as_slice)
+    }
+
+    fn source_format(&self) -> SourceFormat {
+        SourceFormat::Gguf
+    }
+
+    fn tensor_records(&self) -> Vec<SourceTensorRecord> {
+        self.records.clone()
+    }
+}
+
+fn fixture_catalog(
+    tensors: Vec<(String, Vec<u64>, GGMLType)>,
+    metadata: BTreeMap<String, rust_model_inference::MetaValue>,
+) -> Arc<TensorCatalog> {
+    let mut offset = 0_u64;
+    let mut records = Vec::new();
+    let mut bytes = BTreeMap::new();
+    for (name, dims, ggml_type) in tensors {
+        let elements = dims.iter().product::<u64>();
+        let (block_elements, block_bytes) = ggml_type.type_traits();
+        let len =
+            elements / u64::try_from(block_elements).unwrap() * u64::try_from(block_bytes).unwrap();
+        let mut tensor_bytes = vec![0; usize::try_from(len).unwrap()];
+        match ggml_type {
+            GGMLType::Q8_0 => {
+                for block in tensor_bytes.chunks_exact_mut(34) {
+                    block[..2].copy_from_slice(&[0x00, 0x3c]);
+                    block[2..].fill(1);
+                }
+            }
+            GGMLType::F32 => {
+                for value in tensor_bytes.chunks_exact_mut(4) {
+                    value.copy_from_slice(&1.0_f32.to_le_bytes());
+                }
+            }
+            GGMLType::Q4K | GGMLType::Q5K | GGMLType::Q6K => {
+                for block in tensor_bytes.chunks_exact_mut(block_bytes) {
+                    block[..2].copy_from_slice(&[0x00, 0x3c]);
+                    block[2..].fill(1);
+                }
+            }
+            _ => {}
+        }
+        records.push(SourceTensorRecord {
+            info: TensorInfo {
+                name: name.clone(),
+                dims,
+                ggml_type,
+                offset,
+            },
+            segment_id: 0,
+            segment_byte_range: offset..offset + len,
+            layer: None,
+        });
+        bytes.insert(name, tensor_bytes);
+        offset += len;
+    }
+    Arc::new(
+        TensorCatalog::from_sources(vec![(
+            ComponentId::Llm,
+            Arc::new(FixtureSource {
+                metadata,
+                records,
+                bytes,
+            }) as Arc<dyn TensorSource>,
+        )])
+        .unwrap(),
+    )
+}
+
+fn qwen3_tensors() -> Vec<(String, Vec<u64>, GGMLType)> {
+    let mut tensors = vec![
+        ("token_embd.weight".into(), vec![64, 64], GGMLType::Q8_0),
+        ("output_norm.weight".into(), vec![64], GGMLType::F32),
+        ("output.weight".into(), vec![64, 64], GGMLType::Q8_0),
+    ];
+    for layer in 0..2 {
+        tensors.extend(qwen3_layer_tensors(layer));
+    }
+    tensors
+}
+
+fn qwen3_tied_tensors() -> Vec<(String, Vec<u64>, GGMLType)> {
+    let mut tensors = vec![
+        ("token_embd.weight".into(), vec![64, 64], GGMLType::Q8_0),
+        ("output_norm.weight".into(), vec![64], GGMLType::F32),
+    ];
+    for layer in 0..2 {
+        tensors.extend(qwen3_layer_tensors(layer));
+    }
+    tensors
+}
+
+fn qwen3_layer_tensors(layer: usize) -> Vec<(String, Vec<u64>, GGMLType)> {
+    let prefix = format!("blk.{layer}");
+    vec![
+        (
+            format!("{prefix}.attn_norm.weight"),
+            vec![64],
+            GGMLType::F32,
+        ),
+        (
+            format!("{prefix}.attn_q_norm.weight"),
+            vec![16],
+            GGMLType::F32,
+        ),
+        (
+            format!("{prefix}.attn_k_norm.weight"),
+            vec![16],
+            GGMLType::F32,
+        ),
+        (
+            format!("{prefix}.attn_q.weight"),
+            vec![64, 64],
+            GGMLType::Q8_0,
+        ),
+        (
+            format!("{prefix}.attn_k.weight"),
+            vec![64, 32],
+            GGMLType::Q8_0,
+        ),
+        (
+            format!("{prefix}.attn_v.weight"),
+            vec![64, 32],
+            GGMLType::Q8_0,
+        ),
+        (
+            format!("{prefix}.attn_output.weight"),
+            vec![64, 64],
+            GGMLType::Q8_0,
+        ),
+        (format!("{prefix}.ffn_norm.weight"), vec![64], GGMLType::F32),
+        (
+            format!("{prefix}.ffn_gate.weight"),
+            vec![64, 96],
+            GGMLType::Q8_0,
+        ),
+        (
+            format!("{prefix}.ffn_up.weight"),
+            vec![64, 96],
+            GGMLType::Q8_0,
+        ),
+        (
+            format!("{prefix}.ffn_down.weight"),
+            vec![96, 64],
+            GGMLType::Q8_0,
+        ),
+    ]
+}
+
+fn qwen35_tensors() -> Vec<(String, Vec<u64>, GGMLType)> {
+    let mut tensors = vec![
+        ("token_embd.weight".into(), vec![64, 64], GGMLType::Q8_0),
+        ("output_norm.weight".into(), vec![64], GGMLType::F32),
+        ("output.weight".into(), vec![64, 64], GGMLType::Q8_0),
+    ];
+    tensors.extend(qwen35_dense_tensors(0));
+    tensors.extend(qwen35_recurrent_tensors(1));
+    tensors
+}
+
+fn qwen35_dense_tensors(layer: usize) -> Vec<(String, Vec<u64>, GGMLType)> {
+    let prefix = format!("blk.{layer}");
+    vec![
+        (
+            format!("{prefix}.attn_norm.weight"),
+            vec![64],
+            GGMLType::F32,
+        ),
+        (
+            format!("{prefix}.post_attention_norm.weight"),
+            vec![64],
+            GGMLType::F32,
+        ),
+        (
+            format!("{prefix}.attn_q_norm.weight"),
+            vec![16],
+            GGMLType::F32,
+        ),
+        (
+            format!("{prefix}.attn_k_norm.weight"),
+            vec![16],
+            GGMLType::F32,
+        ),
+        (
+            format!("{prefix}.attn_q.weight"),
+            vec![64, 128],
+            GGMLType::Q8_0,
+        ),
+        (
+            format!("{prefix}.attn_k.weight"),
+            vec![64, 32],
+            GGMLType::Q8_0,
+        ),
+        (
+            format!("{prefix}.attn_v.weight"),
+            vec![64, 32],
+            GGMLType::Q8_0,
+        ),
+        (
+            format!("{prefix}.attn_output.weight"),
+            vec![64, 64],
+            GGMLType::Q8_0,
+        ),
+        (
+            format!("{prefix}.ffn_gate.weight"),
+            vec![64, 96],
+            GGMLType::Q8_0,
+        ),
+        (
+            format!("{prefix}.ffn_up.weight"),
+            vec![64, 96],
+            GGMLType::Q8_0,
+        ),
+        (
+            format!("{prefix}.ffn_down.weight"),
+            vec![96, 64],
+            GGMLType::Q8_0,
+        ),
+    ]
+}
+
+fn qwen35_recurrent_tensors(layer: usize) -> Vec<(String, Vec<u64>, GGMLType)> {
+    let prefix = format!("blk.{layer}");
+    vec![
+        (
+            format!("{prefix}.attn_norm.weight"),
+            vec![64],
+            GGMLType::F32,
+        ),
+        (
+            format!("{prefix}.post_attention_norm.weight"),
+            vec![64],
+            GGMLType::F32,
+        ),
+        (
+            format!("{prefix}.attn_qkv.weight"),
+            vec![64, 96],
+            GGMLType::Q8_0,
+        ),
+        (
+            format!("{prefix}.attn_gate.weight"),
+            vec![64, 32],
+            GGMLType::Q8_0,
+        ),
+        (
+            format!("{prefix}.ssm_beta.weight"),
+            vec![64, 32],
+            GGMLType::Q8_0,
+        ),
+        (
+            format!("{prefix}.ssm_alpha.weight"),
+            vec![64, 32],
+            GGMLType::Q8_0,
+        ),
+        (
+            format!("{prefix}.ssm_conv1d.weight"),
+            vec![384],
+            GGMLType::F32,
+        ),
+        (format!("{prefix}.ssm_dt.bias"), vec![1], GGMLType::F32),
+        (format!("{prefix}.ssm_a"), vec![1], GGMLType::F32),
+        (format!("{prefix}.ssm_norm.weight"), vec![32], GGMLType::F32),
+        (
+            format!("{prefix}.ssm_out.weight"),
+            vec![32, 64],
+            GGMLType::Q8_0,
+        ),
+        (
+            format!("{prefix}.ffn_gate.weight"),
+            vec![64, 96],
+            GGMLType::Q8_0,
+        ),
+        (
+            format!("{prefix}.ffn_up.weight"),
+            vec![64, 96],
+            GGMLType::Q8_0,
+        ),
+        (
+            format!("{prefix}.ffn_down.weight"),
+            vec![96, 64],
+            GGMLType::Q8_0,
+        ),
+    ]
+}
+
+fn qwen35_f32_dense_tensors() -> Vec<(String, Vec<u64>, GGMLType)> {
+    let mut tensors = vec![
+        ("token_embd.weight".into(), vec![64, 64], GGMLType::Q8_0),
+        ("output_norm.weight".into(), vec![64], GGMLType::F32),
+        ("output.weight".into(), vec![64, 64], GGMLType::Q8_0),
+    ];
+    for (name, dims, _) in qwen35_dense_tensors(0) {
+        let matrix = dims.len() >= 2;
+        tensors.push((
+            name,
+            dims,
+            if matrix { GGMLType::F32 } else { GGMLType::F32 },
+        ));
+    }
+    tensors
+}
+
+fn qwen35_quantized_dense_tensors(matrix_type: GGMLType) -> Vec<(String, Vec<u64>, GGMLType)> {
+    let prefix = "blk.0";
+    vec![
+        ("token_embd.weight".into(), vec![256, 64], GGMLType::Q8_0),
+        ("output_norm.weight".into(), vec![256], GGMLType::F32),
+        ("output.weight".into(), vec![256, 64], GGMLType::Q8_0),
+        (
+            format!("{prefix}.attn_norm.weight"),
+            vec![256],
+            GGMLType::F32,
+        ),
+        (
+            format!("{prefix}.post_attention_norm.weight"),
+            vec![256],
+            GGMLType::F32,
+        ),
+        (
+            format!("{prefix}.attn_q_norm.weight"),
+            vec![64],
+            GGMLType::F32,
+        ),
+        (
+            format!("{prefix}.attn_k_norm.weight"),
+            vec![64],
+            GGMLType::F32,
+        ),
+        (
+            format!("{prefix}.attn_q.weight"),
+            vec![256, 512],
+            matrix_type,
+        ),
+        (
+            format!("{prefix}.attn_k.weight"),
+            vec![256, 128],
+            matrix_type,
+        ),
+        (
+            format!("{prefix}.attn_v.weight"),
+            vec![256, 128],
+            matrix_type,
+        ),
+        (
+            format!("{prefix}.attn_output.weight"),
+            vec![256, 256],
+            matrix_type,
+        ),
+        (
+            format!("{prefix}.ffn_gate.weight"),
+            vec![256, 256],
+            matrix_type,
+        ),
+        (
+            format!("{prefix}.ffn_up.weight"),
+            vec![256, 256],
+            matrix_type,
+        ),
+        (
+            format!("{prefix}.ffn_down.weight"),
+            vec![256, 256],
+            matrix_type,
+        ),
+    ]
+}
+
+struct RecordingProvider {
+    descriptor: DeviceDescriptor,
+    trace: Arc<Mutex<PlacementTrace>>,
+}
+
+impl DeviceDiscovery for RecordingProvider {
+    fn backend(&self) -> BackendKind {
+        BackendKind::Cpu
+    }
+
+    fn enumerate(&self) -> Result<Vec<DeviceDescriptor>, BackendError> {
+        Ok(vec![self.descriptor.clone()])
+    }
+}
+
+impl DeviceProvider for RecordingProvider {
+    fn open(
+        &self,
+        descriptor: &DeviceDescriptor,
+        plan: &DevicePlan,
+        _catalog: Arc<TensorCatalog>,
+    ) -> Result<Box<dyn DeviceSession>, BackendError> {
+        if descriptor != &self.descriptor || &plan.descriptor != descriptor {
+            return Err(BackendError::InvalidHandle);
+        }
+        Ok(Box::new(RecordingSession {
+            descriptor: descriptor.clone(),
+            programs: plan
+                .programs
+                .iter()
+                .map(|program| (program.id, program.clone()))
+                .collect(),
+            slots: plan
+                .slots
+                .iter()
+                .map(|slot| {
+                    (
+                        slot.id,
+                        vec![0.0; usize::try_from(slot.byte_len / 4).unwrap()],
+                    )
+                })
+                .collect(),
+            trace: Arc::clone(&self.trace),
+            fence: 0,
+        }))
+    }
+}
+
+struct RecordingSession {
+    descriptor: DeviceDescriptor,
+    programs: BTreeMap<ProgramId, rust_model_inference::ProgramPlan>,
+    slots: BTreeMap<SlotId, Vec<f32>>,
+    trace: Arc<Mutex<PlacementTrace>>,
+    fence: u64,
+}
+
+impl DeviceSession for RecordingSession {
+    fn descriptor(&self) -> &DeviceDescriptor {
+        &self.descriptor
+    }
+
+    fn write_f32(&mut self, slot: SlotId, values: &[f32]) -> Result<(), BackendError> {
+        let target = self
+            .slots
+            .get_mut(&slot)
+            .ok_or(BackendError::InvalidHandle)?;
+        if values.len() > target.len() {
+            return Err(BackendError::InvalidHandle);
+        }
+        target[..values.len()].copy_from_slice(values);
+        Ok(())
+    }
+
+    fn submit(
+        &mut self,
+        program: ProgramId,
+        _params: &RunParams<'_>,
+    ) -> Result<FenceId, BackendError> {
+        let plan = self
+            .programs
+            .get(&program)
+            .ok_or(BackendError::InvalidHandle)?;
+        let mut trace = self.trace.lock().map_err(|_| BackendError::PoisonedRun)?;
+        match &plan.kind {
+            ProgramKind::Q8Rows { tensor, .. } => {
+                trace.q8_matrix_tensor_ids.insert(*tensor);
+            }
+            ProgramKind::EmbeddingRows { tensor, .. } => {
+                trace.embedding_tensor_ids.insert(*tensor);
+            }
+            ProgramKind::LayerSegment { .. } => {
+                for operation in &plan.layer_ops {
+                    if let rust_model_inference::LayerOp::Q8Matmul { weight, .. } = operation {
+                        trace.q8_matrix_tensor_ids.insert(*weight);
+                    }
+                }
+            }
+            ProgramKind::FinalNormQ8Logits { output, .. } => {
+                trace.q8_matrix_tensor_ids.insert(*output);
+            }
+        }
+        drop(trace);
+        self.fence += 1;
+        Ok(FenceId(self.fence))
+    }
+
+    fn wait(&mut self, fence: FenceId) -> Result<(), BackendError> {
+        (fence.0 <= self.fence)
+            .then_some(())
+            .ok_or(BackendError::InvalidHandle)
+    }
+
+    fn read_f32(&mut self, slot: SlotId, values: &mut [f32]) -> Result<(), BackendError> {
+        let source = self.slots.get(&slot).ok_or(BackendError::InvalidHandle)?;
+        if values.len() > source.len() {
+            return Err(BackendError::InvalidHandle);
+        }
+        values.copy_from_slice(&source[..values.len()]);
+        Ok(())
+    }
+
+    fn reset_state(&mut self) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    fn stats(&self) -> SessionStats {
+        SessionStats::default()
+    }
+
+    fn lifecycle_probe(&self) -> LifecycleProbe {
+        LifecycleProbe::default()
+    }
+}
+
+fn recording_descriptor() -> DeviceDescriptor {
+    DeviceDescriptor {
+        id: DeviceId::parse("cpu0").unwrap(),
+        backend: BackendKind::Cpu,
+        physical_key: "recording-cpu".into(),
+        name: "recording-cpu".into(),
+        usable_bytes: u64::MAX,
+        max_allocation_bytes: u64::MAX,
+        buffer_alignment: 4,
+        unified_memory: true,
+        capabilities: DeviceCapabilities {
+            components: BTreeSet::from([ComponentId::Llm]),
+            modes: BTreeSet::from([rust_model_inference::PlacementMode::Row]),
+            layer_families: BTreeSet::new(),
+            tensor_types: BTreeSet::from([GGMLType::F32, GGMLType::Q8_0]),
+        },
+    }
+}
+
 #[cfg(any(feature = "vulkan", all(target_os = "macos", feature = "metal")))]
 mod gpu {
     use super::Q8Fixture;

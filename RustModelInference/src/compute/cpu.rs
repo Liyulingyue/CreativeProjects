@@ -45,7 +45,14 @@ impl CpuProvider {
                 components: BTreeSet::from([ComponentId::Llm, ComponentId::Vision]),
                 modes: BTreeSet::from([PlacementMode::Row]),
                 layer_families: BTreeSet::new(),
-                tensor_types: BTreeSet::from([GGMLType::F32, GGMLType::F16, GGMLType::Q8_0]),
+                tensor_types: BTreeSet::from([
+                    GGMLType::F32,
+                    GGMLType::F16,
+                    GGMLType::Q4K,
+                    GGMLType::Q5K,
+                    GGMLType::Q6K,
+                    GGMLType::Q8_0,
+                ]),
             },
         }
     }

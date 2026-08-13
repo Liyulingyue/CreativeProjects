@@ -551,13 +551,7 @@ impl PlacementCompiler<'_> {
             self.ensure_device(component, &target.device, PlacementMode::Row, None)?;
         }
         self.ensure_tensor(llm.final_norm, &primary)?;
-        let logits = self.ensure_tensor(llm.output, &primary)?;
-        if logits.ggml_type != GGMLType::Q8_0 {
-            return Err(PlanError::UnsupportedTensor {
-                tensor: llm.output,
-                device: primary,
-            });
-        }
+        self.ensure_tensor(llm.output, &primary)?;
         let mut row_shards = BTreeMap::new();
         let activation_bytes = checked_mul(
             u64::from(llm.hidden_size),
@@ -597,7 +591,11 @@ impl PlacementCompiler<'_> {
                     input,
                     output,
                 });
-            } else if entry.shape.len() >= 2 {
+                if entry.id != llm.output {
+                    continue;
+                }
+            }
+            if entry.shape.len() >= 2 {
                 if entry.ggml_type != GGMLType::Q8_0 {
                     self.ensure_tensor(entry.id, &primary)?;
                     builders.get_mut(&primary).unwrap().tensor(
