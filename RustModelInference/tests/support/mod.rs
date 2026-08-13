@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
 use std::ops::Range;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Clone)]
 pub struct Q8Block {
@@ -89,14 +91,34 @@ pub fn assert_close(actual: &[f32], expected: &[f32], atol: f32, rtol: f32) {
 }
 
 use rust_model_inference::{
-    parse_placement, BackendError, BackendKind, CompiledModel, ComponentId, DeviceCapabilities,
-    DeviceDescriptor, DeviceDiscovery, DeviceId, DevicePlan, DeviceProvider, DeviceRegistry,
-    DeviceSession, FenceId, GGMLType, LayerOp, LifecycleProbe, PlacementCompiler, ProgramId,
-    ProgramKind, RunParams, SessionStats, SlotId, SourceFormat, SourceTensorRecord, TensorCatalog,
-    TensorId, TensorInfo, TensorSource,
+    parse_placement, BackendError, BackendKind, CompiledModel, ComponentId, ComponentWorkload,
+    DeviceCapabilities, DeviceDescriptor, DeviceDiscovery, DeviceId, DevicePlan, DeviceProvider,
+    DeviceRegistry, DeviceSession, FenceId, GGMLType, LayerOp, LifecycleProbe, PlacementCompiler,
+    ProgramId, ProgramKind, RunParams, SessionStats, SlotId, SourceFormat, SourceTensorRecord,
+    TensorCatalog, TensorId, TensorInfo, TensorSource,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
+
+#[derive(Default)]
+pub struct ProviderProbes {
+    pub vulkan_discover: Arc<AtomicUsize>,
+    pub vulkan_open: Arc<AtomicUsize>,
+    pub metal_discover: Arc<AtomicUsize>,
+    pub metal_open: Arc<AtomicUsize>,
+}
+
+pub fn assert_gpu_probes(probes: &ProviderProbes, expected: (usize, usize, usize, usize)) {
+    assert_eq!(
+        (
+            probes.vulkan_discover.load(Ordering::SeqCst),
+            probes.vulkan_open.load(Ordering::SeqCst),
+            probes.metal_discover.load(Ordering::SeqCst),
+            probes.metal_open.load(Ordering::SeqCst),
+        ),
+        expected
+    );
+}
 
 pub struct PlacementFixture {
     catalog: Arc<TensorCatalog>,
@@ -139,6 +161,10 @@ pub struct PlacementTrace {
 }
 
 impl PlacementFixture {
+    pub fn catalog_arc(&self) -> Arc<TensorCatalog> {
+        Arc::clone(&self.catalog)
+    }
+
     pub fn catalog(&self) -> &TensorCatalog {
         &self.catalog
     }
@@ -676,6 +702,396 @@ pub fn empty_vision_source() -> Arc<dyn TensorSource> {
         records: Vec::new(),
         bytes: BTreeMap::new(),
     })
+}
+
+struct ProbeProvider {
+    descriptor: DeviceDescriptor,
+    discovers: Arc<AtomicUsize>,
+    opens: Arc<AtomicUsize>,
+}
+
+impl DeviceDiscovery for ProbeProvider {
+    fn backend(&self) -> BackendKind {
+        self.descriptor.backend
+    }
+
+    fn enumerate(&self) -> Result<Vec<DeviceDescriptor>, BackendError> {
+        self.discovers.fetch_add(1, Ordering::SeqCst);
+        Ok(vec![self.descriptor.clone()])
+    }
+}
+
+impl DeviceProvider for ProbeProvider {
+    fn open(
+        &self,
+        _descriptor: &DeviceDescriptor,
+        _plan: &DevicePlan,
+        _catalog: Arc<TensorCatalog>,
+    ) -> Result<Box<dyn DeviceSession>, BackendError> {
+        self.opens.fetch_add(1, Ordering::SeqCst);
+        Err(BackendError::InvalidHandle)
+    }
+}
+
+fn probe_descriptor(id: &str, backend: BackendKind) -> DeviceDescriptor {
+    DeviceDescriptor {
+        id: DeviceId::parse(id).unwrap(),
+        backend,
+        physical_key: id.into(),
+        name: id.into(),
+        usable_bytes: 1 << 30,
+        max_allocation_bytes: 1 << 30,
+        buffer_alignment: 16,
+        unified_memory: false,
+        capabilities: DeviceCapabilities {
+            components: BTreeSet::from([ComponentId::Llm]),
+            modes: BTreeSet::from([rust_model_inference::PlacementMode::Layer]),
+            layer_families: BTreeSet::from([
+                rust_model_inference::LayerFamily::Qwen3,
+                rust_model_inference::LayerFamily::Qwen35Dense,
+                rust_model_inference::LayerFamily::Qwen35Recurrent,
+            ]),
+            tensor_types: BTreeSet::from([GGMLType::F32, GGMLType::Q8_0]),
+        },
+    }
+}
+
+/// Compiles the production planner with probes on optional GPU providers.
+/// Probe providers deliberately cannot open: successful CPU-only compilation
+/// proves neither optional backend was discovered or opened.
+pub fn compile_fixture_with_probes(
+    fixture: &PlacementFixture,
+    placements: &[&str],
+    probes: &ProviderProbes,
+) -> Result<(), String> {
+    let mut rules = rust_model_inference::parse_placements(
+        &placements
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|error| error.to_string())?;
+    let mut requirements = vec![fixture.requirements()];
+    if rules.contains_key(&ComponentId::Vision) {
+        requirements.push(rust_model_inference::ComponentRequirements {
+            component: ComponentId::Vision,
+            workload: ComponentWorkload::VisionCpu { layer_count: 1 },
+        });
+    }
+    rules
+        .entry(ComponentId::Llm)
+        .or_insert_with(|| rust_model_inference::parse_placement("llm:layer=cpu0@1").unwrap());
+
+    let mut requested = BTreeSet::from([BackendKind::Cpu]);
+    for rule in rules.values() {
+        for target in &rule.targets {
+            requested.insert(
+                match target.device.as_str().trim_end_matches(char::is_numeric) {
+                    "cpu" => BackendKind::Cpu,
+                    "vulkan" => BackendKind::Vulkan,
+                    "metal" => BackendKind::Metal,
+                    "npu" => BackendKind::Npu,
+                    _ => return Err(format!("unknown backend {}", target.device.as_str())),
+                },
+            );
+        }
+    }
+
+    let mut registry = DeviceRegistry::new();
+    registry
+        .register_provider(Arc::new(rust_model_inference::compute::CpuProvider::new(1)))
+        .map_err(|error| error.to_string())?;
+    registry
+        .register_provider(Arc::new(ProbeProvider {
+            descriptor: probe_descriptor("vulkan0", BackendKind::Vulkan),
+            discovers: Arc::clone(&probes.vulkan_discover),
+            opens: Arc::clone(&probes.vulkan_open),
+        }))
+        .map_err(|error| error.to_string())?;
+    registry
+        .register_provider(Arc::new(ProbeProvider {
+            descriptor: probe_descriptor("metal0", BackendKind::Metal),
+            discovers: Arc::clone(&probes.metal_discover),
+            opens: Arc::clone(&probes.metal_open),
+        }))
+        .map_err(|error| error.to_string())?;
+    registry
+        .discover(&requested)
+        .map_err(|error| error.to_string())?;
+    let registry = Arc::new(registry);
+    let plan = PlacementCompiler {
+        catalog: fixture.catalog(),
+        registry: &registry,
+        requirements: &requirements,
+    }
+    .compile(&rules)
+    .map_err(|error| error.to_string())?;
+    CompiledModel::compile(fixture.catalog_arc(), plan, registry)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+pub struct ModelSourceFixture {
+    dir: PathBuf,
+    pub gguf: PathBuf,
+    pub ggufrs: PathBuf,
+}
+
+impl Drop for ModelSourceFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+static MODEL_SOURCE_ID: AtomicUsize = AtomicUsize::new(0);
+
+fn fixture_bytes(dims: &[u64], ggml_type: GGMLType) -> Vec<u8> {
+    let count = dims.iter().product::<u64>();
+    let (block_elements, block_bytes) = ggml_type.type_traits();
+    let mut bytes = vec![0; (count / block_elements as u64 * block_bytes as u64) as usize];
+    match ggml_type {
+        GGMLType::Q8_0 => {
+            for block in bytes.chunks_exact_mut(34) {
+                block[..2].copy_from_slice(&half::f16::from_f32(1.0).to_bits().to_le_bytes());
+                block[2..].fill(1);
+            }
+        }
+        GGMLType::F32 => {
+            for value in bytes.chunks_exact_mut(4) {
+                value.copy_from_slice(&1.0_f32.to_le_bytes());
+            }
+        }
+        _ => unreachable!("fixture only writes F32 and Q8_0 model tensors"),
+    }
+    bytes
+}
+
+fn put_u32(output: &mut Vec<u8>, value: u32) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+
+fn put_i32(output: &mut Vec<u8>, value: i32) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+
+fn put_u64(output: &mut Vec<u8>, value: u64) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+
+fn put_string(output: &mut Vec<u8>, value: &str) {
+    put_u64(output, value.len() as u64);
+    output.extend_from_slice(value.as_bytes());
+}
+
+fn put_metadata_value(output: &mut Vec<u8>, value: &rust_model_inference::MetaValue) {
+    use rust_model_inference::MetaValue;
+    match value {
+        MetaValue::Uint32(value) => put_u32(output, *value),
+        MetaValue::Float32(value) => output.extend_from_slice(&value.to_le_bytes()),
+        MetaValue::String(value) => put_string(output, value),
+        MetaValue::Array(element_type, values) => {
+            put_i32(output, *element_type as i32);
+            put_u64(output, values.len() as u64);
+            for value in values {
+                put_metadata_value(output, value);
+            }
+        }
+        value => panic!("unsupported tiny GGUF metadata {value:?}"),
+    }
+}
+
+fn metadata_type(value: &rust_model_inference::MetaValue) -> rust_model_inference::MetaValueType {
+    use rust_model_inference::{MetaValue, MetaValueType};
+    match value {
+        MetaValue::Uint32(_) => MetaValueType::Uint32,
+        MetaValue::Float32(_) => MetaValueType::Float32,
+        MetaValue::String(_) => MetaValueType::String,
+        MetaValue::Array(_, _) => MetaValueType::Array,
+        value => panic!("unsupported tiny GGUF metadata {value:?}"),
+    }
+}
+
+fn write_tiny_gguf(
+    path: &Path,
+    metadata: BTreeMap<String, rust_model_inference::MetaValue>,
+    tensors: Vec<(String, Vec<u64>, GGMLType)>,
+) {
+    let tensors = tensors
+        .into_iter()
+        .map(|(name, dims, ggml_type)| {
+            let bytes = fixture_bytes(&dims, ggml_type);
+            (name, dims, ggml_type, bytes)
+        })
+        .collect::<Vec<_>>();
+    let mut output = Vec::new();
+    output.extend_from_slice(b"GGUF");
+    put_u32(&mut output, 3);
+    put_u64(&mut output, tensors.len() as u64);
+    put_u64(&mut output, metadata.len() as u64);
+    for (key, value) in metadata {
+        put_string(&mut output, &key);
+        put_i32(&mut output, metadata_type(&value) as i32);
+        put_metadata_value(&mut output, &value);
+    }
+    let mut offset = 0_u64;
+    for (name, dims, ggml_type, bytes) in &tensors {
+        put_string(&mut output, name);
+        put_u32(&mut output, dims.len() as u32);
+        for dimension in dims {
+            put_u64(&mut output, *dimension);
+        }
+        put_i32(&mut output, *ggml_type as i32);
+        put_u64(&mut output, offset);
+        offset = (offset + bytes.len() as u64 + 31) & !31;
+    }
+    output.resize((output.len() + 31) & !31, 0);
+    for (_, _, _, bytes) in tensors {
+        output.extend_from_slice(&bytes);
+        output.resize((output.len() + 31) & !31, 0);
+    }
+    std::fs::write(path, output).unwrap();
+}
+
+fn model_source_fixture(
+    mut metadata: BTreeMap<String, rust_model_inference::MetaValue>,
+    tensors: Vec<(String, Vec<u64>, GGMLType)>,
+    name: &str,
+) -> ModelSourceFixture {
+    metadata.insert(
+        "general.alignment".into(),
+        rust_model_inference::MetaValue::Uint32(32),
+    );
+    let id = MODEL_SOURCE_ID.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("rmi-task13-{name}-{}-{id}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let gguf = dir.join(format!("{name}.gguf"));
+    let ggufrs = dir.join(format!("{name}.ggufrs"));
+    write_tiny_gguf(&gguf, metadata, tensors);
+    rust_model_inference::export_ggufrs(
+        &ggufrs,
+        &gguf,
+        None,
+        rust_model_inference::ExportOptions::default(),
+    )
+    .unwrap();
+    ModelSourceFixture { dir, gguf, ggufrs }
+}
+
+pub fn tiny_qwen3_sources() -> ModelSourceFixture {
+    model_source_fixture(
+        model_metadata("qwen3", 17, 2, 4, 2, 96, 64),
+        qwen3_tensors(),
+        "qwen3",
+    )
+}
+
+pub fn tiny_qwen35_sources() -> ModelSourceFixture {
+    let mut metadata = model_metadata("qwen35", 19, 1, 4, 2, 96, 64);
+    metadata.extend(qwen35_dense_metadata());
+    metadata.extend(BTreeMap::from([
+        (
+            "qwen35.attention.key_length".into(),
+            rust_model_inference::MetaValue::Uint32(16),
+        ),
+        (
+            "qwen35.attention.value_length".into(),
+            rust_model_inference::MetaValue::Uint32(16),
+        ),
+        (
+            "qwen35.rope.dimension_count".into(),
+            rust_model_inference::MetaValue::Uint32(16),
+        ),
+        (
+            "qwen35.rope.dimension_sections".into(),
+            rust_model_inference::MetaValue::Array(
+                rust_model_inference::MetaValueType::Uint32,
+                vec![
+                    rust_model_inference::MetaValue::Uint32(4),
+                    rust_model_inference::MetaValue::Uint32(4),
+                    rust_model_inference::MetaValue::Uint32(4),
+                    rust_model_inference::MetaValue::Uint32(4),
+                ],
+            ),
+        ),
+    ]));
+    metadata.insert(
+        "tokenizer.ggml.tokens".into(),
+        rust_model_inference::MetaValue::Array(
+            rust_model_inference::MetaValueType::String,
+            (0..64)
+                .map(|index| rust_model_inference::MetaValue::String(index.to_string()))
+                .collect(),
+        ),
+    );
+    let mut tensors = vec![
+        ("token_embd.weight".into(), vec![64, 64], GGMLType::Q8_0),
+        ("output_norm.weight".into(), vec![64], GGMLType::F32),
+        ("output.weight".into(), vec![64, 64], GGMLType::Q8_0),
+    ];
+    tensors.extend(qwen35_dense_tensors(0));
+    model_source_fixture(metadata, tensors, "qwen35")
+}
+
+pub struct FixturePromptRun {
+    pub logits: Vec<f32>,
+    pub tokens: Vec<u32>,
+}
+
+fn selected_token(logits: &[f32]) -> u32 {
+    logits
+        .iter()
+        .enumerate()
+        .max_by(|left, right| left.1.total_cmp(right.1))
+        .map(|(index, _)| index as u32)
+        .unwrap()
+}
+
+pub fn run_fixture_prompt(path: &Path) -> Result<FixturePromptRun, String> {
+    let sources =
+        rust_model_inference::load_model_sources(path, None).map_err(|error| error.to_string())?;
+    let (compiled, runner) = rust_model_inference::compile_model(
+        sources,
+        &rust_model_inference::ExecutionOptions {
+            placements: vec!["llm:layer=cpu0@1".into()],
+            thread_count: 1,
+            max_batch_tokens: 1,
+            ..Default::default()
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    let mut run = compiled.start_run().map_err(|error| error.to_string())?;
+    match runner {
+        rust_model_inference::QwenRunner::Qwen3(model) => {
+            let mut logits = vec![0.0; model.config.vocab];
+            model
+                .forward(&mut run, &[1], &[[0, 0, 0, 0]], &mut logits)
+                .map_err(|error| error.to_string())?;
+            let first = selected_token(&logits);
+            model
+                .forward(&mut run, &[first], &[[1, 1, 1, 0]], &mut logits)
+                .map_err(|error| error.to_string())?;
+            let second = selected_token(&logits);
+            Ok(FixturePromptRun {
+                logits,
+                tokens: vec![first, second],
+            })
+        }
+        rust_model_inference::QwenRunner::Qwen35(model) => {
+            let mut logits = vec![0.0; model.config.vocab_size];
+            model
+                .forward_compiled(&mut run, &[1], &[[0, 0, 0, 0]], &mut logits)
+                .map_err(|error| error.to_string())?;
+            let first = selected_token(&logits);
+            model
+                .forward_compiled(&mut run, &[first], &[[1, 1, 1, 0]], &mut logits)
+                .map_err(|error| error.to_string())?;
+            let second = selected_token(&logits);
+            Ok(FixturePromptRun {
+                logits,
+                tokens: vec![first, second],
+            })
+        }
+    }
 }
 
 pub fn tiny_qwen3_tied() -> PlacementFixture {

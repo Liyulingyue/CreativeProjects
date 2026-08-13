@@ -134,6 +134,49 @@ fn explicit_layer_backend_matches_cpu_for_all_model_sources() {
 }
 
 #[test]
+fn default_cpu_compilation_never_discovers_or_opens_gpu_providers() {
+    let probes = support::ProviderProbes::default();
+    support::compile_fixture_with_probes(&support::tiny_qwen3(), &[], &probes).unwrap();
+    support::assert_gpu_probes(&probes, (0, 0, 0, 0));
+}
+
+#[test]
+fn explicit_vision_gpu_and_unavailable_backends_fail_before_open() {
+    let probes = support::ProviderProbes::default();
+    for placement in [
+        "vision:layer=vulkan0@1",
+        "vision:layer=metal0@1",
+        "vision:layer=npu0@1",
+    ] {
+        let error =
+            support::compile_fixture_with_probes(&support::tiny_qwen3(), &[placement], &probes)
+                .unwrap_err();
+        assert!(error.contains("unsupported component") || error.contains("unavailable"));
+    }
+    assert_eq!(
+        probes.vulkan_open.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+    assert_eq!(
+        probes.metal_open.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+}
+
+#[test]
+fn raw_gguf_and_ggufrs_execute_the_same_qwen_logits_and_tokens() {
+    for fixture in [
+        support::tiny_qwen3_sources(),
+        support::tiny_qwen35_sources(),
+    ] {
+        let raw = support::run_fixture_prompt(&fixture.gguf).unwrap();
+        let packaged = support::run_fixture_prompt(&fixture.ggufrs).unwrap();
+        support::assert_close(&raw.logits, &packaged.logits, 1e-3, 1e-3);
+        assert_eq!(raw.tokens, packaged.tokens);
+    }
+}
+
+#[test]
 fn shared_compile_defaults_to_cpu_layer_plan() {
     let fixture = support::tiny_qwen3();
     let (compiled, _) = rust_model_inference::compile_model(
