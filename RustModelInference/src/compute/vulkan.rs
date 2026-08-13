@@ -4,11 +4,12 @@ use super::device::{
     SlotId,
 };
 use super::program::{
-    DevicePlan, ProgramKind, ProgramPlan, ResidentTensorPlan, SlotKind, SlotPlan, SlotStorage,
+    DevicePlan, LayerOp, ProgramKind, ProgramPlan, ResidentTensorPlan, SlotKind, SlotPlan,
+    SlotStorage,
 };
-use crate::{ComponentId, DeviceId, GGMLType, PlacementMode, TensorCatalog};
+use crate::{ComponentId, DeviceId, GGMLType, LayerFamily, PlacementMode, TensorCatalog};
 use ash::{vk, Entry, Instance};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::{CStr, CString};
 use std::io::Cursor;
 use std::sync::Arc;
@@ -291,9 +292,13 @@ impl VulkanProvider {
                         unified_memory: is_unified_memory(&memory),
                         capabilities: DeviceCapabilities {
                             components: BTreeSet::from([ComponentId::Llm]),
-                            modes: BTreeSet::from([PlacementMode::Row]),
-                            layer_families: BTreeSet::new(),
-                            tensor_types: BTreeSet::from([GGMLType::Q8_0]),
+                            modes: BTreeSet::from([PlacementMode::Layer, PlacementMode::Row]),
+                            layer_families: BTreeSet::from([LayerFamily::Qwen3]),
+                            tensor_types: BTreeSet::from([
+                                GGMLType::F32,
+                                GGMLType::F16,
+                                GGMLType::Q8_0,
+                            ]),
                         },
                     },
                     physical,
@@ -404,6 +409,46 @@ struct Dispatch {
     weight_byte_bias: u32,
 }
 
+unsafe fn bind_q8_dispatch(
+    device: &ash::Device,
+    set: vk::DescriptorSet,
+    resident: vk::Buffer,
+    arena: vk::Buffer,
+    input: &SlotPlan,
+    output: &SlotPlan,
+    chunk: ChunkSpec,
+) -> Dispatch {
+    let infos = [
+        vk::DescriptorBufferInfo::default()
+            .buffer(resident)
+            .offset(chunk.descriptor_offset)
+            .range(chunk.descriptor_range),
+        vk::DescriptorBufferInfo::default()
+            .buffer(arena)
+            .offset(input.arena_offset)
+            .range(input.byte_len),
+        vk::DescriptorBufferInfo::default()
+            .buffer(arena)
+            .offset(output.arena_offset)
+            .range(output.byte_len),
+    ];
+    let writes = [0, 1, 2].map(|binding| {
+        vk::WriteDescriptorSet::default()
+            .dst_set(set)
+            .dst_binding(binding)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .buffer_info(std::slice::from_ref(&infos[binding as usize]))
+    });
+    device.update_descriptor_sets(&writes, &[]);
+    Dispatch {
+        set,
+        local_rows: chunk.local_rows,
+        global_row_start: chunk.global_row_start,
+        output_row_start: chunk.output_row_start,
+        weight_byte_bias: chunk.weight_byte_bias,
+    }
+}
+
 struct ProgramResource {
     plan: ProgramPlan,
     command: vk::CommandBuffer,
@@ -412,6 +457,127 @@ struct ProgramResource {
     n_in: u32,
     output_stride: u32,
     mode: u32,
+    layer_set: Option<vk::DescriptorSet>,
+    layer_ops: Vec<BoundLayerOp>,
+}
+
+#[derive(Clone, Copy)]
+struct ResidentRange {
+    offset: u64,
+}
+
+enum LayerOpSpec {
+    RmsNorm {
+        input: SlotId,
+        weight: ResidentRange,
+        output: SlotId,
+        elements: u32,
+        groups: u32,
+        epsilon_bits: u32,
+        weight_f16: bool,
+    },
+    Q8Matmul {
+        input: SlotId,
+        chunks: Vec<ChunkSpec>,
+        output: SlotId,
+        n_in: u32,
+        rows: u32,
+    },
+    Rope {
+        q: SlotId,
+        k: SlotId,
+        q_width: u32,
+        k_width: u32,
+        key_head_dim: u32,
+        freq_base_bits: u32,
+    },
+    KvAppend {
+        k: SlotId,
+        v: SlotId,
+        key_state: SlotId,
+        value_state: SlotId,
+        key_width: u32,
+        value_width: u32,
+    },
+    Attention {
+        q: SlotId,
+        output: SlotId,
+        head_count: u32,
+        kv_head_count: u32,
+        key_state: SlotId,
+        value_state: SlotId,
+        key_head_dim: u32,
+        value_head_dim: u32,
+        context_capacity: u32,
+    },
+    SiluMul {
+        gate: SlotId,
+        up: SlotId,
+        elements: u32,
+    },
+    Add {
+        left: SlotId,
+        right: SlotId,
+        output: SlotId,
+        elements: u32,
+    },
+}
+
+enum BoundLayerOp {
+    RmsNorm {
+        input: SlotId,
+        weight: ResidentRange,
+        output: SlotId,
+        elements: u32,
+        groups: u32,
+        epsilon_bits: u32,
+        weight_f16: bool,
+    },
+    Q8Matmul {
+        input: SlotId,
+        dispatches: Vec<Dispatch>,
+        output: SlotId,
+        n_in: u32,
+        rows: u32,
+    },
+    Rope {
+        q: SlotId,
+        k: SlotId,
+        q_width: u32,
+        k_width: u32,
+        key_head_dim: u32,
+        freq_base_bits: u32,
+    },
+    KvAppend {
+        k: SlotId,
+        v: SlotId,
+        key_state: SlotId,
+        value_state: SlotId,
+        key_width: u32,
+        value_width: u32,
+    },
+    Attention {
+        q: SlotId,
+        output: SlotId,
+        head_count: u32,
+        kv_head_count: u32,
+        key_state: SlotId,
+        value_state: SlotId,
+        key_head_dim: u32,
+        value_head_dim: u32,
+        context_capacity: u32,
+    },
+    SiluMul {
+        gate: SlotId,
+        up: SlotId,
+        elements: u32,
+    },
+    Add {
+        left: SlotId,
+        right: SlotId,
+        output: SlotId,
+        elements: u32,
+    },
 }
 
 struct Pending {
@@ -421,7 +587,7 @@ struct Pending {
 
 #[derive(Default)]
 struct SubmissionTracker {
-    pending: Option<Pending>,
+    pending: VecDeque<Pending>,
     poisoned: bool,
 }
 
@@ -429,7 +595,7 @@ impl SubmissionTracker {
     fn require_idle(&self) -> Result<(), &'static str> {
         if self.poisoned {
             Err("Vulkan session is poisoned")
-        } else if self.pending.is_some() {
+        } else if !self.pending.is_empty() {
             Err("Vulkan work is pending")
         } else {
             Ok(())
@@ -443,14 +609,39 @@ impl SubmissionTracker {
     ) -> Result<(), vk::Result> {
         match result {
             Ok(()) => {
-                self.pending = Some(pending);
+                self.pending.push_back(pending);
                 Ok(())
             }
             Err(error) => {
                 self.poisoned = true;
-                self.pending = None;
+                self.pending.clear();
                 Err(error)
             }
+        }
+    }
+}
+
+fn drain_pending(
+    tracker: &mut SubmissionTracker,
+    target: FenceId,
+    mut finish: impl FnMut(Pending) -> Result<(), BackendError>,
+) -> Result<(), BackendError> {
+    if !tracker.pending.iter().any(|pending| pending.id == target) {
+        return Err(BackendError::InvalidHandle);
+    }
+    loop {
+        let pending = tracker
+            .pending
+            .pop_front()
+            .expect("validated pending fence");
+        let id = pending.id;
+        if let Err(error) = finish(pending) {
+            tracker.poisoned = true;
+            tracker.pending.clear();
+            return Err(error);
+        }
+        if id == target {
+            return Ok(());
         }
     }
 }
@@ -470,6 +661,7 @@ struct VulkanSession {
     descriptor_pool: vk::DescriptorPool,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
+    layer_pipeline: vk::Pipeline,
     command_pool: vk::CommandPool,
     slots: BTreeMap<SlotId, SlotPlan>,
     programs: BTreeMap<ProgramId, ProgramResource>,
@@ -594,7 +786,7 @@ impl VulkanSession {
         let push_range = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::COMPUTE)
             .offset(0)
-            .size(32)];
+            .size(64)];
         let set_layouts = [descriptor_set_layout];
         let pipeline_layout = unsafe {
             device.create_pipeline_layout(
@@ -641,6 +833,44 @@ impl VulkanSession {
         })?;
         handles.release_last();
         handles.push(OpenHandle::Pipeline(pipeline));
+        let layer_bytes = include_bytes!("vulkan/shaders/layer_ops.spv");
+        let layer_code = ash::util::read_spv(&mut Cursor::new(layer_bytes.as_slice()))
+            .map_err(|error| pipeline_error(&adapter.descriptor, error.to_string()))?;
+        let layer_shader = unsafe {
+            device.create_shader_module(
+                &vk::ShaderModuleCreateInfo::default().code(&layer_code),
+                None,
+            )
+        }
+        .map_err(|error| {
+            pipeline_error(
+                &adapter.descriptor,
+                format!("layer shader module: {error:?}"),
+            )
+        })?;
+        handles.push(OpenHandle::Shader(layer_shader));
+        let layer_stage = vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::COMPUTE)
+            .module(layer_shader)
+            .name(main);
+        let layer_info = [vk::ComputePipelineCreateInfo::default()
+            .stage(layer_stage)
+            .layout(pipeline_layout)];
+        let layer_pipeline = take_created_handle(
+            &mut handles,
+            unsafe {
+                device.create_compute_pipelines(vk::PipelineCache::null(), &layer_info, None)
+            },
+            OpenHandle::Pipeline,
+        )
+        .map_err(|error| {
+            pipeline_error(
+                &adapter.descriptor,
+                format!("layer compute pipeline: {error:?}"),
+            )
+        })?;
+        handles.release_last();
+        handles.push(OpenHandle::Pipeline(layer_pipeline));
 
         let slots = validated.slots;
         let specs = validated.specs;
@@ -691,19 +921,33 @@ impl VulkanSession {
             for chunk in spec.chunks {
                 let set = sets[set_index];
                 set_index += 1;
+                dispatches.push(unsafe {
+                    bind_q8_dispatch(
+                        &device,
+                        set,
+                        resident.buffer,
+                        arena.buffer,
+                        input,
+                        output,
+                        chunk,
+                    )
+                });
+            }
+            let layer_set = if spec.layer_ops.is_empty() {
+                None
+            } else {
+                let set = sets[set_index];
+                set_index += 1;
                 let infos = [
                     vk::DescriptorBufferInfo::default()
                         .buffer(resident.buffer)
-                        .offset(chunk.descriptor_offset)
-                        .range(chunk.descriptor_range),
+                        .range(resident_size),
                     vk::DescriptorBufferInfo::default()
                         .buffer(arena.buffer)
-                        .offset(input.arena_offset)
-                        .range(input.byte_len),
+                        .range(arena_size),
                     vk::DescriptorBufferInfo::default()
                         .buffer(arena.buffer)
-                        .offset(output.arena_offset)
-                        .range(output.byte_len),
+                        .range(arena_size),
                 ];
                 let writes = [0, 1, 2].map(|binding| {
                     vk::WriteDescriptorSet::default()
@@ -713,12 +957,124 @@ impl VulkanSession {
                         .buffer_info(std::slice::from_ref(&infos[binding as usize]))
                 });
                 unsafe { device.update_descriptor_sets(&writes, &[]) };
-                dispatches.push(Dispatch {
-                    set,
-                    local_rows: chunk.local_rows,
-                    global_row_start: chunk.global_row_start,
-                    output_row_start: chunk.output_row_start,
-                    weight_byte_bias: chunk.weight_byte_bias,
+                Some(set)
+            };
+            let mut layer_ops = Vec::with_capacity(spec.layer_ops.len());
+            for op in spec.layer_ops {
+                layer_ops.push(match op {
+                    LayerOpSpec::Q8Matmul {
+                        input,
+                        chunks,
+                        output,
+                        n_in,
+                        rows,
+                    } => {
+                        let mut q8_dispatches = Vec::with_capacity(chunks.len());
+                        for chunk in chunks {
+                            let set = sets[set_index];
+                            set_index += 1;
+                            q8_dispatches.push(unsafe {
+                                bind_q8_dispatch(
+                                    &device,
+                                    set,
+                                    resident.buffer,
+                                    arena.buffer,
+                                    &slots[&input],
+                                    &slots[&output],
+                                    chunk,
+                                )
+                            });
+                        }
+                        BoundLayerOp::Q8Matmul {
+                            input,
+                            dispatches: q8_dispatches,
+                            output,
+                            n_in,
+                            rows,
+                        }
+                    }
+                    LayerOpSpec::RmsNorm {
+                        input,
+                        weight,
+                        output,
+                        elements,
+                        groups,
+                        epsilon_bits,
+                        weight_f16,
+                    } => BoundLayerOp::RmsNorm {
+                        input,
+                        weight,
+                        output,
+                        elements,
+                        groups,
+                        epsilon_bits,
+                        weight_f16,
+                    },
+                    LayerOpSpec::Rope {
+                        q,
+                        k,
+                        q_width,
+                        k_width,
+                        key_head_dim,
+                        freq_base_bits,
+                    } => BoundLayerOp::Rope {
+                        q,
+                        k,
+                        q_width,
+                        k_width,
+                        key_head_dim,
+                        freq_base_bits,
+                    },
+                    LayerOpSpec::KvAppend {
+                        k,
+                        v,
+                        key_state,
+                        value_state,
+                        key_width,
+                        value_width,
+                    } => BoundLayerOp::KvAppend {
+                        k,
+                        v,
+                        key_state,
+                        value_state,
+                        key_width,
+                        value_width,
+                    },
+                    LayerOpSpec::Attention {
+                        q,
+                        output,
+                        head_count,
+                        kv_head_count,
+                        key_state,
+                        value_state,
+                        key_head_dim,
+                        value_head_dim,
+                        context_capacity,
+                    } => BoundLayerOp::Attention {
+                        q,
+                        output,
+                        head_count,
+                        kv_head_count,
+                        key_state,
+                        value_state,
+                        key_head_dim,
+                        value_head_dim,
+                        context_capacity,
+                    },
+                    LayerOpSpec::SiluMul { gate, up, elements } => {
+                        BoundLayerOp::SiluMul { gate, up, elements }
+                    }
+                    LayerOpSpec::Add {
+                        left,
+                        right,
+                        output,
+                        elements,
+                    } => BoundLayerOp::Add {
+                        left,
+                        right,
+                        output,
+                        elements,
+                    },
                 });
             }
             let fence = unsafe {
@@ -741,6 +1097,8 @@ impl VulkanSession {
                         n_in: spec.n_in,
                         output_stride: spec.output_stride,
                         mode: spec.mode,
+                        layer_set,
+                        layer_ops,
                     },
                 )
                 .is_some()
@@ -766,6 +1124,7 @@ impl VulkanSession {
             descriptor_pool,
             pipeline_layout,
             pipeline,
+            layer_pipeline,
             command_pool,
             slots,
             programs,
@@ -792,6 +1151,376 @@ impl VulkanSession {
                 device: self.descriptor.id.clone(),
                 message: message.into(),
             })
+    }
+
+    fn require_submit(&self, program: ProgramId) -> Result<(), BackendError> {
+        if self.submission.poisoned {
+            Err(submission(&self.descriptor, "Vulkan session is poisoned"))
+        } else if self
+            .submission
+            .pending
+            .iter()
+            .any(|pending| pending.program == program)
+        {
+            Err(submission(
+                &self.descriptor,
+                "Vulkan program is already pending",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    unsafe fn compute_barrier(&self, command: vk::CommandBuffer) {
+        let barrier = vk::MemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE);
+        self.device.cmd_pipeline_barrier(
+            command,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::DependencyFlags::empty(),
+            &[barrier],
+            &[],
+            &[],
+        );
+    }
+
+    unsafe fn record_q8(
+        &self,
+        command: vk::CommandBuffer,
+        dispatches: &[Dispatch],
+        batch: u32,
+        n_in: u32,
+        output_stride: u32,
+        mode: u32,
+    ) -> Result<(), BackendError> {
+        self.device
+            .cmd_bind_pipeline(command, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+        for (index, dispatch) in dispatches.iter().enumerate() {
+            if index != 0 {
+                self.compute_barrier(command);
+            }
+            self.device.cmd_bind_descriptor_sets(
+                command,
+                vk::PipelineBindPoint::COMPUTE,
+                self.pipeline_layout,
+                0,
+                &[dispatch.set],
+                &[],
+            );
+            let push = [
+                batch,
+                n_in,
+                dispatch.local_rows,
+                dispatch.global_row_start,
+                output_stride,
+                mode,
+                dispatch.weight_byte_bias,
+                dispatch.output_row_start,
+            ];
+            self.device.cmd_push_constants(
+                command,
+                self.pipeline_layout,
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                std::slice::from_raw_parts(push.as_ptr().cast(), 32),
+            );
+            let work = if mode == 0 {
+                batch.checked_mul(dispatch.local_rows)
+            } else {
+                batch.checked_mul(n_in)
+            }
+            .ok_or(BackendError::InvalidHandle)?;
+            self.device
+                .cmd_dispatch(command, work.div_ceil(LOCAL_SIZE), 1, 1);
+        }
+        Ok(())
+    }
+
+    unsafe fn record_layer_op(
+        &self,
+        command: vk::CommandBuffer,
+        set: vk::DescriptorSet,
+        op: &BoundLayerOp,
+        params: &RunParams<'_>,
+    ) -> Result<(), BackendError> {
+        let batch = params.token_count;
+        let word = |slot: SlotId| {
+            u32::try_from(self.slots[&slot].arena_offset / 4)
+                .map_err(|_| BackendError::InvalidHandle)
+        };
+        let fits_f32 = |slot: SlotId, width: u32| {
+            u64::from(batch)
+                .checked_mul(u64::from(width))
+                .and_then(|values| values.checked_mul(4))
+                .is_some_and(|bytes| bytes <= self.slots[&slot].byte_len)
+        };
+        if let BoundLayerOp::Q8Matmul {
+            input,
+            dispatches,
+            output,
+            n_in,
+            rows,
+        } = op
+        {
+            if !fits_f32(*input, *n_in) || !fits_f32(*output, *rows) {
+                return Err(BackendError::InvalidHandle);
+            }
+            return self.record_q8(command, dispatches, batch, *n_in, *rows, 0);
+        }
+        let (push, work) = match op {
+            BoundLayerOp::RmsNorm {
+                input,
+                weight,
+                output,
+                elements,
+                groups,
+                epsilon_bits,
+                weight_f16,
+            } => {
+                let width = elements
+                    .checked_mul(*groups)
+                    .ok_or(BackendError::InvalidHandle)?;
+                if !fits_f32(*input, width) || !fits_f32(*output, width) {
+                    return Err(BackendError::InvalidHandle);
+                }
+                (
+                    [
+                        0,
+                        batch,
+                        word(*input)?,
+                        u32::try_from(weight.offset).map_err(|_| BackendError::InvalidHandle)?,
+                        word(*output)?,
+                        *elements,
+                        *groups,
+                        *epsilon_bits,
+                        u32::from(*weight_f16),
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ],
+                    batch.checked_mul(*groups),
+                )
+            }
+            BoundLayerOp::Rope {
+                q,
+                k,
+                q_width,
+                k_width,
+                key_head_dim,
+                freq_base_bits,
+            } => {
+                if !fits_f32(*q, *q_width) || !fits_f32(*k, *k_width) {
+                    return Err(BackendError::InvalidHandle);
+                }
+                (
+                    [
+                        1,
+                        batch,
+                        word(*q)?,
+                        word(*k)?,
+                        *q_width,
+                        *k_width,
+                        *key_head_dim,
+                        params.position_start,
+                        *freq_base_bits,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ],
+                    batch.checked_mul((q_width + k_width) / 2),
+                )
+            }
+            BoundLayerOp::KvAppend {
+                k,
+                v,
+                key_state,
+                value_state,
+                key_width,
+                value_width,
+            } => {
+                let end = params
+                    .position_start
+                    .checked_add(batch)
+                    .ok_or(BackendError::InvalidHandle)?;
+                let state_fits = |slot: SlotId, width: u32| {
+                    u64::from(end)
+                        .checked_mul(u64::from(width))
+                        .and_then(|v| v.checked_mul(2))
+                        .is_some_and(|bytes| bytes <= self.slots[&slot].byte_len)
+                };
+                if !fits_f32(*k, *key_width)
+                    || !fits_f32(*v, *value_width)
+                    || !state_fits(*key_state, *key_width)
+                    || !state_fits(*value_state, *value_width)
+                {
+                    return Err(BackendError::InvalidHandle);
+                }
+                (
+                    [
+                        2,
+                        batch,
+                        word(*k)?,
+                        word(*v)?,
+                        word(*key_state)?,
+                        word(*value_state)?,
+                        *key_width,
+                        *value_width,
+                        params.position_start,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ],
+                    Some(batch),
+                )
+            }
+            BoundLayerOp::Attention {
+                q,
+                output,
+                head_count,
+                kv_head_count,
+                key_state,
+                value_state,
+                key_head_dim,
+                value_head_dim,
+                context_capacity,
+            } => {
+                if params
+                    .position_start
+                    .checked_add(batch)
+                    .is_none_or(|end| end > *context_capacity)
+                {
+                    return Err(BackendError::InvalidHandle);
+                }
+                let q_width = head_count
+                    .checked_mul(*key_head_dim)
+                    .ok_or(BackendError::InvalidHandle)?;
+                let output_width = head_count
+                    .checked_mul(*value_head_dim)
+                    .ok_or(BackendError::InvalidHandle)?;
+                if !fits_f32(*q, q_width) || !fits_f32(*output, output_width) {
+                    return Err(BackendError::InvalidHandle);
+                }
+                (
+                    [
+                        3,
+                        batch,
+                        word(*q)?,
+                        word(*key_state)?,
+                        word(*value_state)?,
+                        word(*output)?,
+                        *head_count,
+                        *kv_head_count,
+                        *key_head_dim,
+                        *value_head_dim,
+                        params.position_start,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ],
+                    batch
+                        .checked_mul(*head_count)
+                        .and_then(|v| v.checked_mul(*value_head_dim)),
+                )
+            }
+            BoundLayerOp::SiluMul { gate, up, elements } => {
+                if !fits_f32(*gate, *elements) || !fits_f32(*up, *elements) {
+                    return Err(BackendError::InvalidHandle);
+                }
+                (
+                    [
+                        4,
+                        batch,
+                        word(*gate)?,
+                        word(*up)?,
+                        *elements,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ],
+                    batch.checked_mul(*elements),
+                )
+            }
+            BoundLayerOp::Add {
+                left,
+                right,
+                output,
+                elements,
+            } => {
+                if !fits_f32(*left, *elements)
+                    || !fits_f32(*right, *elements)
+                    || !fits_f32(*output, *elements)
+                {
+                    return Err(BackendError::InvalidHandle);
+                }
+                (
+                    [
+                        5,
+                        batch,
+                        word(*left)?,
+                        word(*right)?,
+                        word(*output)?,
+                        *elements,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ],
+                    batch.checked_mul(*elements),
+                )
+            }
+            BoundLayerOp::Q8Matmul { .. } => unreachable!(),
+        };
+        let work = work.ok_or(BackendError::InvalidHandle)?;
+        self.device
+            .cmd_bind_pipeline(command, vk::PipelineBindPoint::COMPUTE, self.layer_pipeline);
+        self.device.cmd_bind_descriptor_sets(
+            command,
+            vk::PipelineBindPoint::COMPUTE,
+            self.pipeline_layout,
+            0,
+            &[set],
+            &[],
+        );
+        self.device.cmd_push_constants(
+            command,
+            self.pipeline_layout,
+            vk::ShaderStageFlags::COMPUTE,
+            0,
+            std::slice::from_raw_parts(push.as_ptr().cast(), 64),
+        );
+        self.device
+            .cmd_dispatch(command, work.div_ceil(LOCAL_SIZE), 1, 1);
+        Ok(())
     }
 
     fn flush_staging(&self, offset: u64, size: u64) -> Result<(), BackendError> {
@@ -861,11 +1590,114 @@ impl DeviceSession for VulkanSession {
         program: ProgramId,
         params: &RunParams<'_>,
     ) -> Result<FenceId, BackendError> {
-        self.require_idle()?;
+        self.require_submit(program)?;
         let resource = self
             .programs
             .get(&program)
             .ok_or(BackendError::InvalidHandle)?;
+        if matches!(
+            resource.plan.kind,
+            ProgramKind::LayerSegment { .. } | ProgramKind::FinalNormQ8Logits { .. }
+        ) {
+            if params.token_count == 0 {
+                return Err(BackendError::InvalidHandle);
+            }
+            let fence = resource.fence;
+            let command = resource.command;
+            if !unsafe { self.device.get_fence_status(fence) }
+                .map_err(|error| submission(&self.descriptor, format!("fence status: {error:?}")))?
+            {
+                return Err(submission(
+                    &self.descriptor,
+                    "program fence is not complete",
+                ));
+            }
+            let record_result = (|| -> Result<(), BackendError> {
+                unsafe {
+                    self.device
+                        .reset_command_buffer(command, vk::CommandBufferResetFlags::empty())
+                        .map_err(|error| {
+                            submission(&self.descriptor, format!("reset command: {error:?}"))
+                        })?;
+                    self.device
+                        .begin_command_buffer(
+                            command,
+                            &vk::CommandBufferBeginInfo::default()
+                                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                        )
+                        .map_err(|error| {
+                            submission(&self.descriptor, format!("begin command: {error:?}"))
+                        })?;
+                    let set = resource.layer_set.ok_or(BackendError::InvalidHandle)?;
+                    for (index, op) in resource.layer_ops.iter().enumerate() {
+                        if index != 0 {
+                            self.compute_barrier(command);
+                        }
+                        self.record_layer_op(command, set, op, params)?;
+                    }
+                    if matches!(resource.plan.kind, ProgramKind::FinalNormQ8Logits { .. }) {
+                        let output = &self.slots[&resource.plan.output];
+                        let barrier = vk::BufferMemoryBarrier::default()
+                            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                            .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+                            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                            .buffer(self.arena.buffer)
+                            .offset(output.arena_offset)
+                            .size(output.byte_len);
+                        self.device.cmd_pipeline_barrier(
+                            command,
+                            vk::PipelineStageFlags::COMPUTE_SHADER,
+                            vk::PipelineStageFlags::TRANSFER,
+                            vk::DependencyFlags::empty(),
+                            &[],
+                            &[barrier],
+                            &[],
+                        );
+                        self.device.cmd_copy_buffer(
+                            command,
+                            self.arena.buffer,
+                            self.staging.buffer,
+                            &[vk::BufferCopy::default()
+                                .src_offset(output.arena_offset)
+                                .dst_offset(output.arena_offset)
+                                .size(output.byte_len)],
+                        );
+                    }
+                    self.device.end_command_buffer(command).map_err(|error| {
+                        submission(&self.descriptor, format!("end command: {error:?}"))
+                    })?;
+                    self.device.reset_fences(&[fence]).map_err(|error| {
+                        submission(&self.descriptor, format!("reset fence: {error:?}"))
+                    })?;
+                    self.device
+                        .queue_submit(
+                            self.queue,
+                            &[vk::SubmitInfo::default().command_buffers(&[command])],
+                            fence,
+                        )
+                        .map_err(|error| {
+                            submission(&self.descriptor, format!("queue submit: {error:?}"))
+                        })?;
+                }
+                Ok(())
+            })();
+            let id = FenceId(self.next_fence);
+            self.submission
+                .finish_submit(
+                    record_result.map_err(|_| vk::Result::ERROR_UNKNOWN),
+                    Pending { id, program },
+                )
+                .map_err(|error| {
+                    submission(
+                        &self.descriptor,
+                        format!("record or submit failed; session poisoned: {error:?}"),
+                    )
+                })?;
+            self.next_fence += 1;
+            self.stats.submissions += 1;
+            return Ok(id);
+        }
         let input = &self.slots[&resource.plan.input];
         let output = &self.slots[&resource.plan.output];
         let (input_bytes, output_bytes) = match &resource.plan.kind {
@@ -1073,18 +1905,12 @@ impl DeviceSession for VulkanSession {
     }
 
     fn wait(&mut self, fence: FenceId) -> Result<(), BackendError> {
-        let pending = self
-            .submission
-            .pending
-            .as_ref()
-            .filter(|pending| pending.id == fence)
-            .ok_or(BackendError::InvalidHandle)?;
-        let vk_fence = self.programs[&pending.program].fence;
-        unsafe { self.device.wait_for_fences(&[vk_fence], true, u64::MAX) }
-            .map_err(|error| submission(&self.descriptor, format!("wait fence: {error:?}")))?;
-        self.submission.pending = None;
         self.stats.host_waits += 1;
-        Ok(())
+        drain_pending(&mut self.submission, fence, |pending| {
+            let vk_fence = self.programs[&pending.program].fence;
+            unsafe { self.device.wait_for_fences(&[vk_fence], true, u64::MAX) }
+                .map_err(|error| submission(&self.descriptor, format!("wait fence: {error:?}")))
+        })
     }
 
     fn read_f32(&mut self, slot: SlotId, values: &mut [f32]) -> Result<(), BackendError> {
@@ -1132,9 +1958,12 @@ impl DeviceSession for VulkanSession {
 
 impl Drop for VulkanSession {
     fn drop(&mut self) {
-        if let Some(pending) = &self.submission.pending {
+        while let Some(pending) = self.submission.pending.pop_front() {
             let fence = self.programs[&pending.program].fence;
             let _ = unsafe { self.device.wait_for_fences(&[fence], true, u64::MAX) };
+        }
+        if self.submission.poisoned {
+            let _ = unsafe { self.device.device_wait_idle() };
         }
         unsafe {
             self.device.unmap_memory(self.staging.memory);
@@ -1143,6 +1972,7 @@ impl Drop for VulkanSession {
             }
             self.device.destroy_command_pool(self.command_pool, None);
             self.device.destroy_pipeline(self.pipeline, None);
+            self.device.destroy_pipeline(self.layer_pipeline, None);
             self.device
                 .destroy_descriptor_pool(self.descriptor_pool, None);
             self.device
@@ -1173,6 +2003,7 @@ struct ProgramSpec {
     n_in: u32,
     output_stride: u32,
     mode: u32,
+    layer_ops: Vec<LayerOpSpec>,
 }
 
 struct ValidatedPlan {
@@ -1302,9 +2133,28 @@ fn validate_plan(
         return Err(BackendError::InvalidHandle);
     }
     let specs = build_program_specs(plan, catalog, adapter)?;
+    let has_fixed = specs.iter().any(|spec| !spec.layer_ops.is_empty());
+    if has_fixed
+        && (resident_size > adapter.max_storage_buffer_range
+            || arena_size > adapter.max_storage_buffer_range)
+    {
+        return Err(BackendError::InvalidHandle);
+    }
     let descriptor_count = specs
         .iter()
-        .try_fold(0_usize, |count, spec| count.checked_add(spec.chunks.len()))
+        .try_fold(0_usize, |count, spec| {
+            let layer_count = usize::from(!spec.layer_ops.is_empty());
+            let q8_count = spec.layer_ops.iter().try_fold(0_usize, |count, op| {
+                count.checked_add(match op {
+                    LayerOpSpec::Q8Matmul { chunks, .. } => chunks.len(),
+                    _ => 0,
+                })
+            })?;
+            count
+                .checked_add(spec.chunks.len())?
+                .checked_add(layer_count)?
+                .checked_add(q8_count)
+        })
         .ok_or(BackendError::InvalidHandle)?;
     let (descriptor_set_count, storage_descriptor_count, command_buffer_count) =
         descriptor_counts(specs.len(), descriptor_count).ok_or(BackendError::InvalidHandle)?;
@@ -1354,12 +2204,17 @@ fn validate_plan(
                                 && output.byte_len / bytes <= u64::from(u32::MAX)
                         })
                 }
-                _ => false,
+                ProgramKind::LayerSegment { .. } | ProgramKind::FinalNormQ8Logits { .. } => true,
             };
+            let fixed = matches!(
+                spec.plan.kind,
+                ProgramKind::LayerSegment { .. } | ProgramKind::FinalNormQ8Logits { .. }
+            );
             !program_ids.insert(spec.plan.id)
-                || spec.plan.input == spec.plan.output
+                || (spec.plan.input == spec.plan.output
+                    && !matches!(spec.plan.kind, ProgramKind::LayerSegment { .. }))
                 || !program_bytes_valid
-                || spec.chunks.is_empty()
+                || (spec.chunks.is_empty() && !fixed)
                 || spec.chunks.iter().any(|chunk| {
                     chunk
                         .descriptor_offset
@@ -1390,6 +2245,27 @@ fn build_program_specs(
     plan.programs
         .iter()
         .map(|program| {
+            if matches!(
+                program.kind,
+                ProgramKind::LayerSegment { .. } | ProgramKind::FinalNormQ8Logits { .. }
+            ) {
+                if matches!(&program.kind, ProgramKind::LayerSegment { families, .. }
+                    if families.iter().any(|family| *family != LayerFamily::Qwen3))
+                {
+                    return Err(BackendError::InvalidHandle);
+                }
+                if program.layer_ops.is_empty() {
+                    return Err(BackendError::InvalidHandle);
+                }
+                return Ok(ProgramSpec {
+                    plan: program.clone(),
+                    chunks: Vec::new(),
+                    n_in: 0,
+                    output_stride: 0,
+                    mode: 2,
+                    layer_ops: bind_layer_ops(program, plan, catalog, adapter)?,
+                });
+            }
             let (tensor, rows, n_in, output_stride, mode) = match &program.kind {
                 ProgramKind::Q8Rows { tensor, rows, .. } => {
                     (*tensor, rows.clone(), 0, rows.len() as u32, 0)
@@ -1454,9 +2330,228 @@ fn build_program_specs(
                 n_in,
                 output_stride: if mode == 0 { output_stride } else { n_in },
                 mode,
+                layer_ops: Vec::new(),
             })
         })
         .collect()
+}
+
+fn bind_layer_ops(
+    program: &ProgramPlan,
+    plan: &DevicePlan,
+    catalog: &TensorCatalog,
+    adapter: &AdapterInfo,
+) -> Result<Vec<LayerOpSpec>, BackendError> {
+    let slot = |id| {
+        plan.slots
+            .iter()
+            .find(|slot| slot.id == id)
+            .ok_or(BackendError::InvalidHandle)
+    };
+    let f32_slot = |id| slot(id).is_ok_and(|slot| slot.storage == SlotStorage::F32);
+    let resident = |tensor| {
+        let entry = catalog.entry(tensor).ok_or(BackendError::InvalidHandle)?;
+        let plan = plan
+            .tensors
+            .iter()
+            .find(|plan| {
+                plan.tensor == tensor
+                    && plan.rows.start == 0
+                    && u64::from(plan.rows.end) == entry.row_count
+            })
+            .ok_or(BackendError::InvalidHandle)?;
+        Ok::<_, BackendError>((
+            entry,
+            plan,
+            ResidentRange {
+                offset: plan.arena_offset,
+            },
+        ))
+    };
+    let mut widths = BTreeMap::new();
+    let mut bound = Vec::with_capacity(program.layer_ops.len());
+    for op in &program.layer_ops {
+        match *op {
+            LayerOp::RmsNorm {
+                input,
+                weight,
+                output,
+                epsilon_bits,
+            } => {
+                let (entry, _, weight_range) = resident(weight)?;
+                let elements =
+                    u32::try_from(entry.shape[0]).map_err(|_| BackendError::InvalidHandle)?;
+                let groups = u32::try_from(slot(input)?.byte_len / 4 / u64::from(elements))
+                    .map_err(|_| BackendError::InvalidHandle)?;
+                if !matches!(entry.ggml_type, GGMLType::F32 | GGMLType::F16)
+                    || groups == 0
+                    || !f32_slot(input)
+                    || !f32_slot(output)
+                {
+                    return Err(BackendError::InvalidHandle);
+                }
+                widths.insert(input, elements);
+                widths.insert(output, elements);
+                bound.push(LayerOpSpec::RmsNorm {
+                    input,
+                    weight: weight_range,
+                    output,
+                    elements,
+                    groups,
+                    epsilon_bits,
+                    weight_f16: entry.ggml_type == GGMLType::F16,
+                });
+            }
+            LayerOp::Q8Matmul {
+                input,
+                weight,
+                output,
+            } => {
+                let (entry, resident_plan, _) = resident(weight)?;
+                let n_in =
+                    u32::try_from(entry.shape[0]).map_err(|_| BackendError::InvalidHandle)?;
+                let rows =
+                    u32::try_from(entry.row_count).map_err(|_| BackendError::InvalidHandle)?;
+                if entry.ggml_type != GGMLType::Q8_0
+                    || n_in == 0
+                    || n_in % Q8_BLOCK_ELEMENTS as u32 != 0
+                    || !f32_slot(input)
+                    || !f32_slot(output)
+                    || widths.get(&input).is_some_and(|width| *width != n_in)
+                {
+                    return Err(BackendError::InvalidHandle);
+                }
+                let row_bytes = u64::from(n_in) / Q8_BLOCK_ELEMENTS * Q8_BLOCK_BYTES;
+                widths.insert(input, n_in);
+                widths.insert(output, rows);
+                bound.push(LayerOpSpec::Q8Matmul {
+                    input,
+                    chunks: row_chunks(
+                        resident_plan,
+                        row_bytes,
+                        adapter.max_storage_buffer_range,
+                        adapter.descriptor.buffer_alignment,
+                    )?,
+                    output,
+                    n_in,
+                    rows,
+                });
+            }
+            LayerOp::Rope {
+                q,
+                k,
+                key_head_dim,
+                rope_dims,
+                freq_base_bits,
+            } if key_head_dim == rope_dims && f32_slot(q) && f32_slot(k) => {
+                bound.push(LayerOpSpec::Rope {
+                    q,
+                    k,
+                    q_width: *widths.get(&q).ok_or(BackendError::InvalidHandle)?,
+                    k_width: *widths.get(&k).ok_or(BackendError::InvalidHandle)?,
+                    key_head_dim,
+                    freq_base_bits,
+                });
+            }
+            LayerOp::KvAppend {
+                k,
+                v,
+                key_state,
+                value_state,
+                ..
+            } => {
+                let Some((key_width, value_width)) =
+                    program.layer_ops.iter().find_map(|op| match op {
+                        LayerOp::Attention {
+                            kv_head_count,
+                            key_state: keys,
+                            value_state: values,
+                            key_head_dim,
+                            value_head_dim,
+                            ..
+                        } if *keys == key_state && *values == value_state => Some((
+                            kv_head_count.checked_mul(*key_head_dim)?,
+                            kv_head_count.checked_mul(*value_head_dim)?,
+                        )),
+                        _ => None,
+                    })
+                else {
+                    return Err(BackendError::InvalidHandle);
+                };
+                if !f32_slot(k)
+                    || !f32_slot(v)
+                    || slot(key_state)?.storage != SlotStorage::F16
+                    || slot(value_state)?.storage != SlotStorage::F16
+                {
+                    return Err(BackendError::InvalidHandle);
+                }
+                bound.push(LayerOpSpec::KvAppend {
+                    k,
+                    v,
+                    key_state,
+                    value_state,
+                    key_width,
+                    value_width,
+                });
+            }
+            LayerOp::Attention {
+                q,
+                output,
+                head_count,
+                kv_head_count,
+                key_state,
+                value_state,
+                key_head_dim,
+                value_head_dim,
+                context_capacity,
+                ..
+            } if kv_head_count != 0 && f32_slot(q) && f32_slot(output) => {
+                widths.insert(
+                    output,
+                    head_count
+                        .checked_mul(value_head_dim)
+                        .ok_or(BackendError::InvalidHandle)?,
+                );
+                bound.push(LayerOpSpec::Attention {
+                    q,
+                    output,
+                    head_count,
+                    kv_head_count,
+                    key_state,
+                    value_state,
+                    key_head_dim,
+                    value_head_dim,
+                    context_capacity,
+                });
+            }
+            LayerOp::SiluMul { gate, up } if f32_slot(gate) && f32_slot(up) => {
+                let elements = *widths.get(&up).ok_or(BackendError::InvalidHandle)?;
+                if widths.get(&gate) != Some(&elements) {
+                    return Err(BackendError::InvalidHandle);
+                }
+                bound.push(LayerOpSpec::SiluMul { gate, up, elements });
+            }
+            LayerOp::Add {
+                left,
+                right,
+                output,
+            } if f32_slot(left) && f32_slot(right) && f32_slot(output) => {
+                let elements = *widths
+                    .get(&left)
+                    .or_else(|| widths.get(&right))
+                    .ok_or(BackendError::InvalidHandle)?;
+                widths.insert(output, elements);
+                bound.push(LayerOpSpec::Add {
+                    left,
+                    right,
+                    output,
+                    elements,
+                });
+            }
+            _ => return Err(BackendError::InvalidHandle),
+        }
+    }
+    Ok(bound)
 }
 
 fn row_chunks(
@@ -2238,6 +3333,69 @@ mod tests {
 
         assert_eq!(tracker.require_idle(), Err("Vulkan session is poisoned"));
         assert_eq!(tracker.require_idle(), Err("Vulkan session is poisoned"));
+    }
+
+    #[test]
+    fn predecessor_wait_failure_clears_pending_and_poisons_future_work() {
+        let mut tracker = SubmissionTracker {
+            pending: VecDeque::from([
+                Pending {
+                    id: FenceId(1),
+                    program: ProgramId(0),
+                },
+                Pending {
+                    id: FenceId(2),
+                    program: ProgramId(1),
+                },
+            ]),
+            poisoned: false,
+        };
+        assert!(matches!(
+            drain_pending(&mut tracker, FenceId(2), |pending| {
+                if pending.id == FenceId(1) {
+                    Err(BackendError::InvalidHandle)
+                } else {
+                    Ok(())
+                }
+            }),
+            Err(BackendError::InvalidHandle)
+        ));
+        assert!(tracker.pending.is_empty());
+        assert_eq!(tracker.require_idle(), Err("Vulkan session is poisoned"));
+    }
+
+    #[test]
+    fn final_fence_drains_predecessors_with_one_host_wait_boundary() {
+        let provider = VulkanProvider::new().unwrap();
+        let descriptor = provider.enumerate().unwrap().remove(0);
+        let catalog = Arc::new(test_catalog());
+        let mut plan = test_plan(descriptor.clone());
+        let output_offset = align_up(plan.slots[0].byte_len, descriptor.buffer_alignment);
+        plan.slots[0].alignment = descriptor.buffer_alignment;
+        plan.slots[1].alignment = descriptor.buffer_alignment;
+        plan.slots[1].arena_offset = output_offset;
+        for id in [ProgramId(1), ProgramId(2)] {
+            let mut program = plan.programs[0].clone();
+            program.id = id;
+            plan.programs.push(program);
+        }
+        let mut session = provider.open(&descriptor, &plan, catalog).unwrap();
+        session.write_f32(SlotId(0), &[1.0; 128]).unwrap();
+        let params = RunParams {
+            token_count: 2,
+            position_start: 0,
+            mrope_positions: &[],
+            token_ids: &[],
+        };
+        session.submit(ProgramId(0), &params).unwrap();
+        session.submit(ProgramId(1), &params).unwrap();
+        let final_fence = session.submit(ProgramId(2), &params).unwrap();
+        assert!(matches!(
+            session.submit(ProgramId(2), &params),
+            Err(BackendError::Submission { .. })
+        ));
+        session.wait(final_fence).unwrap();
+        assert_eq!(session.stats().host_waits, 1);
     }
 
     #[test]

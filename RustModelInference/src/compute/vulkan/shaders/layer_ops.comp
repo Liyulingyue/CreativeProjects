@@ -1,0 +1,186 @@
+#version 450
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer Resident {
+    uint data[];
+} resident;
+layout(set = 0, binding = 1, std430) buffer Arena {
+    uint data[];
+} arena;
+layout(set = 0, binding = 2, std430) buffer ArenaAlias {
+    uint data[];
+} arena_alias;
+
+layout(push_constant) uniform Params {
+    uint op;
+    uint batch;
+    uint p0;
+    uint p1;
+    uint p2;
+    uint p3;
+    uint p4;
+    uint p5;
+    uint p6;
+    uint p7;
+    uint p8;
+    uint p9;
+    uint p10;
+    uint p11;
+    uint p12;
+    uint p13;
+} params;
+
+float arena_f32(uint base, uint index) {
+    return uintBitsToFloat(arena.data[base + index]);
+}
+
+void set_arena_f32(uint base, uint index, float value) {
+    arena.data[base + index] = floatBitsToUint(value);
+}
+
+uint resident_byte(uint byte_index) {
+    uint word = resident.data[byte_index >> 2];
+    return (word >> ((byte_index & 3) * 8)) & 0xff;
+}
+
+float resident_weight(uint byte_offset, uint index, bool f16) {
+    if (f16) {
+        uint lo = resident_byte(byte_offset + index * 2);
+        uint hi = resident_byte(byte_offset + index * 2 + 1);
+        return unpackHalf2x16(lo | (hi << 8)).x;
+    }
+    return uintBitsToFloat(resident.data[(byte_offset >> 2) + index]);
+}
+
+float arena_f16(uint word_base, uint index) {
+    vec2 pair = unpackHalf2x16(arena.data[word_base + index / 2]);
+    return (index & 1) == 0 ? pair.x : pair.y;
+}
+
+void set_arena_f16(uint word_base, uint index, float value) {
+    uint word_index = word_base + index / 2;
+    vec2 pair = unpackHalf2x16(arena.data[word_index]);
+    if ((index & 1) == 0) pair.x = value; else pair.y = value;
+    arena.data[word_index] = packHalf2x16(pair);
+}
+
+void rms_norm(uint index) {
+    uint width = params.p3;
+    uint groups = params.p4;
+    if (index >= params.batch * groups) return;
+    uint base = index * width;
+    float sum = 0.0;
+    for (uint i = 0; i < width; ++i) {
+        float value = arena_f32(params.p0, base + i);
+        sum += value * value;
+    }
+    float scale = inversesqrt(sum / float(width) + uintBitsToFloat(params.p5));
+    for (uint i = 0; i < width; ++i) {
+        float weight = resident_weight(params.p1, i, params.p6 != 0);
+        set_arena_f32(params.p2, base + i, arena_f32(params.p0, base + i) * scale * weight);
+    }
+}
+
+void rope(uint index) {
+    uint half_width = params.p4 / 2;
+    uint q_pairs = params.p2 / 2;
+    uint k_pairs = params.p3 / 2;
+    uint pairs = q_pairs + k_pairs;
+    if (index >= params.batch * pairs) return;
+    uint item = index / pairs;
+    uint pair = index % pairs;
+    uint base_words = pair < q_pairs ? params.p0 : params.p1;
+    uint width = pair < q_pairs ? params.p2 : params.p3;
+    pair = pair < q_pairs ? pair : pair - q_pairs;
+    uint head = pair / half_width;
+    uint lane = pair % half_width;
+    uint base = item * width + head * params.p4;
+    float theta = float(params.p5 + item);
+    float theta_scale = pow(uintBitsToFloat(params.p6), -2.0 / float(params.p4));
+    for (uint i = 0; i < lane; ++i) theta *= theta_scale;
+    float c = cos(theta);
+    float s = sin(theta);
+    float x0 = arena_f32(base_words, base + lane);
+    float x1 = arena_f32(base_words, base + lane + half_width);
+    set_arena_f32(base_words, base + lane, fma(x0, c, -x1 * s));
+    set_arena_f32(base_words, base + lane + half_width, fma(x0, s, x1 * c));
+}
+
+void kv_append(uint item) {
+    if (item >= params.batch) return;
+    uint position = params.p6 + item;
+    for (uint lane = 0; lane < params.p4; ++lane) {
+        set_arena_f16(params.p2, position * params.p4 + lane,
+            arena_f32(params.p0, item * params.p4 + lane));
+    }
+    for (uint lane = 0; lane < params.p5; ++lane) {
+        set_arena_f16(params.p3, position * params.p5 + lane,
+            arena_f32(params.p1, item * params.p5 + lane));
+    }
+}
+
+// ponytail: each output lane recomputes softmax; share scores only after profiling proves it matters.
+void attention(uint index) {
+    uint value_dim = params.p7;
+    uint count = params.batch * params.p4 * value_dim;
+    if (index >= count) return;
+    uint lane = index % value_dim;
+    uint head_item = index / value_dim;
+    uint head = head_item % params.p4;
+    uint item = head_item / params.p4;
+    uint kv_head = head / (params.p4 / params.p5);
+    uint cached = params.p8 + item + 1;
+    uint key_dim = params.p6;
+    uint key_width = params.p5 * key_dim;
+    uint value_width = params.p5 * value_dim;
+    uint q_base = (item * params.p4 + head) * key_dim;
+    float scale = inversesqrt(float(key_dim));
+    float maximum = -1.0 / 0.0;
+    for (uint prior = 0; prior < cached; ++prior) {
+        float score = 0.0;
+        uint key_base = prior * key_width + kv_head * key_dim;
+        for (uint i = 0; i < key_dim; ++i) {
+            score += arena_f32(params.p0, q_base + i) * arena_f16(params.p1, key_base + i);
+        }
+        maximum = max(maximum, score * scale);
+    }
+    float denominator = 0.0;
+    float result = 0.0;
+    for (uint prior = 0; prior < cached; ++prior) {
+        float score = 0.0;
+        uint key_base = prior * key_width + kv_head * key_dim;
+        for (uint i = 0; i < key_dim; ++i) {
+            score += arena_f32(params.p0, q_base + i) * arena_f16(params.p1, key_base + i);
+        }
+        float probability = exp(score * scale - maximum);
+        denominator += probability;
+        result += probability * arena_f16(
+            params.p2, prior * value_width + kv_head * value_dim + lane);
+    }
+    set_arena_f32(params.p3, (item * params.p4 + head) * value_dim + lane,
+        result / denominator);
+}
+
+void silu_mul(uint index) {
+    if (index >= params.batch * params.p2) return;
+    float value = arena_f32(params.p0, index);
+    float up = arena_f32(params.p1, index);
+    set_arena_f32(params.p1, index, up * value / (1.0 + exp(-value)));
+}
+
+void add(uint index) {
+    if (index >= params.batch * params.p3) return;
+    set_arena_f32(params.p2, index,
+        arena_f32(params.p0, index) + arena_f32(params.p1, index));
+}
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    if (params.op == 0) rms_norm(index);
+    else if (params.op == 1) rope(index);
+    else if (params.op == 2) kv_append(index);
+    else if (params.op == 3) attention(index);
+    else if (params.op == 4) silu_mul(index);
+    else if (params.op == 5) add(index);
+}
