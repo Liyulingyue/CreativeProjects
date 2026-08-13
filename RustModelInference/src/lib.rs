@@ -20,6 +20,11 @@ pub mod traits;
 pub mod vision;
 
 pub use clip_config::{ClipVisionConfig, Qwen35Config};
+pub use compute::{
+    BackendError, BackendKind, DeviceCapabilities, DeviceDescriptor, DeviceDiscovery,
+    DeviceRegistry, DeviceSession, FenceId, LayerFamily, LifecycleProbe, ProgramId, RunParams,
+    SessionStats, SlotId,
+};
 pub use ggufrs::{
     export_ggufrs, open_model_source, ComponentInfo, ComponentRole, ExportOptions, GgufrsError,
     GgufrsFile, LoadedComponent, SegmentKind, GGUFRS_SEGMENT_ALIGNMENT, GGUFRS_VERSION,

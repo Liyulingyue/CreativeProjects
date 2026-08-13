@@ -1,344 +1,352 @@
-use thiserror::Error;
+use crate::{ComponentId, DeviceId, GGMLType, PlacementMode, TensorId};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-#[derive(Error, Debug)]
-pub enum ComputeError {
-    #[error("Device {0} does not support this operation")]
-    UnsupportedOp(String),
-
-    #[error("Device {0} not available")]
-    DeviceNotAvailable(String),
-
-    #[error("Memory error: {0}")]
-    MemoryError(String),
-
-    #[error("Execution failed: {0}")]
-    ExecutionError(String),
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BackendKind {
+    Cpu,
+    Vulkan,
+    Metal,
+    Npu,
 }
 
-pub type Result<T> = std::result::Result<T, ComputeError>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DeviceKind {
-    Cpu(u8),   // Cpu(0) = 第一个CPU, Cpu(1) = 第二个CPU (NUMA节点等)
-    Gpu(u8),   // Gpu(0) = 第一个GPU, Gpu(1) = 第二个GPU
-    Npu(u8),   // Npu(0) = 第一个NPU, Npu(1) = 第二个NPU
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LayerFamily {
+    Qwen3,
+    Qwen35Dense,
+    Qwen35Recurrent,
 }
 
-impl DeviceKind {
-    pub fn is_accelerator(&self) -> bool {
-        !matches!(self, DeviceKind::Cpu(_))
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceCapabilities {
+    pub components: BTreeSet<ComponentId>,
+    pub modes: BTreeSet<PlacementMode>,
+    pub layer_families: BTreeSet<LayerFamily>,
+    pub tensor_types: BTreeSet<GGMLType>,
+}
 
-    pub fn id(&self) -> u8 {
-        match self {
-            DeviceKind::Cpu(id) | DeviceKind::Gpu(id) | DeviceKind::Npu(id) => *id,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceDescriptor {
+    pub id: DeviceId,
+    pub backend: BackendKind,
+    pub physical_key: String,
+    pub name: String,
+    pub usable_bytes: u64,
+    pub max_allocation_bytes: u64,
+    pub buffer_alignment: u64,
+    pub unified_memory: bool,
+    pub capabilities: DeviceCapabilities,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SlotId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ProgramId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FenceId(pub u64);
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SessionStats {
+    pub resident_bytes: u64,
+    pub resident_allocations: u64,
+    pub resident_frees: u64,
+    pub weight_uploads: u64,
+    pub weight_upload_bytes: u64,
+    pub activation_h2d_bytes: u64,
+    pub activation_d2h_bytes: u64,
+    pub submissions: u64,
+    pub host_waits: u64,
+}
+
+#[derive(Default)]
+struct LifecycleCounters {
+    resident_bytes: AtomicU64,
+    resident_allocations: AtomicU64,
+    resident_frees: AtomicU64,
+    weight_uploads: AtomicU64,
+    weight_upload_bytes: AtomicU64,
+    activation_h2d_bytes: AtomicU64,
+    activation_d2h_bytes: AtomicU64,
+    submissions: AtomicU64,
+    host_waits: AtomicU64,
+}
+
+#[derive(Clone, Default)]
+pub struct LifecycleProbe(Arc<LifecycleCounters>);
+
+impl LifecycleProbe {
+    pub fn snapshot(&self) -> SessionStats {
+        SessionStats {
+            resident_bytes: self.0.resident_bytes.load(Ordering::Relaxed),
+            resident_allocations: self.0.resident_allocations.load(Ordering::Relaxed),
+            resident_frees: self.0.resident_frees.load(Ordering::Relaxed),
+            weight_uploads: self.0.weight_uploads.load(Ordering::Relaxed),
+            weight_upload_bytes: self.0.weight_upload_bytes.load(Ordering::Relaxed),
+            activation_h2d_bytes: self.0.activation_h2d_bytes.load(Ordering::Relaxed),
+            activation_d2h_bytes: self.0.activation_d2h_bytes.load(Ordering::Relaxed),
+            submissions: self.0.submissions.load(Ordering::Relaxed),
+            host_waits: self.0.host_waits.load(Ordering::Relaxed),
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OpType {
-    MatMulF32,
-    MatMulF16,
-    MatMulQ8,
-    MatMulQ4,
-    RmsNorm,
-    Silu,
-    Softmax,
-    RoPE,
-    Attention,
+#[derive(Debug, thiserror::Error)]
+pub enum BackendError {
+    #[error("backend is unavailable: {backend:?}")]
+    BackendUnavailable { backend: BackendKind },
+    #[error("device is unavailable: {device:?}")]
+    DeviceUnavailable { device: DeviceId },
+    #[error("duplicate backend registration: {backend:?}")]
+    DuplicateBackend { backend: BackendKind },
+    #[error("duplicate device id: {device:?}")]
+    DuplicateDeviceId { device: DeviceId },
+    #[error("descriptor {id:?} reports {actual:?}, expected {expected:?}")]
+    DescriptorBackendMismatch {
+        id: DeviceId,
+        expected: BackendKind,
+        actual: BackendKind,
+    },
+    #[error("unsupported {operation} for {device:?}")]
+    Unsupported {
+        device: DeviceId,
+        operation: &'static str,
+    },
+    #[error("allocation failed on {device:?}: {message}")]
+    Allocation { device: DeviceId, message: String },
+    #[error("weight upload failed on {device:?}: {message}")]
+    Upload { device: DeviceId, message: String },
+    #[error("pipeline creation failed on {device:?}: {message}")]
+    Pipeline { device: DeviceId, message: String },
+    #[error("submission failed on {device:?}: {message}")]
+    Submission { device: DeviceId, message: String },
+    #[error("program is missing for tensor {tensor:?}")]
+    ProgramMissing { tensor: TensorId },
+    #[error("invalid compiled handle")]
+    InvalidHandle,
+    #[error("inference state is poisoned")]
+    PoisonedRun,
 }
 
-impl OpType {
-    pub fn is_heavy(&self) -> bool {
-        matches!(self, OpType::MatMulF32 | OpType::MatMulF16 | OpType::MatMulQ8 | OpType::MatMulQ4)
-    }
+pub struct RunParams<'a> {
+    pub token_count: u32,
+    pub position_start: u32,
+    pub mrope_positions: &'a [[u32; 4]],
+    pub token_ids: &'a [u32],
 }
 
-#[derive(Debug, Clone)]
-pub struct WorkSpec {
-    pub op: OpType,
-    pub weight: Arc<Vec<u8>>,
-    pub input: Arc<Vec<u8>>,
-    pub scales: Arc<Vec<f32>>,
-    pub n_in: usize,
-    pub n_out: usize,
+pub trait DeviceSession: Send {
+    fn descriptor(&self) -> &DeviceDescriptor;
+    fn write_f32(&mut self, slot: SlotId, values: &[f32]) -> Result<(), BackendError>;
+    fn submit(
+        &mut self,
+        program: ProgramId,
+        params: &RunParams<'_>,
+    ) -> Result<FenceId, BackendError>;
+    fn wait(&mut self, fence: FenceId) -> Result<(), BackendError>;
+    fn read_f32(&mut self, slot: SlotId, values: &mut [f32]) -> Result<(), BackendError>;
+    fn reset_state(&mut self) -> Result<(), BackendError>;
+    fn stats(&self) -> SessionStats;
+    fn lifecycle_probe(&self) -> LifecycleProbe;
 }
 
-impl WorkSpec {
-    pub fn new_matmul_q8(
-        weight: Vec<u8>,
-        input: Vec<u8>,
-        scales: Vec<f32>,
-        n_in: usize,
-        n_out: usize,
-    ) -> Self {
-        Self {
-            op: OpType::MatMulQ8,
-            weight: Arc::new(weight),
-            input: Arc::new(input),
-            scales: Arc::new(scales),
-            n_in,
-            n_out,
-        }
-    }
-
-    pub fn split_at(&self, split_idx: usize) -> (WorkSpec, WorkSpec) {
-        let row_bytes = self.n_in * 16 / 8;
-        let blocks_per_row = (self.n_in + 31) / 32;
-
-        let (cpu_input, gpu_input) = self.input.split_at(split_idx * row_bytes);
-        let (cpu_scales, gpu_scales) = self.scales.split_at(blocks_per_row * split_idx);
-
-        (
-            WorkSpec {
-                op: self.op,
-                weight: Arc::clone(&self.weight),
-                input: Arc::new(cpu_input.to_vec()),
-                scales: Arc::new(cpu_scales.to_vec()),
-                n_in: self.n_in,
-                n_out: split_idx,
-            },
-            WorkSpec {
-                op: self.op,
-                weight: Arc::clone(&self.weight),
-                input: Arc::new(gpu_input.to_vec()),
-                scales: Arc::new(gpu_scales.to_vec()),
-                n_in: self.n_in,
-                n_out: self.n_out - split_idx,
-            },
-        )
-    }
-
-    pub fn split_for(&self, parts: usize) -> Vec<WorkSpec> {
-        if parts <= 1 {
-            return vec![self.clone()];
-        }
-
-        let chunk_size = (self.n_out + parts - 1) / parts;
-        let mut specs = Vec::with_capacity(parts);
-
-        for i in 0..parts {
-            let start = i * chunk_size;
-            let end = (start + chunk_size).min(self.n_out);
-            if start >= self.n_out {
-                break;
-            }
-
-            let row_bytes = self.n_in * 16 / 8;
-            let blocks_per_row = (self.n_in + 31) / 32;
-
-            let input_start = start * row_bytes;
-            let input_end = end * row_bytes;
-            let scales_start = blocks_per_row * start;
-            let scales_end = blocks_per_row * end;
-
-            specs.push(WorkSpec {
-                op: self.op,
-                weight: Arc::clone(&self.weight),
-                input: Arc::new(self.input[input_start..input_end].to_vec()),
-                scales: Arc::new(self.scales[scales_start..scales_end].to_vec()),
-                n_in: self.n_in,
-                n_out: end - start,
-            });
-        }
-
-        specs
-    }
+pub trait DeviceDiscovery: Send + Sync {
+    fn backend(&self) -> BackendKind;
+    fn enumerate(&self) -> Result<Vec<DeviceDescriptor>, BackendError>;
 }
 
-pub trait ComputeDevice: Send + Sync {
-    fn kind(&self) -> DeviceKind;
-    fn name(&self) -> &str;
-    fn is_available(&self) -> bool;
-    fn supports(&self, op: OpType) -> bool;
-
-    fn execute_matmul_q8(&self, spec: &WorkSpec) -> Result<Vec<f32>>;
-    fn sync(&self);
+pub struct DeviceRegistry {
+    discoveries: BTreeMap<BackendKind, Arc<dyn DeviceDiscovery>>,
+    descriptors: BTreeMap<DeviceId, DeviceDescriptor>,
 }
 
-#[derive(Clone, Copy)]
-pub struct DeviceRatio(u8);
-
-impl DeviceRatio {
-    pub fn new(ratio: u8) -> Self {
-        Self(ratio.min(100))
-    }
-
-    pub fn ratio(&self) -> u8 {
-        self.0
-    }
-
-    pub fn is_zero(&self) -> bool {
-        self.0 == 0
-    }
-}
-
-impl Default for DeviceRatio {
-    fn default() -> Self {
-        Self(0)
-    }
-}
-
-impl From<u8> for DeviceRatio {
-    fn from(v: u8) -> Self {
-        Self::new(v)
-    }
-}
-
-#[derive(Clone)]
-pub struct DeviceConfig {
-    pub kind: DeviceKind,
-    pub ratio: DeviceRatio,
-}
-
-impl DeviceConfig {
-    pub fn new(kind: DeviceKind, ratio: u8) -> Self {
-        Self {
-            kind,
-            ratio: DeviceRatio::new(ratio),
-        }
-    }
-
-    pub fn cpu(id: u8, ratio: u8) -> Self {
-        Self::new(DeviceKind::Cpu(id), ratio)
-    }
-
-    pub fn gpu(id: u8, ratio: u8) -> Self {
-        Self::new(DeviceKind::Gpu(id), ratio)
-    }
-
-    pub fn npu(id: u8, ratio: u8) -> Self {
-        Self::new(DeviceKind::Npu(id), ratio)
-    }
-}
-
-pub struct Scheduler {
-    devices: Vec<Arc<dyn ComputeDevice>>,
-    config: Vec<DeviceConfig>,
-}
-
-impl Scheduler {
+impl DeviceRegistry {
     pub fn new() -> Self {
         Self {
-            devices: Vec::new(),
-            config: Vec::new(),
+            discoveries: BTreeMap::new(),
+            descriptors: BTreeMap::new(),
         }
     }
 
-    pub fn add_device<D: ComputeDevice + 'static>(&mut self, device: D) -> &mut Self {
-        self.devices.push(Arc::new(device));
-        self
+    pub fn register_discovery(
+        &mut self,
+        discovery: Arc<dyn DeviceDiscovery>,
+    ) -> Result<(), BackendError> {
+        let backend = discovery.backend();
+        if self.discoveries.contains_key(&backend) {
+            return Err(BackendError::DuplicateBackend { backend });
+        }
+        self.discoveries.insert(backend, discovery);
+        Ok(())
     }
 
-    pub fn with_device<D: ComputeDevice + 'static>(mut self, device: D) -> Self {
-        self.add_device(device);
-        self
+    pub fn discover(&mut self, requested: &BTreeSet<BackendKind>) -> Result<(), BackendError> {
+        for backend in requested {
+            let discovery = self
+                .discoveries
+                .get(backend)
+                .ok_or(BackendError::BackendUnavailable { backend: *backend })?;
+            for descriptor in discovery.enumerate()? {
+                if descriptor.backend != *backend {
+                    return Err(BackendError::DescriptorBackendMismatch {
+                        id: descriptor.id,
+                        expected: *backend,
+                        actual: descriptor.backend,
+                    });
+                }
+                let id = descriptor.id.clone();
+                if self.descriptors.contains_key(&id) {
+                    return Err(BackendError::DuplicateDeviceId { device: id });
+                }
+                self.descriptors.insert(id, descriptor);
+            }
+        }
+        Ok(())
     }
 
-    pub fn set_config(&mut self, config: Vec<DeviceConfig>) -> &mut Self {
-        self.config = config;
-        self
+    pub fn get(&self, id: &DeviceId) -> Option<&DeviceDescriptor> {
+        self.descriptors.get(id)
     }
 
-    pub fn with_config(mut self, config: Vec<DeviceConfig>) -> Self {
-        self.set_config(config);
-        self
-    }
-
-    pub fn execute(&self, spec: WorkSpec) -> Result<Vec<f32>> {
-        let active_devices = self.active_devices();
-        if active_devices.is_empty() {
-            return Err(ComputeError::DeviceNotAvailable("No devices available".to_string()));
-        }
-
-        if active_devices.len() == 1 {
-            return active_devices[0].execute_matmul_q8(&spec);
-        }
-
-        let parts = active_devices.len();
-        let chunks = spec.split_for(parts);
-
-        let mut results = Vec::with_capacity(parts);
-        for (device, chunk) in active_devices.iter().zip(chunks.iter()) {
-            results.push(device.execute_matmul_q8(chunk)?);
-        }
-
-        let mut combined = Vec::with_capacity(spec.n_out);
-        for r in results {
-            combined.extend(r);
-        }
-        Ok(combined)
-    }
-
-    pub fn execute_parallel(&self, spec: WorkSpec) -> Result<Vec<f32>> {
-        let active_devices = self.active_devices();
-        if active_devices.is_empty() {
-            return Err(ComputeError::DeviceNotAvailable("No devices available".to_string()));
-        }
-
-        if active_devices.len() == 1 {
-            return active_devices[0].execute_matmul_q8(&spec);
-        }
-
-        let parts = active_devices.len();
-        let chunks = spec.split_for(parts);
-
-        let handles: Vec<_> = active_devices
-            .iter()
-            .zip(chunks.iter())
-            .map(|(device, chunk)| {
-                let device = Arc::clone(device);
-                let chunk = chunk.clone();
-                std::thread::spawn(move || device.execute_matmul_q8(&chunk))
-            })
-            .collect();
-
-        let mut results = Vec::with_capacity(parts);
-        for h in handles {
-            results.push(h.join().map_err(|_| ComputeError::ExecutionError("Thread panicked".to_string()))??);
-        }
-
-        let mut combined = Vec::with_capacity(spec.n_out);
-        for r in results {
-            combined.extend(r);
-        }
-        Ok(combined)
-    }
-
-    fn active_devices(&self) -> Vec<Arc<dyn ComputeDevice>> {
-        if self.config.is_empty() {
-            return self.devices.iter().filter(|d| d.is_available()).cloned().collect();
-        }
-
-        self.devices
-            .iter()
-            .filter(|d| d.is_available())
-            .filter(|d| {
-                self.config.iter().any(|c| c.kind == d.kind() && !c.ratio.is_zero())
-            })
-            .cloned()
-            .collect()
-    }
-
-    pub fn available_devices(&self) -> Vec<DeviceKind> {
-        self.devices.iter().filter(|d| d.is_available()).map(|d| d.kind()).collect()
-    }
-
-    pub fn gpu_configured(&self) -> bool {
-        if self.config.is_empty() {
-            return false;
-        }
-        self.config.iter().any(|c| matches!(c.kind, DeviceKind::Gpu(_)) && c.ratio.ratio() > 0)
+    pub fn require(&self, id: &DeviceId) -> Result<&DeviceDescriptor, BackendError> {
+        self.get(id)
+            .ok_or_else(|| BackendError::DeviceUnavailable { device: id.clone() })
     }
 }
 
-impl Default for Scheduler {
+impl Default for DeviceRegistry {
     fn default() -> Self {
         Self::new()
     }
 }
 
-pub use crate::compute::cpu::CpuDevice;
-pub use crate::compute::gpu::GpuDevice;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct TestDiscovery {
+        backend: BackendKind,
+        descriptor: DeviceDescriptor,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl TestDiscovery {
+        fn new(backend: BackendKind, id: &str, calls: Arc<AtomicUsize>) -> Self {
+            Self {
+                backend,
+                descriptor: DeviceDescriptor {
+                    id: DeviceId::parse(id).unwrap(),
+                    backend,
+                    physical_key: id.into(),
+                    name: id.into(),
+                    usable_bytes: 1024,
+                    max_allocation_bytes: 1024,
+                    buffer_alignment: 1,
+                    unified_memory: backend == BackendKind::Cpu,
+                    capabilities: DeviceCapabilities {
+                        components: BTreeSet::from([ComponentId::Llm]),
+                        modes: BTreeSet::from([PlacementMode::Row]),
+                        layer_families: BTreeSet::new(),
+                        tensor_types: BTreeSet::from([GGMLType::Q8_0]),
+                    },
+                },
+                calls,
+            }
+        }
+    }
+
+    impl DeviceDiscovery for TestDiscovery {
+        fn backend(&self) -> BackendKind {
+            self.backend
+        }
+
+        fn enumerate(&self) -> Result<Vec<DeviceDescriptor>, BackendError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![self.descriptor.clone()])
+        }
+    }
+
+    #[test]
+    fn discovers_only_requested_backends_and_rejects_duplicate_ids() {
+        let cpu_calls = Arc::new(AtomicUsize::new(0));
+        let vulkan_calls = Arc::new(AtomicUsize::new(0));
+        let mut registry = DeviceRegistry::new();
+        registry
+            .register_discovery(Arc::new(TestDiscovery::new(
+                BackendKind::Cpu,
+                "cpu0",
+                cpu_calls.clone(),
+            )))
+            .unwrap();
+        registry
+            .register_discovery(Arc::new(TestDiscovery::new(
+                BackendKind::Vulkan,
+                "vulkan0",
+                vulkan_calls.clone(),
+            )))
+            .unwrap();
+
+        registry
+            .discover(&BTreeSet::from([BackendKind::Cpu]))
+            .unwrap();
+
+        assert_eq!(cpu_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(vulkan_calls.load(Ordering::SeqCst), 0);
+        assert!(registry.get(&DeviceId::parse("cpu0").unwrap()).is_some());
+    }
+
+    #[test]
+    fn npu_id_has_a_contract_but_no_implicit_provider() {
+        let registry = DeviceRegistry::new();
+        let error = registry
+            .require(&DeviceId::parse("npu0").unwrap())
+            .unwrap_err();
+        assert!(matches!(error, BackendError::DeviceUnavailable { .. }));
+    }
+
+    #[test]
+    fn rejects_duplicate_backends_and_device_ids() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut duplicate_backend = DeviceRegistry::new();
+        duplicate_backend
+            .register_discovery(Arc::new(TestDiscovery::new(
+                BackendKind::Cpu,
+                "cpu0",
+                calls.clone(),
+            )))
+            .unwrap();
+        assert!(matches!(
+            duplicate_backend.register_discovery(Arc::new(TestDiscovery::new(
+                BackendKind::Cpu,
+                "cpu1",
+                calls.clone(),
+            ))),
+            Err(BackendError::DuplicateBackend {
+                backend: BackendKind::Cpu
+            })
+        ));
+
+        let mut duplicate_id = DeviceRegistry::new();
+        duplicate_id
+            .register_discovery(Arc::new(TestDiscovery::new(
+                BackendKind::Cpu,
+                "cpu0",
+                calls.clone(),
+            )))
+            .unwrap();
+        duplicate_id
+            .register_discovery(Arc::new(TestDiscovery::new(
+                BackendKind::Vulkan,
+                "cpu0",
+                calls,
+            )))
+            .unwrap();
+        assert!(matches!(
+            duplicate_id.discover(&BTreeSet::from([BackendKind::Cpu, BackendKind::Vulkan])),
+            Err(BackendError::DuplicateDeviceId { .. })
+        ));
+    }
+}
