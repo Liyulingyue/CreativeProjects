@@ -152,6 +152,19 @@ class LanceDBVectorStore:
             return len(self._table.to_pandas())
         return 0
 
+    def list_files(self) -> list[dict]:
+        if "file_embeddings" not in self.table_names() or self.count() == 0:
+            return []
+        df = self._table.to_pandas()
+        files = []
+        for _, row in df.iterrows():
+            files.append({
+                "id": row["id"],
+                "file_path": row["file_path"],
+                "content_preview": row["content"][:200] if len(row["content"]) > 200 else row["content"],
+            })
+        return files
+
 
 class RAGService:
     def __init__(self, embedding_service: EmbeddingService, llm_api_key: str, llm_base_url: str, llm_model: str, db_path: str):

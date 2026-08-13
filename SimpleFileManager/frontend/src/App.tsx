@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom';
 import { FileManagerPage } from './components/FileManagerPage';
 import { SearchPage } from './components/SearchPage';
+import { IndexPage } from './components/IndexPage';
 import { SimpleChat } from './components/SimpleChat';
 
 function App() {
@@ -28,7 +29,17 @@ function App() {
                 }`
               }
             >
-              🔍 文件搜索
+              🔍 搜索
+            </NavLink>
+            <NavLink
+              to="/index"
+              className={({ isActive }) =>
+                `px-4 py-2 rounded-xl text-sm font-medium transition-colors ${
+                  isActive ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`
+              }
+            >
+              📊 索引管理
             </NavLink>
             <NavLink
               to="/chat"
@@ -47,6 +58,7 @@ function App() {
           <Routes>
             <Route path="/" element={<FileManagerPage />} />
             <Route path="/search" element={<SearchPage />} />
+            <Route path="/index" element={<IndexPage />} />
             <Route path="/chat" element={<SimpleChat />} />
           </Routes>
         </div>

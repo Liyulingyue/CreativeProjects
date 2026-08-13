@@ -50,12 +50,12 @@ export function SearchPage() {
       <div className="bg-white border-b border-slate-200 px-6 py-4">
         <div className="max-w-4xl mx-auto">
           <form onSubmit={handleSearch} className="flex items-center gap-4">
-            <div className="text-2xl font-bold text-indigo-600 whitespace-nowrap">🔍 文件搜索</div>
+            <div className="text-2xl font-bold text-indigo-600 whitespace-nowrap">🔍 搜索</div>
             <input
               type="text"
               value={query}
               onChange={e => setQuery(e.target.value)}
-              placeholder="输入搜索内容..."
+              placeholder="输入内容..."
               className="flex-1 px-5 py-3 rounded-xl border border-slate-200 bg-slate-50 text-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
             />
             <button
@@ -76,7 +76,7 @@ export function SearchPage() {
             <div className="text-center py-16 text-slate-400">
               <div className="text-5xl mb-4">🔍</div>
               <div className="text-lg">输入关键词开始搜索</div>
-              <div className="text-sm mt-2">支持自然语言搜索，系统会在文件内容中查找相关信息</div>
+              <div className="text-sm mt-2">在文件内容中搜索相关信息</div>
             </div>
           )}
 
