@@ -1,7 +1,9 @@
+pub mod cpu;
 pub mod device;
 pub mod program;
 pub mod session;
 
+pub use cpu::{CpuProvider, CpuSession};
 pub use device::{
     BackendError, BackendKind, DeviceCapabilities, DeviceDescriptor, DeviceDiscovery,
     DeviceProvider, DeviceRegistry, DeviceSession, FenceId, LayerFamily, LifecycleProbe, ProgramId,
