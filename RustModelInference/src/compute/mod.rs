@@ -100,16 +100,19 @@ pub fn matmul_q8(
     n_out: usize,
 ) -> Vec<f32> {
     if let Ok(sched) = scheduler().lock() {
-        if !sched.config().is_empty() && sched.config()[0].ratio.ratio() > 0 {
-            let spec = WorkSpec::new_matmul_q8(
-                weight.to_vec(),
-                input.to_vec(),
-                scales.to_vec(),
-                n_in,
-                n_out,
-            );
-            if let Ok(result) = sched.execute(spec) {
-                return result;
+        if !sched.config().is_empty() {
+            let has_configured_device = sched.config().iter().any(|c| c.ratio.ratio() > 0);
+            if has_configured_device {
+                let spec = WorkSpec::new_matmul_q8(
+                    weight.to_vec(),
+                    input.to_vec(),
+                    scales.to_vec(),
+                    n_in,
+                    n_out,
+                );
+                if let Ok(result) = sched.execute(spec) {
+                    return result;
+                }
             }
         }
     }
