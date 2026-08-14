@@ -421,6 +421,14 @@ impl Qwen3Model {
         Arc::clone(&self.pool)
     }
 
+    pub fn layers(&self) -> &Vec<Qwen3LayerWeights> {
+        &self.layers
+    }
+
+    pub fn output_norm(&self) -> &Vec<f32> {
+        &self.output_norm
+    }
+
     pub fn embed_tokens(&self, token_ids: &[u32]) -> Result<Vec<f32>, String> {
         validate_token_ids(token_ids, self.config.vocab)?;
         let len = checked_product(
