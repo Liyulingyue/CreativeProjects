@@ -601,7 +601,7 @@ fn server_prompt_tokens(
             content: &message.content,
         })
         .collect();
-    build_qwen_chat_prompt(tokenizer, &prompt_messages)
+    build_qwen_chat_prompt(tokenizer, &prompt_messages, true)
 }
 
 fn generate(

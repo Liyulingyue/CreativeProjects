@@ -19,13 +19,14 @@ fn required_control(tokenizer: &BPETokenizer, name: &str, literal: &str) -> Resu
 pub fn build_qwen_chat_prompt(
     tokenizer: &BPETokenizer,
     messages: &[QwenMessage<'_>],
+    enable_thinking: bool,
 ) -> Result<Vec<u32>, String> {
     let mut output = Vec::new();
     for message in messages {
         let content = tokenizer.encode(message.content, PLAIN_TEXT);
         append_qwen_message_tokens(&mut output, tokenizer, message.role, &content)?;
     }
-    append_qwen_assistant_prefix(&mut output, tokenizer)?;
+    append_qwen_assistant_prefix(&mut output, tokenizer, enable_thinking)?;
     Ok(output)
 }
 
@@ -48,9 +49,13 @@ pub fn append_qwen_message_tokens(
 pub fn append_qwen_assistant_prefix(
     out: &mut Vec<u32>,
     tokenizer: &BPETokenizer,
+    enable_thinking: bool,
 ) -> Result<(), String> {
     out.push(required_control(tokenizer, "im_start", "<|im_start|>")?);
     out.extend(tokenizer.encode("assistant\n", PLAIN_TEXT));
+    if !enable_thinking {
+        out.extend(tokenizer.encode("<think>\n\n</think>\n\n", PLAIN_TEXT));
+    }
     Ok(())
 }
 

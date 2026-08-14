@@ -32,6 +32,7 @@ struct CliOptions {
     max_tokens: Option<usize>,
     temperature: Option<f32>,
     threads: usize,
+    thinking: bool,
     embedding: bool,
     embedding_output: EmbeddingOutput,
     dump_logits: bool,
@@ -889,6 +890,7 @@ fn parse_cli_options(args: &[String]) -> Result<CliOptions, String> {
                 i += 1;
             }
             "--bench" => options.bench = true,
+            "--thinking" => options.thinking = true,
             "--profile" => options.profile = true,
             "--kv-cache" => {
                 if i + 1 < args.len() {
@@ -1077,6 +1079,7 @@ fn main() {
                 max_tokens,
                 temperature,
                 options.threads,
+                options.thinking,
             ));
         } else if options.dump_logits {
             run_or_exit(run_dump_logits(
@@ -1093,6 +1096,7 @@ fn main() {
                 max_tokens,
                 temperature,
                 options.threads,
+                options.thinking,
                 options.bench,
                 options.profile,
                 options.kv_format,
@@ -1104,6 +1108,7 @@ fn main() {
                 max_tokens,
                 temperature,
                 options.threads,
+                options.thinking,
             ));
         }
     } else {
@@ -2641,6 +2646,7 @@ fn run_shared_inference(
     max_tokens: usize,
     temperature: f32,
     n_threads_arg: usize,
+    thinking: bool,
 ) -> Result<(), String> {
     let started = Instant::now();
     let tokenizer = std::sync::Arc::new(
@@ -2661,6 +2667,7 @@ fn run_shared_inference(
             role: "user",
             content: prompt,
         }],
+        thinking,
     )?;
     let positions = qwen_text_positions(input_tokens.len());
     println!(
@@ -2713,6 +2720,7 @@ fn run_inference(
     max_tokens: usize,
     temperature: f32,
     n_threads_arg: usize,
+    thinking: bool,
     bench: bool,
     profile: bool,
     kv_format: KvFormat,
@@ -2831,6 +2839,7 @@ fn run_inference(
                 role: "user",
                 content: prompt,
             }],
+            thinking,
         )?
     };
     #[cfg(feature = "parity-trace")]
@@ -3505,6 +3514,7 @@ fn run_interactive(
             n_threads_arg,
             false,
             false,
+            false,
             KvFormat::F16,
         )?;
         println!();
@@ -3814,7 +3824,7 @@ fn run_multimodal(
 
     let mut prompt_ids = Vec::new();
     append_qwen_message_tokens(&mut prompt_ids, &tokenizer, "user", &content_tokens)?;
-    append_qwen_assistant_prefix(&mut prompt_ids, &tokenizer)?;
+    append_qwen_assistant_prefix(&mut prompt_ids, &tokenizer, false)?;
     let image_grids: Vec<VisionGrid> = image_grid.iter().copied().collect();
     let (prompt_positions, mut next_text_position) =
         build_qwen35_positions(&prompt_ids, image_token_id, &image_grids)?;
