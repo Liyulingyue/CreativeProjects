@@ -747,13 +747,22 @@ fn generate_qwen3(
             let q8 = q8_buf[..n_embd].as_ptr();
             let sc = scale_buf[..n_embd / 32].as_ptr();
             let ow = s.output_weight;
-            let pool6 = s.pool.clone();
-            pool6.compute(move |ith: usize, nth: usize| {
-                let q8 = unsafe { std::slice::from_raw_parts(q8, n_embd) };
-                let sc = unsafe { std::slice::from_raw_parts(sc, n_embd / 32) };
+
+            if compute::gpu_configured() {
+                let q8_owned = unsafe { std::slice::from_raw_parts(q8, n_embd).to_vec() };
+                let sc_owned = unsafe { std::slice::from_raw_parts(sc, n_embd / 32).to_vec() };
                 let logits = unsafe { std::slice::from_raw_parts_mut(logits_ptr, vocab) };
-                matmul_q8_0_quantized_parallel_rows(ow, q8, sc, logits, n_embd, vocab, ith, nth);
-            });
+                let result = compute::matmul_q8(ow, &q8_owned, &sc_owned, n_embd, vocab);
+                logits.copy_from_slice(&result);
+            } else {
+                let pool6 = s.pool.clone();
+                pool6.compute(move |ith: usize, nth: usize| {
+                    let q8 = unsafe { std::slice::from_raw_parts(q8, n_embd) };
+                    let sc = unsafe { std::slice::from_raw_parts(sc, n_embd / 32) };
+                    let logits = unsafe { std::slice::from_raw_parts_mut(logits_ptr, vocab) };
+                    matmul_q8_0_quantized_parallel_rows(ow, q8, sc, logits, n_embd, vocab, ith, nth);
+                });
+            }
         }
 
         if step < n_prompt - 1 {
