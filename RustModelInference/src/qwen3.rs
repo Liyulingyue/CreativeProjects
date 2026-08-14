@@ -20,7 +20,6 @@ pub struct Qwen3Config {
     pub eps: f32,
     pub freq_base: f32,
 }
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Qwen3EmbeddingPooling {
     Mean,

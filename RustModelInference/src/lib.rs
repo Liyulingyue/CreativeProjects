@@ -1,3 +1,4 @@
+pub mod asr;
 pub mod clip_config;
 pub mod compute;
 pub mod ggufrs;
@@ -13,6 +14,8 @@ pub mod prompt;
 pub mod quant;
 pub mod qwen3;
 pub mod qwen35;
+pub mod qwen3a;
+pub mod qwen3_cpu;
 pub mod scratchpad;
 pub mod tensor_catalog;
 pub mod thread_pool;
@@ -24,6 +27,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
 
+pub use asr::*;
 pub use clip_config::{ClipVisionConfig, Qwen35Config};
 pub use compute::{
     ActivationTransfer, BackendError, BackendKind, CompiledModel, ComponentPlan,

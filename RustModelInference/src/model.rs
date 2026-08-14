@@ -608,7 +608,7 @@ pub fn model_config_from_source<S: TensorSource + ?Sized>(
         .and_then(MetaValue::to_string_val)
         .unwrap_or_default();
     let prefix = match arch {
-        "qwen2" | "qwen3" | "qwen35" | "llama" => arch,
+        "qwen2" | "qwen3" | "qwen3vl" | "qwen35" | "llama" => arch,
         _ => return Err(format!("Unsupported architecture: {arch}")),
     };
     let get_u64 = |key: &str| -> Result<u64, String> {
@@ -1121,6 +1121,82 @@ mod tests {
             "attn_q",
         )
         .is_some());
+    }
+
+    #[derive(Default)]
+    struct MapTensorSource {
+        metadata: std::collections::HashMap<String, MetaValue>,
+        tensors: std::collections::HashMap<String, TensorInfo>,
+    }
+
+    impl TensorSource for MapTensorSource {
+        fn metadata(&self, key: &str) -> Option<&MetaValue> {
+            self.metadata.get(key)
+        }
+
+        fn tensor_info(&self, name: &str) -> Option<&TensorInfo> {
+            self.tensors.get(name)
+        }
+
+        fn tensor_slice(&self, _name: &str) -> Option<&[u8]> {
+            None
+        }
+
+        fn source_format(&self) -> SourceFormat {
+            SourceFormat::Gguf
+        }
+
+        fn tensor_records(&self) -> Vec<SourceTensorRecord> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn qwen3vl_uses_its_own_metadata_prefix() {
+        let metadata = std::collections::HashMap::from([
+            (
+                "general.architecture".into(),
+                MetaValue::String("qwen3vl".into()),
+            ),
+            ("qwen3vl.embedding_length".into(), MetaValue::Uint32(1024)),
+            ("qwen3vl.block_count".into(), MetaValue::Uint32(28)),
+            ("qwen3vl.attention.head_count".into(), MetaValue::Uint32(16)),
+            (
+                "qwen3vl.attention.head_count_kv".into(),
+                MetaValue::Uint32(8),
+            ),
+            (
+                "qwen3vl.feed_forward_length".into(),
+                MetaValue::Uint32(3072),
+            ),
+            ("qwen3vl.context_length".into(), MetaValue::Uint32(65536)),
+            (
+                "qwen3vl.rope.freq_base".into(),
+                MetaValue::Float32(1_000_000.0),
+            ),
+            (
+                "qwen3vl.attention.layer_norm_rms_epsilon".into(),
+                MetaValue::Float32(1e-6),
+            ),
+            ("qwen3vl.vocab_size".into(), MetaValue::Uint32(151_936)),
+        ]);
+        let config = model_config_from_source(&MapTensorSource {
+            metadata,
+            tensors: std::collections::HashMap::new(),
+        })
+        .unwrap();
+        assert_eq!(
+            (
+                config.n_embd,
+                config.n_layer,
+                config.n_head,
+                config.n_head_kv
+            ),
+            (1024, 28, 16, 8)
+        );
+        assert_eq!((config.n_ff, config.n_ctx), (3072, 65536));
+        assert_eq!(config.rope_freq_base, 1_000_000.0);
+        assert_eq!(config.norm_eps, 1e-6);
     }
 
     #[test]

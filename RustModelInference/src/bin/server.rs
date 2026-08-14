@@ -17,7 +17,7 @@ use tower_http::cors::CorsLayer;
 use rust_model_inference::*;
 
 #[cfg(test)]
-mod tests {
+mod placement_tests {
     use super::*;
 
     #[test]
@@ -60,13 +60,224 @@ struct Qwen35State {
 
 enum ModelBackend {
     Qwen3(Qwen3State),
+    Qwen3Cpu(Arc<qwen3_cpu::Qwen3Model>),
     Qwen35(Qwen35State),
+    #[cfg(test)]
+    Test,
 }
 
 #[derive(Clone)]
 struct AppState {
     model: Arc<ModelBackend>,
+    asr: Option<Arc<AsrRuntime>>,
     model_name: String,
+    // ponytail: one global model lock; split per-runtime only if measured concurrent throughput requires it.
+    inference_lock: Arc<std::sync::Mutex<()>>,
+}
+
+impl AppState {
+    fn run_inference<T>(&self, call: impl FnOnce() -> T) -> T {
+        let _guard = self
+            .inference_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        call()
+    }
+}
+
+#[derive(Default)]
+struct TranscriptionFields {
+    file: Option<Vec<u8>>,
+    model: Option<String>,
+    language: Option<String>,
+    prompt: Option<String>,
+    max_tokens: Option<usize>,
+    response_format: Option<String>,
+    stream: Option<bool>,
+}
+
+#[derive(Debug)]
+struct ValidatedTranscription {
+    file: Vec<u8>,
+    options: TranscriptionOptions,
+}
+
+impl TranscriptionFields {
+    fn preflight(&self, name: &str) -> Result<(), TranscriptionHttpError> {
+        let vacant = match name {
+            "file" => self.file.is_none(),
+            "model" => self.model.is_none(),
+            "language" => self.language.is_none(),
+            "prompt" => self.prompt.is_none(),
+            "max_tokens" => self.max_tokens.is_none(),
+            "response_format" => self.response_format.is_none(),
+            "stream" => self.stream.is_none(),
+            _ => {
+                return Err(TranscriptionHttpError::bad_request(format!(
+                    "unknown multipart field: {name}"
+                )))
+            }
+        };
+        if !vacant {
+            return Err(TranscriptionHttpError::bad_request(format!(
+                "duplicate {name} field"
+            )));
+        }
+        Ok(())
+    }
+
+    fn add_file(&mut self, file: Vec<u8>) -> Result<(), TranscriptionHttpError> {
+        self.preflight("file")?;
+        self.file = Some(file);
+        Ok(())
+    }
+
+    fn add_text(&mut self, name: &str, bytes: Vec<u8>) -> Result<(), TranscriptionHttpError> {
+        self.preflight(name)?;
+        let text = String::from_utf8(bytes).map_err(|_| {
+            TranscriptionHttpError::bad_request(format!("invalid UTF-8 in {name} field"))
+        })?;
+        match name {
+            "model" => self.model = Some(text),
+            "language" => self.language = Some(text),
+            "prompt" => self.prompt = Some(text),
+            "max_tokens" => {
+                let value = text
+                    .parse()
+                    .map_err(|_| TranscriptionHttpError::bad_request("invalid max_tokens field"))?;
+                self.max_tokens = Some(value);
+            }
+            "response_format" => self.response_format = Some(text),
+            "stream" => {
+                let value = text
+                    .parse()
+                    .map_err(|_| TranscriptionHttpError::bad_request("invalid stream field"))?;
+                self.stream = Some(value);
+            }
+            _ => unreachable!("preflight accepted unknown field"),
+        }
+        Ok(())
+    }
+
+    fn validate(self, model_name: &str) -> Result<ValidatedTranscription, TranscriptionHttpError> {
+        let file = self
+            .file
+            .ok_or_else(|| TranscriptionHttpError::bad_request("missing file field"))?;
+        if self
+            .model
+            .as_deref()
+            .is_some_and(|model| model != model_name)
+        {
+            return Err(TranscriptionHttpError::unprocessable(
+                "model does not match loaded model",
+            ));
+        }
+        if self
+            .response_format
+            .as_deref()
+            .is_some_and(|format| format != "json")
+        {
+            return Err(TranscriptionHttpError::unprocessable(
+                "only json response_format is supported",
+            ));
+        }
+        if self.stream.is_some_and(|stream| stream) {
+            return Err(TranscriptionHttpError::unprocessable(
+                "stream must be false",
+            ));
+        }
+        let max_new_tokens = self.max_tokens.unwrap_or(256);
+        if max_new_tokens == 0 {
+            return Err(TranscriptionHttpError::unprocessable(
+                "max_tokens must be greater than zero",
+            ));
+        }
+        normalize_language(self.language.as_deref()).map_err(TranscriptionHttpError::from_asr)?;
+        Ok(ValidatedTranscription {
+            file,
+            options: TranscriptionOptions {
+                language: self.language,
+                prompt: self.prompt,
+                max_new_tokens,
+            },
+        })
+    }
+}
+
+#[derive(Serialize)]
+struct TranscriptionResponse {
+    text: String,
+}
+
+#[derive(Debug)]
+struct TranscriptionHttpError {
+    status: StatusCode,
+    message: String,
+}
+
+impl TranscriptionHttpError {
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+        }
+    }
+
+    fn unprocessable(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            message: message.into(),
+        }
+    }
+
+    fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: message.into(),
+        }
+    }
+
+    fn internal(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: message.into(),
+        }
+    }
+
+    fn from_asr(error: AsrError) -> Self {
+        Self {
+            status: match error.kind {
+                AsrErrorKind::UnsupportedAudio => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                AsrErrorKind::Unprocessable => StatusCode::UNPROCESSABLE_ENTITY,
+                AsrErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+            },
+            message: error.message,
+        }
+    }
+
+    fn from_multipart(error: axum::extract::multipart::MultipartError) -> Self {
+        Self {
+            status: error.status(),
+            message: error.to_string(),
+        }
+    }
+
+    #[cfg(test)]
+    fn status(&self) -> StatusCode {
+        self.status
+    }
+}
+
+impl IntoResponse for TranscriptionHttpError {
+    fn into_response(self) -> axum::response::Response {
+        (
+            self.status,
+            Json(ErrorResponse {
+                error: self.message,
+            }),
+        )
+            .into_response()
+    }
 }
 
 #[derive(Deserialize)]
@@ -247,6 +458,51 @@ async fn list_models(State(state): State<AppState>) -> Json<ModelsResponse> {
     })
 }
 
+async fn audio_transcriptions(
+    State(state): State<AppState>,
+    mut multipart: axum::extract::Multipart,
+) -> impl IntoResponse {
+    let result: Result<Json<TranscriptionResponse>, TranscriptionHttpError> = async {
+        let mut fields = TranscriptionFields::default();
+        while let Some(field) = multipart
+            .next_field()
+            .await
+            .map_err(TranscriptionHttpError::from_multipart)?
+        {
+            let name = field.name().unwrap_or_default().to_string();
+            fields.preflight(&name)?;
+            let bytes = field
+                .bytes()
+                .await
+                .map_err(TranscriptionHttpError::from_multipart)?;
+            if name == "file" {
+                fields.add_file(bytes.to_vec())?;
+            } else {
+                fields.add_text(&name, bytes.to_vec())?;
+            }
+        }
+        let request = fields.validate(&state.model_name)?;
+        let runtime = state
+            .asr
+            .clone()
+            .ok_or_else(|| TranscriptionHttpError::unavailable("audio runtime unavailable"))?;
+        let worker_state = state.clone();
+        let transcription = tokio::task::spawn_blocking(move || {
+            worker_state.run_inference(|| runtime.transcribe_wav(&request.file, &request.options))
+        })
+        .await
+        .map_err(|error| {
+            TranscriptionHttpError::internal(format!("transcription worker failed: {error}"))
+        })?
+        .map_err(TranscriptionHttpError::from_asr)?;
+        Ok(Json(TranscriptionResponse {
+            text: transcription.text,
+        }))
+    }
+    .await;
+    result.into_response()
+}
+
 async fn chat_completions(
     State(state): State<AppState>,
     Json(req): Json<ChatCompletionRequest>,
@@ -258,6 +514,7 @@ async fn chat_completions(
     if stream {
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, axum::Error>>(32);
         let model = state.model.clone();
+        let worker_state = state.clone();
         let model_name = state.model_name.clone();
 
         tokio::task::spawn_blocking(move || {
@@ -286,7 +543,9 @@ async fn chat_completions(
                 return;
             }
 
-            let result = match generate(&model, &req.messages, max_tokens, temperature) {
+            let result = match worker_state
+                .run_inference(|| generate(&model, &req.messages, max_tokens, temperature))
+            {
                 Ok(result) => result,
                 Err(error) => {
                     let data = serde_json::json!({ "error": error }).to_string();
@@ -345,8 +604,10 @@ async fn chat_completions(
             .as_secs();
 
         let model_clone = state.model.clone();
+        let worker_state = state.clone();
         let result = match tokio::task::spawn_blocking(move || {
-            generate(&model_clone, &req.messages, max_tokens, temperature)
+            worker_state
+                .run_inference(|| generate(&model_clone, &req.messages, max_tokens, temperature))
         })
         .await
         {
@@ -426,8 +687,31 @@ fn generate(
     temperature: f32,
 ) -> Result<GenerateResult, String> {
     match model {
-        ModelBackend::Qwen3(s) => generate_qwen3(s, messages, max_tokens, temperature),
-        ModelBackend::Qwen35(s) => generate_qwen35(s, messages, max_tokens, temperature),
+        ModelBackend::Qwen3(state) => generate_qwen3(state, messages, max_tokens, temperature),
+        ModelBackend::Qwen3Cpu(model) => {
+            let token_ids = server_prompt_tokens(model.tokenizer(), messages)?;
+            let positions = qwen3_cpu::qwen_text_positions(token_ids.len());
+            let generation = model.generate(
+                qwen3_cpu::Qwen3Input {
+                    token_ids: &token_ids,
+                    positions: &positions,
+                    embeddings: None,
+                },
+                qwen3_cpu::Qwen3GenerateOptions {
+                    max_new_tokens: max_tokens,
+                    temperature,
+                },
+            )?;
+            Ok(GenerateResult {
+                text: generation.text,
+                tokens: generation.rendered_tokens,
+                prompt_tokens: generation.prompt_tokens,
+                completion_tokens: generation.token_ids.len(),
+            })
+        }
+        ModelBackend::Qwen35(state) => generate_qwen35(state, messages, max_tokens, temperature),
+        #[cfg(test)]
+        ModelBackend::Test => unreachable!("test backend does not generate"),
     }
 }
 
@@ -605,28 +889,81 @@ async fn main() {
         .metadata("general.architecture")
         .and_then(|v| v.to_string_val())
         .unwrap_or_default();
-    let tokenizer = BPETokenizer::from_gguf_metadata(|k| source.metadata(k).cloned())
+    let tokenizer = Arc::new(BPETokenizer::from_gguf_metadata(|k| source.metadata(k).cloned())
         .unwrap_or_else(|e| {
             eprintln!("Failed to init tokenizer: {}", e);
             std::process::exit(1);
-        });
+        }));
 
-    let (compiled, runner) = rust_model_inference::compile_model(sources, &cli.execution)
-        .unwrap_or_else(|error| {
-            eprintln!("Failed to compile model: {error}");
-            std::process::exit(1);
+    let mut asr = None;
+    let model = if arch == "qwen3vl" {
+        let threads = if n_threads == 0 {
+            std::thread::available_parallelism()
+                .map(std::num::NonZeroUsize::get)
+                .unwrap_or(1)
+                .min(8)
+        } else {
+            n_threads
+        };
+        let decoder = Arc::new(
+            qwen3_cpu::Qwen3Model::from_source(
+                Arc::clone(&source),
+                Arc::clone(&tokenizer),
+                Arc::new(thread_pool::ComputePool::new(threads)),
+            )
+            .unwrap_or_else(
+                |error| {
+                    eprintln!("Failed to parse Qwen2/Qwen3 model: {error}");
+                    std::process::exit(1);
+                },
+            ),
+        );
+        let audio_source: Option<Arc<dyn TensorSource>> = cli
+            .mmproj_path
+            .as_deref()
+            .map(|path| {
+                Arc::from(
+                    open_model_source(Path::new(path), ComponentRole::Mmproj).unwrap_or_else(
+                        |error| {
+                            eprintln!("Failed to load mmproj: {error}");
+                            std::process::exit(1);
+                        },
+                    ),
+                )
+            })
+            .or_else(|| {
+                open_bundled_audio_source(Path::new(&cli.model_path)).unwrap_or_else(|error| {
+                    eprintln!("Failed to load bundled audio component: {error}");
+                    std::process::exit(1);
+                })
+            });
+        asr = audio_source.map(|audio_source| {
+            Arc::new(
+                AsrRuntime::new(Arc::clone(&decoder), audio_source).unwrap_or_else(|error| {
+                    eprintln!("Failed to initialize ASR runtime: {error}");
+                    std::process::exit(1);
+                }),
+            )
         });
-    let model = match runner {
-        QwenRunner::Qwen3(model) => ModelBackend::Qwen3(Qwen3State {
-            model,
-            compiled,
-            tokenizer: Arc::new(tokenizer),
-        }),
-        QwenRunner::Qwen35(model) => ModelBackend::Qwen35(Qwen35State {
-            model,
-            compiled,
-            tokenizer: Arc::new(tokenizer),
-        }),
+        ModelBackend::Qwen3Cpu(decoder)
+    } else {
+        let (compiled, runner) = rust_model_inference::compile_model(sources, &cli.execution)
+            .unwrap_or_else(|error| {
+                eprintln!("Failed to compile model: {error}");
+                std::process::exit(1);
+            });
+        match runner {
+            QwenRunner::Qwen3(model) => ModelBackend::Qwen3(Qwen3State {
+                model,
+                compiled,
+                tokenizer,
+            }),
+            QwenRunner::Qwen35(model) => ModelBackend::Qwen35(Qwen35State {
+                model,
+                compiled,
+                tokenizer,
+            }),
+        }
     };
 
     let model_name = std::path::Path::new(&cli.model_path)
@@ -642,13 +979,20 @@ async fn main() {
 
     let state = AppState {
         model: Arc::new(model),
+        asr,
         model_name,
+        inference_lock: Arc::new(std::sync::Mutex::new(())),
     };
 
     let app = Router::new()
         .route("/health", get(health))
         .route("/v1/models", get(list_models))
         .route("/v1/chat/completions", post(chat_completions))
+        .route(
+            "/v1/audio/transcriptions",
+            post(audio_transcriptions)
+                .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -656,4 +1000,190 @@ async fn main() {
     eprintln!("Server listening on http://{}", addr);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn fields_with_file() -> TranscriptionFields {
+        let mut fields = TranscriptionFields::default();
+        fields.add_file(vec![1, 2, 3]).unwrap();
+        fields
+    }
+
+    #[test]
+    fn transcription_rejects_missing_and_duplicate_file() {
+        assert_eq!(
+            TranscriptionFields::default()
+                .validate("model")
+                .unwrap_err()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        let mut fields = fields_with_file();
+        assert_eq!(
+            fields.add_file(vec![4]).unwrap_err().status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(fields.file.as_deref(), Some(&[1, 2, 3][..]));
+    }
+
+    #[test]
+    fn transcription_preflights_duplicate_unknown_and_strict_utf8_fields() {
+        let mut fields = TranscriptionFields::default();
+        fields.add_text("model", b"model".to_vec()).unwrap();
+        assert_eq!(
+            fields.preflight("model").unwrap_err().status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            fields
+                .add_text("model", b"other".to_vec())
+                .unwrap_err()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(fields.model.as_deref(), Some("model"));
+        assert_eq!(
+            fields.preflight("unknown").unwrap_err().status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            fields
+                .add_text("language", vec![0xff])
+                .unwrap_err()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(fields.language, None);
+    }
+
+    #[test]
+    fn transcription_validates_option_syntax_and_values() {
+        for (name, value, expected) in [
+            ("max_tokens", "invalid", StatusCode::BAD_REQUEST),
+            ("stream", "invalid", StatusCode::BAD_REQUEST),
+            ("max_tokens", "0", StatusCode::UNPROCESSABLE_ENTITY),
+            ("model", "other", StatusCode::UNPROCESSABLE_ENTITY),
+            ("response_format", "text", StatusCode::UNPROCESSABLE_ENTITY),
+            ("stream", "true", StatusCode::UNPROCESSABLE_ENTITY),
+            ("language", "Klingon", StatusCode::UNPROCESSABLE_ENTITY),
+        ] {
+            let mut fields = fields_with_file();
+            match fields.add_text(name, value.as_bytes().to_vec()) {
+                Err(error) => {
+                    assert_eq!(error.status(), expected, "field {name}");
+                    assert!(match name {
+                        "max_tokens" => fields.max_tokens.is_none(),
+                        "stream" => fields.stream.is_none(),
+                        _ => true,
+                    });
+                }
+                Ok(()) => assert_eq!(
+                    fields.validate("model").unwrap_err().status(),
+                    expected,
+                    "field {name}"
+                ),
+            }
+        }
+
+        let mut fields = fields_with_file();
+        fields.add_text("stream", b"false".to_vec()).unwrap();
+        let request = fields.validate("model").unwrap();
+        assert_eq!(request.options.max_new_tokens, 256);
+        assert_eq!(request.options.language, None);
+        assert_eq!(request.options.prompt, None);
+    }
+
+    #[test]
+    fn transcription_maps_runtime_errors_and_serializes_success() {
+        for (kind, expected) in [
+            (
+                AsrErrorKind::UnsupportedAudio,
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            ),
+            (
+                AsrErrorKind::Unprocessable,
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            (AsrErrorKind::Internal, StatusCode::INTERNAL_SERVER_ERROR),
+        ] {
+            let error = TranscriptionHttpError::from_asr(AsrError {
+                kind,
+                message: "failure".into(),
+            });
+            assert_eq!(error.status(), expected);
+        }
+        assert_eq!(
+            TranscriptionHttpError::unavailable("no runtime").status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            TranscriptionHttpError::internal("worker failed").status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            serde_json::to_string(&TranscriptionResponse {
+                text: "hello".into()
+            })
+            .unwrap(),
+            r#"{"text":"hello"}"#
+        );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn chat_and_asr_share_one_inference_lock() {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    };
+    use std::time::Duration;
+
+    let state = Arc::new(AppState {
+        model: Arc::new(ModelBackend::Test),
+        asr: None,
+        model_name: "test".into(),
+        inference_lock: Arc::new(std::sync::Mutex::new(())),
+    });
+    let setup = Arc::new(AtomicUsize::new(0));
+    let (first_entered_tx, first_entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let first_state = Arc::clone(&state);
+    let first_setup = Arc::clone(&setup);
+    let first = std::thread::spawn(move || {
+        first_setup.fetch_add(1, Ordering::SeqCst);
+        first_state.run_inference(|| {
+            first_entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+    });
+    first_entered_rx
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap();
+
+    let (second_setup_tx, second_setup_rx) = mpsc::channel();
+    let (second_entered_tx, second_entered_rx) = mpsc::channel();
+    let second_state = Arc::clone(&state);
+    let second_setup = Arc::clone(&setup);
+    let second = std::thread::spawn(move || {
+        second_setup.fetch_add(1, Ordering::SeqCst);
+        second_setup_tx.send(()).unwrap();
+        second_state.run_inference(|| second_entered_tx.send(()).unwrap());
+    });
+    second_setup_rx
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap();
+    assert!(matches!(
+        second_entered_rx.recv_timeout(Duration::from_millis(100)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    release_tx.send(()).unwrap();
+    second_entered_rx
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap();
+    first.join().unwrap();
+    second.join().unwrap();
+    assert_eq!(setup.load(Ordering::SeqCst), 2);
 }

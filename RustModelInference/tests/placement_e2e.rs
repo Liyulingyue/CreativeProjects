@@ -396,12 +396,23 @@ fn qwen35_recurrent_contract_is_rejected_during_catalog_model_construction() {
         ("ssm-a-shape", "blk.1.ssm_a"),
         ("ssm-norm-shape", "blk.1.ssm_norm.weight"),
         ("ssm-output-shape", "blk.1.ssm_out.weight"),
-        ("qkv-format", "blk.1.attn_qkv.weight"),
     ] {
         let error = support::qwen35_recurrent_contract_error(case)
             .unwrap_or_else(|| panic!("{case} was accepted"));
         assert!(error.contains(expected), "{case}: {error}");
     }
+}
+
+#[test]
+fn qwen35_non_q8_recurrent_projections_run_in_row_and_fail_layer_compile() {
+    let fixture = support::tiny_qwen35_f32_recurrent();
+    let logits = fixture.run_cpu_forward_two_tokens().unwrap();
+    assert!(logits.iter().all(|value| value.is_finite()));
+
+    let error = fixture
+        .run_recording_forward("llm:layer=cpu0@1", &[1], &[[0, 0, 0, 0]])
+        .unwrap_err();
+    assert!(error.contains("unsupported tensor"), "{error}");
 }
 
 #[test]

@@ -823,6 +823,22 @@ impl PlacementCompiler<'_> {
                 )?;
                 layer_input = layer_output;
             }
+            for op in &ops {
+                if let LayerOp::Q8Matmul { weight, .. } = op {
+                    let entry = self.catalog.entry(*weight).ok_or_else(|| {
+                        PlanError::UnsupportedTensor {
+                            tensor: *weight,
+                            device: device.clone(),
+                        }
+                    })?;
+                    if entry.ggml_type != GGMLType::Q8_0 {
+                        return Err(PlanError::UnsupportedTensor {
+                            tensor: *weight,
+                            device: device.clone(),
+                        });
+                    }
+                }
+            }
             let referenced = ops
                 .iter()
                 .flat_map(LayerOp::referenced_tensors)

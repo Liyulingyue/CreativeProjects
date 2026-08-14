@@ -32,6 +32,8 @@ struct Cli {
     embedding: bool,
     embedding_output: EmbeddingOutput,
     mmproj_path: Option<String>,
+    audio_path: Option<String>,
+    language: Option<String>,
 }
 
 fn main() {
@@ -62,6 +64,13 @@ fn main() {
             eprintln!("Failed to initialize tokenizer: {error}");
             std::process::exit(1);
         });
+    if cli.audio_path.is_some() {
+        if let Err(error) = run_asr(&cli, source, Arc::new(tokenizer)) {
+            eprintln!("ASR error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let (compiled, runner) = rust_model_inference::compile_model(sources, &cli.execution)
         .unwrap_or_else(|error| {
             eprintln!("Failed to compile model: {error}");
@@ -94,6 +103,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
         embedding: false,
         embedding_output: EmbeddingOutput::Summary,
         mmproj_path: None,
+        audio_path: None,
+        language: None,
     };
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
@@ -119,6 +130,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
                     parse_embedding_output(Some(&next_value(&mut args, "--embedding-output")?))?;
             }
             "--mmproj" => cli.mmproj_path = Some(next_value(&mut args, "--mmproj")?),
+            "--audio" => cli.audio_path = Some(next_value(&mut args, "--audio")?),
+            "--language" => cli.language = Some(next_value(&mut args, "--language")?),
             "--image" => return Err("--image is not supported by the compiled vision path".into()),
             "--dump-logits" | "--bench" | "--profile" => {
                 return Err(format!(
@@ -128,7 +141,64 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
             _ => return Err(format!("Unknown option: {flag}")),
         }
     }
+    if cli.language.is_some() && cli.audio_path.is_none() {
+        return Err("--language requires --audio".into());
+    }
+    if cli.audio_path.is_some() && cli.embedding {
+        return Err("--audio cannot be used with --embedding".into());
+    }
     Ok(cli)
+}
+
+fn run_asr(
+    cli: &Cli,
+    source: Arc<dyn TensorSource>,
+    tokenizer: Arc<BPETokenizer>,
+) -> Result<(), String> {
+    let threads = if cli.execution.thread_count == 0 {
+        std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(1)
+            .min(8)
+    } else {
+        cli.execution.thread_count
+    };
+    let decoder = Arc::new(qwen3_cpu::Qwen3Model::from_source(
+        source,
+        tokenizer,
+        Arc::new(thread_pool::ComputePool::new(threads)),
+    )?);
+    if decoder.config().architecture != "qwen3vl" {
+        return Err("--audio requires a qwen3vl decoder".into());
+    }
+    let audio_source: Arc<dyn TensorSource> = match cli.mmproj_path.as_deref() {
+        Some(path) => Arc::from(
+            open_model_source(Path::new(path), ComponentRole::Mmproj)
+                .map_err(|error| error.to_string())?,
+        ),
+        None => open_bundled_audio_source(Path::new(&cli.model_path))?
+            .ok_or("raw GGUF ASR requires --mmproj")?,
+    };
+    let runtime = AsrRuntime::new(decoder, audio_source).map_err(|error| error.to_string())?;
+    let wav_path = cli.audio_path.as_deref().expect("checked by caller");
+    let wav = std::fs::read(wav_path)
+        .map_err(|error| format!("Failed to read {wav_path}: {error}"))?;
+    let result = runtime
+        .transcribe_wav(
+            &wav,
+            &TranscriptionOptions {
+                language: cli
+                    .language
+                    .as_ref()
+                    .filter(|language| !language.eq_ignore_ascii_case("auto"))
+                    .cloned(),
+                prompt: (!cli.prompt.is_empty()).then(|| cli.prompt.clone()),
+                max_new_tokens: cli.max_tokens,
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    println!("{}", result.text);
+    Ok(())
 }
 
 fn next_value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, String> {
@@ -167,6 +237,20 @@ mod tests {
         .unwrap();
         assert_eq!(cli.mmproj_path.as_deref(), Some("vision.gguf"));
         assert_eq!(cli.execution.placements.len(), 2);
+    }
+
+    #[test]
+    fn asr_parser_requires_audio_for_language() {
+        assert!(parse_args(["--language".into(), "English".into()]).is_err());
+        let cli = parse_args([
+            "--audio".into(),
+            "sample.wav".into(),
+            "--language".into(),
+            "auto".into(),
+        ])
+        .unwrap();
+        assert_eq!(cli.audio_path.as_deref(), Some("sample.wav"));
+        assert_eq!(cli.language.as_deref(), Some("auto"));
     }
 
     #[test]
@@ -429,6 +513,8 @@ fn run_interactive(
             embedding: false,
             embedding_output: cli.embedding_output,
             mmproj_path: cli.mmproj_path.clone(),
+            audio_path: None,
+            language: None,
         };
         run_inference(runner, tokenizer, run, &interactive_cli)?;
     }
@@ -458,6 +544,6 @@ fn sample_token(logits: &[f32], temperature: f32) -> Result<u32, String> {
 
 fn print_usage() {
     println!(
-        "Usage: cargo run -- --model <path.gguf> --prompt <text> [--placement llm:row=cpu0@1]"
+        "Usage: cargo run -- --model <path.gguf> [--prompt <text> | --audio <wav>] [--mmproj <path.gguf>] [--placement llm:row=cpu0@1]"
     );
 }

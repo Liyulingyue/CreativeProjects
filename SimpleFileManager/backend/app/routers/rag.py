@@ -43,6 +43,17 @@ class IndexStatusResponse(BaseModel):
     vector_count: int
 
 
+class IndexedFile(BaseModel):
+    id: str
+    file_path: str
+    content_preview: str
+
+
+class IndexedFilesResponse(BaseModel):
+    files: list[IndexedFile]
+    total: int
+
+
 @rag.post("/index")
 def index_file(req: IndexRequest) -> dict:
     try:
@@ -96,6 +107,29 @@ def get_status() -> IndexStatusResponse:
             indexed_count=rag_svc.vector_store.count(),
             vector_count=rag_svc.vector_store.count(),
         )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@rag.get("/files", response_model=IndexedFilesResponse)
+def get_indexed_files():
+    try:
+        rag_svc = state.get_rag_service()
+        files = rag_svc.vector_store.list_files()
+        return IndexedFilesResponse(
+            files=[IndexedFile(**f) for f in files],
+            total=len(files)
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@rag.delete("/files/{file_path:path}")
+def delete_indexed_file(file_path: str) -> dict:
+    try:
+        rag_svc = state.get_rag_service()
+        rag_svc.vector_store.delete_by_file(file_path)
+        return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

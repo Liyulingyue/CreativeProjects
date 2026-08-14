@@ -109,6 +109,8 @@ def browse(path: Optional[str] = None) -> BrowseResult:
     files_count = 0
 
     for entry in sorted(target.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+        if entry.name.startswith('.'):
+            continue
         try:
             node = _path_to_filenode(entry)
             items.append(node)
@@ -225,6 +227,8 @@ def get_tree(path: Optional[str] = None, depth: int = 2) -> dict:
         children = []
         try:
             for child in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+                if child.name.startswith('.'):
+                    continue
                 try:
                     children.append(build_tree(child, current_depth + 1))
                 except (PermissionError, OSError):

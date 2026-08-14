@@ -1085,31 +1085,38 @@ fn validate_recurrent_layer(
         }
         Ok(())
     };
-    let q8 = &[GGMLType::Q8_0];
+    let projection = &[
+        GGMLType::F32,
+        GGMLType::F16,
+        GGMLType::Q4K,
+        GGMLType::Q5K,
+        GGMLType::Q6K,
+        GGMLType::Q8_0,
+    ];
     let float = &[GGMLType::F32, GGMLType::F16];
     check(
         &format!("{prefix}.attn_qkv.weight"),
         *qkv,
         &[n_embd, dimensions.conv_dim as u64],
-        q8,
+        projection,
     )?;
     check(
         &format!("{prefix}.attn_gate.weight"),
         *gate,
         &[n_embd, dimensions.value_dim as u64],
-        q8,
+        projection,
     )?;
     check(
         &format!("{prefix}.ssm_beta.weight"),
         *beta,
         &[n_embd, dimensions.dt_rank as u64],
-        q8,
+        projection,
     )?;
     check(
         &format!("{prefix}.ssm_alpha.weight"),
         *alpha,
         &[n_embd, dimensions.dt_rank as u64],
-        q8,
+        projection,
     )?;
     check(
         &format!("{prefix}.ssm_conv1d.weight"),
@@ -1139,7 +1146,7 @@ fn validate_recurrent_layer(
         &format!("{prefix}.ssm_out.weight"),
         *ssm_output,
         &[dimensions.value_dim as u64, n_embd],
-        q8,
+        projection,
     )
 }
 

@@ -1450,7 +1450,6 @@ pub fn qwen35_recurrent_contract_error(case: &str) -> Option<String> {
         "ssm-a-shape" => replace("blk.1.ssm_a", vec![2], GGMLType::F32),
         "ssm-norm-shape" => replace("blk.1.ssm_norm.weight", vec![64], GGMLType::F32),
         "ssm-output-shape" => replace("blk.1.ssm_out.weight", vec![64, 64], GGMLType::Q8_0),
-        "qkv-format" => replace("blk.1.attn_qkv.weight", vec![64, 96], GGMLType::F32),
         _ => panic!("unknown recurrent contract case: {case}"),
     }
 
@@ -1465,6 +1464,48 @@ pub fn qwen35_recurrent_contract_error(case: &str) -> Option<String> {
     )])
     .unwrap();
     rust_model_inference::Qwen35Model::from_catalog(&catalog).err()
+}
+
+pub fn tiny_qwen35_f32_recurrent() -> PlacementFixture {
+    let fixture = tiny_qwen35_hybrid();
+    let source = fixture.llm_source();
+    let mut records = source.tensor_records();
+    let mut bytes = BTreeMap::new();
+    for name in [
+        "blk.1.attn_qkv.weight",
+        "blk.1.attn_gate.weight",
+        "blk.1.ssm_beta.weight",
+        "blk.1.ssm_alpha.weight",
+        "blk.1.ssm_out.weight",
+    ] {
+        let record = records
+            .iter_mut()
+            .find(|record| record.info.name == name)
+            .expect("fixture recurrent projection exists");
+        let data = vec![0; record.info.dims.iter().product::<u64>() as usize * 4];
+        record.info.ggml_type = GGMLType::F32;
+        record.segment_byte_range.end = record.segment_byte_range.start + data.len() as u64;
+        bytes.insert(name.to_owned(), data);
+    }
+    let catalog = Arc::new(
+        TensorCatalog::from_sources(vec![(
+            ComponentId::Llm,
+            Arc::new(OverrideSource {
+                source,
+                metadata: BTreeMap::new(),
+                records,
+                bytes,
+            }) as Arc<dyn TensorSource>,
+        )])
+        .unwrap(),
+    );
+    let model = rust_model_inference::Qwen35Model::from_catalog(&catalog).unwrap();
+    PlacementFixture {
+        token_embedding: catalog.find(ComponentId::Llm, "token_embd.weight").unwrap(),
+        output: catalog.find(ComponentId::Llm, "output.weight").unwrap(),
+        catalog,
+        model: PlacementModel::Qwen35(model),
+    }
 }
 
 fn tiny_qwen35_dense(
