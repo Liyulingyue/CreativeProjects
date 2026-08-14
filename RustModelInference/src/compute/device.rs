@@ -390,6 +390,12 @@ impl Scheduler {
         self.devices.iter().filter(|d| d.is_available()).map(|d| d.kind()).collect()
     }
 
+    pub fn get_device(&self, kind: DeviceKind) -> Option<Arc<dyn ComputeDevice>> {
+        self.devices.iter()
+            .find(|d| d.kind() == kind && d.is_available())
+            .cloned()
+    }
+
     pub fn gpu_configured(&self) -> bool {
         if self.config.is_empty() {
             return false;

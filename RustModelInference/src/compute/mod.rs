@@ -1,11 +1,15 @@
 pub mod cpu;
 pub mod device;
 pub mod gpu;
+pub mod layer;
+pub mod layer_engine;
 pub mod npu;
 
 pub use cpu::CpuDevice;
 pub use device::{ComputeError, ComputeDevice, DeviceConfig, DeviceKind, DeviceRatio, OpType, Result, Scheduler, WorkSpec};
 pub use gpu::GpuDevice;
+pub use layer::{LayerSpec, LayerOp, LayerScheduleConfig, LayerDeviceConfig, LayerError, LayerResult};
+pub use layer_engine::{LayerEngine, LayerMode, GpuWeightCache};
 pub use npu::NpuDevice;
 
 use std::sync::{Mutex, OnceLock};
