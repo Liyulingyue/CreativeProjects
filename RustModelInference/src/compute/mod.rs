@@ -30,14 +30,17 @@ pub fn init() -> &'static Mutex<Scheduler> {
         #[cfg(feature = "gpu")]
         {
             let gpu_count = GpuDevice::gpu_count();
-            eprintln!("Found {} GPU(s) - DISABLED (kernel bug)", gpu_count);
+            eprintln!("Found {} GPU(s)", gpu_count);
             for id in 0..gpu_count {
                 match GpuDevice::new(id as u8) {
                     Ok(gpu) => {
                         if gpu.is_available() && !gpu.is_software_renderer() {
-                            eprintln!("  GPU {}: {} (available but disabled)", id, gpu.name());
+                            eprintln!("  GPU {}: {} (available)", id, gpu.name());
+                            scheduler.add_device(gpu);
+                        } else if gpu.is_software_renderer() {
+                            eprintln!("  GPU {}: {} (software renderer, skipped)", id, gpu.name());
                         } else {
-                            eprintln!("  GPU {}: {} (skipped)", id, gpu.name());
+                            eprintln!("  GPU {}: {} (not available)", id, gpu.name());
                         }
                     }
                     Err(e) => {

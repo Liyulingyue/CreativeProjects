@@ -313,9 +313,8 @@ impl Scheduler {
         let ratios: Vec<u8> = self.config.iter().map(|c| c.ratio.ratio()).collect();
         let active_devices: Vec<_> = self.devices
             .iter()
-            .filter(|d| d.is_available())
             .filter(|d| {
-                self.config.iter().any(|c| c.kind == d.kind() && !c.ratio.is_zero())
+                d.is_available() && self.config.iter().any(|c| c.kind == d.kind() && !c.ratio.is_zero())
             })
             .cloned()
             .collect();
@@ -336,12 +335,9 @@ impl Scheduler {
             .collect();
 
         let non_zero_ratios: Vec<u8> = device_ratios.into_iter().filter(|r| *r > 0).collect();
-        eprintln!("DEBUG: active_devices={}, non_zero_ratios={:?}, n_out={}", active_devices.len(), non_zero_ratios, spec.n_out);
         if non_zero_ratios.len() == 1 {
-            eprintln!("DEBUG: Single device mode, skipping split");
             return active_devices[0].execute_matmul_q8(&spec);
         }
-        eprintln!("DEBUG: Splitting work by ratios: {:?}", non_zero_ratios);
 
         let chunks = spec.split_by_ratios(&non_zero_ratios);
         self.execute_on_devices(&active_devices, &chunks)
