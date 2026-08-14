@@ -180,10 +180,9 @@ impl Qwen3Model {
         let k = catalog.entry(layers[0].k).ok_or("Missing K tensor entry")?;
         let q_rows = usize::try_from(q.row_count).map_err(|_| "Q row count does not fit usize")?;
         let k_rows = usize::try_from(k.row_count).map_err(|_| "K row count does not fit usize")?;
-        let n_embd_head_k = config.n_embd_head;
-        if q_rows != config.n_head * n_embd_head_k
+        let n_embd_head_k = q_rows / config.n_head;
+        if n_embd_head_k == 0
             || k_rows != config.n_head_kv * n_embd_head_k
-            || n_embd_head_k == 0
         {
             return Err("Invalid Qwen3 attention dimensions".into());
         }
