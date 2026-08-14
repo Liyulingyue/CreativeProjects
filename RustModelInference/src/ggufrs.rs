@@ -1,6 +1,7 @@
 use crate::model::{
     ByteReader, GGMLType, GGUFLoader, MetaValue, MetaValueType, TensorInfo, TensorSource,
 };
+use crate::tensor_catalog::{SourceFormat, SourceTensorRecord};
 use crate::qwen3a::validate_qwen3a_source;
 use memmap2::{Mmap, MmapOptions};
 use sha2::{Digest, Sha256};
@@ -2173,6 +2174,25 @@ impl TensorSource for LoadedComponent {
         let len = usize::try_from(record.byte_len).ok()?;
         mapping.bytes.get(start..start.checked_add(len)?)
     }
+
+    fn source_format(&self) -> SourceFormat {
+        SourceFormat::Ggufrs
+    }
+
+    fn tensor_records(&self) -> Vec<SourceTensorRecord> {
+        self.index
+            .tensors
+            .iter()
+            .filter(|record| record.component_id == self.component_id)
+            .map(|record| SourceTensorRecord {
+                info: record.info.clone(),
+                segment_id: record.segment_id,
+                segment_byte_range: record.segment_offset
+                    ..record.segment_offset + record.byte_len,
+                layer: self.index.segments[record.segment_id as usize].layer,
+            })
+            .collect()
+    }
 }
 
 fn io_error(operation: &'static str, path: &Path, source: io::Error) -> GgufrsError {
@@ -3355,7 +3375,7 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
     use crate::asr::{open_bundled_audio_source, AsrRuntime, TranscriptionOptions};
-    use crate::qwen3::Qwen3Model;
+    use crate::qwen3_cpu::Qwen3Model;
     use crate::thread_pool::ComputePool;
     use crate::tokenizer::BPETokenizer;
 

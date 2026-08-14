@@ -1,6 +1,6 @@
 use crate::ggufrs::{ComponentRole, GgufrsFile};
 use crate::model::{MetaValue, TensorSource};
-use crate::qwen3::{Qwen3GenerateOptions, Qwen3Input, Qwen3Model};
+use crate::qwen3_cpu::{Qwen3GenerateOptions, Qwen3Input, Qwen3Model};
 use crate::qwen3a::{
     decode_pcm16_wav, log_mel_windows, validate_qwen3a_source, AsrAudioError, AudioEmbeddings,
     Qwen3AudioModel,
@@ -1621,7 +1621,7 @@ mod tests {
     #[test]
     fn audio_replacement_changes_only_pad_rows() {
         let tokenizer = Arc::new(tokenizer());
-        let decoder = crate::qwen3::test_model(Arc::clone(&tokenizer), 4096, 32);
+        let decoder = crate::qwen3_cpu::test_model(Arc::clone(&tokenizer), 4096, 32);
         let prompt = build_asr_prompt(&tokenizer, 4096, 2, None, None).unwrap();
         let original = decoder.embed_tokens(&prompt.token_ids).unwrap();
         let audio = AudioEmbeddings {
@@ -1650,7 +1650,7 @@ mod tests {
     #[test]
     fn audio_replacement_rejects_count_dimension_value_and_finite_mismatches() {
         let tokenizer = Arc::new(tokenizer());
-        let decoder = crate::qwen3::test_model(Arc::clone(&tokenizer), 4096, 32);
+        let decoder = crate::qwen3_cpu::test_model(Arc::clone(&tokenizer), 4096, 32);
         let prompt = build_asr_prompt(&tokenizer, 4096, 2, None, None).unwrap();
         for audio in [
             AudioEmbeddings {

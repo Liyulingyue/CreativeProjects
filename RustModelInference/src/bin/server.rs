@@ -16,24 +16,55 @@ use tower_http::cors::CorsLayer;
 
 use rust_model_inference::*;
 
-struct Qwen35State {
-    source: Arc<dyn TensorSource>,
-    model: Arc<Qwen35Model>,
+#[cfg(test)]
+mod placement_tests {
+    use super::*;
+
+    #[test]
+    fn server_parses_placement_and_rejects_unknown_flags() {
+        let cli = parse_server_args([
+            "--model".to_owned(),
+            "model.gguf".to_owned(),
+            "--placement".to_owned(),
+            "llm:row=metal0@1".to_owned(),
+            "--placement".to_owned(),
+            "vision:layer=cpu0@1".to_owned(),
+            "--port".to_owned(),
+            "9000".to_owned(),
+        ])
+        .unwrap();
+        assert_eq!(cli.model_path, "model.gguf");
+        assert_eq!(cli.port, 9000);
+        assert_eq!(
+            cli.execution.placements,
+            ["llm:row=metal0@1", "vision:layer=cpu0@1"]
+        );
+        assert!(parse_server_args(["--unknown".to_owned()]).is_err());
+        assert!(parse_server_args(["--gpu-ratio".to_owned()])
+            .unwrap_err()
+            .contains("use --placement"));
+    }
+}
+
+struct Qwen3State {
+    model: Qwen3Model,
+    compiled: CompiledModel,
     tokenizer: Arc<BPETokenizer>,
-    pool: Arc<thread_pool::ComputePool>,
+}
+
+struct Qwen35State {
+    model: Qwen35Model,
+    compiled: CompiledModel,
+    tokenizer: Arc<BPETokenizer>,
 }
 
 enum ModelBackend {
-    Qwen3(Arc<Qwen3Model>),
+    Qwen3(Qwen3State),
+    Qwen3Cpu(Arc<qwen3_cpu::Qwen3Model>),
     Qwen35(Qwen35State),
     #[cfg(test)]
     Test,
 }
-
-unsafe impl Send for ModelBackend {}
-unsafe impl Sync for ModelBackend {}
-unsafe impl Send for Qwen35State {}
-unsafe impl Sync for Qwen35State {}
 
 #[derive(Clone)]
 struct AppState {
@@ -366,6 +397,51 @@ fn sample_token_from_logits(logits: &[f32], temperature: f32) -> i32 {
     (logits.len() - 1) as i32
 }
 
+#[derive(Debug)]
+struct ServerCli {
+    model_path: String,
+    mmproj_path: Option<String>,
+    host: String,
+    port: u16,
+    execution: ExecutionOptions,
+}
+
+fn parse_server_args(args: impl IntoIterator<Item = String>) -> Result<ServerCli, String> {
+    let mut cli = ServerCli {
+        model_path: String::new(),
+        mmproj_path: None,
+        host: "0.0.0.0".to_owned(),
+        port: 8080,
+        execution: ExecutionOptions::default(),
+    };
+    let mut args = args.into_iter();
+    while let Some(flag) = args.next() {
+        if parse_execution_flag(&flag, &mut args, &mut cli.execution)? {
+            continue;
+        }
+        match flag.as_str() {
+            "--model" => cli.model_path = next_server_value(&mut args, "--model")?,
+            "--mmproj" => cli.mmproj_path = Some(next_server_value(&mut args, "--mmproj")?),
+            "--host" => cli.host = next_server_value(&mut args, "--host")?,
+            "--port" => {
+                cli.port = next_server_value(&mut args, "--port")?
+                    .parse()
+                    .map_err(|_| "Invalid --port value")?
+            }
+            _ => return Err(format!("Unknown option: {flag}")),
+        }
+    }
+    Ok(cli)
+}
+
+fn next_server_value(
+    args: &mut impl Iterator<Item = String>,
+    flag: &str,
+) -> Result<String, String> {
+    args.next()
+        .ok_or_else(|| format!("Missing value for {flag}"))
+}
+
 async fn health() -> &'static str {
     "ok"
 }
@@ -611,16 +687,17 @@ fn generate(
     temperature: f32,
 ) -> Result<GenerateResult, String> {
     match model {
-        ModelBackend::Qwen3(model) => {
+        ModelBackend::Qwen3(state) => generate_qwen3(state, messages, max_tokens, temperature),
+        ModelBackend::Qwen3Cpu(model) => {
             let token_ids = server_prompt_tokens(model.tokenizer(), messages)?;
-            let positions = qwen_text_positions(token_ids.len());
+            let positions = qwen3_cpu::qwen_text_positions(token_ids.len());
             let generation = model.generate(
-                Qwen3Input {
+                qwen3_cpu::Qwen3Input {
                     token_ids: &token_ids,
                     positions: &positions,
                     embeddings: None,
                 },
-                Qwen3GenerateOptions {
+                qwen3_cpu::Qwen3GenerateOptions {
                     max_new_tokens: max_tokens,
                     temperature,
                 },
@@ -632,94 +709,105 @@ fn generate(
                 completion_tokens: generation.token_ids.len(),
             })
         }
-        ModelBackend::Qwen35(s) => generate_qwen_35(s, messages, max_tokens, temperature),
+        ModelBackend::Qwen35(state) => generate_qwen35(state, messages, max_tokens, temperature),
         #[cfg(test)]
         ModelBackend::Test => unreachable!("test backend does not generate"),
     }
 }
 
-fn generate_qwen_35(
+fn generate_qwen3(
+    state: &Qwen3State,
+    messages: &[ChatMessage],
+    max_tokens: usize,
+    temperature: f32,
+) -> Result<GenerateResult, String> {
+    let input_tokens = server_prompt_tokens(&state.tokenizer, messages)?;
+    let n_prompt = input_tokens.len();
+    let mut all_tokens = input_tokens.clone();
+    let mut generated_tokens = Vec::new();
+    let mut token_strings = Vec::new();
+    let mut decoder = state.tokenizer.streaming_decoder(false);
+    let mut run = state
+        .compiled
+        .start_run()
+        .map_err(|error| error.to_string())?;
+    for step in 0..(n_prompt + max_tokens) {
+        let token_id = if step < n_prompt {
+            input_tokens[step]
+        } else {
+            *generated_tokens.last().unwrap_or(&0)
+        };
+        let position = u32::try_from(step).map_err(|_| "Qwen3 server position does not fit u32")?;
+        let mut logits = vec![0.0; state.model.config.vocab];
+        state.model.forward(
+            &mut run,
+            &[token_id],
+            &[[position, position, position, 0]],
+            &mut logits,
+        )?;
+        if step < n_prompt - 1 {
+            continue;
+        }
+        let next_token = sample_token_from_logits(&logits, temperature);
+        if state.tokenizer.eos_id() == Some(next_token as u32)
+            || state.tokenizer.special_token_id("im_end") == Some(next_token as u32)
+            || generated_tokens.len() >= max_tokens
+        {
+            break;
+        }
+        let text = decoder.push(next_token as u32);
+        if !text.is_empty() {
+            token_strings.push(text);
+        }
+        generated_tokens.push(next_token as u32);
+        all_tokens.push(next_token as u32);
+    }
+    let tail = decoder.finish();
+    if !tail.is_empty() {
+        token_strings.push(tail);
+    }
+    Ok(GenerateResult {
+        text: token_strings.join(""),
+        tokens: token_strings,
+        prompt_tokens: n_prompt,
+        completion_tokens: generated_tokens.len(),
+    })
+}
+
+fn generate_qwen35(
     state: &Qwen35State,
     messages: &[ChatMessage],
     max_tokens: usize,
     temperature: f32,
 ) -> Result<GenerateResult, String> {
-    let _source = &state.source;
     let prompt_ids = server_prompt_tokens(&state.tokenizer, messages)?;
     let (prompt_positions, mut next_text_position) =
         build_qwen35_positions(&prompt_ids, None, &[])?;
-    let prompt_tokens: Vec<i32> = prompt_ids
-        .iter()
-        .copied()
-        .map(|id| i32::try_from(id).map_err(|_| format!("Token ID {id} exceeds i32")))
-        .collect::<Result<_, _>>()?;
-
-    let n_prompt = prompt_tokens.len();
-    let max_seq = state.model.config.n_ctx;
-    let mut kv_cache = KvCache::new_f32(
-        state.model.config.n_layer,
-        max_seq,
-        state.model.config.n_embd_head() * state.model.config.n_head_kv,
-    );
-    let mut llm_scratch =
-        qwen35::Qwen35Scratchpad::new(&state.model.config, n_prompt.max(max_tokens));
-
-    let mut all_tokens = prompt_tokens.clone();
+    let n_prompt = prompt_ids.len();
     let mut decoder = state.tokenizer.streaming_decoder(false);
     let mut generated_ids = Vec::<u32>::new();
     let mut rendered_chunks = Vec::<String>::new();
 
-    for step in 0..max_tokens {
-        let tokens = if step == 0 {
-            &prompt_tokens[..]
-        } else {
-            &all_tokens[all_tokens.len() - 1..]
-        };
-
-        if step == 0 {
-            for t in 0..n_prompt {
-                let embd_off = t * state.model.config.n_embd;
-                let tok = prompt_tokens[t] as usize;
-                let tok_off = tok * state.model.config.n_embd;
-                for e in 0..state.model.config.n_embd {
-                    if tok_off + e < state.model.tok_embd.len() {
-                        llm_scratch.x[embd_off + e] = state.model.tok_embd[tok_off + e];
-                    }
-                }
-            }
-        } else {
-            let tok = tokens[0] as usize;
-            let tok_off = tok * state.model.config.n_embd;
-            for e in 0..state.model.config.n_embd {
-                if tok_off + e < state.model.tok_embd.len() {
-                    llm_scratch.x[e] = state.model.tok_embd[tok_off + e];
-                }
-            }
-        }
-
-        let decode_position = [[
-            next_text_position,
-            next_text_position,
-            next_text_position,
-            0,
+    let mut run = state
+        .compiled
+        .start_run()
+        .map_err(|error| error.to_string())?;
+    let mut logits = None;
+    for (token, position) in prompt_ids.iter().copied().zip(prompt_positions.iter()) {
+        let positions = [[
+            u32::try_from(position[0]).map_err(|_| "Qwen3.5 server position does not fit u32")?,
+            u32::try_from(position[1]).map_err(|_| "Qwen3.5 server position does not fit u32")?,
+            u32::try_from(position[2]).map_err(|_| "Qwen3.5 server position does not fit u32")?,
+            u32::try_from(position[3]).map_err(|_| "Qwen3.5 server position does not fit u32")?,
         ]];
-        let positions = if step == 0 {
-            &prompt_positions[..]
-        } else {
-            &decode_position[..]
-        };
-        let logits = state.model.forward(
-            tokens.len(),
-            &mut kv_cache,
-            &mut llm_scratch,
-            &state.pool,
-            positions,
-        )?;
-        if step > 0 {
-            next_text_position = next_text_position
-                .checked_add(1)
-                .ok_or("Qwen3.5 server decode position overflow")?;
-        }
+        let mut current_logits = vec![0.0; state.model.config.vocab_size];
+        state
+            .model
+            .forward_compiled(&mut run, &[token], &positions, &mut current_logits)?;
+        logits = Some(current_logits);
+    }
+    let mut logits = logits.ok_or("Qwen3.5 prompt produced no tokens")?;
+    for generated in 0..max_tokens {
         let next_token = sample_token_from_logits(&logits, temperature);
         let next_id = u32::try_from(next_token)
             .map_err(|_| format!("Model produced negative token ID {next_token}"))?;
@@ -733,7 +821,26 @@ fn generate_qwen_35(
             rendered_chunks.push(rendered);
         }
         generated_ids.push(next_id);
-        all_tokens.push(next_token);
+        if generated + 1 == max_tokens {
+            break;
+        }
+        let decode_position = [
+            u32::try_from(next_text_position)
+                .map_err(|_| "Qwen3.5 server position does not fit u32")?,
+            u32::try_from(next_text_position)
+                .map_err(|_| "Qwen3.5 server position does not fit u32")?,
+            u32::try_from(next_text_position)
+                .map_err(|_| "Qwen3.5 server position does not fit u32")?,
+            0,
+        ];
+        let mut next_logits = vec![0.0; state.model.config.vocab_size];
+        state
+            .model
+            .forward_compiled(&mut run, &[next_id], &[decode_position], &mut next_logits)?;
+        logits = next_logits;
+        next_text_position = next_text_position
+            .checked_add(1)
+            .ok_or("Qwen3.5 server decode position overflow")?;
     }
 
     let tail = decoder.finish();
@@ -749,139 +856,117 @@ fn generate_qwen_35(
     })
 }
 
-fn validate_explicit_mmproj_arch(arch: &str, explicit: bool) -> Result<(), String> {
-    if explicit && arch != "qwen3vl" {
-        return Err("--mmproj requires a qwen3vl decoder".into());
-    }
-    Ok(())
-}
-
 #[tokio::main]
 async fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let mut model_path = String::new();
-    let mut mmproj_path = None;
-    let mut host = "0.0.0.0".to_string();
-    let mut port = 8080u16;
-    let mut n_threads = 0usize;
+    let cli = parse_server_args(std::env::args().skip(1)).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(2);
+    });
 
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--model" => {
-                if i + 1 < args.len() {
-                    model_path = args[i + 1].clone();
-                    i += 1;
-                }
-            }
-            "--host" => {
-                if i + 1 < args.len() {
-                    host = args[i + 1].clone();
-                    i += 1;
-                }
-            }
-            "--mmproj" => {
-                if i + 1 < args.len() {
-                    mmproj_path = Some(args[i + 1].clone());
-                    i += 1;
-                }
-            }
-            "--port" => {
-                if i + 1 < args.len() {
-                    port = args[i + 1].parse().unwrap_or(8080);
-                    i += 1;
-                }
-            }
-            "--threads" => {
-                if i + 1 < args.len() {
-                    n_threads = args[i + 1].parse().unwrap_or(0);
-                    i += 1;
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-
-    if model_path.is_empty() {
-        eprintln!("Usage: rust-model-server --model <path.gguf-or-ggufrs> [--mmproj path.gguf] [--host 0.0.0.0] [--port 8080] [--threads 4]");
+    if cli.model_path.is_empty() {
+        eprintln!("Usage: rust-model-server --model <path.gguf-or-ggufrs> [--host 0.0.0.0] [--port 8080] [--threads 4] [--placement llm:row=cpu0@1]");
         std::process::exit(1);
     }
 
-    let n_threads = if n_threads > 0 { n_threads } else { 4 };
-    eprintln!("Loading model: {} ...", model_path);
+    let n_threads = cli.execution.thread_count;
+    eprintln!("Loading model: {} ...", cli.model_path);
 
-    let source: Arc<dyn TensorSource> = Arc::from(
-        open_model_source(Path::new(&model_path), ComponentRole::Llm).unwrap_or_else(|error| {
-            eprintln!("Failed to load model: {error}");
-            std::process::exit(1);
-        }),
-    );
+    let sources = load_model_sources(
+        Path::new(&cli.model_path),
+        cli.mmproj_path.as_deref().map(Path::new),
+    )
+    .unwrap_or_else(|error| {
+        eprintln!("Failed to load model: {error}");
+        std::process::exit(1);
+    });
+    let source = sources
+        .iter()
+        .find(|(component, _)| *component == ComponentId::Llm)
+        .expect("load_model_sources always returns LLM")
+        .1
+        .clone();
     let arch = source
         .metadata("general.architecture")
         .and_then(|v| v.to_string_val())
         .unwrap_or_default();
-    validate_explicit_mmproj_arch(&arch, mmproj_path.is_some()).unwrap_or_else(|error| {
-        eprintln!("{error}");
-        std::process::exit(1);
-    });
-    let pool = Arc::new(thread_pool::ComputePool::new(n_threads));
-    let explicit_audio_source: Option<Arc<dyn TensorSource>> = mmproj_path.as_deref().map(|path| {
-        Arc::from(
-            open_model_source(Path::new(path), ComponentRole::Mmproj).unwrap_or_else(|error| {
-                eprintln!("Failed to load mmproj: {error}");
-                std::process::exit(1);
-            }),
-        )
-    });
-
-    let tokenizer = BPETokenizer::from_gguf_metadata(|k| source.metadata(k).cloned())
+    let tokenizer = Arc::new(BPETokenizer::from_gguf_metadata(|k| source.metadata(k).cloned())
         .unwrap_or_else(|e| {
             eprintln!("Failed to init tokenizer: {}", e);
             std::process::exit(1);
-        });
+        }));
 
     let mut asr = None;
-    let model: ModelBackend = if arch == "qwen35" {
-        let model = Qwen35Model::from_source(source.as_ref()).unwrap_or_else(|e| {
-            eprintln!("Failed to parse Qwen3.5 model: {}", e);
-            std::process::exit(1);
-        });
-        ModelBackend::Qwen35(Qwen35State {
-            source: Arc::clone(&source),
-            model: Arc::new(model),
-            tokenizer: Arc::new(tokenizer),
-            pool,
-        })
-    } else {
-        let model = Arc::new(
-            Qwen3Model::from_source(Arc::clone(&source), Arc::new(tokenizer), pool).unwrap_or_else(
+    let model = if arch == "qwen3vl" {
+        let threads = if n_threads == 0 {
+            std::thread::available_parallelism()
+                .map(std::num::NonZeroUsize::get)
+                .unwrap_or(1)
+                .min(8)
+        } else {
+            n_threads
+        };
+        let decoder = Arc::new(
+            qwen3_cpu::Qwen3Model::from_source(
+                Arc::clone(&source),
+                Arc::clone(&tokenizer),
+                Arc::new(thread_pool::ComputePool::new(threads)),
+            )
+            .unwrap_or_else(
                 |error| {
                     eprintln!("Failed to parse Qwen2/Qwen3 model: {error}");
                     std::process::exit(1);
                 },
             ),
         );
-        if arch == "qwen3vl" {
-            let audio_source = explicit_audio_source.or_else(|| {
-                open_bundled_audio_source(Path::new(&model_path)).unwrap_or_else(|error| {
+        let audio_source: Option<Arc<dyn TensorSource>> = cli
+            .mmproj_path
+            .as_deref()
+            .map(|path| {
+                Arc::from(
+                    open_model_source(Path::new(path), ComponentRole::Mmproj).unwrap_or_else(
+                        |error| {
+                            eprintln!("Failed to load mmproj: {error}");
+                            std::process::exit(1);
+                        },
+                    ),
+                )
+            })
+            .or_else(|| {
+                open_bundled_audio_source(Path::new(&cli.model_path)).unwrap_or_else(|error| {
                     eprintln!("Failed to load bundled audio component: {error}");
                     std::process::exit(1);
                 })
             });
-            asr = audio_source.map(|audio_source| {
-                Arc::new(
-                    AsrRuntime::new(Arc::clone(&model), audio_source).unwrap_or_else(|error| {
-                        eprintln!("Failed to initialize ASR runtime: {error}");
-                        std::process::exit(1);
-                    }),
-                )
+        asr = audio_source.map(|audio_source| {
+            Arc::new(
+                AsrRuntime::new(Arc::clone(&decoder), audio_source).unwrap_or_else(|error| {
+                    eprintln!("Failed to initialize ASR runtime: {error}");
+                    std::process::exit(1);
+                }),
+            )
+        });
+        ModelBackend::Qwen3Cpu(decoder)
+    } else {
+        let (compiled, runner) = rust_model_inference::compile_model(sources, &cli.execution)
+            .unwrap_or_else(|error| {
+                eprintln!("Failed to compile model: {error}");
+                std::process::exit(1);
             });
+        match runner {
+            QwenRunner::Qwen3(model) => ModelBackend::Qwen3(Qwen3State {
+                model,
+                compiled,
+                tokenizer,
+            }),
+            QwenRunner::Qwen35(model) => ModelBackend::Qwen35(Qwen35State {
+                model,
+                compiled,
+                tokenizer,
+            }),
         }
-        ModelBackend::Qwen3(model)
     };
 
-    let model_name = std::path::Path::new(&model_path)
+    let model_name = std::path::Path::new(&cli.model_path)
         .file_stem()
         .unwrap_or_default()
         .to_string_lossy()
@@ -911,7 +996,7 @@ async fn main() {
         .layer(CorsLayer::permissive())
         .with_state(state);
 
-    let addr = format!("{}:{}", host, port);
+    let addr = format!("{}:{}", cli.host, cli.port);
     eprintln!("Server listening on http://{}", addr);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
@@ -1008,14 +1093,6 @@ mod tests {
         assert_eq!(request.options.max_new_tokens, 256);
         assert_eq!(request.options.language, None);
         assert_eq!(request.options.prompt, None);
-    }
-
-    #[test]
-    fn explicit_mmproj_requires_qwen3vl_decoder() {
-        assert!(validate_explicit_mmproj_arch("qwen3vl", true).is_ok());
-        assert!(validate_explicit_mmproj_arch("qwen35", false).is_ok());
-        assert!(validate_explicit_mmproj_arch("qwen35", true).is_err());
-        assert!(validate_explicit_mmproj_arch("qwen3", true).is_err());
     }
 
     #[test]

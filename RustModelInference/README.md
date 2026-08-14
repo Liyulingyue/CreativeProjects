@@ -55,6 +55,28 @@ cargo run --release --bin micro-bench -- --check
 
 ### CLI Options
 
+### Compiled execution placement
+
+`--placement` is repeatable and is the only device-selection contract. Omit it
+to compile every loaded component on `cpu0` in Layer mode. Weights are opened
+and uploaded at compilation, not while a token is submitted. `--gpu-ratio` was
+removed; use `--placement llm:layer=metal0@1` (or `vulkan0`) instead.
+
+```bash
+cargo run --release --bin rust-model-inference -- \
+  --model /absolute/path/Qwen3-Q8_0.gguf \
+  --placement llm:layer=cpu0@1 --kv-cache f16 --prompt '2 + 3 ='
+
+cargo run --release --features gpu --bin micro-bench -- \
+  --model /absolute/path/Qwen3-Q8_0.gguf \
+  --placement llm:layer=metal0@1 --prompt '2 + 3 =' \
+  --max-tokens 32 --kv-cache f16 --samples 5
+```
+
+Explicit unavailable, unsupported, or insufficient-capacity placements fail
+before sessions are opened; they never fall back to CPU. `--kv-cache` accepts
+only `f16` and `f32` (default `f16`).
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--model` | — | Path to GGUF file |

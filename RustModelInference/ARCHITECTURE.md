@@ -6,6 +6,18 @@
 
 ## 1. 核心设计初衷与目标
 
+## Compiled multi-device execution
+
+Both binaries call one `compile_model` entry point: sources become a
+`TensorCatalog`, model metadata becomes `ComponentRequirements`, the
+`PlacementCompiler` produces the immutable `ProgramPlan`, and `CompiledModel`
+opens resident sessions once. `ProgramPlan.layer_ops` remains the sole public
+schedule. An `ExecutionRun` serializes mutable state while retaining weights.
+
+Row mode submits all row shards then waits before gathering outputs. Layer mode
+chains same-device spans without host readback; host transfers occur only at
+planned device boundaries.
+
 `rust-model-inference` 是一个针对端侧设备（如 Raspberry Pi, Cix P1, NUC 等）打造的**高吞吐、零堆分配（Zero-Allocation）、多模态混合量化**推理引擎。
 
 ### 关键工程痛点与破局策略

@@ -3044,6 +3044,14 @@ mod tests {
         fn tensor_slice(&self, name: &str) -> Option<&[u8]> {
             self.data.get(name).map(Vec::as_slice)
         }
+
+        fn source_format(&self) -> crate::SourceFormat {
+            crate::SourceFormat::Gguf
+        }
+
+        fn tensor_records(&self) -> Vec<crate::SourceTensorRecord> {
+            Vec::new()
+        }
     }
 
     fn add_tensor(

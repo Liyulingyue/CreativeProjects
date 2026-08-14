@@ -1,1226 +1,2440 @@
-use crate::ggufrs::{GgufrsError, GgufrsFile, MappedSegment, SegmentKind, TensorRecord};
+use crate::compute::{
+    ActivationTransfer, BackendError, BackendKind, ComponentPlan, DevicePlan, DeviceRegistry,
+    ExecutionPlan, LayerFamily, LayerOp, LayerSpan, MemoryPlan, ProgramBinding, ProgramId,
+    ProgramKind, ProgramPlan, ResidentTensorPlan, RowShard, SlotId, SlotKind, SlotPlan,
+    SlotStorage, TransferTarget,
+};
+use crate::{
+    ComponentId, DeviceId, GGMLType, NormalizedTarget, PlacementMode, PlacementRule, TensorCatalog,
+    TensorId,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
-use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LogicalDevice {
-    pub id: String,
-    pub capacity: u64,
+pub struct ComponentRequirements {
+    pub component: ComponentId,
+    pub workload: ComponentWorkload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComponentWorkload {
+    Llm(LlmRequirements),
+    VisionCpu { layer_count: u32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlacementPolicy {
-    LayerSplit,
-    TensorSplit,
+pub enum KvCacheType {
+    F16,
+    F32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PlacementSlice {
-    Whole,
-    Rows { start: u64, end: u64 },
+pub struct LlmRequirements {
+    pub layers: Vec<LlmLayerSpec>,
+    pub hidden_size: u32,
+    pub context_length: u32,
+    pub max_batch_tokens: u32,
+    pub kv_cache: KvCacheType,
+    pub final_norm: TensorId,
+    pub output: TensorId,
+    pub norm_epsilon_bits: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Placement {
-    pub component_id: u32,
-    pub segment_id: u32,
-    pub tensor_name: String,
-    pub slice: PlacementSlice,
-    pub segment_byte_range: Range<u64>,
-    pub device_id: String,
+pub enum LlmLayerSpec {
+    Qwen3(Qwen3LayerSpec),
+    Qwen35Dense(Qwen35DenseLayerSpec),
+    Qwen35Recurrent(Qwen35RecurrentLayerSpec),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LoadPlan {
-    pub component_ids: Vec<u32>,
-    pub devices: Vec<LogicalDevice>,
-    pub primary_device: String,
-    pub policy: PlacementPolicy,
-    pub placements: Vec<Placement>,
-}
+impl LlmLayerSpec {
+    pub fn layer(&self) -> u32 {
+        match self {
+            Self::Qwen3(spec) => spec.layer,
+            Self::Qwen35Dense(spec) => spec.layer,
+            Self::Qwen35Recurrent(spec) => spec.layer,
+        }
+    }
 
-fn invalid_plan(context: impl Into<String>) -> GgufrsError {
-    GgufrsError::InvalidPlan {
-        context: context.into(),
+    pub fn family(&self) -> LayerFamily {
+        match self {
+            Self::Qwen3(_) => LayerFamily::Qwen3,
+            Self::Qwen35Dense(_) => LayerFamily::Qwen35Dense,
+            Self::Qwen35Recurrent(_) => LayerFamily::Qwen35Recurrent,
+        }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct RowLayout {
-    row_count: u64,
-    row_bytes: u64,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Qwen3LayerSpec {
+    pub layer: u32,
+    pub attn_norm: TensorId,
+    pub q_norm: Option<TensorId>,
+    pub k_norm: Option<TensorId>,
+    pub q: TensorId,
+    pub k: TensorId,
+    pub v: TensorId,
+    pub o: TensorId,
+    pub ffn_norm: TensorId,
+    pub ffn_gate: TensorId,
+    pub ffn_up: TensorId,
+    pub ffn_down: TensorId,
+    pub head_count: u32,
+    pub kv_head_count: u32,
+    pub key_head_dim: u32,
+    pub value_head_dim: u32,
+    pub rope_dims: u32,
+    pub rope_freq_base_bits: u32,
+    pub norm_epsilon_bits: u32,
 }
 
-fn row_layout(record: &TensorRecord) -> Result<RowLayout, GgufrsError> {
-    let row_elements = *record
-        .info
-        .dims
-        .first()
-        .ok_or_else(|| invalid_plan(format!("{} has rank zero", record.info.name)))?;
-    let row_count = record.info.dims[1..]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Qwen35DenseLayerSpec {
+    pub layer: u32,
+    pub attn_norm: TensorId,
+    pub post_attn_norm: TensorId,
+    pub q_norm: TensorId,
+    pub k_norm: TensorId,
+    pub q: TensorId,
+    pub k: TensorId,
+    pub v: TensorId,
+    pub o: TensorId,
+    pub ffn_gate: TensorId,
+    pub ffn_up: TensorId,
+    pub ffn_down: TensorId,
+    pub head_count: u32,
+    pub kv_head_count: u32,
+    pub key_head_dim: u32,
+    pub value_head_dim: u32,
+    pub rope_dims: u32,
+    pub rope_sections: [i32; 4],
+    pub rope_freq_base_bits: u32,
+    pub norm_epsilon_bits: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Qwen35RecurrentLayerSpec {
+    pub layer: u32,
+    pub attn_norm: TensorId,
+    pub post_attn_norm: TensorId,
+    pub qkv: TensorId,
+    pub gate: TensorId,
+    pub beta: TensorId,
+    pub alpha: TensorId,
+    pub conv_weight: TensorId,
+    pub dt_bias: TensorId,
+    pub ssm_a: TensorId,
+    pub ssm_norm: TensorId,
+    pub ssm_output: TensorId,
+    pub ffn_gate: TensorId,
+    pub ffn_up: TensorId,
+    pub ffn_down: TensorId,
+    pub conv_width: u32,
+    pub state_size: u32,
+    pub group_count: u32,
+    pub dt_rank: u32,
+    pub inner_size: u32,
+    pub value_dim: u32,
+    pub conv_dim: u32,
+    pub norm_epsilon_bits: u32,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PlanError {
+    #[error(transparent)]
+    Backend(#[from] BackendError),
+    #[error("{device:?} receives no units from {available} across {targets} targets")]
+    InsufficientUnits {
+        device: DeviceId,
+        available: u32,
+        targets: usize,
+    },
+    #[error("unsupported component {component:?} on {device:?}")]
+    UnsupportedComponent {
+        component: ComponentId,
+        device: DeviceId,
+    },
+    #[error("unsupported tensor {tensor:?} on {device:?}")]
+    UnsupportedTensor { tensor: TensorId, device: DeviceId },
+    #[error("row mode requires a CPU primary for {component:?}, got {device:?}")]
+    UnsupportedRowPrimary {
+        component: ComponentId,
+        device: DeviceId,
+    },
+    #[error(
+        "physical device {physical_key} was selected through more than one logical id: {devices:?}"
+    )]
+    DuplicatePhysicalSelection {
+        physical_key: String,
+        devices: Vec<DeviceId>,
+    },
+    #[error("capacity exceeded on {device:?}: required {required_bytes}, available {available_bytes}, largest allocation {largest_allocation_bytes}")]
+    CapacityExceeded {
+        device: DeviceId,
+        required_bytes: u64,
+        available_bytes: u64,
+        largest_allocation_bytes: u64,
+    },
+    #[error("memory-size arithmetic overflow")]
+    SizeOverflow,
+}
+
+pub struct PlacementCompiler<'a> {
+    pub catalog: &'a TensorCatalog,
+    pub registry: &'a DeviceRegistry,
+    pub requirements: &'a [ComponentRequirements],
+}
+
+pub fn weighted_ranges(
+    total: u32,
+    targets: &[NormalizedTarget],
+) -> Result<Vec<(DeviceId, Range<u32>)>, PlanError> {
+    let exact = targets
         .iter()
-        .try_fold(1u64, |count, dimension| count.checked_mul(*dimension))
-        .ok_or_else(|| invalid_plan(format!("{} row count overflow", record.info.name)))?;
-    let (block_elements, block_bytes) = record.info.ggml_type.type_traits();
-    let block_elements = block_elements as u64;
-    if row_elements == 0 || row_elements % block_elements != 0 {
-        return Err(GgufrsError::UnsplittableTensor {
-            component_id: record.component_id,
-            tensor: record.info.name.clone(),
-            row_bytes: 0,
-            remaining: Vec::new(),
-            reason: "row element count is not divisible by quantization block size".into(),
+        .map(|target| target.fraction * f64::from(total))
+        .collect::<Vec<_>>();
+    let mut counts = exact
+        .iter()
+        .map(|value| value.floor() as u32)
+        .collect::<Vec<_>>();
+    let assigned = counts.iter().copied().sum::<u32>();
+    let mut order = (0..targets.len()).collect::<Vec<_>>();
+    order.sort_by(|left, right| {
+        let left_remainder = exact[*left] - f64::from(counts[*left]);
+        let right_remainder = exact[*right] - f64::from(counts[*right]);
+        right_remainder
+            .total_cmp(&left_remainder)
+            .then_with(|| targets[*left].ordinal.cmp(&targets[*right].ordinal))
+    });
+    for index in order.into_iter().take((total - assigned) as usize) {
+        counts[index] += 1;
+    }
+    if let Some(index) = counts.iter().position(|count| *count == 0) {
+        return Err(PlanError::InsufficientUnits {
+            device: targets[index].device.clone(),
+            available: total,
+            targets: targets.len(),
         });
     }
-    let row_bytes = row_elements
-        .checked_div(block_elements)
-        .and_then(|blocks| blocks.checked_mul(block_bytes as u64))
-        .ok_or_else(|| invalid_plan(format!("{} row size overflow", record.info.name)))?;
-    if row_count.checked_mul(row_bytes) != Some(record.byte_len) {
-        return Err(invalid_plan(format!(
-            "{} row layout does not match byte_len {}",
-            record.info.name, record.byte_len
-        )));
-    }
-    Ok(RowLayout {
-        row_count,
-        row_bytes,
-    })
-}
-
-fn device_index(devices: &[LogicalDevice], id: &str) -> Result<usize, GgufrsError> {
-    devices
+    let mut start = 0;
+    Ok(targets
         .iter()
-        .position(|device| device.id == id)
-        .ok_or_else(|| invalid_plan(format!("unknown logical device {id:?}")))
+        .zip(counts)
+        .map(|(target, count)| {
+            let range = start..start + count;
+            start += count;
+            (target.device.clone(), range)
+        })
+        .collect())
 }
 
-fn checked_tensor_range(record: &TensorRecord) -> Result<Range<u64>, GgufrsError> {
-    let end = record
-        .segment_offset
-        .checked_add(record.byte_len)
-        .ok_or_else(|| {
-            invalid_plan(format!(
-                "component {} segment {} tensor {} byte range overflow",
-                record.component_id, record.segment_id, record.info.name
-            ))
-        })?;
-    Ok(record.segment_offset..end)
+fn checked_mul(left: u64, right: u64) -> Result<u64, PlanError> {
+    left.checked_mul(right).ok_or(PlanError::SizeOverflow)
 }
 
-fn validate_devices(devices: &[LogicalDevice], primary_device: &str) -> Result<usize, GgufrsError> {
-    if devices.is_empty() {
-        return Err(invalid_plan(
-            "load plan requires at least one logical device",
-        ));
-    }
-    let mut ids = BTreeSet::new();
-    for device in devices {
-        if device.id.is_empty() {
-            return Err(invalid_plan("logical device id must not be empty"));
-        }
-        if !ids.insert(device.id.as_str()) {
-            return Err(invalid_plan(format!(
-                "duplicate logical device id {:?}",
-                device.id
-            )));
+fn align_up_checked(value: u64, alignment: u64) -> Result<u64, PlanError> {
+    let alignment = alignment.max(1);
+    value
+        .checked_add(alignment - 1)
+        .map(|value| value / alignment * alignment)
+        .ok_or(PlanError::SizeOverflow)
+}
+
+struct DeviceBuilder {
+    plan: DevicePlan,
+    resident_end: u64,
+    arena_end: u64,
+}
+
+impl DeviceBuilder {
+    fn new(descriptor: crate::DeviceDescriptor) -> Self {
+        Self {
+            plan: DevicePlan {
+                descriptor,
+                tensors: Vec::new(),
+                slots: Vec::new(),
+                programs: Vec::new(),
+                memory: MemoryPlan::default(),
+            },
+            resident_end: 0,
+            arena_end: 0,
         }
     }
-    device_index(devices, primary_device)
-}
 
-fn selected_components(
-    package: &GgufrsFile,
-    component_ids: &[u32],
-) -> Result<Vec<u32>, GgufrsError> {
-    let requested = component_ids.iter().copied().collect::<BTreeSet<_>>();
-    if requested.len() != component_ids.len() {
-        return Err(invalid_plan("selected component ids must be unique"));
-    }
-    let selected = package
-        .components()
-        .iter()
-        .filter(|component| requested.contains(&component.id))
-        .map(|component| component.id)
-        .collect::<Vec<_>>();
-    if selected.len() != requested.len() {
-        let unknown = requested
+    fn tensor(
+        &mut self,
+        tensor: TensorId,
+        rows: Range<u32>,
+        bytes: Range<u64>,
+    ) -> Result<(), PlanError> {
+        if self
+            .plan
+            .tensors
             .iter()
-            .find(|id| !selected.contains(id))
-            .copied()
-            .unwrap();
-        return Err(invalid_plan(format!("unknown component id {unknown}")));
+            .any(|item| item.tensor == tensor && item.rows == rows)
+        {
+            return Ok(());
+        }
+        let len = bytes
+            .end
+            .checked_sub(bytes.start)
+            .ok_or(PlanError::SizeOverflow)?;
+        let offset = align_up_checked(self.resident_end, self.plan.descriptor.buffer_alignment)?;
+        self.resident_end = offset.checked_add(len).ok_or(PlanError::SizeOverflow)?;
+        self.plan.tensors.push(ResidentTensorPlan {
+            tensor,
+            rows,
+            source_bytes: bytes,
+            arena_offset: offset,
+        });
+        self.plan.memory.largest_allocation_bytes =
+            self.plan.memory.largest_allocation_bytes.max(len);
+        Ok(())
     }
-    Ok(selected)
-}
 
-pub fn build_load_plan(
-    package: &GgufrsFile,
-    component_ids: &[u32],
-    devices: &[LogicalDevice],
-    primary_device: &str,
-    policy: PlacementPolicy,
-) -> Result<LoadPlan, GgufrsError> {
-    let primary = validate_devices(devices, primary_device)?;
-    let component_ids = selected_components(package, component_ids)?;
-    let selected = component_ids.iter().copied().collect::<BTreeSet<_>>();
-    let mut remaining = devices
-        .iter()
-        .map(|device| device.capacity)
-        .collect::<Vec<_>>();
-    let mut placements = Vec::new();
+    fn slot(
+        &mut self,
+        kind: SlotKind,
+        storage: SlotStorage,
+        byte_len: u64,
+    ) -> Result<SlotId, PlanError> {
+        let alignment = self.plan.descriptor.buffer_alignment.max(1);
+        let offset = align_up_checked(self.arena_end, alignment)?;
+        self.arena_end = offset
+            .checked_add(byte_len)
+            .ok_or(PlanError::SizeOverflow)?;
+        let id = SlotId(self.plan.slots.len() as u32);
+        self.plan.slots.push(SlotPlan {
+            id,
+            kind,
+            storage,
+            byte_len,
+            alignment,
+            arena_offset: offset,
+        });
+        self.plan.memory.largest_allocation_bytes =
+            self.plan.memory.largest_allocation_bytes.max(byte_len);
+        match kind {
+            SlotKind::KvState | SlotKind::ConvState | SlotKind::SsmState => {
+                self.plan.memory.state_bytes = self
+                    .plan
+                    .memory
+                    .state_bytes
+                    .checked_add(byte_len)
+                    .ok_or(PlanError::SizeOverflow)?
+            }
+            _ => {
+                self.plan.memory.scratch_bytes = self
+                    .plan
+                    .memory
+                    .scratch_bytes
+                    .checked_add(byte_len)
+                    .ok_or(PlanError::SizeOverflow)?
+            }
+        }
+        Ok(id)
+    }
 
-    for record in package.tensors().iter().filter(|record| {
-        selected.contains(&record.component_id)
-            && package
-                .segment(record.segment_id)
-                .is_some_and(|segment| segment.kind != SegmentKind::Layer)
-    }) {
-        if record.byte_len > remaining[primary] {
-            return Err(GgufrsError::CapacityExceeded {
-                device_id: devices[primary].id.clone(),
-                required: record.byte_len,
-                available: remaining[primary],
-                context: format!(
-                    "component {} segment {} tensor {}",
-                    record.component_id, record.segment_id, record.info.name
-                ),
+    fn program(
+        &mut self,
+        kind: ProgramKind,
+        input: SlotId,
+        output: SlotId,
+        layer_ops: Vec<LayerOp>,
+    ) -> ProgramId {
+        let id = ProgramId(self.plan.programs.len() as u32);
+        self.plan.programs.push(ProgramPlan {
+            id,
+            kind,
+            input,
+            output,
+            layer_ops,
+        });
+        id
+    }
+
+    fn finish(mut self) -> Result<DevicePlan, PlanError> {
+        self.plan.memory.resident_bytes = self.resident_end;
+        self.plan.memory.staging_bytes = self.plan.memory.largest_allocation_bytes;
+        self.plan.memory.largest_allocation_bytes = self
+            .plan
+            .memory
+            .largest_allocation_bytes
+            .max(self.resident_end)
+            .max(self.arena_end);
+        self.plan.memory.required_bytes = self
+            .resident_end
+            .checked_add(self.arena_end)
+            .and_then(|v| v.checked_add(self.plan.memory.staging_bytes))
+            .ok_or(PlanError::SizeOverflow)?;
+        let available = self.plan.descriptor.usable_bytes;
+        if self.plan.memory.required_bytes > available
+            || self.plan.memory.largest_allocation_bytes > self.plan.descriptor.max_allocation_bytes
+        {
+            return Err(PlanError::CapacityExceeded {
+                device: self.plan.descriptor.id.clone(),
+                required_bytes: self.plan.memory.required_bytes,
+                available_bytes: available,
+                largest_allocation_bytes: self.plan.memory.largest_allocation_bytes,
             });
         }
-        placements.push(Placement {
-            component_id: record.component_id,
-            segment_id: record.segment_id,
-            tensor_name: record.info.name.clone(),
-            slice: PlacementSlice::Whole,
-            segment_byte_range: checked_tensor_range(record)?,
-            device_id: devices[primary].id.clone(),
-        });
-        remaining[primary] = remaining[primary]
-            .checked_sub(record.byte_len)
-            .ok_or_else(|| invalid_plan("primary device capacity underflow"))?;
+        Ok(self.plan)
     }
-
-    let mut layer_segments = component_ids
-        .iter()
-        .flat_map(|component_id| package.segments_for_component(*component_id))
-        .filter(|segment| segment.kind == SegmentKind::Layer)
-        .collect::<Vec<_>>();
-    layer_segments.sort_by_key(|segment| (segment.component_id, segment.layer, segment.id));
-
-    let mut current_device = 0usize;
-    match policy {
-        PlacementPolicy::LayerSplit => {
-            for segment in layer_segments {
-                let records = package.tensors_for_segment(segment.id).collect::<Vec<_>>();
-                let required = records.iter().try_fold(0u64, |sum, record| {
-                    sum.checked_add(record.byte_len)
-                        .ok_or_else(|| invalid_plan("layer payload overflow"))
-                })?;
-                while current_device < devices.len() && required > remaining[current_device] {
-                    current_device += 1;
-                }
-                if current_device == devices.len() {
-                    return Err(GgufrsError::CapacityExceeded {
-                        device_id: devices.last().unwrap().id.clone(),
-                        required,
-                        available: remaining.last().copied().unwrap_or(0),
-                        context: format!(
-                            "component {} segment {}",
-                            segment.component_id, segment.id
-                        ),
-                    });
-                }
-                for record in records {
-                    placements.push(Placement {
-                        component_id: record.component_id,
-                        segment_id: record.segment_id,
-                        tensor_name: record.info.name.clone(),
-                        slice: PlacementSlice::Whole,
-                        segment_byte_range: checked_tensor_range(record)?,
-                        device_id: devices[current_device].id.clone(),
-                    });
-                }
-                remaining[current_device] = remaining[current_device]
-                    .checked_sub(required)
-                    .ok_or_else(|| invalid_plan("logical device capacity underflow"))?;
-            }
-        }
-        PlacementPolicy::TensorSplit => {
-            for segment in layer_segments {
-                for record in package.tensors_for_segment(segment.id) {
-                    let layout = row_layout(record)?;
-                    let mut row_start = 0u64;
-                    while row_start < layout.row_count {
-                        while current_device < devices.len()
-                            && remaining[current_device] < layout.row_bytes
-                        {
-                            current_device += 1;
-                        }
-                        if current_device == devices.len() {
-                            return Err(GgufrsError::UnsplittableTensor {
-                                component_id: record.component_id,
-                                tensor: record.info.name.clone(),
-                                row_bytes: layout.row_bytes,
-                                remaining: devices
-                                    .iter()
-                                    .zip(&remaining)
-                                    .map(|(device, bytes)| (device.id.clone(), *bytes))
-                                    .collect(),
-                                reason: "no remaining device can hold one complete row".into(),
-                            });
-                        }
-                        let rows_here = (remaining[current_device] / layout.row_bytes)
-                            .min(layout.row_count - row_start);
-                        let row_end = row_start
-                            .checked_add(rows_here)
-                            .ok_or_else(|| invalid_plan("tensor row range overflow"))?;
-                        let start_delta =
-                            row_start.checked_mul(layout.row_bytes).ok_or_else(|| {
-                                invalid_plan(format!(
-                                    "{} row byte offset overflow",
-                                    record.info.name
-                                ))
-                            })?;
-                        let end_delta = row_end.checked_mul(layout.row_bytes).ok_or_else(|| {
-                            invalid_plan(format!("{} row byte end overflow", record.info.name))
-                        })?;
-                        let start =
-                            record
-                                .segment_offset
-                                .checked_add(start_delta)
-                                .ok_or_else(|| {
-                                    invalid_plan(format!(
-                                        "{} segment byte start overflow",
-                                        record.info.name
-                                    ))
-                                })?;
-                        let end =
-                            record
-                                .segment_offset
-                                .checked_add(end_delta)
-                                .ok_or_else(|| {
-                                    invalid_plan(format!(
-                                        "{} segment byte end overflow",
-                                        record.info.name
-                                    ))
-                                })?;
-                        placements.push(Placement {
-                            component_id: record.component_id,
-                            segment_id: record.segment_id,
-                            tensor_name: record.info.name.clone(),
-                            slice: if row_start == 0 && row_end == layout.row_count {
-                                PlacementSlice::Whole
-                            } else {
-                                PlacementSlice::Rows {
-                                    start: row_start,
-                                    end: row_end,
-                                }
-                            },
-                            segment_byte_range: start..end,
-                            device_id: devices[current_device].id.clone(),
-                        });
-                        let used = rows_here.checked_mul(layout.row_bytes).ok_or_else(|| {
-                            invalid_plan(format!(
-                                "{} placement byte size overflow",
-                                record.info.name
-                            ))
-                        })?;
-                        remaining[current_device] = remaining[current_device]
-                            .checked_sub(used)
-                            .ok_or_else(|| invalid_plan("logical device capacity underflow"))?;
-                        row_start = row_end;
-                    }
-                }
-            }
-        }
-    }
-    let plan = LoadPlan {
-        component_ids,
-        devices: devices.to_vec(),
-        primary_device: primary_device.into(),
-        policy,
-        placements,
-    };
-    plan.validate(package)?;
-    Ok(plan)
 }
 
-impl LoadPlan {
-    pub fn validate(&self, package: &GgufrsFile) -> Result<(), GgufrsError> {
-        validate_devices(&self.devices, &self.primary_device)?;
-        if selected_components(package, &self.component_ids)? != self.component_ids {
-            return Err(invalid_plan("component ids are not in package order"));
-        }
-        let selected = self.component_ids.iter().copied().collect::<BTreeSet<_>>();
-        for placement in &self.placements {
-            if !selected.contains(&placement.component_id) {
-                return Err(invalid_plan(format!(
-                    "placement references unselected component {}",
-                    placement.component_id
-                )));
-            }
-            device_index(&self.devices, &placement.device_id)?;
-            let record = package
-                .tensors()
-                .iter()
-                .find(|record| {
-                    record.component_id == placement.component_id
-                        && record.segment_id == placement.segment_id
-                        && record.info.name == placement.tensor_name
-                })
-                .ok_or_else(|| {
-                    invalid_plan(format!(
-                        "placement references unknown component {} segment {} tensor {}",
-                        placement.component_id, placement.segment_id, placement.tensor_name
-                    ))
-                })?;
-            let tensor_range = checked_tensor_range(record)?;
-            if placement.segment_byte_range.start > placement.segment_byte_range.end
-                || placement.segment_byte_range.start < tensor_range.start
-                || placement.segment_byte_range.end > tensor_range.end
-            {
-                return Err(invalid_plan(format!(
-                    "component {} segment {} tensor {} placement range {:?} is outside {:?}",
-                    placement.component_id,
-                    placement.segment_id,
-                    placement.tensor_name,
-                    placement.segment_byte_range,
-                    tensor_range
-                )));
-            }
-        }
-
-        let mut layer_devices = BTreeMap::<u32, String>::new();
-        for record in package
-            .tensors()
-            .iter()
-            .filter(|record| selected.contains(&record.component_id))
-        {
-            let segment = package.segment(record.segment_id).ok_or_else(|| {
-                invalid_plan(format!(
-                    "component {} tensor {} references unknown segment {}",
-                    record.component_id, record.info.name, record.segment_id
-                ))
+impl PlacementCompiler<'_> {
+    fn ensure_tensor(
+        &self,
+        tensor: TensorId,
+        device: &DeviceId,
+    ) -> Result<&crate::TensorCatalogEntry, PlanError> {
+        let entry = self
+            .catalog
+            .entry(tensor)
+            .ok_or(PlanError::UnsupportedTensor {
+                tensor,
+                device: device.clone(),
             })?;
-            let layout = row_layout(record)?;
-            let tensor_range = checked_tensor_range(record)?;
-            let mut row_ranges = Vec::<Range<u64>>::new();
-            for placement in self.placements.iter().filter(|placement| {
-                placement.component_id == record.component_id
-                    && placement.segment_id == record.segment_id
-                    && placement.tensor_name == record.info.name
-            }) {
-                if segment.kind != SegmentKind::Layer && placement.device_id != self.primary_device
-                {
-                    return Err(invalid_plan(format!(
-                        "component {} segment {} tensor {} must be on primary device {:?}",
-                        record.component_id,
-                        record.segment_id,
-                        record.info.name,
-                        self.primary_device
-                    )));
-                }
-                if self.policy == PlacementPolicy::LayerSplit
-                    && placement.slice != PlacementSlice::Whole
-                {
-                    return Err(invalid_plan(format!(
-                        "LayerSplit placement for component {} segment {} tensor {} is not whole",
-                        record.component_id, record.segment_id, record.info.name
-                    )));
-                }
-                if self.policy == PlacementPolicy::LayerSplit && segment.kind == SegmentKind::Layer
-                {
-                    if let Some(device_id) = layer_devices.get(&segment.id) {
-                        if device_id != &placement.device_id {
-                            return Err(invalid_plan(format!(
-                                "component {} layer segment {} spans devices {:?} and {:?}",
-                                segment.component_id, segment.id, device_id, placement.device_id
-                            )));
-                        }
-                    } else {
-                        layer_devices.insert(segment.id, placement.device_id.clone());
-                    }
-                }
+        if !self
+            .registry
+            .require(device)?
+            .capabilities
+            .tensor_types
+            .contains(&entry.ggml_type)
+        {
+            return Err(PlanError::UnsupportedTensor {
+                tensor,
+                device: device.clone(),
+            });
+        }
+        Ok(entry)
+    }
 
-                let rows = match placement.slice {
-                    PlacementSlice::Whole => {
-                        if placement.segment_byte_range != tensor_range {
-                            return Err(invalid_plan(format!(
-                                "whole placement for component {} segment {} tensor {} has byte range {:?}, expected {:?}",
-                                record.component_id,
-                                record.segment_id,
-                                record.info.name,
-                                placement.segment_byte_range,
-                                tensor_range
-                            )));
-                        }
-                        0..layout.row_count
-                    }
-                    PlacementSlice::Rows { start, end } => {
-                        if start >= end || end > layout.row_count {
-                            return Err(invalid_plan(format!(
-                                "component {} segment {} tensor {} has invalid row range {start}..{end} of {}",
-                                record.component_id,
-                                record.segment_id,
-                                record.info.name,
-                                layout.row_count
-                            )));
-                        }
-                        let expected_start = start
-                            .checked_mul(layout.row_bytes)
-                            .and_then(|offset| record.segment_offset.checked_add(offset))
-                            .ok_or_else(|| {
-                                invalid_plan(format!(
-                                    "{} row placement start overflow",
-                                    record.info.name
-                                ))
-                            })?;
-                        let expected_end = end
-                            .checked_mul(layout.row_bytes)
-                            .and_then(|offset| record.segment_offset.checked_add(offset))
-                            .ok_or_else(|| {
-                                invalid_plan(format!(
-                                    "{} row placement end overflow",
-                                    record.info.name
-                                ))
-                            })?;
-                        if placement.segment_byte_range != (expected_start..expected_end) {
-                            return Err(invalid_plan(format!(
-                                "component {} segment {} tensor {} row range {start}..{end} has byte range {:?}, expected {:?}",
-                                record.component_id,
-                                record.segment_id,
-                                record.info.name,
-                                placement.segment_byte_range,
-                                expected_start..expected_end
-                            )));
-                        }
-                        start..end
-                    }
-                };
-                row_ranges.push(rows);
-            }
-            row_ranges.sort_unstable_by_key(|range| range.start);
-            let mut covered = 0u64;
-            for range in row_ranges {
-                if range.start != covered {
-                    return Err(invalid_plan(format!(
-                        "component {} segment {} tensor {} row coverage expected {covered}, got {}",
-                        record.component_id, record.segment_id, record.info.name, range.start
-                    )));
-                }
-                covered = range.end;
-            }
-            if covered != layout.row_count {
-                return Err(invalid_plan(format!(
-                    "component {} segment {} tensor {} row coverage ends at {covered}, expected {}",
-                    record.component_id, record.segment_id, record.info.name, layout.row_count
-                )));
+    pub fn compile(
+        &self,
+        rules: &BTreeMap<ComponentId, PlacementRule>,
+    ) -> Result<ExecutionPlan, PlanError> {
+        let mut selected = BTreeMap::<DeviceId, crate::DeviceDescriptor>::new();
+        let mut physical = BTreeMap::<String, Vec<DeviceId>>::new();
+        for rule in rules.values() {
+            for target in &rule.targets {
+                let descriptor = self.registry.require(&target.device)?.clone();
+                physical
+                    .entry(descriptor.physical_key.clone())
+                    .or_default()
+                    .push(descriptor.id.clone());
+                selected.insert(descriptor.id.clone(), descriptor);
             }
         }
-
-        if self.policy == PlacementPolicy::LayerSplit {
-            let mut previous_device = None;
-            for component_id in &self.component_ids {
-                for segment in package
-                    .segments_for_component(*component_id)
-                    .filter(|segment| segment.kind == SegmentKind::Layer)
-                {
-                    let device_id = layer_devices.get(&segment.id).ok_or_else(|| {
-                        invalid_plan(format!(
-                            "component {} layer segment {} has no assigned device",
-                            segment.component_id, segment.id
-                        ))
-                    })?;
-                    let index = device_index(&self.devices, device_id)?;
-                    if previous_device.is_some_and(|previous| index < previous) {
-                        return Err(invalid_plan(format!(
-                            "component {} layer segment {} backtracks to device {:?}",
-                            segment.component_id, segment.id, device_id
-                        )));
-                    }
-                    previous_device = Some(index);
-                }
-            }
-        }
-        for device in &self.devices {
-            let used = self.used_bytes(&device.id)?;
-            if used > device.capacity {
-                return Err(GgufrsError::CapacityExceeded {
-                    device_id: device.id.clone(),
-                    required: used,
-                    available: device.capacity,
-                    context: "load plan placements".into(),
+        for (physical_key, mut devices) in physical {
+            devices.sort();
+            devices.dedup();
+            if devices.len() > 1 {
+                return Err(PlanError::DuplicatePhysicalSelection {
+                    physical_key,
+                    devices,
                 });
             }
+        }
+        let mut builders = selected
+            .into_iter()
+            .map(|(id, descriptor)| (id, DeviceBuilder::new(descriptor)))
+            .collect::<BTreeMap<_, _>>();
+        let mut components = BTreeMap::new();
+        for (component, rule) in rules {
+            let requirement = self
+                .requirements
+                .iter()
+                .find(|item| item.component == *component)
+                .ok_or_else(|| PlanError::UnsupportedComponent {
+                    component: *component,
+                    device: rule.targets[0].device.clone(),
+                })?;
+            let primary = rule.targets[0].device.clone();
+            match &requirement.workload {
+                ComponentWorkload::VisionCpu { .. } => {
+                    for target in &rule.targets {
+                        let descriptor = &builders[&target.device].plan.descriptor;
+                        if descriptor.backend != BackendKind::Cpu
+                            || !descriptor.capabilities.components.contains(component)
+                        {
+                            return Err(PlanError::UnsupportedComponent {
+                                component: *component,
+                                device: target.device.clone(),
+                            });
+                        }
+                    }
+                    for entry in self
+                        .catalog
+                        .entries()
+                        .iter()
+                        .filter(|entry| entry.component == *component)
+                    {
+                        let rows = 0..u32::try_from(entry.row_count)
+                            .map_err(|_| PlanError::SizeOverflow)?;
+                        builders.get_mut(&primary).unwrap().tensor(
+                            entry.id,
+                            rows,
+                            entry.segment_byte_range.clone(),
+                        )?;
+                    }
+                    components.insert(
+                        *component,
+                        ComponentPlan {
+                            component: *component,
+                            mode: rule.mode,
+                            primary,
+                            embedding: None,
+                            finalization: None,
+                            layer_spans: Vec::new(),
+                            activation_transfers: Vec::new(),
+                            row_shards: BTreeMap::new(),
+                        },
+                    );
+                }
+                ComponentWorkload::Llm(llm) => match rule.mode {
+                    PlacementMode::Row => {
+                        self.compile_row(*component, rule, llm, &mut builders, &mut components)?
+                    }
+                    PlacementMode::Layer => {
+                        self.compile_layer(*component, rule, llm, &mut builders, &mut components)?
+                    }
+                },
+            }
+        }
+        let devices = builders
+            .into_iter()
+            .map(|(id, builder)| builder.finish().map(|plan| (id, plan)))
+            .collect::<Result<_, _>>()?;
+        Ok(ExecutionPlan {
+            components,
+            devices,
+        })
+    }
+
+    fn ensure_device(
+        &self,
+        component: ComponentId,
+        device: &DeviceId,
+        mode: PlacementMode,
+        family: Option<LayerFamily>,
+    ) -> Result<(), PlanError> {
+        let descriptor = self.registry.require(device)?;
+        if !descriptor.capabilities.components.contains(&component)
+            || !descriptor.capabilities.modes.contains(&mode)
+            || family
+                .is_some_and(|family| !descriptor.capabilities.layer_families.contains(&family))
+        {
+            return Err(PlanError::UnsupportedComponent {
+                component,
+                device: device.clone(),
+            });
         }
         Ok(())
     }
 
-    pub fn used_bytes(&self, device_id: &str) -> Result<u64, GgufrsError> {
-        self.placements
-            .iter()
-            .filter(|placement| placement.device_id == device_id)
-            .try_fold(0u64, |used, placement| {
-                let bytes = placement
-                    .segment_byte_range
-                    .end
-                    .checked_sub(placement.segment_byte_range.start)
-                    .ok_or_else(|| {
-                        invalid_plan(format!(
-                            "component {} segment {} tensor {} has reversed byte range {:?}",
-                            placement.component_id,
-                            placement.segment_id,
-                            placement.tensor_name,
-                            placement.segment_byte_range,
-                        ))
-                    })?;
-                used.checked_add(bytes).ok_or_else(|| {
-                    invalid_plan(format!("payload total overflow for device {device_id:?}"))
-                })
-            })
-    }
-}
-
-pub struct LogicalCpuPlacement {
-    pub placement: Placement,
-    mapping: Arc<MappedSegment>,
-}
-
-impl LogicalCpuPlacement {
-    pub fn bytes(&self) -> Option<&[u8]> {
-        (self.mapping.segment_id == self.placement.segment_id).then_some(())?;
-        let start = usize::try_from(self.placement.segment_byte_range.start).ok()?;
-        let end = usize::try_from(self.placement.segment_byte_range.end).ok()?;
-        self.mapping.bytes.get(start..end)
-    }
-}
-
-pub struct LogicalCpuDeviceLoad {
-    pub id: String,
-    pub placements: Vec<LogicalCpuPlacement>,
-}
-
-pub struct LogicalCpuLoad {
-    pub devices: Vec<LogicalCpuDeviceLoad>,
-}
-
-impl LogicalCpuLoad {
-    pub fn release_device(&mut self, device_id: &str) -> bool {
-        let Some(device) = self
-            .devices
-            .iter_mut()
-            .find(|device| device.id == device_id)
-        else {
-            return false;
-        };
-        let released = !device.placements.is_empty();
-        device.placements.clear();
-        released
-    }
-
-    pub fn release_component(&mut self, component_id: u32) -> usize {
-        let before = self
-            .devices
-            .iter()
-            .map(|device| device.placements.len())
-            .sum::<usize>();
-        for device in &mut self.devices {
-            device
-                .placements
-                .retain(|loaded| loaded.placement.component_id != component_id);
+    fn compile_row(
+        &self,
+        component: ComponentId,
+        rule: &PlacementRule,
+        llm: &LlmRequirements,
+        builders: &mut BTreeMap<DeviceId, DeviceBuilder>,
+        components: &mut BTreeMap<ComponentId, ComponentPlan>,
+    ) -> Result<(), PlanError> {
+        let primary = rule.targets[0].device.clone();
+        if self.registry.require(&primary)?.backend != BackendKind::Cpu {
+            return Err(PlanError::UnsupportedRowPrimary {
+                component,
+                device: primary,
+            });
         }
-        before
-            - self
-                .devices
+        for target in &rule.targets {
+            self.ensure_device(component, &target.device, PlacementMode::Row, None)?;
+        }
+        self.ensure_tensor(llm.final_norm, &primary)?;
+        self.ensure_tensor(llm.output, &primary)?;
+        let mut row_shards = BTreeMap::new();
+        let activation_bytes = checked_mul(
+            u64::from(llm.hidden_size),
+            checked_mul(u64::from(llm.max_batch_tokens), 4)?,
+        )?;
+        let mut embedding = None;
+        for entry in self
+            .catalog
+            .entries()
+            .iter()
+            .filter(|entry| entry.component == component)
+        {
+            let row_count = u32::try_from(entry.row_count).map_err(|_| PlanError::SizeOverflow)?;
+            if entry.name == "token_embd.weight" {
+                self.ensure_tensor(entry.id, &primary)?;
+                let builder = builders.get_mut(&primary).unwrap();
+                builder.tensor(entry.id, 0..row_count, entry.segment_byte_range.clone())?;
+                let input = builder.slot(
+                    SlotKind::Scratch,
+                    SlotStorage::I8,
+                    checked_mul(u64::from(llm.max_batch_tokens), 4)?,
+                )?;
+                let output =
+                    builder.slot(SlotKind::Activation, SlotStorage::F32, activation_bytes)?;
+                let program = builder.program(
+                    ProgramKind::EmbeddingRows {
+                        tensor: entry.id,
+                        row_count,
+                    },
+                    input,
+                    output,
+                    Vec::new(),
+                );
+                embedding = Some(ProgramBinding {
+                    device: primary.clone(),
+                    program,
+                    input,
+                    output,
+                });
+                if entry.id != llm.output {
+                    continue;
+                }
+            }
+            if entry.shape.len() >= 2 {
+                if entry.ggml_type != GGMLType::Q8_0 {
+                    self.ensure_tensor(entry.id, &primary)?;
+                    builders.get_mut(&primary).unwrap().tensor(
+                        entry.id,
+                        0..row_count,
+                        entry.segment_byte_range.clone(),
+                    )?;
+                    continue;
+                }
+                let mut shards = Vec::new();
+                for (device, rows) in weighted_ranges(row_count, &rule.targets)? {
+                    let descriptor = self.registry.require(&device)?;
+                    if !descriptor
+                        .capabilities
+                        .tensor_types
+                        .contains(&entry.ggml_type)
+                    {
+                        return Err(PlanError::UnsupportedTensor {
+                            tensor: entry.id,
+                            device,
+                        });
+                    }
+                    let start = entry
+                        .segment_byte_range
+                        .start
+                        .checked_add(checked_mul(u64::from(rows.start), entry.row_bytes)?)
+                        .ok_or(PlanError::SizeOverflow)?;
+                    let end = entry
+                        .segment_byte_range
+                        .start
+                        .checked_add(checked_mul(u64::from(rows.end), entry.row_bytes)?)
+                        .ok_or(PlanError::SizeOverflow)?;
+                    let builder = builders.get_mut(&device).unwrap();
+                    builder.tensor(entry.id, rows.clone(), start..end)?;
+                    let input_elements = *entry.shape.first().ok_or(PlanError::SizeOverflow)?;
+                    let input = builder.slot(
+                        SlotKind::Activation,
+                        SlotStorage::F32,
+                        checked_mul(
+                            checked_mul(input_elements, u64::from(llm.max_batch_tokens))?,
+                            4,
+                        )?,
+                    )?;
+                    let output = builder.slot(
+                        SlotKind::Result,
+                        SlotStorage::F32,
+                        checked_mul(
+                            checked_mul(
+                                u64::from(rows.end - rows.start),
+                                u64::from(llm.max_batch_tokens),
+                            )?,
+                            4,
+                        )?,
+                    )?;
+                    let program = builder.program(
+                        ProgramKind::Q8Rows {
+                            tensor: entry.id,
+                            rows: rows.clone(),
+                            batch_capacity: llm.max_batch_tokens,
+                        },
+                        input,
+                        output,
+                        vec![LayerOp::Q8Matmul {
+                            input,
+                            weight: entry.id,
+                            output,
+                        }],
+                    );
+                    shards.push(RowShard {
+                        device,
+                        rows,
+                        tensor_bytes: start..end,
+                        program,
+                        input,
+                        output,
+                    });
+                }
+                row_shards.insert(entry.id, shards);
+            } else {
+                let builder = builders.get_mut(&primary).unwrap();
+                builder.tensor(entry.id, 0..row_count, entry.segment_byte_range.clone())?;
+            }
+        }
+        components.insert(
+            component,
+            ComponentPlan {
+                component,
+                mode: PlacementMode::Row,
+                primary,
+                embedding,
+                finalization: None,
+                layer_spans: Vec::new(),
+                activation_transfers: Vec::new(),
+                row_shards,
+            },
+        );
+        Ok(())
+    }
+
+    fn compile_layer(
+        &self,
+        component: ComponentId,
+        rule: &PlacementRule,
+        llm: &LlmRequirements,
+        builders: &mut BTreeMap<DeviceId, DeviceBuilder>,
+        components: &mut BTreeMap<ComponentId, ComponentPlan>,
+    ) -> Result<(), PlanError> {
+        if llm.layers.is_empty()
+            || llm
+                .layers
                 .iter()
-                .map(|device| device.placements.len())
-                .sum::<usize>()
+                .enumerate()
+                .any(|(index, layer)| layer.layer() != index as u32)
+        {
+            return Err(PlanError::UnsupportedComponent {
+                component,
+                device: rule.targets[0].device.clone(),
+            });
+        }
+        let primary = rule.targets[0].device.clone();
+        let ranges = weighted_ranges(llm.layers.len() as u32, &rule.targets)?;
+        for (device, layers) in &ranges {
+            for layer in &llm.layers[layers.start as usize..layers.end as usize] {
+                self.ensure_device(
+                    component,
+                    device,
+                    PlacementMode::Layer,
+                    Some(layer.family()),
+                )?;
+            }
+        }
+        let activation_bytes = checked_mul(
+            checked_mul(u64::from(llm.hidden_size), u64::from(llm.max_batch_tokens))?,
+            4,
+        )?;
+        let embedding_id = self.catalog.find(component, "token_embd.weight");
+        let embedding = if let Some(tensor) = embedding_id {
+            let entry = self.ensure_tensor(tensor, &primary)?;
+            let builder = builders.get_mut(&primary).unwrap();
+            builder.tensor(
+                tensor,
+                0..entry.row_count as u32,
+                entry.segment_byte_range.clone(),
+            )?;
+            let input = builder.slot(
+                SlotKind::Scratch,
+                SlotStorage::I8,
+                checked_mul(u64::from(llm.max_batch_tokens), 4)?,
+            )?;
+            let output = builder.slot(SlotKind::Activation, SlotStorage::F32, activation_bytes)?;
+            let program = builder.program(
+                ProgramKind::EmbeddingRows {
+                    tensor,
+                    row_count: entry.row_count as u32,
+                },
+                input,
+                output,
+                Vec::new(),
+            );
+            Some(ProgramBinding {
+                device: primary.clone(),
+                program,
+                input,
+                output,
+            })
+        } else {
+            None
+        };
+        let mut spans = Vec::new();
+        for (span_index, (device, layers)) in ranges.into_iter().enumerate() {
+            let builder = builders.get_mut(&device).unwrap();
+            for entry in self.catalog.entries().iter().filter(|entry| {
+                entry.component == component
+                    && entry.layer.is_some_and(|layer| layers.contains(&layer))
+            }) {
+                if !builder
+                    .plan
+                    .descriptor
+                    .capabilities
+                    .tensor_types
+                    .contains(&entry.ggml_type)
+                {
+                    return Err(PlanError::UnsupportedTensor {
+                        tensor: entry.id,
+                        device: device.clone(),
+                    });
+                }
+                builder.tensor(
+                    entry.id,
+                    0..entry.row_count as u32,
+                    entry.segment_byte_range.clone(),
+                )?;
+            }
+            let input = if let Some(binding) = embedding
+                .as_ref()
+                .filter(|binding| span_index == 0 && binding.device == device)
+            {
+                binding.output
+            } else {
+                builder.slot(SlotKind::Activation, SlotStorage::F32, activation_bytes)?
+            };
+            let alternate =
+                builder.slot(SlotKind::Activation, SlotStorage::F32, activation_bytes)?;
+            let mut ops = Vec::new();
+            let mut layer_input = input;
+            for (layer_index, layer) in llm.layers[layers.start as usize..layers.end as usize]
+                .iter()
+                .enumerate()
+            {
+                let layer_output = if layer_index % 2 == 0 {
+                    alternate
+                } else {
+                    input
+                };
+                append_layer_ops(
+                    builder,
+                    self.catalog,
+                    layer,
+                    llm,
+                    layer_input,
+                    layer_output,
+                    &mut ops,
+                )?;
+                layer_input = layer_output;
+            }
+            for op in &ops {
+                if let LayerOp::Q8Matmul { weight, .. } = op {
+                    let entry = self.catalog.entry(*weight).ok_or_else(|| {
+                        PlanError::UnsupportedTensor {
+                            tensor: *weight,
+                            device: device.clone(),
+                        }
+                    })?;
+                    if entry.ggml_type != GGMLType::Q8_0 {
+                        return Err(PlanError::UnsupportedTensor {
+                            tensor: *weight,
+                            device: device.clone(),
+                        });
+                    }
+                }
+            }
+            let referenced = ops
+                .iter()
+                .flat_map(LayerOp::referenced_tensors)
+                .collect::<BTreeSet<_>>();
+            for tensor in referenced {
+                let entry = self.ensure_tensor(tensor, &device)?;
+                builder.tensor(
+                    tensor,
+                    0..u32::try_from(entry.row_count).map_err(|_| PlanError::SizeOverflow)?,
+                    entry.segment_byte_range.clone(),
+                )?;
+            }
+            let output = layer_input;
+            let families = llm.layers[layers.start as usize..layers.end as usize]
+                .iter()
+                .map(LlmLayerSpec::family)
+                .collect();
+            let program = builder.program(
+                ProgramKind::LayerSegment {
+                    layers: layers.clone(),
+                    families,
+                },
+                input,
+                output,
+                ops,
+            );
+            spans.push(LayerSpan {
+                device,
+                layers,
+                program,
+                input,
+                output,
+            });
+        }
+        let final_builder = builders.get_mut(&primary).unwrap();
+        for tensor in [llm.final_norm, llm.output] {
+            let entry = self.ensure_tensor(tensor, &primary)?;
+            if tensor == llm.output && entry.ggml_type != GGMLType::Q8_0 {
+                return Err(PlanError::UnsupportedTensor {
+                    tensor,
+                    device: primary.clone(),
+                });
+            }
+            final_builder.tensor(
+                tensor,
+                0..entry.row_count as u32,
+                entry.segment_byte_range.clone(),
+            )?;
+        }
+        let final_input = if spans.last().is_some_and(|span| span.device == primary) {
+            spans.last().unwrap().output
+        } else {
+            final_builder.slot(SlotKind::Activation, SlotStorage::F32, activation_bytes)?
+        };
+        let output_rows = self.catalog.entry(llm.output).unwrap().row_count;
+        let final_output = final_builder.slot(
+            SlotKind::Result,
+            SlotStorage::F32,
+            checked_mul(
+                checked_mul(output_rows, u64::from(llm.max_batch_tokens))?,
+                4,
+            )?,
+        )?;
+        let final_program = final_builder.program(
+            ProgramKind::FinalNormQ8Logits {
+                norm: llm.final_norm,
+                output: llm.output,
+                epsilon_bits: llm.norm_epsilon_bits,
+                batch_capacity: llm.max_batch_tokens,
+            },
+            final_input,
+            final_output,
+            vec![
+                LayerOp::RmsNorm {
+                    input: final_input,
+                    weight: llm.final_norm,
+                    output: final_input,
+                    epsilon_bits: llm.norm_epsilon_bits,
+                },
+                LayerOp::Q8Matmul {
+                    input: final_input,
+                    weight: llm.output,
+                    output: final_output,
+                },
+            ],
+        );
+        let finalization = Some(ProgramBinding {
+            device: primary.clone(),
+            program: final_program,
+            input: final_input,
+            output: final_output,
+        });
+        let mut transfers = Vec::new();
+        if let (Some(embedding), Some(first)) = (&embedding, spans.first()) {
+            if embedding.device != first.device {
+                transfers.push(ActivationTransfer {
+                    after_span: None,
+                    target: TransferTarget::Span(0),
+                    from_device: embedding.device.clone(),
+                    from_slot: embedding.output,
+                    to_device: first.device.clone(),
+                    to_slot: first.input,
+                    f32_values_per_token: llm.hidden_size,
+                });
+            }
+        }
+        for (index, pair) in spans.windows(2).enumerate() {
+            if pair[0].device != pair[1].device {
+                transfers.push(ActivationTransfer {
+                    after_span: Some(index as u32),
+                    target: TransferTarget::Span(index as u32 + 1),
+                    from_device: pair[0].device.clone(),
+                    from_slot: pair[0].output,
+                    to_device: pair[1].device.clone(),
+                    to_slot: pair[1].input,
+                    f32_values_per_token: llm.hidden_size,
+                });
+            }
+        }
+        if let Some(last) = spans.last() {
+            if last.device != primary {
+                transfers.push(ActivationTransfer {
+                    after_span: Some(spans.len() as u32 - 1),
+                    target: TransferTarget::Finalization,
+                    from_device: last.device.clone(),
+                    from_slot: last.output,
+                    to_device: primary.clone(),
+                    to_slot: final_input,
+                    f32_values_per_token: llm.hidden_size,
+                });
+            }
+        }
+        components.insert(
+            component,
+            ComponentPlan {
+                component,
+                mode: PlacementMode::Layer,
+                primary,
+                embedding,
+                finalization,
+                layer_spans: spans,
+                activation_transfers: transfers,
+                row_shards: BTreeMap::new(),
+            },
+        );
+        Ok(())
     }
 }
 
-pub fn load_logical_cpu(
-    package: &GgufrsFile,
-    plan: &LoadPlan,
-) -> Result<LogicalCpuLoad, GgufrsError> {
-    plan.validate(package)?;
-    let mut mappings = BTreeMap::<u32, Arc<MappedSegment>>::new();
-    for placement in &plan.placements {
-        if !mappings.contains_key(&placement.segment_id) {
-            mappings.insert(
-                placement.segment_id,
-                package.map_segment_shared(placement.segment_id)?,
-            );
+fn append_layer_ops(
+    builder: &mut DeviceBuilder,
+    catalog: &TensorCatalog,
+    layer: &LlmLayerSpec,
+    llm: &LlmRequirements,
+    input: SlotId,
+    output: SlotId,
+    ops: &mut Vec<LayerOp>,
+) -> Result<(), PlanError> {
+    let f32_slot = |builder: &mut DeviceBuilder, elements: u64| {
+        builder.slot(
+            SlotKind::Scratch,
+            SlotStorage::F32,
+            checked_mul(checked_mul(elements, u64::from(llm.max_batch_tokens))?, 4)?,
+        )
+    };
+    let state_storage = match llm.kv_cache {
+        KvCacheType::F16 => SlotStorage::F16,
+        KvCacheType::F32 => SlotStorage::F32,
+    };
+    let state_bytes = match llm.kv_cache {
+        KvCacheType::F16 => 2,
+        KvCacheType::F32 => 4,
+    };
+    let tensor_rows = |tensor: TensorId| {
+        catalog
+            .entry(tensor)
+            .map(|entry| entry.row_count)
+            .ok_or(PlanError::SizeOverflow)
+    };
+    match layer {
+        LlmLayerSpec::Qwen3(spec) => {
+            let norm = f32_slot(builder, u64::from(llm.hidden_size))?;
+            let q = f32_slot(
+                builder,
+                u64::from(spec.head_count) * u64::from(spec.key_head_dim),
+            )?;
+            let k = f32_slot(
+                builder,
+                u64::from(spec.kv_head_count) * u64::from(spec.key_head_dim),
+            )?;
+            let v = f32_slot(
+                builder,
+                u64::from(spec.kv_head_count) * u64::from(spec.value_head_dim),
+            )?;
+            let ffn_gate = f32_slot(builder, tensor_rows(spec.ffn_gate)?)?;
+            let ffn_up = f32_slot(builder, tensor_rows(spec.ffn_up)?)?;
+            let key_state = builder.slot(
+                SlotKind::KvState,
+                state_storage,
+                checked_mul(
+                    checked_mul(
+                        u64::from(llm.context_length),
+                        u64::from(spec.kv_head_count) * u64::from(spec.key_head_dim),
+                    )?,
+                    state_bytes,
+                )?,
+            )?;
+            let value_state = builder.slot(
+                SlotKind::KvState,
+                state_storage,
+                checked_mul(
+                    checked_mul(
+                        u64::from(llm.context_length),
+                        u64::from(spec.kv_head_count) * u64::from(spec.value_head_dim),
+                    )?,
+                    state_bytes,
+                )?,
+            )?;
+            ops.extend([
+                LayerOp::RmsNorm {
+                    input,
+                    weight: spec.attn_norm,
+                    output: norm,
+                    epsilon_bits: spec.norm_epsilon_bits,
+                },
+                LayerOp::Q8Matmul {
+                    input: norm,
+                    weight: spec.q,
+                    output: q,
+                },
+                LayerOp::Q8Matmul {
+                    input: norm,
+                    weight: spec.k,
+                    output: k,
+                },
+                LayerOp::Q8Matmul {
+                    input: norm,
+                    weight: spec.v,
+                    output: v,
+                },
+            ]);
+            if let Some(weight) = spec.q_norm {
+                ops.push(LayerOp::RmsNorm {
+                    input: q,
+                    weight,
+                    output: q,
+                    epsilon_bits: spec.norm_epsilon_bits,
+                });
+            }
+            if let Some(weight) = spec.k_norm {
+                ops.push(LayerOp::RmsNorm {
+                    input: k,
+                    weight,
+                    output: k,
+                    epsilon_bits: spec.norm_epsilon_bits,
+                });
+            }
+            ops.extend([
+                LayerOp::Rope {
+                    q,
+                    k,
+                    key_head_dim: spec.key_head_dim,
+                    rope_dims: spec.rope_dims,
+                    freq_base_bits: spec.rope_freq_base_bits,
+                },
+                LayerOp::KvAppend {
+                    layer: spec.layer,
+                    k,
+                    v,
+                    key_state,
+                    value_state,
+                },
+                LayerOp::Attention {
+                    layer: spec.layer,
+                    q,
+                    output: norm,
+                    head_count: spec.head_count,
+                    kv_head_count: spec.kv_head_count,
+                    key_state,
+                    value_state,
+                    key_head_dim: spec.key_head_dim,
+                    value_head_dim: spec.value_head_dim,
+                    context_capacity: llm.context_length,
+                },
+                LayerOp::Q8Matmul {
+                    input: norm,
+                    weight: spec.o,
+                    output,
+                },
+                LayerOp::Add {
+                    left: input,
+                    right: output,
+                    output,
+                },
+                LayerOp::RmsNorm {
+                    input: output,
+                    weight: spec.ffn_norm,
+                    output: norm,
+                    epsilon_bits: spec.norm_epsilon_bits,
+                },
+                LayerOp::Q8Matmul {
+                    input: norm,
+                    weight: spec.ffn_gate,
+                    output: ffn_gate,
+                },
+                LayerOp::Q8Matmul {
+                    input: norm,
+                    weight: spec.ffn_up,
+                    output: ffn_up,
+                },
+                LayerOp::SiluMul {
+                    gate: ffn_gate,
+                    up: ffn_up,
+                },
+                LayerOp::Q8Matmul {
+                    input: ffn_up,
+                    weight: spec.ffn_down,
+                    output: norm,
+                },
+                LayerOp::Add {
+                    left: output,
+                    right: norm,
+                    output,
+                },
+            ]);
+        }
+        LlmLayerSpec::Qwen35Dense(spec) => {
+            let norm = f32_slot(builder, u64::from(llm.hidden_size))?;
+            let q_elements = u64::from(spec.head_count) * u64::from(spec.key_head_dim);
+            let q_projection = f32_slot(builder, q_elements * 2)?;
+            let q = f32_slot(builder, q_elements)?;
+            let q_gate = f32_slot(builder, q_elements)?;
+            let k = f32_slot(
+                builder,
+                u64::from(spec.kv_head_count) * u64::from(spec.key_head_dim),
+            )?;
+            let v = f32_slot(
+                builder,
+                u64::from(spec.kv_head_count) * u64::from(spec.value_head_dim),
+            )?;
+            let ffn_gate = f32_slot(builder, tensor_rows(spec.ffn_gate)?)?;
+            let ffn_up = f32_slot(builder, tensor_rows(spec.ffn_up)?)?;
+            let key_state = builder.slot(
+                SlotKind::KvState,
+                state_storage,
+                checked_mul(
+                    checked_mul(
+                        u64::from(llm.context_length),
+                        u64::from(spec.kv_head_count) * u64::from(spec.key_head_dim),
+                    )?,
+                    state_bytes,
+                )?,
+            )?;
+            let value_state = builder.slot(
+                SlotKind::KvState,
+                state_storage,
+                checked_mul(
+                    checked_mul(
+                        u64::from(llm.context_length),
+                        u64::from(spec.kv_head_count) * u64::from(spec.value_head_dim),
+                    )?,
+                    state_bytes,
+                )?,
+            )?;
+            ops.extend([
+                LayerOp::RmsNorm {
+                    input,
+                    weight: spec.attn_norm,
+                    output: norm,
+                    epsilon_bits: spec.norm_epsilon_bits,
+                },
+                LayerOp::Q8Matmul {
+                    input: norm,
+                    weight: spec.q,
+                    output: q_projection,
+                },
+                LayerOp::Slice {
+                    input: q_projection,
+                    offset: 0,
+                    elements: u32::try_from(q_elements).map_err(|_| PlanError::SizeOverflow)?,
+                    output: q,
+                },
+                LayerOp::Slice {
+                    input: q_projection,
+                    offset: u32::try_from(q_elements).map_err(|_| PlanError::SizeOverflow)?,
+                    elements: u32::try_from(q_elements).map_err(|_| PlanError::SizeOverflow)?,
+                    output: q_gate,
+                },
+                LayerOp::Q8Matmul {
+                    input: norm,
+                    weight: spec.k,
+                    output: k,
+                },
+                LayerOp::Q8Matmul {
+                    input: norm,
+                    weight: spec.v,
+                    output: v,
+                },
+                LayerOp::RmsNorm {
+                    input: q,
+                    weight: spec.q_norm,
+                    output: q,
+                    epsilon_bits: spec.norm_epsilon_bits,
+                },
+                LayerOp::RmsNorm {
+                    input: k,
+                    weight: spec.k_norm,
+                    output: k,
+                    epsilon_bits: spec.norm_epsilon_bits,
+                },
+                LayerOp::MRope {
+                    q,
+                    k,
+                    sections: spec.rope_sections,
+                    key_head_dim: spec.key_head_dim,
+                    rope_dims: spec.rope_dims,
+                    freq_base_bits: spec.rope_freq_base_bits,
+                },
+                LayerOp::KvAppend {
+                    layer: spec.layer,
+                    k,
+                    v,
+                    key_state,
+                    value_state,
+                },
+                LayerOp::Attention {
+                    layer: spec.layer,
+                    q,
+                    output: norm,
+                    head_count: spec.head_count,
+                    kv_head_count: spec.kv_head_count,
+                    key_state,
+                    value_state,
+                    key_head_dim: spec.key_head_dim,
+                    value_head_dim: spec.value_head_dim,
+                    context_capacity: llm.context_length,
+                },
+                LayerOp::SigmoidMul {
+                    gate: q_gate,
+                    values: norm,
+                },
+                LayerOp::Q8Matmul {
+                    input: norm,
+                    weight: spec.o,
+                    output,
+                },
+                LayerOp::Add {
+                    left: input,
+                    right: output,
+                    output,
+                },
+                LayerOp::RmsNorm {
+                    input: output,
+                    weight: spec.post_attn_norm,
+                    output: norm,
+                    epsilon_bits: spec.norm_epsilon_bits,
+                },
+                LayerOp::Q8Matmul {
+                    input: norm,
+                    weight: spec.ffn_gate,
+                    output: ffn_gate,
+                },
+                LayerOp::Q8Matmul {
+                    input: norm,
+                    weight: spec.ffn_up,
+                    output: ffn_up,
+                },
+                LayerOp::SiluMul {
+                    gate: ffn_gate,
+                    up: ffn_up,
+                },
+                LayerOp::Q8Matmul {
+                    input: ffn_up,
+                    weight: spec.ffn_down,
+                    output: norm,
+                },
+                LayerOp::Add {
+                    left: output,
+                    right: norm,
+                    output,
+                },
+            ]);
+        }
+        LlmLayerSpec::Qwen35Recurrent(spec) => {
+            let norm = f32_slot(builder, u64::from(llm.hidden_size))?;
+            let key_elements = u64::from(spec.state_size) * u64::from(spec.group_count);
+            let qkv_elements = u64::from(spec.conv_dim);
+            let qkv = f32_slot(builder, qkv_elements)?;
+            let q = f32_slot(builder, key_elements)?;
+            let k = f32_slot(builder, key_elements)?;
+            let v = f32_slot(builder, u64::from(spec.value_dim))?;
+            let alpha = f32_slot(builder, u64::from(spec.dt_rank))?;
+            let beta = f32_slot(builder, u64::from(spec.dt_rank))?;
+            let gate = f32_slot(builder, u64::from(spec.value_dim))?;
+            let ffn_gate = f32_slot(builder, tensor_rows(spec.ffn_gate)?)?;
+            let ffn_up = f32_slot(builder, tensor_rows(spec.ffn_up)?)?;
+            let conv_state = builder.slot(
+                SlotKind::ConvState,
+                SlotStorage::F32,
+                checked_mul(checked_mul(u64::from(spec.conv_width), qkv_elements)?, 4)?,
+            )?;
+            let inner_size = u64::from(spec.inner_size);
+            let dt_rank = u64::from(spec.dt_rank);
+            let head_width = inner_size
+                .checked_div(dt_rank)
+                .filter(|_| inner_size % dt_rank == 0)
+                .ok_or(PlanError::SizeOverflow)?;
+            let ssm_state = builder.slot(
+                SlotKind::SsmState,
+                SlotStorage::F32,
+                checked_mul(
+                    checked_mul(checked_mul(dt_rank, head_width)?, head_width)?,
+                    4,
+                )?,
+            )?;
+            ops.extend([
+                LayerOp::RmsNorm {
+                    input,
+                    weight: spec.attn_norm,
+                    output: norm,
+                    epsilon_bits: spec.norm_epsilon_bits,
+                },
+                LayerOp::Q8Matmul {
+                    input: norm,
+                    weight: spec.qkv,
+                    output: qkv,
+                },
+                LayerOp::Q8Matmul {
+                    input: norm,
+                    weight: spec.gate,
+                    output: gate,
+                },
+                LayerOp::Q8Matmul {
+                    input: norm,
+                    weight: spec.beta,
+                    output: beta,
+                },
+                LayerOp::Q8Matmul {
+                    input: norm,
+                    weight: spec.alpha,
+                    output: alpha,
+                },
+                LayerOp::DepthwiseCausalConv {
+                    input: qkv,
+                    weight: spec.conv_weight,
+                    state: conv_state,
+                    width: spec.conv_width,
+                    output: qkv,
+                },
+                LayerOp::Silu { values: qkv },
+                LayerOp::Slice {
+                    input: qkv,
+                    offset: 0,
+                    elements: u32::try_from(key_elements).map_err(|_| PlanError::SizeOverflow)?,
+                    output: q,
+                },
+                LayerOp::Slice {
+                    input: qkv,
+                    offset: u32::try_from(key_elements).map_err(|_| PlanError::SizeOverflow)?,
+                    elements: u32::try_from(key_elements).map_err(|_| PlanError::SizeOverflow)?,
+                    output: k,
+                },
+                LayerOp::Slice {
+                    input: qkv,
+                    offset: u32::try_from(
+                        key_elements.checked_mul(2).ok_or(PlanError::SizeOverflow)?,
+                    )
+                    .map_err(|_| PlanError::SizeOverflow)?,
+                    elements: spec.value_dim,
+                    output: v,
+                },
+                LayerOp::Sigmoid { values: beta },
+                LayerOp::L2Norm {
+                    values: q,
+                    epsilon_bits: spec.norm_epsilon_bits,
+                },
+                LayerOp::L2Norm {
+                    values: k,
+                    epsilon_bits: spec.norm_epsilon_bits,
+                },
+                LayerOp::SoftplusAffine {
+                    values: alpha,
+                    bias: spec.dt_bias,
+                    scale: spec.ssm_a,
+                },
+                LayerOp::SsmUpdate {
+                    q,
+                    k,
+                    v,
+                    alpha,
+                    beta,
+                    state: ssm_state,
+                    output: norm,
+                    state_size: spec.state_size,
+                    group_count: spec.group_count,
+                    dt_rank: spec.dt_rank,
+                    inner_size: spec.inner_size,
+                },
+                LayerOp::RmsNorm {
+                    input: norm,
+                    weight: spec.ssm_norm,
+                    output: norm,
+                    epsilon_bits: spec.norm_epsilon_bits,
+                },
+                LayerOp::SiluMul { gate, up: norm },
+                LayerOp::Q8Matmul {
+                    input: norm,
+                    weight: spec.ssm_output,
+                    output,
+                },
+                LayerOp::Add {
+                    left: input,
+                    right: output,
+                    output,
+                },
+                LayerOp::RmsNorm {
+                    input: output,
+                    weight: spec.post_attn_norm,
+                    output: norm,
+                    epsilon_bits: spec.norm_epsilon_bits,
+                },
+                LayerOp::Q8Matmul {
+                    input: norm,
+                    weight: spec.ffn_gate,
+                    output: ffn_gate,
+                },
+                LayerOp::Q8Matmul {
+                    input: norm,
+                    weight: spec.ffn_up,
+                    output: ffn_up,
+                },
+                LayerOp::SiluMul {
+                    gate: ffn_gate,
+                    up: ffn_up,
+                },
+                LayerOp::Q8Matmul {
+                    input: ffn_up,
+                    weight: spec.ffn_down,
+                    output: norm,
+                },
+                LayerOp::Add {
+                    left: output,
+                    right: norm,
+                    output,
+                },
+            ]);
         }
     }
-    let mut devices = plan
-        .devices
-        .iter()
-        .map(|device| LogicalCpuDeviceLoad {
-            id: device.id.clone(),
-            placements: Vec::new(),
-        })
-        .collect::<Vec<_>>();
-    for placement in &plan.placements {
-        let target = devices
-            .iter_mut()
-            .find(|device| device.id == placement.device_id)
-            .ok_or_else(|| {
-                invalid_plan(format!(
-                    "placement for component {} tensor {} references unknown device {:?}",
-                    placement.component_id, placement.tensor_name, placement.device_id
-                ))
-            })?;
-        let mapping = mappings.get(&placement.segment_id).ok_or_else(|| {
-            invalid_plan(format!(
-                "placement for component {} tensor {} has no mapping for segment {}",
-                placement.component_id, placement.tensor_name, placement.segment_id
-            ))
-        })?;
-        target.placements.push(LogicalCpuPlacement {
-            placement: placement.clone(),
-            mapping: Arc::clone(mapping),
-        });
-    }
-    Ok(LogicalCpuLoad { devices })
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ggufrs::{GgufrsFile, SegmentKind};
-    use crate::model::{GGMLType, TensorInfo};
+    use crate::compute::{
+        DeviceCapabilities, DeviceDescriptor, DeviceDiscovery, DeviceProvider, DeviceSession,
+    };
+    use crate::{MetaValue, SourceFormat, SourceTensorRecord, TensorInfo, TensorSource};
+    use std::collections::BTreeSet;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
-    struct ExportedFixture {
-        package: GgufrsFile,
-        #[allow(dead_code)]
-        inputs: crate::ggufrs::test_support::TestInputs,
+    fn id(value: &str) -> DeviceId {
+        DeviceId::parse(value).unwrap()
     }
 
-    fn exported_test_package() -> ExportedFixture {
-        let inputs = crate::ggufrs::test_support::test_gguf_pair();
-        let output = inputs.dir.join("load-plan.ggufrs");
-        crate::ggufrs::export_ggufrs(
-            &output,
-            &inputs.llm,
-            Some(&inputs.mmproj),
-            crate::ggufrs::ExportOptions::default(),
-        )
-        .unwrap();
-        let package = GgufrsFile::open(output).unwrap();
-        ExportedFixture { package, inputs }
+    fn targets(values: &[(&str, f64)]) -> Vec<NormalizedTarget> {
+        let total = values.iter().map(|(_, weight)| weight).sum::<f64>();
+        values
+            .iter()
+            .enumerate()
+            .map(|(ordinal, (device, weight))| NormalizedTarget {
+                device: id(device),
+                fraction: weight / total,
+                ordinal,
+            })
+            .collect()
+    }
+
+    struct TestSource {
+        records: Vec<SourceTensorRecord>,
+        bytes: BTreeMap<String, Vec<u8>>,
+    }
+
+    impl TensorSource for TestSource {
+        fn metadata(&self, _key: &str) -> Option<&MetaValue> {
+            None
+        }
+
+        fn tensor_info(&self, name: &str) -> Option<&TensorInfo> {
+            self.records
+                .iter()
+                .find(|record| record.info.name == name)
+                .map(|record| &record.info)
+        }
+
+        fn tensor_slice(&self, name: &str) -> Option<&[u8]> {
+            self.bytes.get(name).map(Vec::as_slice)
+        }
+
+        fn source_format(&self) -> SourceFormat {
+            SourceFormat::Gguf
+        }
+
+        fn tensor_records(&self) -> Vec<SourceTensorRecord> {
+            self.records.clone()
+        }
+    }
+
+    struct TestDiscovery(Vec<DeviceDescriptor>);
+
+    impl DeviceDiscovery for TestDiscovery {
+        fn backend(&self) -> BackendKind {
+            self.0[0].backend
+        }
+
+        fn enumerate(&self) -> Result<Vec<DeviceDescriptor>, BackendError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    struct TestProvider {
+        descriptor: DeviceDescriptor,
+        opens: Arc<AtomicUsize>,
+    }
+
+    impl DeviceDiscovery for TestProvider {
+        fn backend(&self) -> BackendKind {
+            self.descriptor.backend
+        }
+
+        fn enumerate(&self) -> Result<Vec<DeviceDescriptor>, BackendError> {
+            Ok(vec![self.descriptor.clone()])
+        }
+    }
+
+    impl DeviceProvider for TestProvider {
+        fn open(
+            &self,
+            descriptor: &DeviceDescriptor,
+            _plan: &DevicePlan,
+            _catalog: Arc<TensorCatalog>,
+        ) -> Result<Box<dyn DeviceSession>, BackendError> {
+            self.opens.fetch_add(1, Ordering::SeqCst);
+            Err(BackendError::Allocation {
+                device: descriptor.id.clone(),
+                message: "test provider must not open while compiling".into(),
+            })
+        }
+    }
+
+    fn descriptor(id: &str, backend: BackendKind, physical_key: &str) -> DeviceDescriptor {
+        DeviceDescriptor {
+            id: DeviceId::parse(id).unwrap(),
+            backend,
+            physical_key: physical_key.into(),
+            name: id.into(),
+            usable_bytes: 64 * 1024 * 1024,
+            max_allocation_bytes: 64 * 1024 * 1024,
+            buffer_alignment: 16,
+            unified_memory: backend == BackendKind::Cpu,
+            capabilities: DeviceCapabilities {
+                components: BTreeSet::from([ComponentId::Llm, ComponentId::Vision]),
+                modes: BTreeSet::from([PlacementMode::Layer, PlacementMode::Row]),
+                layer_families: BTreeSet::from([
+                    LayerFamily::Qwen3,
+                    LayerFamily::Qwen35Dense,
+                    LayerFamily::Qwen35Recurrent,
+                ]),
+                tensor_types: BTreeSet::from([GGMLType::F32, GGMLType::Q8_0]),
+            },
+        }
+    }
+
+    fn registry(descriptors: Vec<DeviceDescriptor>) -> DeviceRegistry {
+        let mut by_backend = BTreeMap::<BackendKind, Vec<DeviceDescriptor>>::new();
+        for descriptor in descriptors {
+            by_backend
+                .entry(descriptor.backend)
+                .or_default()
+                .push(descriptor);
+        }
+        let requested = by_backend.keys().copied().collect::<BTreeSet<_>>();
+        let mut registry = DeviceRegistry::new();
+        for descriptors in by_backend.into_values() {
+            registry
+                .register_discovery(Arc::new(TestDiscovery(descriptors)))
+                .unwrap();
+        }
+        registry.discover(&requested).unwrap();
+        registry
+    }
+
+    fn test_catalog(layer_count: u32, weight_type: GGMLType) -> TensorCatalog {
+        let mut tensors = vec![(
+            "token_embd.weight".to_string(),
+            vec![32, 16],
+            GGMLType::F32,
+            None,
+        )];
+        let row_elements = weight_type.type_traits().0 as u64;
+        for layer in 0..layer_count {
+            tensors.push((
+                format!("blk.{layer}.weight"),
+                vec![row_elements, 10],
+                weight_type,
+                Some(layer),
+            ));
+        }
+        tensors.extend([
+            (
+                "output_norm.weight".to_string(),
+                vec![32],
+                GGMLType::F32,
+                None,
+            ),
+            (
+                "output.weight".to_string(),
+                vec![32, 12],
+                GGMLType::Q8_0,
+                None,
+            ),
+        ]);
+        catalog_from_tensors(tensors)
+    }
+
+    fn catalog_from_tensors(
+        tensors: Vec<(String, Vec<u64>, GGMLType, Option<u32>)>,
+    ) -> TensorCatalog {
+        let mut offset = 0_u64;
+        let mut records = Vec::new();
+        let mut bytes = BTreeMap::new();
+        let mut push = |name: String, dims: Vec<u64>, ggml_type: GGMLType, layer| {
+            let info = TensorInfo {
+                name: name.clone(),
+                dims,
+                ggml_type,
+                offset,
+            };
+            let len = info.checked_nbytes().unwrap();
+            records.push(SourceTensorRecord {
+                info,
+                segment_id: 0,
+                segment_byte_range: offset..offset + len,
+                layer,
+            });
+            bytes.insert(name, vec![0; len as usize]);
+            offset += len;
+        };
+        for (name, dims, ggml_type, layer) in tensors {
+            push(name, dims, ggml_type, layer);
+        }
+        TensorCatalog::from_sources(vec![(
+            ComponentId::Llm,
+            Arc::new(TestSource { records, bytes }),
+        )])
+        .unwrap()
+    }
+
+    fn llm_requirements(catalog: &TensorCatalog, layer_count: u32) -> ComponentRequirements {
+        let layer_weights = (0..layer_count)
+            .map(|layer| {
+                catalog
+                    .find(ComponentId::Llm, &format!("blk.{layer}.weight"))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let layers = layer_weights
+            .iter()
+            .enumerate()
+            .map(|(layer, &weight)| {
+                LlmLayerSpec::Qwen3(Qwen3LayerSpec {
+                    layer: layer as u32,
+                    attn_norm: weight,
+                    q_norm: None,
+                    k_norm: None,
+                    q: weight,
+                    k: weight,
+                    v: weight,
+                    o: weight,
+                    ffn_norm: weight,
+                    ffn_gate: weight,
+                    ffn_up: weight,
+                    ffn_down: weight,
+                    head_count: 2,
+                    kv_head_count: 1,
+                    key_head_dim: 4,
+                    value_head_dim: 3,
+                    rope_dims: 4,
+                    rope_freq_base_bits: 10_000_f32.to_bits(),
+                    norm_epsilon_bits: 1e-6_f32.to_bits(),
+                })
+            })
+            .collect();
+        ComponentRequirements {
+            component: ComponentId::Llm,
+            workload: ComponentWorkload::Llm(LlmRequirements {
+                layers,
+                hidden_size: 32,
+                context_length: 16,
+                max_batch_tokens: 2,
+                kv_cache: KvCacheType::F16,
+                final_norm: catalog
+                    .find(ComponentId::Llm, "output_norm.weight")
+                    .unwrap(),
+                output: catalog.find(ComponentId::Llm, "output.weight").unwrap(),
+                norm_epsilon_bits: 1e-6_f32.to_bits(),
+            }),
+        }
+    }
+
+    fn compile(
+        catalog: &TensorCatalog,
+        registry: &DeviceRegistry,
+        requirement: &ComponentRequirements,
+        rule: PlacementRule,
+    ) -> Result<ExecutionPlan, PlanError> {
+        PlacementCompiler {
+            catalog,
+            registry,
+            requirements: std::slice::from_ref(requirement),
+        }
+        .compile(&BTreeMap::from([(rule.component, rule)]))
     }
 
     #[test]
-    fn layer_split_keeps_layers_contiguous_and_shared_on_primary() {
-        let fixture = exported_test_package();
-        let package = &fixture.package;
-        let llm = package
-            .component_id(crate::ggufrs::ComponentRole::Llm)
+    fn recurrent_ssm_state_matches_head_matrix_layout() {
+        let catalog = catalog_from_tensors(vec![(
+            "weight".into(),
+            vec![32, 64],
+            GGMLType::Q8_0,
+            Some(0),
+        )]);
+        let weight = catalog.find(ComponentId::Llm, "weight").unwrap();
+        let layer = LlmLayerSpec::Qwen35Recurrent(Qwen35RecurrentLayerSpec {
+            layer: 0,
+            attn_norm: weight,
+            post_attn_norm: weight,
+            qkv: weight,
+            gate: weight,
+            beta: weight,
+            alpha: weight,
+            conv_weight: weight,
+            dt_bias: weight,
+            ssm_a: weight,
+            ssm_norm: weight,
+            ssm_output: weight,
+            ffn_gate: weight,
+            ffn_up: weight,
+            ffn_down: weight,
+            conv_width: 4,
+            state_size: 16,
+            group_count: 2,
+            dt_rank: 4,
+            inner_size: 64,
+            value_dim: 64,
+            conv_dim: 128,
+            norm_epsilon_bits: 1e-6_f32.to_bits(),
+        });
+        let llm = LlmRequirements {
+            layers: vec![layer.clone()],
+            hidden_size: 32,
+            context_length: 16,
+            max_batch_tokens: 1,
+            kv_cache: KvCacheType::F16,
+            final_norm: weight,
+            output: weight,
+            norm_epsilon_bits: 1e-6_f32.to_bits(),
+        };
+        let mut builder = DeviceBuilder::new(descriptor("cpu0", BackendKind::Cpu, "cpu"));
+        let input = builder
+            .slot(SlotKind::Activation, SlotStorage::F32, 32 * 4)
             .unwrap();
-        let mmproj = package
-            .component_id(crate::ggufrs::ComponentRole::Mmproj)
+        let output = builder
+            .slot(SlotKind::Result, SlotStorage::F32, 32 * 4)
             .unwrap();
-        let devices = vec![
-            LogicalDevice {
-                id: "cpu0".into(),
-                capacity: 354,
-            },
-            LogicalDevice {
-                id: "cpu1".into(),
-                capacity: 34,
-            },
-        ];
-        let plan = build_load_plan(
-            package,
-            &[llm, mmproj],
-            &devices,
-            "cpu0",
-            PlacementPolicy::LayerSplit,
+        append_layer_ops(
+            &mut builder,
+            &catalog,
+            &layer,
+            &llm,
+            input,
+            output,
+            &mut Vec::new(),
         )
         .unwrap();
-        plan.validate(package).unwrap();
+
+        let state = builder
+            .plan
+            .slots
+            .iter()
+            .find(|slot| slot.kind == SlotKind::SsmState)
+            .unwrap();
+        assert_eq!(state.byte_len, 4 * 16 * 16 * 4);
+    }
+
+    #[test]
+    fn largest_remainder_is_weighted_contiguous_and_stable() {
+        let weighted = targets(&[("cpu0", 1.0), ("vulkan0", 2.0), ("metal0", 1.0)]);
         assert_eq!(
-            plan,
-            build_load_plan(
-                package,
-                &[llm, mmproj],
-                &devices,
-                "cpu0",
-                PlacementPolicy::LayerSplit,
-            )
-            .unwrap()
+            weighted_ranges(10, &weighted).unwrap(),
+            vec![
+                (id("cpu0"), 0..3),
+                (id("vulkan0"), 3..8),
+                (id("metal0"), 8..10)
+            ]
+        );
+        let tied = targets(&[("cpu0", 1.0), ("metal0", 1.0), ("vulkan0", 1.0)]);
+        assert_eq!(
+            weighted_ranges(5, &tied).unwrap(),
+            vec![
+                (id("cpu0"), 0..2),
+                (id("metal0"), 2..4),
+                (id("vulkan0"), 4..5)
+            ]
+        );
+    }
+
+    #[test]
+    fn positive_target_cannot_receive_zero_units() {
+        assert!(matches!(
+            weighted_ranges(
+                2,
+                &targets(&[("cpu0", 1.0), ("metal0", 1.0), ("vulkan0", 1.0)])
+            ),
+            Err(PlanError::InsufficientUnits { .. })
+        ));
+    }
+
+    #[test]
+    fn unequal_row_plan_shards_every_matrix_without_gaps_or_overlap() {
+        let catalog = test_catalog(1, GGMLType::Q8_0);
+        let registry = registry(vec![
+            descriptor("cpu0", BackendKind::Cpu, "cpu"),
+            descriptor("metal0", BackendKind::Metal, "metal"),
+            descriptor("vulkan0", BackendKind::Vulkan, "vulkan"),
+        ]);
+        let requirement = llm_requirements(&catalog, 1);
+        let rule = PlacementRule {
+            component: ComponentId::Llm,
+            mode: PlacementMode::Row,
+            targets: targets(&[("cpu0", 1.0), ("metal0", 2.0), ("vulkan0", 1.0)]),
+        };
+        let plan = compile(&catalog, &registry, &requirement, rule).unwrap();
+        let component = &plan.components[&ComponentId::Llm];
+        assert!(component.embedding.is_some());
+        for (&tensor, shards) in &component.row_shards {
+            let row_count = catalog.entry(tensor).unwrap().row_count as u32;
+            assert_eq!(shards.first().unwrap().rows.start, 0);
+            assert_eq!(shards.last().unwrap().rows.end, row_count);
+            assert!(shards
+                .windows(2)
+                .all(|pair| pair[0].rows.end == pair[1].rows.start));
+        }
+        let layer = catalog.find(ComponentId::Llm, "blk.0.weight").unwrap();
+        assert_eq!(
+            component.row_shards[&layer]
+                .iter()
+                .map(|shard| shard.rows.clone())
+                .collect::<Vec<_>>(),
+            vec![0..3, 3..8, 8..10]
         );
 
-        for placement in &plan.placements {
-            let segment = package.segment(placement.segment_id).unwrap();
-            if segment.kind != SegmentKind::Layer || placement.component_id == mmproj {
-                assert_eq!(placement.device_id, "cpu0");
+        let two = PlacementRule {
+            component: ComponentId::Llm,
+            mode: PlacementMode::Row,
+            targets: targets(&[("cpu0", 1.0), ("metal0", 3.0)]),
+        };
+        let plan = compile(&catalog, &registry, &requirement, two).unwrap();
+        assert_eq!(
+            plan.components[&ComponentId::Llm].row_shards[&layer]
+                .iter()
+                .map(|shard| shard.rows.clone())
+                .collect::<Vec<_>>(),
+            vec![0..3, 3..10]
+        );
+    }
+
+    #[test]
+    fn layer_plan_is_contiguous_and_compiles_explicit_transfers() {
+        let catalog = test_catalog(5, GGMLType::Q8_0);
+        let registry = registry(vec![
+            descriptor("cpu0", BackendKind::Cpu, "cpu"),
+            descriptor("metal0", BackendKind::Metal, "metal"),
+        ]);
+        let requirement = llm_requirements(&catalog, 5);
+        let rule = PlacementRule {
+            component: ComponentId::Llm,
+            mode: PlacementMode::Layer,
+            targets: targets(&[("cpu0", 1.0), ("metal0", 2.0)]),
+        };
+        let plan = compile(&catalog, &registry, &requirement, rule).unwrap();
+        let component = &plan.components[&ComponentId::Llm];
+        assert_eq!(
+            component
+                .layer_spans
+                .iter()
+                .map(|span| span.layers.clone())
+                .collect::<Vec<_>>(),
+            vec![0..2, 2..5]
+        );
+        assert_eq!(component.activation_transfers.len(), 2);
+        assert!(matches!(
+            component.activation_transfers[0].target,
+            TransferTarget::Span(1)
+        ));
+        assert!(matches!(
+            component.activation_transfers[1].target,
+            TransferTarget::Finalization
+        ));
+        assert!(plan.devices[&id("metal0")].programs[0]
+            .layer_ops
+            .iter()
+            .any(|op| matches!(
+                op,
+                LayerOp::Attention {
+                    key_head_dim: 4,
+                    value_head_dim: 3,
+                    ..
+                }
+            )));
+    }
+
+    #[test]
+    fn same_device_layer_span_chains_embedding_and_each_layer_output() {
+        let catalog = test_catalog(2, GGMLType::Q8_0);
+        let registry = registry(vec![descriptor("cpu0", BackendKind::Cpu, "cpu")]);
+        let requirement = llm_requirements(&catalog, 2);
+        let rule = PlacementRule {
+            component: ComponentId::Llm,
+            mode: PlacementMode::Layer,
+            targets: targets(&[("cpu0", 1.0)]),
+        };
+        let plan = compile(&catalog, &registry, &requirement, rule).unwrap();
+        let component = &plan.components[&ComponentId::Llm];
+        let embedding = component.embedding.as_ref().unwrap();
+        let span = &component.layer_spans[0];
+        assert_eq!(embedding.output, span.input);
+        assert!(component.activation_transfers.is_empty());
+
+        let program = &plan.devices[&id("cpu0")].programs[span.program.0 as usize];
+        let layers = match &requirement.workload {
+            ComponentWorkload::Llm(llm) => &llm.layers,
+            _ => unreachable!(),
+        };
+        let layer_inputs = layers
+            .iter()
+            .map(|layer| {
+                let weight = match layer {
+                    LlmLayerSpec::Qwen3(spec) => spec.attn_norm,
+                    _ => unreachable!(),
+                };
+                program
+                    .layer_ops
+                    .iter()
+                    .find_map(|op| match op {
+                        LayerOp::RmsNorm {
+                            input,
+                            weight: found,
+                            ..
+                        } if *found == weight => Some(*input),
+                        _ => None,
+                    })
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(layer_inputs[0], span.input);
+        assert_ne!(layer_inputs[1], span.input);
+        let second_weight = match &layers[1] {
+            LlmLayerSpec::Qwen3(spec) => spec.attn_norm,
+            _ => unreachable!(),
+        };
+        let second_layer_start = program
+            .layer_ops
+            .iter()
+            .position(|op| matches!(op, LayerOp::RmsNorm { input, weight, .. } if *input == layer_inputs[1] && *weight == second_weight))
+            .unwrap();
+        assert!(program.layer_ops[..second_layer_start]
+            .iter()
+            .rev()
+            .any(|op| matches!(op, LayerOp::Add { output, .. } if *output == layer_inputs[1])));
+        assert!(matches!(
+            program.layer_ops.last(),
+            Some(LayerOp::Add { output, .. }) if *output == span.output
+        ));
+    }
+
+    #[test]
+    fn layer_plan_resides_every_tensor_referenced_by_its_programs() {
+        let catalog = catalog_from_tensors(vec![
+            (
+                "token_embd.weight".into(),
+                vec![32, 16],
+                GGMLType::F32,
+                None,
+            ),
+            ("layer_norm".into(), vec![32], GGMLType::F32, None),
+            ("blk.0.weight".into(), vec![32, 10], GGMLType::Q8_0, Some(0)),
+            ("output_norm.weight".into(), vec![32], GGMLType::F32, None),
+            ("output.weight".into(), vec![32, 12], GGMLType::Q8_0, None),
+        ]);
+        let mut requirement = llm_requirements(&catalog, 1);
+        let norm = catalog.find(ComponentId::Llm, "layer_norm").unwrap();
+        let ComponentWorkload::Llm(llm) = &mut requirement.workload else {
+            unreachable!()
+        };
+        let LlmLayerSpec::Qwen3(layer) = &mut llm.layers[0] else {
+            unreachable!()
+        };
+        layer.attn_norm = norm;
+        layer.ffn_norm = norm;
+
+        let registry = registry(vec![descriptor("metal0", BackendKind::Metal, "metal")]);
+        let plan = compile(
+            &catalog,
+            &registry,
+            &requirement,
+            PlacementRule {
+                component: ComponentId::Llm,
+                mode: PlacementMode::Layer,
+                targets: targets(&[("metal0", 1.0)]),
+            },
+        )
+        .unwrap();
+        let device = &plan.devices[&id("metal0")];
+        let resident = device
+            .tensors
+            .iter()
+            .map(|tensor| tensor.tensor)
+            .collect::<BTreeSet<_>>();
+        for program in &device.programs {
+            for op in &program.layer_ops {
+                for tensor in op.referenced_tensors() {
+                    assert!(resident.contains(&tensor), "{tensor:?} from {op:?}");
+                }
             }
         }
-        let layer_devices: Vec<&str> = package
-            .segments_for_component(llm)
-            .filter(|segment| segment.kind == SegmentKind::Layer)
-            .map(|segment| {
-                plan.placements
-                    .iter()
-                    .find(|placement| placement.segment_id == segment.id)
-                    .unwrap()
-                    .device_id
-                    .as_str()
-            })
-            .collect();
-        assert_eq!(layer_devices, vec!["cpu0", "cpu1"]);
-        assert_eq!(plan.used_bytes("cpu0").unwrap(), 354);
-        assert_eq!(plan.used_bytes("cpu1").unwrap(), 34);
     }
 
     #[test]
-    fn tensor_split_uses_only_complete_quantized_rows() {
-        let fixture = crate::ggufrs::test_support::test_q8_row_package(4, 32);
-        let devices = vec![
-            LogicalDevice {
-                id: "cpu0".into(),
-                capacity: 196,
+    fn row_q8_public_inputs_use_each_matrix_f32_activation_width() {
+        let catalog = catalog_from_tensors(vec![
+            (
+                "token_embd.weight".into(),
+                vec![32, 16],
+                GGMLType::F32,
+                None,
+            ),
+            ("narrow.weight".into(), vec![32, 4], GGMLType::Q8_0, Some(0)),
+            ("wide.weight".into(), vec![64, 4], GGMLType::Q8_0, Some(0)),
+            ("output_norm.weight".into(), vec![32], GGMLType::F32, None),
+            ("output.weight".into(), vec![32, 12], GGMLType::Q8_0, None),
+        ]);
+        let requirement = llm_requirements(&catalog, 0);
+        let registry = registry(vec![descriptor("cpu0", BackendKind::Cpu, "cpu")]);
+        let plan = compile(
+            &catalog,
+            &registry,
+            &requirement,
+            PlacementRule {
+                component: ComponentId::Llm,
+                mode: PlacementMode::Row,
+                targets: targets(&[("cpu0", 1.0)]),
             },
-            LogicalDevice {
-                id: "cpu1".into(),
-                capacity: 68,
-            },
-        ];
-        let plan = build_load_plan(
-            &fixture.package,
-            &[fixture.llm_component],
-            &devices,
-            "cpu0",
-            PlacementPolicy::TensorSplit,
         )
         .unwrap();
-        plan.validate(&fixture.package).unwrap();
-        let rows: Vec<&Placement> = plan
-            .placements
-            .iter()
-            .filter(|placement| placement.tensor_name == "blk.0.weight")
-            .collect();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].slice, PlacementSlice::Rows { start: 0, end: 2 });
-        assert_eq!(rows[1].slice, PlacementSlice::Rows { start: 2, end: 4 });
-        assert!(rows.iter().all(|placement| {
-            (placement.segment_byte_range.end - placement.segment_byte_range.start) % 34 == 0
+        let device = &plan.devices[&id("cpu0")];
+        for (name, input_bytes) in [("narrow.weight", 256), ("wide.weight", 512)] {
+            let tensor = catalog.find(ComponentId::Llm, name).unwrap();
+            let shard = &plan.components[&ComponentId::Llm].row_shards[&tensor][0];
+            let input = &device.slots[shard.input.0 as usize];
+            assert_eq!(input.kind, SlotKind::Activation);
+            assert_eq!(input.storage, SlotStorage::F32);
+            assert_eq!(input.byte_len, input_bytes);
+        }
+        assert!(device.slots.iter().all(|slot| {
+            device.programs.iter().any(|program| {
+                program.input == slot.id
+                    || program.output == slot.id
+                    || program.layer_ops.iter().any(|op| {
+                        matches!(
+                            op,
+                            LayerOp::Q8Matmul { input, output, .. }
+                                if *input == slot.id || *output == slot.id
+                        )
+                    })
+            })
         }));
     }
 
     #[test]
-    fn row_layout_rejects_incomplete_quantization_blocks() {
-        let record = TensorRecord {
-            component_id: 0,
-            segment_id: 0,
-            info: TensorInfo {
-                name: "bad".into(),
-                dims: vec![31, 2],
-                ggml_type: GGMLType::Q8_0,
-                offset: 0,
+    fn layer_ffn_intermediates_follow_tensor_rows_not_attention_width() {
+        let tensors = vec![
+            (
+                "token_embd.weight".into(),
+                vec![32, 16],
+                GGMLType::F32,
+                None,
+            ),
+            ("attn_norm".into(), vec![32], GGMLType::F32, Some(0)),
+            ("q".into(), vec![32, 8], GGMLType::Q8_0, Some(0)),
+            ("k".into(), vec![32, 4], GGMLType::Q8_0, Some(0)),
+            ("v".into(), vec![32, 3], GGMLType::Q8_0, Some(0)),
+            ("o".into(), vec![32, 32], GGMLType::Q8_0, Some(0)),
+            ("ffn_norm".into(), vec![32], GGMLType::F32, Some(0)),
+            ("ffn_gate".into(), vec![32, 64], GGMLType::Q8_0, Some(0)),
+            ("ffn_up".into(), vec![32, 64], GGMLType::Q8_0, Some(0)),
+            ("ffn_down".into(), vec![64, 32], GGMLType::Q8_0, Some(0)),
+            ("output_norm.weight".into(), vec![32], GGMLType::F32, None),
+            ("output.weight".into(), vec![32, 12], GGMLType::Q8_0, None),
+        ];
+        let catalog = catalog_from_tensors(tensors);
+        let find = |name| catalog.find(ComponentId::Llm, name).unwrap();
+        let requirement = ComponentRequirements {
+            component: ComponentId::Llm,
+            workload: ComponentWorkload::Llm(LlmRequirements {
+                layers: vec![LlmLayerSpec::Qwen3(Qwen3LayerSpec {
+                    layer: 0,
+                    attn_norm: find("attn_norm"),
+                    q_norm: None,
+                    k_norm: None,
+                    q: find("q"),
+                    k: find("k"),
+                    v: find("v"),
+                    o: find("o"),
+                    ffn_norm: find("ffn_norm"),
+                    ffn_gate: find("ffn_gate"),
+                    ffn_up: find("ffn_up"),
+                    ffn_down: find("ffn_down"),
+                    head_count: 2,
+                    kv_head_count: 1,
+                    key_head_dim: 4,
+                    value_head_dim: 3,
+                    rope_dims: 4,
+                    rope_freq_base_bits: 10_000_f32.to_bits(),
+                    norm_epsilon_bits: 1e-6_f32.to_bits(),
+                })],
+                hidden_size: 32,
+                context_length: 16,
+                max_batch_tokens: 2,
+                kv_cache: KvCacheType::F16,
+                final_norm: find("output_norm.weight"),
+                output: find("output.weight"),
+                norm_epsilon_bits: 1e-6_f32.to_bits(),
+            }),
+        };
+        let registry = registry(vec![descriptor("cpu0", BackendKind::Cpu, "cpu")]);
+        let plan = compile(
+            &catalog,
+            &registry,
+            &requirement,
+            PlacementRule {
+                component: ComponentId::Llm,
+                mode: PlacementMode::Layer,
+                targets: targets(&[("cpu0", 1.0)]),
             },
-            segment_offset: 0,
-            byte_len: 68,
+        )
+        .unwrap();
+        let device = &plan.devices[&id("cpu0")];
+        let span = &plan.components[&ComponentId::Llm].layer_spans[0];
+        let program = &device.programs[span.program.0 as usize];
+        let output_slot = |weight| {
+            program
+                .layer_ops
+                .iter()
+                .find_map(|op| match op {
+                    LayerOp::Q8Matmul {
+                        weight: found,
+                        output,
+                        ..
+                    } if *found == weight => Some(*output),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let q = output_slot(find("q"));
+        for weight in [find("ffn_gate"), find("ffn_up")] {
+            let slot = output_slot(weight);
+            assert_ne!(slot, q);
+            assert_eq!(device.slots[slot.0 as usize].byte_len, 64 * 2 * 4);
+        }
+    }
+
+    #[test]
+    fn row_keeps_non_q8_matrix_on_capable_cpu_primary() {
+        let catalog = catalog_from_tensors(vec![
+            (
+                "token_embd.weight".into(),
+                vec![32, 16],
+                GGMLType::F32,
+                None,
+            ),
+            (
+                "cpu_only.weight".into(),
+                vec![32, 4],
+                GGMLType::F32,
+                Some(0),
+            ),
+            ("blk.0.weight".into(), vec![32, 4], GGMLType::Q8_0, Some(0)),
+            ("output_norm.weight".into(), vec![32], GGMLType::F32, None),
+            ("output.weight".into(), vec![32, 12], GGMLType::Q8_0, None),
+        ]);
+        let requirement = llm_requirements(&catalog, 1);
+        let registry = registry(vec![
+            descriptor("cpu0", BackendKind::Cpu, "cpu"),
+            descriptor("metal0", BackendKind::Metal, "metal"),
+        ]);
+        let plan = compile(
+            &catalog,
+            &registry,
+            &requirement,
+            PlacementRule {
+                component: ComponentId::Llm,
+                mode: PlacementMode::Row,
+                targets: targets(&[("cpu0", 1.0), ("metal0", 1.0)]),
+            },
+        )
+        .unwrap();
+        let tensor = catalog.find(ComponentId::Llm, "cpu_only.weight").unwrap();
+        assert!(plan.devices[&id("cpu0")]
+            .tensors
+            .iter()
+            .any(|item| item.tensor == tensor));
+        assert!(!plan.devices[&id("metal0")]
+            .tensors
+            .iter()
+            .any(|item| item.tensor == tensor));
+    }
+
+    #[test]
+    fn special_llm_tensors_require_primary_capability_and_q8_logits() {
+        let catalog = test_catalog(1, GGMLType::Q8_0);
+        let requirement = llm_requirements(&catalog, 1);
+        let mut cpu = descriptor("cpu0", BackendKind::Cpu, "cpu");
+        cpu.capabilities.tensor_types = BTreeSet::from([GGMLType::Q8_0]);
+        let limited = registry(vec![cpu]);
+        assert!(matches!(
+            compile(
+                &catalog,
+                &limited,
+                &requirement,
+                PlacementRule {
+                    component: ComponentId::Llm,
+                    mode: PlacementMode::Layer,
+                    targets: targets(&[("cpu0", 1.0)]),
+                },
+            ),
+            Err(PlanError::UnsupportedTensor { tensor, .. })
+                if tensor == catalog.find(ComponentId::Llm, "token_embd.weight").unwrap()
+        ));
+
+        let wrong_logits = catalog_from_tensors(vec![
+            (
+                "token_embd.weight".into(),
+                vec![32, 16],
+                GGMLType::F32,
+                None,
+            ),
+            ("blk.0.weight".into(), vec![32, 4], GGMLType::Q8_0, Some(0)),
+            ("output_norm.weight".into(), vec![32], GGMLType::F32, None),
+            ("output.weight".into(), vec![32, 12], GGMLType::F32, None),
+        ]);
+        let requirement = llm_requirements(&wrong_logits, 1);
+        let registry = registry(vec![descriptor("cpu0", BackendKind::Cpu, "cpu")]);
+        assert!(matches!(
+            compile(
+                &wrong_logits,
+                &registry,
+                &requirement,
+                PlacementRule {
+                    component: ComponentId::Llm,
+                    mode: PlacementMode::Layer,
+                    targets: targets(&[("cpu0", 1.0)]),
+                },
+            ),
+            Err(PlanError::UnsupportedTensor { tensor, .. })
+                if tensor == wrong_logits.find(ComponentId::Llm, "output.weight").unwrap()
+        ));
+    }
+
+    #[test]
+    fn compiler_rejects_unknown_non_cpu_row_and_duplicate_physical_devices() {
+        let catalog = test_catalog(1, GGMLType::Q8_0);
+        let requirement = llm_requirements(&catalog, 1);
+        let only_cpu = registry(vec![descriptor("cpu0", BackendKind::Cpu, "cpu")]);
+        let unknown = PlacementRule {
+            component: ComponentId::Llm,
+            mode: PlacementMode::Layer,
+            targets: targets(&[("metal0", 1.0)]),
         };
         assert!(matches!(
-            row_layout(&record),
-            Err(GgufrsError::UnsplittableTensor { .. })
+            compile(&catalog, &only_cpu, &requirement, unknown),
+            Err(PlanError::Backend(BackendError::DeviceUnavailable { .. }))
         ));
-    }
 
-    #[test]
-    fn tensor_split_keeps_rank_one_layer_tensors_whole() {
-        let fixture = exported_test_package();
-        let package = &fixture.package;
-        let llm = package
-            .component_id(crate::ggufrs::ComponentRole::Llm)
-            .unwrap();
-        let devices = vec![
-            LogicalDevice {
-                id: "cpu0".into(),
-                capacity: 128,
-            },
-            LogicalDevice {
-                id: "cpu1".into(),
-                capacity: 68,
-            },
-        ];
-        let plan = build_load_plan(
-            package,
-            &[llm],
-            &devices,
-            "cpu0",
-            PlacementPolicy::TensorSplit,
-        )
-        .unwrap();
-        let layers: Vec<&Placement> = plan
-            .placements
-            .iter()
-            .filter(|placement| placement.tensor_name.starts_with("blk."))
-            .collect();
-        assert_eq!(layers.len(), 2);
-        assert!(layers.iter().all(|placement| {
-            placement.device_id == "cpu1" && placement.slice == PlacementSlice::Whole
-        }));
-    }
-
-    #[test]
-    fn planning_reports_capacity_and_row_failures() {
-        let fixture = exported_test_package();
-        let package = &fixture.package;
-        let llm = package
-            .component_id(crate::ggufrs::ComponentRole::Llm)
-            .unwrap();
-        let too_small = vec![LogicalDevice {
-            id: "cpu0".into(),
-            capacity: 127,
-        }];
+        let devices = registry(vec![
+            descriptor("cpu0", BackendKind::Cpu, "shared"),
+            descriptor("metal0", BackendKind::Metal, "shared"),
+        ]);
+        let row = PlacementRule {
+            component: ComponentId::Llm,
+            mode: PlacementMode::Row,
+            targets: targets(&[("metal0", 1.0)]),
+        };
         assert!(matches!(
-            build_load_plan(
-                package,
-                &[llm],
-                &too_small,
-                "cpu0",
-                PlacementPolicy::LayerSplit,
-            ),
-            Err(GgufrsError::CapacityExceeded { .. })
+            compile(&catalog, &devices, &requirement, row),
+            Err(PlanError::UnsupportedRowPrimary { .. })
         ));
-
-        let fixture = crate::ggufrs::test_support::test_q8_row_package(2, 64);
-        let devices = vec![
-            LogicalDevice {
-                id: "cpu0".into(),
-                capacity: 128,
-            },
-            LogicalDevice {
-                id: "cpu1".into(),
-                capacity: 34,
-            },
-        ];
+        let duplicate = PlacementRule {
+            component: ComponentId::Llm,
+            mode: PlacementMode::Layer,
+            targets: targets(&[("cpu0", 1.0), ("metal0", 1.0)]),
+        };
         assert!(matches!(
-            build_load_plan(
-                &fixture.package,
-                &[fixture.llm_component],
-                &devices,
-                "cpu0",
-                PlacementPolicy::TensorSplit,
-            ),
-            Err(GgufrsError::UnsplittableTensor { row_bytes: 68, .. })
+            compile(&catalog, &devices, &requirement, duplicate),
+            Err(PlanError::DuplicatePhysicalSelection { .. })
         ));
     }
 
     #[test]
-    fn planning_rejects_ambiguous_devices_and_components() {
-        let fixture = exported_test_package();
-        let package = &fixture.package;
-        let llm = package
-            .component_id(crate::ggufrs::ComponentRole::Llm)
+    fn compiler_rejects_gpu_quantization_and_capacity_before_runtime_open() {
+        for ggml_type in [GGMLType::Q4K, GGMLType::Q5K, GGMLType::Q6K] {
+            let catalog = test_catalog(2, ggml_type);
+            let requirement = llm_requirements(&catalog, 2);
+            let mut metal = descriptor("metal0", BackendKind::Metal, "metal");
+            metal.capabilities.tensor_types = BTreeSet::from([GGMLType::Q8_0]);
+            let devices = registry(vec![descriptor("cpu0", BackendKind::Cpu, "cpu"), metal]);
+            let layer = PlacementRule {
+                component: ComponentId::Llm,
+                mode: PlacementMode::Layer,
+                targets: targets(&[("cpu0", 1.0), ("metal0", 1.0)]),
+            };
+            assert!(matches!(
+                compile(&catalog, &devices, &requirement, layer),
+                Err(PlanError::UnsupportedTensor { .. })
+            ));
+        }
+
+        let catalog = test_catalog(1, GGMLType::Q8_0);
+        let requirement = llm_requirements(&catalog, 1);
+        let mut cpu = descriptor("cpu0", BackendKind::Cpu, "cpu");
+        cpu.max_allocation_bytes = 8;
+        let opens = Arc::new(AtomicUsize::new(0));
+        let mut provider_registry = DeviceRegistry::new();
+        provider_registry
+            .register_provider(Arc::new(TestProvider {
+                descriptor: cpu,
+                opens: opens.clone(),
+            }))
             .unwrap();
-        let duplicate = vec![
-            LogicalDevice {
-                id: "cpu".into(),
-                capacity: 1024,
-            },
-            LogicalDevice {
-                id: "cpu".into(),
-                capacity: 1024,
-            },
-        ];
-        assert!(build_load_plan(
-            package,
-            &[llm],
-            &duplicate,
-            "cpu",
-            PlacementPolicy::LayerSplit,
-        )
-        .is_err());
-        let valid = vec![LogicalDevice {
-            id: "cpu".into(),
-            capacity: 1024,
-        }];
-        assert!(build_load_plan(
-            package,
-            &[llm],
-            &valid,
-            "missing",
-            PlacementPolicy::LayerSplit,
-        )
-        .is_err());
-        assert!(build_load_plan(
-            package,
-            &[llm, llm],
-            &valid,
-            "cpu",
-            PlacementPolicy::LayerSplit,
-        )
-        .is_err());
-        assert!(build_load_plan(
-            package,
-            &[u32::MAX],
-            &valid,
-            "cpu",
-            PlacementPolicy::LayerSplit,
-        )
-        .is_err());
-    }
+        provider_registry
+            .discover(&BTreeSet::from([BackendKind::Cpu]))
+            .unwrap();
+        let row = PlacementRule {
+            component: ComponentId::Llm,
+            mode: PlacementMode::Row,
+            targets: targets(&[("cpu0", 1.0)]),
+        };
+        assert!(matches!(
+            compile(&catalog, &provider_registry, &requirement, row),
+            Err(PlanError::CapacityExceeded {
+                largest_allocation_bytes,
+                ..
+            }) if largest_allocation_bytes > 8
+        ));
+        assert_eq!(opens.load(Ordering::SeqCst), 0);
 
-    #[test]
-    fn validation_rejects_missing_overlapping_or_misaligned_rows() {
-        let fixture = crate::ggufrs::test_support::test_q8_row_package(4, 32);
-        let devices = vec![
-            LogicalDevice {
-                id: "cpu0".into(),
-                capacity: 196,
-            },
-            LogicalDevice {
-                id: "cpu1".into(),
-                capacity: 68,
-            },
-        ];
-        let plan = build_load_plan(
-            &fixture.package,
-            &[fixture.llm_component],
-            &devices,
-            "cpu0",
-            PlacementPolicy::TensorSplit,
-        )
-        .unwrap();
+        let vision = ComponentRequirements {
+            component: ComponentId::Vision,
+            workload: ComponentWorkload::VisionCpu { layer_count: 1 },
+        };
+        let metal = registry(vec![descriptor("metal0", BackendKind::Metal, "metal")]);
+        let vision_rule = PlacementRule {
+            component: ComponentId::Vision,
+            mode: PlacementMode::Layer,
+            targets: targets(&[("metal0", 1.0)]),
+        };
+        assert!(matches!(
+            compile(&catalog, &metal, &vision, vision_rule),
+            Err(PlanError::UnsupportedComponent { .. })
+        ));
 
-        let mut missing = plan.clone();
-        missing.placements.pop();
-        assert!(missing.validate(&fixture.package).is_err());
-
-        let mut overlap = plan.clone();
-        let second = overlap
-            .placements
-            .iter_mut()
-            .find(|placement| {
-                placement.tensor_name == "blk.0.weight"
-                    && placement.slice == PlacementSlice::Rows { start: 2, end: 4 }
+        let mut cpu = descriptor("cpu0", BackendKind::Cpu, "cpu");
+        cpu.usable_bytes = 8;
+        let too_small = registry(vec![cpu]);
+        let row = PlacementRule {
+            component: ComponentId::Llm,
+            mode: PlacementMode::Row,
+            targets: targets(&[("cpu0", 1.0)]),
+        };
+        assert!(matches!(
+            compile(&catalog, &too_small, &requirement, row),
+            Err(PlanError::CapacityExceeded {
+                available_bytes: 8,
+                ..
             })
-            .unwrap();
-        second.slice = PlacementSlice::Rows { start: 1, end: 4 };
-        assert!(overlap.validate(&fixture.package).is_err());
-
-        let mut misaligned = plan;
-        let row = misaligned
-            .placements
-            .iter_mut()
-            .find(|placement| placement.tensor_name == "blk.0.weight")
-            .unwrap();
-        row.segment_byte_range.end -= 1;
-        assert!(misaligned.validate(&fixture.package).is_err());
-    }
-
-    #[test]
-    fn validation_rejects_forged_tensor_ownership_device_and_capacity() {
-        let fixture = exported_test_package();
-        let package = &fixture.package;
-        let llm = package
-            .component_id(crate::ggufrs::ComponentRole::Llm)
-            .unwrap();
-        let mmproj = package
-            .component_id(crate::ggufrs::ComponentRole::Mmproj)
-            .unwrap();
-        let devices = vec![
-            LogicalDevice {
-                id: "cpu0".into(),
-                capacity: 1024,
-            },
-            LogicalDevice {
-                id: "cpu1".into(),
-                capacity: 1024,
-            },
-        ];
-        let plan = build_load_plan(
-            package,
-            &[llm, mmproj],
-            &devices,
-            "cpu0",
-            PlacementPolicy::LayerSplit,
-        )
-        .unwrap();
-
-        let mut wrong_owner = plan.clone();
-        wrong_owner
-            .placements
-            .iter_mut()
-            .find(|placement| placement.component_id == mmproj)
-            .unwrap()
-            .device_id = "cpu1".into();
-        assert!(wrong_owner.validate(package).is_err());
-
-        let mut forged = plan.clone();
-        forged.devices[0].capacity = u64::MAX;
-        let mut extra = forged.placements[0].clone();
-        extra.tensor_name = "not-a-package-tensor".into();
-        forged.placements.push(extra);
-        assert!(forged.validate(package).is_err());
-
-        let mut unknown_device = plan.clone();
-        unknown_device.placements[0].device_id = "missing".into();
-        assert!(unknown_device.validate(package).is_err());
-
-        let mut over_capacity = plan;
-        over_capacity.devices[0].capacity = 1;
-        assert!(matches!(
-            over_capacity.validate(package),
-            Err(GgufrsError::CapacityExceeded { .. })
         ));
-    }
-
-    #[test]
-    fn layer_split_validation_requires_whole_single_device_layers() {
-        let fixture = crate::ggufrs::test_support::test_q8_row_package(4, 32);
-        let devices = vec![
-            LogicalDevice {
-                id: "cpu0".into(),
-                capacity: 196,
-            },
-            LogicalDevice {
-                id: "cpu1".into(),
-                capacity: 68,
-            },
-        ];
-        let mut plan = build_load_plan(
-            &fixture.package,
-            &[fixture.llm_component],
-            &devices,
-            "cpu0",
-            PlacementPolicy::TensorSplit,
-        )
-        .unwrap();
-        plan.policy = PlacementPolicy::LayerSplit;
-        assert!(plan.validate(&fixture.package).is_err());
-    }
-
-    #[test]
-    fn layer_split_validation_rejects_device_order_backtracking() {
-        let fixture = exported_test_package();
-        let package = &fixture.package;
-        let llm = package
-            .component_id(crate::ggufrs::ComponentRole::Llm)
-            .unwrap();
-        let devices = vec![
-            LogicalDevice {
-                id: "cpu0".into(),
-                capacity: 1024,
-            },
-            LogicalDevice {
-                id: "cpu1".into(),
-                capacity: 1024,
-            },
-        ];
-        let mut plan = build_load_plan(
-            package,
-            &[llm],
-            &devices,
-            "cpu0",
-            PlacementPolicy::LayerSplit,
-        )
-        .unwrap();
-        plan.placements
-            .iter_mut()
-            .find(|placement| placement.tensor_name == "blk.0.weight")
-            .unwrap()
-            .device_id = "cpu1".into();
-        assert!(plan.validate(package).is_err());
-    }
-
-    #[test]
-    fn logical_cpu_shares_split_segment_mapping_until_each_device_releases() {
-        let fixture = crate::ggufrs::test_support::test_q8_row_package(4, 32);
-        let devices = vec![
-            LogicalDevice {
-                id: "cpu0".into(),
-                capacity: 196,
-            },
-            LogicalDevice {
-                id: "cpu1".into(),
-                capacity: 68,
-            },
-        ];
-        let plan = build_load_plan(
-            &fixture.package,
-            &[fixture.llm_component],
-            &devices,
-            "cpu0",
-            PlacementPolicy::TensorSplit,
-        )
-        .unwrap();
-        let mut load = load_logical_cpu(&fixture.package, &plan).unwrap();
-        let weak = {
-            let first = load.devices[0]
-                .placements
-                .iter()
-                .find(|loaded| loaded.placement.tensor_name == "blk.0.weight")
-                .unwrap();
-            assert_eq!(first.bytes().unwrap(), &[0x22; 68]);
-            assert!(load.devices[1]
-                .placements
-                .iter()
-                .any(|loaded| Arc::ptr_eq(&first.mapping, &loaded.mapping)));
-            Arc::downgrade(&first.mapping)
-        };
-        assert!(!load.release_device("missing"));
-        assert!(load.release_device("cpu0"));
-        assert!(weak.upgrade().is_some());
-        assert!(!load.release_device("cpu0"));
-        assert!(load.release_device("cpu1"));
-        assert!(weak.upgrade().is_none());
-    }
-
-    #[test]
-    fn logical_cpu_releases_one_component_without_invalidating_another() {
-        let fixture = exported_test_package();
-        let package = &fixture.package;
-        let llm = package
-            .component_id(crate::ggufrs::ComponentRole::Llm)
-            .unwrap();
-        let mmproj = package
-            .component_id(crate::ggufrs::ComponentRole::Mmproj)
-            .unwrap();
-        let devices = vec![LogicalDevice {
-            id: "cpu0".into(),
-            capacity: 388,
-        }];
-        let plan = build_load_plan(
-            package,
-            &[llm, mmproj],
-            &devices,
-            "cpu0",
-            PlacementPolicy::LayerSplit,
-        )
-        .unwrap();
-        let mut load = load_logical_cpu(package, &plan).unwrap();
-        assert_eq!(
-            load.devices[0]
-                .placements
-                .iter()
-                .find(|loaded| loaded.placement.tensor_name == "mm.0.weight")
-                .unwrap()
-                .bytes()
-                .unwrap(),
-            fixture.inputs.mmproj_weight
-        );
-
-        assert_eq!(load.release_component(mmproj), 3);
-        assert!(load.devices[0]
-            .placements
-            .iter()
-            .all(|loaded| loaded.placement.component_id == llm));
-        assert_eq!(
-            load.devices[0]
-                .placements
-                .iter()
-                .find(|loaded| loaded.placement.tensor_name == "token_embd.weight")
-                .unwrap()
-                .bytes()
-                .unwrap(),
-            fixture.inputs.llm_shared
-        );
-        assert_eq!(load.release_component(mmproj), 0);
     }
 }
