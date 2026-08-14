@@ -1,29 +1,34 @@
 use super::device::{ComputeDevice, DeviceKind, OpType, Result, WorkSpec};
 
 pub struct CpuDevice {
+    id: u8,
     name: String,
 }
 
 impl CpuDevice {
-    pub fn new() -> Self {
+    pub fn new(id: u8) -> Self {
         let has_avx2 = crate::ops::has_avx2_fma();
         let has_neon = cfg!(target_arch = "aarch64");
 
         let name = if has_avx2 {
-            "CPU-AVX2".to_string()
+            format!("CPU-AVX2-{}", id)
         } else if has_neon {
-            "CPU-NEON".to_string()
+            format!("CPU-NEON-{}", id)
         } else {
-            "CPU-Scalar".to_string()
+            format!("CPU-Scalar-{}", id)
         };
 
-        Self { name }
+        Self { id, name }
+    }
+
+    pub fn id(&self) -> u8 {
+        self.id
     }
 }
 
 impl ComputeDevice for CpuDevice {
     fn kind(&self) -> DeviceKind {
-        DeviceKind::Cpu(0)
+        DeviceKind::Cpu(self.id)
     }
 
     fn name(&self) -> &str {
@@ -62,6 +67,6 @@ impl ComputeDevice for CpuDevice {
 
 impl Default for CpuDevice {
     fn default() -> Self {
-        Self::new()
+        Self::new(0)
     }
 }

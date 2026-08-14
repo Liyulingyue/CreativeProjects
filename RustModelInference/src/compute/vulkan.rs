@@ -197,12 +197,30 @@ impl VulkanDevice {
     fn dispatch_matmul_gpu(&mut self, weight: &[u8], input: &[u8], scales: &[f32],
                           output: &mut [f32], n_in: usize, n_out: usize) -> Result<()> {
         let block_size = 32;
-        let n_blocks = (n_out + block_size - 1) / block_size;
+        let blocks_per_row = (n_in + block_size - 1) / block_size;
+        let row_stride = blocks_per_row * 34;
 
-        let weight_packed: Vec<u32> = weight.chunks(4)
-            .map(|c| u32::from_le_bytes([c[0], c.get(1).copied().unwrap_or(0), c.get(2).copied().unwrap_or(0), c.get(3).copied().unwrap_or(0)]))
-            .collect();
+        // GPU kernel layout: (n_blocks, 9) where 9 = 8*uint32 (quantized) + 1*uint32 (scale)
+        // blocks_per_row = n_blocks
+        let n_blocks = blocks_per_row;
+
+        // CPU weight: [n_out][blocks_per_row][34] -> [n_out * blocks_per_row * 34]
+        // GPU weight: [blocks_per_row][9] where each row has 8 uint32 data + 1 uint32 scale
+        let weight_packed: Vec<u32> = (0..n_out).flat_map(|row| {
+            (0..blocks_per_row).map(move |blk| {
+                let block_off = row * row_stride + blk * 34;
+                let scale_off = block_off + 32;
+                let mut bytes = [0u8; 4];
+                bytes[0] = weight.get(scale_off).copied().unwrap_or(0);
+                bytes[1] = weight.get(scale_off + 1).copied().unwrap_or(0);
+                bytes[2] = weight.get(scale_off + 2).copied().unwrap_or(0);
+                bytes[3] = weight.get(scale_off + 3).copied().unwrap_or(0);
+                u32::from_le_bytes(bytes)
+            })
+        }).collect();
         let weight_size = weight_packed.len() * 4;
+
+        // Input is same layout on CPU and GPU
         let input_packed: Vec<u32> = input.chunks(4)
             .map(|c| u32::from_le_bytes([c[0], c.get(1).copied().unwrap_or(0), c.get(2).copied().unwrap_or(0), c.get(3).copied().unwrap_or(0)]))
             .collect();
@@ -284,12 +302,14 @@ impl VulkanDevice {
         unsafe { self.device.cmd_bind_descriptor_sets(command_buffer, vk::PipelineBindPoint::COMPUTE,
             self.pipeline_layout, 0, &[self.descriptor_sets[0]], &[]) };
 
-        let push_constants_u32 = [n_in as u32, n_out as u32, n_blocks as u32];
+        let blocks_per_row = (n_in + 31) / 32;
+        let push_constants_u32 = [n_in as u32, n_out as u32, blocks_per_row as u32];
         let push_constants: &[u8] = unsafe { std::slice::from_raw_parts(push_constants_u32.as_ptr() as *const u8, 12) };
         unsafe { self.device.cmd_push_constants(command_buffer, self.pipeline_layout,
             vk::ShaderStageFlags::COMPUTE, 0, push_constants) };
 
-        unsafe { self.device.cmd_dispatch(command_buffer, n_blocks as u32, 1, 1) };
+        let dispatch_x = ((n_out + 31) / 32) as u32;
+        unsafe { self.device.cmd_dispatch(command_buffer, dispatch_x, 1, 1) };
 
         unsafe { self.device.end_command_buffer(command_buffer) }
             .map_err(|e| ComputeError::VulkanError(format!("End command: {:?}", e)))?;
