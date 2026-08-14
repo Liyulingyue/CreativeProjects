@@ -146,6 +146,48 @@ impl WorkSpec {
 
         specs
     }
+
+    pub fn split_by_ratios(&self, ratios: &[u8]) -> Vec<WorkSpec> {
+        let non_zero_ratios: Vec<u8> = ratios.iter().filter(|&&r| r > 0).cloned().collect();
+        if non_zero_ratios.is_empty() {
+            return vec![self.clone()];
+        }
+
+        let total: usize = non_zero_ratios.iter().map(|&r| r as usize).sum();
+        let mut specs = Vec::with_capacity(non_zero_ratios.len());
+        let mut current_out = 0usize;
+
+        for (i, &ratio) in non_zero_ratios.iter().enumerate() {
+            let is_last = i == non_zero_ratios.len() - 1;
+            let start = current_out;
+            let end = if is_last {
+                self.n_out
+            } else {
+                let target = (ratio as usize * self.n_out + total - 1) / total;
+                (start + target).min(self.n_out)
+            };
+            current_out = end;
+
+            let row_bytes = self.n_in * 16 / 8;
+            let blocks_per_row = (self.n_in + 31) / 32;
+
+            let input_start = start * row_bytes;
+            let input_end = end * row_bytes;
+            let scales_start = blocks_per_row * start;
+            let scales_end = blocks_per_row * end;
+
+            specs.push(WorkSpec {
+                op: self.op,
+                weight: Arc::clone(&self.weight),
+                input: Arc::new(self.input[input_start..input_end].to_vec()),
+                scales: Arc::new(self.scales[scales_start..scales_end].to_vec()),
+                n_in: self.n_in,
+                n_out: end - start,
+            });
+        }
+
+        specs
+    }
 }
 
 pub trait ComputeDevice: Send + Sync {
@@ -247,45 +289,64 @@ impl Scheduler {
         self
     }
 
-    pub fn execute(&self, spec: WorkSpec) -> Result<Vec<f32>> {
-        let active_devices = self.active_devices();
-        if active_devices.is_empty() {
-            return Err(ComputeError::DeviceNotAvailable("No devices available".to_string()));
-        }
-
-        if active_devices.len() == 1 {
-            return active_devices[0].execute_matmul_q8(&spec);
-        }
-
-        let parts = active_devices.len();
-        let chunks = spec.split_for(parts);
-
-        let mut results = Vec::with_capacity(parts);
-        for (device, chunk) in active_devices.iter().zip(chunks.iter()) {
-            results.push(device.execute_matmul_q8(chunk)?);
-        }
-
-        let mut combined = Vec::with_capacity(spec.n_out);
-        for r in results {
-            combined.extend(r);
-        }
-        Ok(combined)
+    pub fn config(&self) -> &Vec<DeviceConfig> {
+        &self.config
     }
 
-    pub fn execute_parallel(&self, spec: WorkSpec) -> Result<Vec<f32>> {
-        let active_devices = self.active_devices();
+    pub fn config_mut(&mut self) -> &mut Vec<DeviceConfig> {
+        &mut self.config
+    }
+
+    pub fn execute(&self, spec: WorkSpec) -> Result<Vec<f32>> {
+        if self.config.is_empty() {
+            let active = self.devices.iter().filter(|d| d.is_available()).cloned().collect::<Vec<_>>();
+            if active.is_empty() {
+                return Err(ComputeError::DeviceNotAvailable("No devices available".to_string()));
+            }
+            if active.len() == 1 {
+                return active[0].execute_matmul_q8(&spec);
+            }
+            let chunks = spec.split_for(active.len());
+            return self.execute_on_devices(&active, &chunks);
+        }
+
+        let ratios: Vec<u8> = self.config.iter().map(|c| c.ratio.ratio()).collect();
+        let active_devices: Vec<_> = self.devices
+            .iter()
+            .filter(|d| d.is_available())
+            .filter(|d| {
+                self.config.iter().any(|c| c.kind == d.kind() && !c.ratio.is_zero())
+            })
+            .cloned()
+            .collect();
+
         if active_devices.is_empty() {
             return Err(ComputeError::DeviceNotAvailable("No devices available".to_string()));
         }
 
-        if active_devices.len() == 1 {
+        let device_ratios: Vec<u8> = active_devices
+            .iter()
+            .map(|d| {
+                self.config
+                    .iter()
+                    .find(|c| c.kind == d.kind())
+                    .map(|c| c.ratio.ratio())
+                    .unwrap_or(0)
+            })
+            .collect();
+
+        let non_zero_ratios: Vec<u8> = device_ratios.into_iter().filter(|r| *r > 0).collect();
+        if non_zero_ratios.len() == 1 {
             return active_devices[0].execute_matmul_q8(&spec);
         }
 
-        let parts = active_devices.len();
-        let chunks = spec.split_for(parts);
+        let chunks = spec.split_by_ratios(&non_zero_ratios);
+        self.execute_on_devices(&active_devices, &chunks)
+    }
 
-        let handles: Vec<_> = active_devices
+    fn execute_on_devices(&self, devices: &[Arc<dyn ComputeDevice>], chunks: &[WorkSpec]) -> Result<Vec<f32>> {
+        let parts = devices.len();
+        let handles: Vec<_> = devices
             .iter()
             .zip(chunks.iter())
             .map(|(device, chunk)| {
@@ -300,7 +361,7 @@ impl Scheduler {
             results.push(h.join().map_err(|_| ComputeError::ExecutionError("Thread panicked".to_string()))??);
         }
 
-        let mut combined = Vec::with_capacity(spec.n_out);
+        let mut combined = Vec::with_capacity(devices.len() * 100);
         for r in results {
             combined.extend(r);
         }

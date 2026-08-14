@@ -57,13 +57,31 @@ pub fn scheduler() -> &'static Mutex<Scheduler> {
 
 pub fn set_device_ratio(kind: DeviceKind, ratio: u8) {
     if let Ok(mut sched) = init().lock() {
-        let config = DeviceConfig::new(kind, ratio);
-        sched.set_config(vec![config]);
+        // Check if this device kind already has a config
+        let existing_idx = sched.config().iter().position(|c| c.kind == kind);
+        if let Some(idx) = existing_idx {
+            // Update existing
+            sched.config_mut()[idx].ratio = DeviceRatio::new(ratio);
+        } else {
+            // Add new
+            sched.config_mut().push(DeviceConfig::new(kind, ratio));
+        }
     }
 }
 
 pub fn enable_gpu(id: u8, ratio: u8) {
     set_device_ratio(DeviceKind::Gpu(id), ratio);
+}
+
+pub fn get_device_ratio(kind: DeviceKind) -> u8 {
+    if let Ok(sched) = scheduler().lock() {
+        for c in sched.config().iter() {
+            if c.kind == kind {
+                return c.ratio.ratio();
+            }
+        }
+    }
+    0
 }
 
 pub fn gpu_configured() -> bool {
@@ -81,8 +99,20 @@ pub fn matmul_q8(
     n_in: usize,
     n_out: usize,
 ) -> Vec<f32> {
-    // GPU path disabled - Intel Graphics is too slow for compute
-    // GPU produces correct output but ~4x slower than CPU
+    if let Ok(sched) = scheduler().lock() {
+        if !sched.config().is_empty() && sched.config()[0].ratio.ratio() > 0 {
+            let spec = WorkSpec::new_matmul_q8(
+                weight.to_vec(),
+                input.to_vec(),
+                scales.to_vec(),
+                n_in,
+                n_out,
+            );
+            if let Ok(result) = sched.execute(spec) {
+                return result;
+            }
+        }
+    }
     let mut output = vec![0.0f32; n_out];
     crate::ops::matmul_q8_0_quantized(weight, input, scales, &mut output, n_in, n_out);
     output

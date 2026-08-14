@@ -976,20 +976,32 @@ async fn main() {
             "--gpu" => {
                 #[cfg(feature = "gpu")]
                 {
-                    let id = if i + 1 < args.len() {
+                    let id = if i + 1 < args.len() && !args[i + 1].starts_with('-') {
                         args[i + 1].parse().unwrap_or(0)
                     } else {
                         0
                     };
-                    compute::enable_gpu(id, 100);
+                    compute::set_device_ratio(compute::DeviceKind::Gpu(id), 100);
                     eprintln!("GPU {} enabled at 100%", id);
-                    if i + 1 < args.len() && args[i + 1].parse::<u8>().is_ok() {
+                    if i + 1 < args.len() && args[i + 1].parse::<u8>().is_ok() && !args[i + 1].starts_with('-') {
                         i += 1;
                     }
                 }
                 #[cfg(not(feature = "gpu"))]
                 {
                     eprintln!("GPU support not compiled in");
+                }
+            }
+            "--cpu-ratio" => {
+                let ratio = if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+                    args[i + 1].parse().unwrap_or(50)
+                } else {
+                    50
+                };
+                compute::set_device_ratio(compute::DeviceKind::Cpu(0), ratio);
+                eprintln!("CPU enabled at {}%", ratio);
+                if i + 1 < args.len() && args[i + 1].parse::<u8>().is_ok() && !args[i + 1].starts_with('-') {
+                    i += 1;
                 }
             }
             _ => {}
