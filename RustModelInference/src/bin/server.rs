@@ -16,17 +16,6 @@ use tower_http::cors::CorsLayer;
 
 use rust_model_inference::*;
 
-struct Qwen3State {
-    source: Arc<dyn TensorSource>,
-    layers: Vec<LayerWeightsOwned>,
-    output_norm: Vec<f32>,
-    embd_weight: &'static [u8],
-    output_weight: &'static [u8],
-    config: Qwen3Config,
-    tokenizer: Arc<BPETokenizer>,
-    pool: Arc<thread_pool::ComputePool>,
-}
-
 struct Qwen35State {
     source: Arc<dyn TensorSource>,
     model: Arc<Qwen35Model>,
@@ -34,54 +23,230 @@ struct Qwen35State {
     pool: Arc<thread_pool::ComputePool>,
 }
 
-struct Qwen3Config {
-    n_embd: usize,
-    n_layer: usize,
-    n_head: usize,
-    n_head_kv: usize,
-    n_embd_head: usize,
-    n_embd_head_k: usize,
-    n_embd_head_v: usize,
-    n_ff: usize,
-    vocab: usize,
-    n_ctx: usize,
-    eps: f32,
-    freq_base: f32,
-    has_qk_norm: bool,
-}
-
-struct LayerWeightsOwned {
-    attn_norm: Vec<f32>,
-    ffn_norm: Vec<f32>,
-    q_norm: Option<Vec<f32>>,
-    k_norm: Option<Vec<f32>>,
-    wq: &'static [u8],
-    wk: &'static [u8],
-    wv: &'static [u8],
-    wo: &'static [u8],
-    w_gate: &'static [u8],
-    w_up: &'static [u8],
-    w_down: &'static [u8],
-}
-
 enum ModelBackend {
-    Qwen3(Qwen3State),
+    Qwen3(Arc<Qwen3Model>),
     Qwen35(Qwen35State),
+    #[cfg(test)]
+    Test,
 }
 
 unsafe impl Send for ModelBackend {}
 unsafe impl Sync for ModelBackend {}
-unsafe impl Send for LayerWeightsOwned {}
-unsafe impl Sync for LayerWeightsOwned {}
-unsafe impl Send for Qwen3State {}
-unsafe impl Sync for Qwen3State {}
 unsafe impl Send for Qwen35State {}
 unsafe impl Sync for Qwen35State {}
 
 #[derive(Clone)]
 struct AppState {
     model: Arc<ModelBackend>,
+    asr: Option<Arc<AsrRuntime>>,
     model_name: String,
+    // ponytail: one global model lock; split per-runtime only if measured concurrent throughput requires it.
+    inference_lock: Arc<std::sync::Mutex<()>>,
+}
+
+impl AppState {
+    fn run_inference<T>(&self, call: impl FnOnce() -> T) -> T {
+        let _guard = self
+            .inference_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        call()
+    }
+}
+
+#[derive(Default)]
+struct TranscriptionFields {
+    file: Option<Vec<u8>>,
+    model: Option<String>,
+    language: Option<String>,
+    prompt: Option<String>,
+    max_tokens: Option<usize>,
+    response_format: Option<String>,
+    stream: Option<bool>,
+}
+
+#[derive(Debug)]
+struct ValidatedTranscription {
+    file: Vec<u8>,
+    options: TranscriptionOptions,
+}
+
+impl TranscriptionFields {
+    fn preflight(&self, name: &str) -> Result<(), TranscriptionHttpError> {
+        let vacant = match name {
+            "file" => self.file.is_none(),
+            "model" => self.model.is_none(),
+            "language" => self.language.is_none(),
+            "prompt" => self.prompt.is_none(),
+            "max_tokens" => self.max_tokens.is_none(),
+            "response_format" => self.response_format.is_none(),
+            "stream" => self.stream.is_none(),
+            _ => {
+                return Err(TranscriptionHttpError::bad_request(format!(
+                    "unknown multipart field: {name}"
+                )))
+            }
+        };
+        if !vacant {
+            return Err(TranscriptionHttpError::bad_request(format!(
+                "duplicate {name} field"
+            )));
+        }
+        Ok(())
+    }
+
+    fn add_file(&mut self, file: Vec<u8>) -> Result<(), TranscriptionHttpError> {
+        self.preflight("file")?;
+        self.file = Some(file);
+        Ok(())
+    }
+
+    fn add_text(&mut self, name: &str, bytes: Vec<u8>) -> Result<(), TranscriptionHttpError> {
+        self.preflight(name)?;
+        let text = String::from_utf8(bytes).map_err(|_| {
+            TranscriptionHttpError::bad_request(format!("invalid UTF-8 in {name} field"))
+        })?;
+        match name {
+            "model" => self.model = Some(text),
+            "language" => self.language = Some(text),
+            "prompt" => self.prompt = Some(text),
+            "max_tokens" => {
+                let value = text
+                    .parse()
+                    .map_err(|_| TranscriptionHttpError::bad_request("invalid max_tokens field"))?;
+                self.max_tokens = Some(value);
+            }
+            "response_format" => self.response_format = Some(text),
+            "stream" => {
+                let value = text
+                    .parse()
+                    .map_err(|_| TranscriptionHttpError::bad_request("invalid stream field"))?;
+                self.stream = Some(value);
+            }
+            _ => unreachable!("preflight accepted unknown field"),
+        }
+        Ok(())
+    }
+
+    fn validate(self, model_name: &str) -> Result<ValidatedTranscription, TranscriptionHttpError> {
+        let file = self
+            .file
+            .ok_or_else(|| TranscriptionHttpError::bad_request("missing file field"))?;
+        if self
+            .model
+            .as_deref()
+            .is_some_and(|model| model != model_name)
+        {
+            return Err(TranscriptionHttpError::unprocessable(
+                "model does not match loaded model",
+            ));
+        }
+        if self
+            .response_format
+            .as_deref()
+            .is_some_and(|format| format != "json")
+        {
+            return Err(TranscriptionHttpError::unprocessable(
+                "only json response_format is supported",
+            ));
+        }
+        if self.stream.is_some_and(|stream| stream) {
+            return Err(TranscriptionHttpError::unprocessable(
+                "stream must be false",
+            ));
+        }
+        let max_new_tokens = self.max_tokens.unwrap_or(256);
+        if max_new_tokens == 0 {
+            return Err(TranscriptionHttpError::unprocessable(
+                "max_tokens must be greater than zero",
+            ));
+        }
+        normalize_language(self.language.as_deref()).map_err(TranscriptionHttpError::from_asr)?;
+        Ok(ValidatedTranscription {
+            file,
+            options: TranscriptionOptions {
+                language: self.language,
+                prompt: self.prompt,
+                max_new_tokens,
+            },
+        })
+    }
+}
+
+#[derive(Serialize)]
+struct TranscriptionResponse {
+    text: String,
+}
+
+#[derive(Debug)]
+struct TranscriptionHttpError {
+    status: StatusCode,
+    message: String,
+}
+
+impl TranscriptionHttpError {
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+        }
+    }
+
+    fn unprocessable(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            message: message.into(),
+        }
+    }
+
+    fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: message.into(),
+        }
+    }
+
+    fn internal(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: message.into(),
+        }
+    }
+
+    fn from_asr(error: AsrError) -> Self {
+        Self {
+            status: match error.kind {
+                AsrErrorKind::UnsupportedAudio => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                AsrErrorKind::Unprocessable => StatusCode::UNPROCESSABLE_ENTITY,
+                AsrErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+            },
+            message: error.message,
+        }
+    }
+
+    fn from_multipart(error: axum::extract::multipart::MultipartError) -> Self {
+        Self {
+            status: error.status(),
+            message: error.to_string(),
+        }
+    }
+
+    #[cfg(test)]
+    fn status(&self) -> StatusCode {
+        self.status
+    }
+}
+
+impl IntoResponse for TranscriptionHttpError {
+    fn into_response(self) -> axum::response::Response {
+        (
+            self.status,
+            Json(ErrorResponse {
+                error: self.message,
+            }),
+        )
+            .into_response()
+    }
 }
 
 #[derive(Deserialize)]
@@ -217,6 +382,51 @@ async fn list_models(State(state): State<AppState>) -> Json<ModelsResponse> {
     })
 }
 
+async fn audio_transcriptions(
+    State(state): State<AppState>,
+    mut multipart: axum::extract::Multipart,
+) -> impl IntoResponse {
+    let result: Result<Json<TranscriptionResponse>, TranscriptionHttpError> = async {
+        let mut fields = TranscriptionFields::default();
+        while let Some(field) = multipart
+            .next_field()
+            .await
+            .map_err(TranscriptionHttpError::from_multipart)?
+        {
+            let name = field.name().unwrap_or_default().to_string();
+            fields.preflight(&name)?;
+            let bytes = field
+                .bytes()
+                .await
+                .map_err(TranscriptionHttpError::from_multipart)?;
+            if name == "file" {
+                fields.add_file(bytes.to_vec())?;
+            } else {
+                fields.add_text(&name, bytes.to_vec())?;
+            }
+        }
+        let request = fields.validate(&state.model_name)?;
+        let runtime = state
+            .asr
+            .clone()
+            .ok_or_else(|| TranscriptionHttpError::unavailable("audio runtime unavailable"))?;
+        let worker_state = state.clone();
+        let transcription = tokio::task::spawn_blocking(move || {
+            worker_state.run_inference(|| runtime.transcribe_wav(&request.file, &request.options))
+        })
+        .await
+        .map_err(|error| {
+            TranscriptionHttpError::internal(format!("transcription worker failed: {error}"))
+        })?
+        .map_err(TranscriptionHttpError::from_asr)?;
+        Ok(Json(TranscriptionResponse {
+            text: transcription.text,
+        }))
+    }
+    .await;
+    result.into_response()
+}
+
 async fn chat_completions(
     State(state): State<AppState>,
     Json(req): Json<ChatCompletionRequest>,
@@ -228,6 +438,7 @@ async fn chat_completions(
     if stream {
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, axum::Error>>(32);
         let model = state.model.clone();
+        let worker_state = state.clone();
         let model_name = state.model_name.clone();
 
         tokio::task::spawn_blocking(move || {
@@ -256,7 +467,9 @@ async fn chat_completions(
                 return;
             }
 
-            let result = match generate(&model, &req.messages, max_tokens, temperature) {
+            let result = match worker_state
+                .run_inference(|| generate(&model, &req.messages, max_tokens, temperature))
+            {
                 Ok(result) => result,
                 Err(error) => {
                     let data = serde_json::json!({ "error": error }).to_string();
@@ -315,8 +528,10 @@ async fn chat_completions(
             .as_secs();
 
         let model_clone = state.model.clone();
+        let worker_state = state.clone();
         let result = match tokio::task::spawn_blocking(move || {
-            generate(&model_clone, &req.messages, max_tokens, temperature)
+            worker_state
+                .run_inference(|| generate(&model_clone, &req.messages, max_tokens, temperature))
         })
         .await
         {
@@ -396,402 +611,34 @@ fn generate(
     temperature: f32,
 ) -> Result<GenerateResult, String> {
     match model {
-        ModelBackend::Qwen3(s) => generate_qwen3(s, messages, max_tokens, temperature),
-        ModelBackend::Qwen35(s) => generate_qwen35(s, messages, max_tokens, temperature),
+        ModelBackend::Qwen3(model) => {
+            let token_ids = server_prompt_tokens(model.tokenizer(), messages)?;
+            let positions = qwen_text_positions(token_ids.len());
+            let generation = model.generate(
+                Qwen3Input {
+                    token_ids: &token_ids,
+                    positions: &positions,
+                    embeddings: None,
+                },
+                Qwen3GenerateOptions {
+                    max_new_tokens: max_tokens,
+                    temperature,
+                },
+            )?;
+            Ok(GenerateResult {
+                text: generation.text,
+                tokens: generation.rendered_tokens,
+                prompt_tokens: generation.prompt_tokens,
+                completion_tokens: generation.token_ids.len(),
+            })
+        }
+        ModelBackend::Qwen35(s) => generate_qwen_35(s, messages, max_tokens, temperature),
+        #[cfg(test)]
+        ModelBackend::Test => unreachable!("test backend does not generate"),
     }
 }
 
-fn generate_qwen3(
-    s: &Qwen3State,
-    messages: &[ChatMessage],
-    max_tokens: usize,
-    temperature: f32,
-) -> Result<GenerateResult, String> {
-    let _source = &s.source;
-    let cfg = &s.config;
-    let n_embd = cfg.n_embd;
-    let n_layer = cfg.n_layer;
-    let n_head = cfg.n_head;
-    let n_head_kv = cfg.n_head_kv;
-    let n_embd_head_k = cfg.n_embd_head_k;
-    let n_embd_head_v = cfg.n_embd_head_v;
-    let n_embd_q = n_head * n_embd_head_k;
-    let n_embd_gqa = n_head_kv * n_embd_head_v;
-    let n_ff = cfg.n_ff;
-    let eps = cfg.eps;
-    let freq_base = cfg.freq_base;
-    let vocab = cfg.vocab;
-    let max_ctx = cfg.n_ctx;
-    let group_size = n_head / n_head_kv;
-    let kq_scale = 1.0f32 / (n_embd_head_k as f32).sqrt();
-
-    let input_tokens = server_prompt_tokens(&s.tokenizer, messages)?;
-
-    let n_prompt = input_tokens.len();
-    let mut kv_cache = KvCache::new_f16(n_layer, max_ctx, n_embd_gqa);
-    let mut scratch = ExecutionScratchpad::new(
-        n_embd,
-        n_embd_q,
-        n_embd_gqa,
-        n_ff,
-        vocab,
-        s.pool.n_threads(),
-        max_ctx,
-    );
-    let mut all_tokens: Vec<u32> = input_tokens.clone();
-    let mut generated_tokens: Vec<u32> = Vec::new();
-    let mut token_strings: Vec<String> = Vec::new();
-    let mut decoder = s.tokenizer.streaming_decoder(false);
-
-    for step in 0..(n_prompt + max_tokens) {
-        let token_id = if step < n_prompt {
-            input_tokens[step]
-        } else {
-            *generated_tokens.last().unwrap_or(&0)
-        };
-        let pos = step;
-
-        embedding_lookup_q8_0(s.embd_weight, token_id, n_embd, &mut scratch.x);
-
-        for layer in 0..n_layer {
-            let lw = &s.layers[layer];
-
-            let x_ptr = scratch.x.as_mut_ptr();
-            let normed_ptr = scratch.normed.as_mut_ptr();
-            let q_ptr = scratch.q.as_mut_ptr();
-            let k_ptr = scratch.k_new.as_mut_ptr();
-            let v_ptr = scratch.v_new.as_mut_ptr();
-            let attn_out_ptr = scratch.attn_out.as_mut_ptr();
-            let attn_proj_ptr = scratch.attn_proj.as_mut_ptr();
-            let down_buf_ptr = scratch.down_buf.as_mut_ptr();
-            let gate_buf_ptr = scratch.gate_buf.as_mut_ptr();
-            let up_buf_ptr = scratch.up_buf.as_mut_ptr();
-            let q8_buf_ptr = scratch.q8_buf.as_mut_ptr();
-            let scale_buf_ptr = scratch.scale_buf.as_mut_ptr();
-            let kv_cache_size = n_layer * max_ctx * n_embd_gqa;
-            let (k_cache_f16_ptr, v_cache_f16_ptr) = match &kv_cache {
-                KvCache::F16(c) => (c.k.as_ptr() as *mut u16, c.v.as_ptr() as *mut u16),
-                _ => (std::ptr::null_mut(), std::ptr::null_mut()),
-            };
-
-            let max_n_in = n_embd_q.max(n_ff);
-            let x = unsafe { std::slice::from_raw_parts_mut(x_ptr, n_embd) };
-            let normed = unsafe { std::slice::from_raw_parts_mut(normed_ptr, n_embd) };
-            let q8_buf = unsafe { std::slice::from_raw_parts_mut(q8_buf_ptr, max_n_in) };
-            let scale_buf = unsafe { std::slice::from_raw_parts_mut(scale_buf_ptr, max_n_in / 32) };
-
-            rms_norm(x, &lw.attn_norm, normed, eps);
-            quantize_q8_0_into(
-                normed,
-                n_embd,
-                &mut q8_buf[..n_embd],
-                &mut scale_buf[..n_embd / 32],
-            );
-            let q8 = q8_buf[..n_embd].as_ptr();
-            let sc = scale_buf[..n_embd / 32].as_ptr();
-
-            let wq = lw.wq;
-            let wk = lw.wk;
-            let wv = lw.wv;
-            let n_embd_v = n_embd;
-            let n_embd_q_v = n_embd_q;
-            let n_embd_gqa_v = n_embd_gqa;
-            let pool = s.pool.clone();
-
-            pool.compute(move |ith: usize, nth: usize| {
-                let q8 = unsafe { std::slice::from_raw_parts(q8, n_embd_v) };
-                let sc = unsafe { std::slice::from_raw_parts(sc, n_embd_v / 32) };
-                let q = unsafe { std::slice::from_raw_parts_mut(q_ptr, n_embd_q_v) };
-                let k_new = unsafe { std::slice::from_raw_parts_mut(k_ptr, n_embd_gqa_v) };
-                let v_new = unsafe { std::slice::from_raw_parts_mut(v_ptr, n_embd_gqa_v) };
-                matmul_q8_0_quantized_parallel_rows(wq, q8, sc, q, n_embd_v, n_embd_q_v, ith, nth);
-                matmul_q8_0_quantized_parallel_rows(
-                    wk,
-                    q8,
-                    sc,
-                    k_new,
-                    n_embd_v,
-                    n_embd_gqa_v,
-                    ith,
-                    nth,
-                );
-                matmul_q8_0_quantized_parallel_rows(
-                    wv,
-                    q8,
-                    sc,
-                    v_new,
-                    n_embd_v,
-                    n_embd_gqa_v,
-                    ith,
-                    nth,
-                );
-            });
-
-            {
-                let q = unsafe { std::slice::from_raw_parts_mut(q_ptr, n_embd_q) };
-                let k_new = unsafe { std::slice::from_raw_parts_mut(k_ptr, n_embd_gqa) };
-                let v_new = unsafe { std::slice::from_raw_parts_mut(v_ptr, n_embd_gqa) };
-                let q_norm = lw.q_norm.as_deref();
-                let k_norm = lw.k_norm.as_deref();
-
-                if let (Some(qn), Some(kn)) = (q_norm, k_norm) {
-                    for h in 0..n_head {
-                        rms_norm_inplace(
-                            &mut q[h * n_embd_head_k..(h + 1) * n_embd_head_k],
-                            qn,
-                            eps,
-                        );
-                    }
-                    for h in 0..n_head_kv {
-                        rms_norm_inplace(
-                            &mut k_new[h * n_embd_head_k..(h + 1) * n_embd_head_k],
-                            kn,
-                            eps,
-                        );
-                    }
-                }
-
-                for h in 0..n_head {
-                    rope_neox(
-                        &mut q[h * n_embd_head_k..(h + 1) * n_embd_head_k],
-                        pos,
-                        n_embd_head_k,
-                        freq_base,
-                    );
-                }
-                for h in 0..n_head_kv {
-                    rope_neox(
-                        &mut k_new[h * n_embd_head_k..(h + 1) * n_embd_head_k],
-                        pos,
-                        n_embd_head_k,
-                        freq_base,
-                    );
-                }
-
-                let kb = layer * max_ctx * n_embd_gqa;
-                let k_cache =
-                    unsafe { std::slice::from_raw_parts_mut(k_cache_f16_ptr, kv_cache_size) };
-                let v_cache =
-                    unsafe { std::slice::from_raw_parts_mut(v_cache_f16_ptr, kv_cache_size) };
-                for h in 0..n_head_kv {
-                    let off = h * n_embd_head_k;
-                    f32_slice_to_f16(
-                        &k_new[off..off + n_embd_head_k],
-                        &mut k_cache[kb + pos * n_embd_gqa + off
-                            ..kb + pos * n_embd_gqa + off + n_embd_head_k],
-                    );
-                    f32_slice_to_f16(
-                        &v_new[off..off + n_embd_head_v],
-                        &mut v_cache[kb + pos * n_embd_gqa + off
-                            ..kb + pos * n_embd_gqa + off + n_embd_head_v],
-                    );
-                }
-            }
-
-            let pool2 = s.pool.clone();
-            pool2.compute(move |ith: usize, nth: usize| {
-                let q = unsafe { std::slice::from_raw_parts(q_ptr, n_embd_q) };
-                let attn_out = unsafe { std::slice::from_raw_parts_mut(attn_out_ptr, n_embd_q) };
-                let h_start = ith * n_head / nth;
-                let h_end = (ith + 1) * n_head / nth;
-
-                let kb = layer * max_ctx * n_embd_gqa;
-                let k_cache = unsafe { std::slice::from_raw_parts(k_cache_f16_ptr, kv_cache_size) };
-                let v_cache = unsafe { std::slice::from_raw_parts(v_cache_f16_ptr, kv_cache_size) };
-
-                for h in h_start..h_end {
-                    let kv_h = h / group_size;
-                    let q_off = h * n_embd_head_k;
-                    let n_cached = pos + 1;
-                    let out_base = h * n_embd_head_v;
-                    let mut ms = 0.0f32;
-                    let mut s_sum = 0.0f32;
-                    for d in 0..n_embd_head_v {
-                        attn_out[out_base + d] = 0.0;
-                    }
-                    for t in 0..n_cached {
-                        let score = dot_f16_f32(
-                            &q[q_off..q_off + n_embd_head_k],
-                            &k_cache[kb + t * n_embd_gqa + kv_h * n_embd_head_v
-                                ..kb + t * n_embd_gqa + kv_h * n_embd_head_v + n_embd_head_k],
-                            n_embd_head_k,
-                        ) * kq_scale;
-                        if score > ms {
-                            let rescale = (ms - score).exp();
-                            vec_scale_f32(
-                                &mut attn_out[out_base..out_base + n_embd_head_v],
-                                rescale,
-                            );
-                            s_sum *= rescale;
-                            ms = score;
-                        }
-                        let vs = (score - ms).exp();
-                        let v_base = kb + t * n_embd_gqa + kv_h * n_embd_head_v;
-                        vec_mad_f16_f32(
-                            &mut attn_out[out_base..out_base + n_embd_head_v],
-                            &v_cache[v_base..v_base + n_embd_head_v],
-                            vs,
-                        );
-                        s_sum += vs;
-                    }
-                    let inv_sum = 1.0 / s_sum;
-                    vec_scale_f32(&mut attn_out[out_base..out_base + n_embd_head_v], inv_sum);
-                }
-            });
-
-            let attn_out = unsafe { std::slice::from_raw_parts_mut(attn_out_ptr, n_embd_q) };
-            let q8_buf = unsafe { std::slice::from_raw_parts_mut(q8_buf_ptr, max_n_in) };
-            let scale_buf = unsafe { std::slice::from_raw_parts_mut(scale_buf_ptr, max_n_in / 32) };
-            quantize_q8_0_into(
-                attn_out,
-                n_embd_q,
-                &mut q8_buf[..n_embd_q],
-                &mut scale_buf[..n_embd_q / 32],
-            );
-            let q8 = q8_buf[..n_embd_q].as_ptr();
-            let sc = scale_buf[..n_embd_q / 32].as_ptr();
-            let wo = lw.wo;
-            let pool3 = s.pool.clone();
-            pool3.compute(move |ith: usize, nth: usize| {
-                let q8 = unsafe { std::slice::from_raw_parts(q8, n_embd_q) };
-                let sc = unsafe { std::slice::from_raw_parts(sc, n_embd_q / 32) };
-                let attn_proj = unsafe { std::slice::from_raw_parts_mut(attn_proj_ptr, n_embd) };
-                matmul_q8_0_quantized_parallel_rows(
-                    wo, q8, sc, attn_proj, n_embd_q, n_embd, ith, nth,
-                );
-            });
-
-            let attn_proj = unsafe { std::slice::from_raw_parts_mut(attn_proj_ptr, n_embd) };
-            let x = unsafe { std::slice::from_raw_parts_mut(x_ptr, n_embd) };
-            for i in 0..n_embd {
-                x[i] += attn_proj[i];
-            }
-
-            let normed = unsafe { std::slice::from_raw_parts_mut(normed_ptr, n_embd) };
-            rms_norm(x, &lw.ffn_norm, normed, eps);
-            quantize_q8_0_into(
-                normed,
-                n_embd,
-                &mut q8_buf[..n_embd],
-                &mut scale_buf[..n_embd / 32],
-            );
-            let q8 = q8_buf[..n_embd].as_ptr();
-            let sc = scale_buf[..n_embd / 32].as_ptr();
-            let w_gate = lw.w_gate;
-            let w_up = lw.w_up;
-            let pool4 = s.pool.clone();
-            pool4.compute(move |ith: usize, nth: usize| {
-                let q8 = unsafe { std::slice::from_raw_parts(q8, n_embd) };
-                let sc = unsafe { std::slice::from_raw_parts(sc, n_embd / 32) };
-                let gate_buf = unsafe { std::slice::from_raw_parts_mut(gate_buf_ptr, n_ff) };
-                let up_buf = unsafe { std::slice::from_raw_parts_mut(up_buf_ptr, n_ff) };
-                matmul_q8_0_quantized_parallel_rows(w_gate, q8, sc, up_buf, n_embd, n_ff, ith, nth);
-                matmul_q8_0_quantized_parallel_rows(w_up, q8, sc, gate_buf, n_embd, n_ff, ith, nth);
-                let rows_per = n_ff / nth;
-                let r_start = ith * rows_per;
-                let r_end = if ith == nth - 1 {
-                    n_ff
-                } else {
-                    r_start + rows_per
-                };
-                silu_mul_inplace(&up_buf[r_start..r_end], &mut gate_buf[r_start..r_end]);
-            });
-
-            {
-                let gate_buf = unsafe { std::slice::from_raw_parts_mut(gate_buf_ptr, n_ff) };
-                let q8_buf = unsafe { std::slice::from_raw_parts_mut(q8_buf_ptr, max_n_in) };
-                let scale_buf =
-                    unsafe { std::slice::from_raw_parts_mut(scale_buf_ptr, max_n_in / 32) };
-                quantize_q8_0_into(
-                    gate_buf,
-                    n_ff,
-                    &mut q8_buf[..n_ff],
-                    &mut scale_buf[..n_ff / 32],
-                );
-            }
-
-            let q8 = q8_buf[..n_ff].as_ptr();
-            let sc = scale_buf[..n_ff / 32].as_ptr();
-            let w_down = lw.w_down;
-            let pool5 = s.pool.clone();
-            pool5.compute(move |ith: usize, nth: usize| {
-                let q8 = unsafe { std::slice::from_raw_parts(q8, n_ff) };
-                let sc = unsafe { std::slice::from_raw_parts(sc, n_ff / 32) };
-                let down_buf = unsafe { std::slice::from_raw_parts_mut(down_buf_ptr, n_embd) };
-                matmul_q8_0_quantized_parallel_rows(
-                    w_down, q8, sc, down_buf, n_ff, n_embd, ith, nth,
-                );
-            });
-
-            let down_buf = unsafe { std::slice::from_raw_parts_mut(down_buf_ptr, n_embd) };
-            let x = unsafe { std::slice::from_raw_parts_mut(x_ptr, n_embd) };
-            for i in 0..n_embd {
-                x[i] += down_buf[i];
-            }
-        }
-
-        {
-            let x = &mut scratch.x;
-            let normed = &mut scratch.normed;
-            let logits_ptr = scratch.logits.as_mut_ptr();
-            let q8_buf = &mut scratch.q8_buf;
-            let scale_buf = &mut scratch.scale_buf;
-
-            rms_norm(x, &s.output_norm, normed, eps);
-            quantize_q8_0_into(
-                normed,
-                n_embd,
-                &mut q8_buf[..n_embd],
-                &mut scale_buf[..n_embd / 32],
-            );
-            let q8 = q8_buf[..n_embd].as_ptr();
-            let sc = scale_buf[..n_embd / 32].as_ptr();
-            let ow = s.output_weight;
-            let pool6 = s.pool.clone();
-            pool6.compute(move |ith: usize, nth: usize| {
-                let q8 = unsafe { std::slice::from_raw_parts(q8, n_embd) };
-                let sc = unsafe { std::slice::from_raw_parts(sc, n_embd / 32) };
-                let logits = unsafe { std::slice::from_raw_parts_mut(logits_ptr, vocab) };
-                matmul_q8_0_quantized_parallel_rows(ow, q8, sc, logits, n_embd, vocab, ith, nth);
-            });
-        }
-
-        if step < n_prompt - 1 {
-            continue;
-        }
-
-        let next_token = sample_token_from_logits(&scratch.logits, temperature);
-        if s.tokenizer.eos_id() == Some(next_token as u32)
-            || s.tokenizer.special_token_id("im_end") == Some(next_token as u32)
-        {
-            break;
-        }
-        if generated_tokens.len() >= max_tokens {
-            break;
-        }
-
-        let text = decoder.push(next_token as u32);
-        if !text.is_empty() {
-            token_strings.push(text);
-        }
-        generated_tokens.push(next_token as u32);
-        all_tokens.push(next_token as u32);
-    }
-
-    let tail = decoder.finish();
-    if !tail.is_empty() {
-        token_strings.push(tail);
-    }
-
-    Ok(GenerateResult {
-        text: token_strings.join(""),
-        tokens: token_strings,
-        prompt_tokens: n_prompt,
-        completion_tokens: generated_tokens.len(),
-    })
-}
-
-fn generate_qwen35(
+fn generate_qwen_35(
     state: &Qwen35State,
     messages: &[ChatMessage],
     max_tokens: usize,
@@ -902,37 +749,18 @@ fn generate_qwen35(
     })
 }
 
-fn get_f32_tensor_from_source(
-    source: &dyn TensorSource,
-    name: &str,
-    expected_len: usize,
-) -> Vec<f32> {
-    let ti = source
-        .tensor_info(name)
-        .unwrap_or_else(|| panic!("tensor {} not found", name));
-    let slice = source
-        .tensor_slice(name)
-        .unwrap_or_else(|| panic!("slice {} not found", name));
-    let mut out = vec![0.0f32; expected_len];
-    if ti.ggml_type == GGMLType::F32 {
-        let n = expected_len.min(slice.len() / 4);
-        for i in 0..n {
-            let bytes = [
-                slice[i * 4],
-                slice[i * 4 + 1],
-                slice[i * 4 + 2],
-                slice[i * 4 + 3],
-            ];
-            out[i] = f32::from_le_bytes(bytes);
-        }
+fn validate_explicit_mmproj_arch(arch: &str, explicit: bool) -> Result<(), String> {
+    if explicit && arch != "qwen3vl" {
+        return Err("--mmproj requires a qwen3vl decoder".into());
     }
-    out
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut model_path = String::new();
+    let mut mmproj_path = None;
     let mut host = "0.0.0.0".to_string();
     let mut port = 8080u16;
     let mut n_threads = 0usize;
@@ -949,6 +777,12 @@ async fn main() {
             "--host" => {
                 if i + 1 < args.len() {
                     host = args[i + 1].clone();
+                    i += 1;
+                }
+            }
+            "--mmproj" => {
+                if i + 1 < args.len() {
+                    mmproj_path = Some(args[i + 1].clone());
                     i += 1;
                 }
             }
@@ -970,7 +804,7 @@ async fn main() {
     }
 
     if model_path.is_empty() {
-        eprintln!("Usage: rust-model-server --model <path.gguf-or-ggufrs> [--host 0.0.0.0] [--port 8080] [--threads 4]");
+        eprintln!("Usage: rust-model-server --model <path.gguf-or-ggufrs> [--mmproj path.gguf] [--host 0.0.0.0] [--port 8080] [--threads 4]");
         std::process::exit(1);
     }
 
@@ -987,7 +821,19 @@ async fn main() {
         .metadata("general.architecture")
         .and_then(|v| v.to_string_val())
         .unwrap_or_default();
+    validate_explicit_mmproj_arch(&arch, mmproj_path.is_some()).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(1);
+    });
     let pool = Arc::new(thread_pool::ComputePool::new(n_threads));
+    let explicit_audio_source: Option<Arc<dyn TensorSource>> = mmproj_path.as_deref().map(|path| {
+        Arc::from(
+            open_model_source(Path::new(path), ComponentRole::Mmproj).unwrap_or_else(|error| {
+                eprintln!("Failed to load mmproj: {error}");
+                std::process::exit(1);
+            }),
+        )
+    });
 
     let tokenizer = BPETokenizer::from_gguf_metadata(|k| source.metadata(k).cloned())
         .unwrap_or_else(|e| {
@@ -995,6 +841,7 @@ async fn main() {
             std::process::exit(1);
         });
 
+    let mut asr = None;
     let model: ModelBackend = if arch == "qwen35" {
         let model = Qwen35Model::from_source(source.as_ref()).unwrap_or_else(|e| {
             eprintln!("Failed to parse Qwen3.5 model: {}", e);
@@ -1007,148 +854,31 @@ async fn main() {
             pool,
         })
     } else {
-        let config = model_config_from_source(source.as_ref()).unwrap_or_else(|e| {
-            eprintln!("Failed to parse config: {}", e);
-            std::process::exit(1);
-        });
-        let n_embd = config.n_embd;
-        let n_layer = config.n_layer;
-        let n_head = config.n_head;
-        let n_head_kv = config.n_head_kv;
-        let n_embd_head = config.n_embd_head;
-        let n_embd_head_k =
-            if let Some(v) = source.metadata(&format!("{}.attention.key_length", arch)) {
-                v.to_u64().unwrap_or(n_embd_head as u64) as usize
-            } else {
-                n_embd_head
-            };
-        let n_embd_head_v =
-            if let Some(v) = source.metadata(&format!("{}.attention.value_length", arch)) {
-                v.to_u64().unwrap_or(n_embd_head as u64) as usize
-            } else {
-                n_embd_head
-            };
-        let n_ff = config.n_ff;
-        let eps = config.norm_eps;
-        let freq_base = config.rope_freq_base;
-        let vocab = tokenizer.vocab_size();
-        let n_ctx = config.n_ctx.min(4096);
-        let is_qwen3 = arch == "qwen3";
-
-        let output_norm = get_f32_tensor_from_source(source.as_ref(), "output_norm.weight", n_embd);
-        let (embd_weight, output_weight) = unsafe {
-            // SAFETY: every slice comes from the immutable `source` Arc stored in the
-            // same state, and this task does not expose source/segment unloading.
-            (
-                std::mem::transmute::<&[u8], &'static [u8]>(
-                    source.tensor_slice("token_embd.weight").expect("no embd"),
-                ),
-                std::mem::transmute::<&[u8], &'static [u8]>(
-                    source
-                        .tensor_slice("output.weight")
-                        .unwrap_or(source.tensor_slice("token_embd.weight").unwrap()),
-                ),
-            )
-        };
-
-        let layers: Vec<LayerWeightsOwned> = (0..n_layer)
-            .map(|l| unsafe {
-                // SAFETY: every slice comes from the immutable `source` Arc stored in the
-                // same state, and this task does not expose source/segment unloading.
-                LayerWeightsOwned {
-                    attn_norm: get_f32_tensor_from_source(
-                        source.as_ref(),
-                        &format!("blk.{}.attn_norm.weight", l),
-                        n_embd,
-                    ),
-                    ffn_norm: get_f32_tensor_from_source(
-                        source.as_ref(),
-                        &format!("blk.{}.ffn_norm.weight", l),
-                        n_embd,
-                    ),
-                    q_norm: if is_qwen3 {
-                        Some(get_f32_tensor_from_source(
-                            source.as_ref(),
-                            &format!("blk.{}.attn_q_norm.weight", l),
-                            n_embd_head_k,
-                        ))
-                    } else {
-                        None
-                    },
-                    k_norm: if is_qwen3 {
-                        Some(get_f32_tensor_from_source(
-                            source.as_ref(),
-                            &format!("blk.{}.attn_k_norm.weight", l),
-                            n_embd_head_k,
-                        ))
-                    } else {
-                        None
-                    },
-                    wq: std::mem::transmute::<&[u8], &'static [u8]>(
-                        source
-                            .tensor_slice(&format!("blk.{}.attn_q.weight", l))
-                            .unwrap(),
-                    ),
-                    wk: std::mem::transmute::<&[u8], &'static [u8]>(
-                        source
-                            .tensor_slice(&format!("blk.{}.attn_k.weight", l))
-                            .unwrap(),
-                    ),
-                    wv: std::mem::transmute::<&[u8], &'static [u8]>(
-                        source
-                            .tensor_slice(&format!("blk.{}.attn_v.weight", l))
-                            .unwrap(),
-                    ),
-                    wo: std::mem::transmute::<&[u8], &'static [u8]>(
-                        source
-                            .tensor_slice(&format!("blk.{}.attn_output.weight", l))
-                            .unwrap(),
-                    ),
-                    w_gate: std::mem::transmute::<&[u8], &'static [u8]>(
-                        source
-                            .tensor_slice(&format!("blk.{}.ffn_gate.weight", l))
-                            .unwrap(),
-                    ),
-                    w_up: std::mem::transmute::<&[u8], &'static [u8]>(
-                        source
-                            .tensor_slice(&format!("blk.{}.ffn_up.weight", l))
-                            .unwrap(),
-                    ),
-                    w_down: std::mem::transmute::<&[u8], &'static [u8]>(
-                        source
-                            .tensor_slice(&format!("blk.{}.ffn_down.weight", l))
-                            .unwrap(),
-                    ),
-                }
-            })
-            .collect();
-
-        let qwen3_cfg = Qwen3Config {
-            n_embd,
-            n_layer,
-            n_head,
-            n_head_kv,
-            n_embd_head,
-            n_embd_head_k,
-            n_embd_head_v,
-            n_ff,
-            vocab,
-            n_ctx,
-            eps,
-            freq_base,
-            has_qk_norm: is_qwen3,
-        };
-
-        ModelBackend::Qwen3(Qwen3State {
-            source: Arc::clone(&source),
-            layers,
-            output_norm,
-            embd_weight,
-            output_weight,
-            config: qwen3_cfg,
-            tokenizer: Arc::new(tokenizer),
-            pool,
-        })
+        let model = Arc::new(
+            Qwen3Model::from_source(Arc::clone(&source), Arc::new(tokenizer), pool).unwrap_or_else(
+                |error| {
+                    eprintln!("Failed to parse Qwen2/Qwen3 model: {error}");
+                    std::process::exit(1);
+                },
+            ),
+        );
+        if arch == "qwen3vl" {
+            let audio_source = explicit_audio_source.or_else(|| {
+                open_bundled_audio_source(Path::new(&model_path)).unwrap_or_else(|error| {
+                    eprintln!("Failed to load bundled audio component: {error}");
+                    std::process::exit(1);
+                })
+            });
+            asr = audio_source.map(|audio_source| {
+                Arc::new(
+                    AsrRuntime::new(Arc::clone(&model), audio_source).unwrap_or_else(|error| {
+                        eprintln!("Failed to initialize ASR runtime: {error}");
+                        std::process::exit(1);
+                    }),
+                )
+            });
+        }
+        ModelBackend::Qwen3(model)
     };
 
     let model_name = std::path::Path::new(&model_path)
@@ -1164,13 +894,20 @@ async fn main() {
 
     let state = AppState {
         model: Arc::new(model),
+        asr,
         model_name,
+        inference_lock: Arc::new(std::sync::Mutex::new(())),
     };
 
     let app = Router::new()
         .route("/health", get(health))
         .route("/v1/models", get(list_models))
         .route("/v1/chat/completions", post(chat_completions))
+        .route(
+            "/v1/audio/transcriptions",
+            post(audio_transcriptions)
+                .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -1178,4 +915,198 @@ async fn main() {
     eprintln!("Server listening on http://{}", addr);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn fields_with_file() -> TranscriptionFields {
+        let mut fields = TranscriptionFields::default();
+        fields.add_file(vec![1, 2, 3]).unwrap();
+        fields
+    }
+
+    #[test]
+    fn transcription_rejects_missing_and_duplicate_file() {
+        assert_eq!(
+            TranscriptionFields::default()
+                .validate("model")
+                .unwrap_err()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        let mut fields = fields_with_file();
+        assert_eq!(
+            fields.add_file(vec![4]).unwrap_err().status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(fields.file.as_deref(), Some(&[1, 2, 3][..]));
+    }
+
+    #[test]
+    fn transcription_preflights_duplicate_unknown_and_strict_utf8_fields() {
+        let mut fields = TranscriptionFields::default();
+        fields.add_text("model", b"model".to_vec()).unwrap();
+        assert_eq!(
+            fields.preflight("model").unwrap_err().status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            fields
+                .add_text("model", b"other".to_vec())
+                .unwrap_err()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(fields.model.as_deref(), Some("model"));
+        assert_eq!(
+            fields.preflight("unknown").unwrap_err().status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            fields
+                .add_text("language", vec![0xff])
+                .unwrap_err()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(fields.language, None);
+    }
+
+    #[test]
+    fn transcription_validates_option_syntax_and_values() {
+        for (name, value, expected) in [
+            ("max_tokens", "invalid", StatusCode::BAD_REQUEST),
+            ("stream", "invalid", StatusCode::BAD_REQUEST),
+            ("max_tokens", "0", StatusCode::UNPROCESSABLE_ENTITY),
+            ("model", "other", StatusCode::UNPROCESSABLE_ENTITY),
+            ("response_format", "text", StatusCode::UNPROCESSABLE_ENTITY),
+            ("stream", "true", StatusCode::UNPROCESSABLE_ENTITY),
+            ("language", "Klingon", StatusCode::UNPROCESSABLE_ENTITY),
+        ] {
+            let mut fields = fields_with_file();
+            match fields.add_text(name, value.as_bytes().to_vec()) {
+                Err(error) => {
+                    assert_eq!(error.status(), expected, "field {name}");
+                    assert!(match name {
+                        "max_tokens" => fields.max_tokens.is_none(),
+                        "stream" => fields.stream.is_none(),
+                        _ => true,
+                    });
+                }
+                Ok(()) => assert_eq!(
+                    fields.validate("model").unwrap_err().status(),
+                    expected,
+                    "field {name}"
+                ),
+            }
+        }
+
+        let mut fields = fields_with_file();
+        fields.add_text("stream", b"false".to_vec()).unwrap();
+        let request = fields.validate("model").unwrap();
+        assert_eq!(request.options.max_new_tokens, 256);
+        assert_eq!(request.options.language, None);
+        assert_eq!(request.options.prompt, None);
+    }
+
+    #[test]
+    fn explicit_mmproj_requires_qwen3vl_decoder() {
+        assert!(validate_explicit_mmproj_arch("qwen3vl", true).is_ok());
+        assert!(validate_explicit_mmproj_arch("qwen35", false).is_ok());
+        assert!(validate_explicit_mmproj_arch("qwen35", true).is_err());
+        assert!(validate_explicit_mmproj_arch("qwen3", true).is_err());
+    }
+
+    #[test]
+    fn transcription_maps_runtime_errors_and_serializes_success() {
+        for (kind, expected) in [
+            (
+                AsrErrorKind::UnsupportedAudio,
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            ),
+            (
+                AsrErrorKind::Unprocessable,
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            (AsrErrorKind::Internal, StatusCode::INTERNAL_SERVER_ERROR),
+        ] {
+            let error = TranscriptionHttpError::from_asr(AsrError {
+                kind,
+                message: "failure".into(),
+            });
+            assert_eq!(error.status(), expected);
+        }
+        assert_eq!(
+            TranscriptionHttpError::unavailable("no runtime").status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            TranscriptionHttpError::internal("worker failed").status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            serde_json::to_string(&TranscriptionResponse {
+                text: "hello".into()
+            })
+            .unwrap(),
+            r#"{"text":"hello"}"#
+        );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn chat_and_asr_share_one_inference_lock() {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    };
+    use std::time::Duration;
+
+    let state = Arc::new(AppState {
+        model: Arc::new(ModelBackend::Test),
+        asr: None,
+        model_name: "test".into(),
+        inference_lock: Arc::new(std::sync::Mutex::new(())),
+    });
+    let setup = Arc::new(AtomicUsize::new(0));
+    let (first_entered_tx, first_entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let first_state = Arc::clone(&state);
+    let first_setup = Arc::clone(&setup);
+    let first = std::thread::spawn(move || {
+        first_setup.fetch_add(1, Ordering::SeqCst);
+        first_state.run_inference(|| {
+            first_entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+    });
+    first_entered_rx
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap();
+
+    let (second_setup_tx, second_setup_rx) = mpsc::channel();
+    let (second_entered_tx, second_entered_rx) = mpsc::channel();
+    let second_state = Arc::clone(&state);
+    let second_setup = Arc::clone(&setup);
+    let second = std::thread::spawn(move || {
+        second_setup.fetch_add(1, Ordering::SeqCst);
+        second_setup_tx.send(()).unwrap();
+        second_state.run_inference(|| second_entered_tx.send(()).unwrap());
+    });
+    second_setup_rx
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap();
+    assert!(matches!(
+        second_entered_rx.recv_timeout(Duration::from_millis(100)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    release_tx.send(()).unwrap();
+    second_entered_rx
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap();
+    first.join().unwrap();
+    second.join().unwrap();
+    assert_eq!(setup.load(Ordering::SeqCst), 2);
 }

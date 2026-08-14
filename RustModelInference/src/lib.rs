@@ -1,3 +1,4 @@
+pub mod asr;
 pub mod clip_config;
 pub mod ggufrs;
 pub mod load_plan;
@@ -9,13 +10,16 @@ pub mod ops;
 pub mod parity_trace;
 pub mod prompt;
 pub mod quant;
+pub mod qwen3;
 pub mod qwen35;
+pub mod qwen3a;
 pub mod scratchpad;
 pub mod thread_pool;
 pub mod tokenizer;
 pub mod traits;
 pub mod vision;
 
+pub use asr::*;
 pub use clip_config::{ClipVisionConfig, Qwen35Config};
 pub use ggufrs::{
     export_ggufrs, open_model_source, ComponentInfo, ComponentRole, ExportOptions, GgufrsError,
@@ -35,6 +39,7 @@ pub use prompt::{
     append_qwen_assistant_prefix, append_qwen_message_tokens, build_qwen_chat_prompt, QwenMessage,
 };
 pub use quant::dequant_weight_q4k;
+pub use qwen3::*;
 pub use qwen35::{build_qwen35_positions, Qwen35Model};
 pub use scratchpad::{ExecutionScratchpad, KvCache, KvCacheF16, KvCacheF32};
 pub use tokenizer::{BPETokenizer, EncodeOptions, StreamingDecoder};

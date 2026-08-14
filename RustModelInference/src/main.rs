@@ -1,13 +1,15 @@
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "parity-trace")]
 use rust_model_inference::parity_trace;
 use rust_model_inference::*;
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 enum KvFormat {
+    #[default]
     F16,
     F32,
 }
@@ -19,6 +21,25 @@ enum EmbeddingOutput {
     Raw,
 }
 
+#[derive(Debug, Default)]
+struct CliOptions {
+    model: PathBuf,
+    mmproj: Option<PathBuf>,
+    audio: Option<PathBuf>,
+    image: Option<PathBuf>,
+    prompt: Option<String>,
+    language: Option<String>,
+    max_tokens: Option<usize>,
+    temperature: Option<f32>,
+    threads: usize,
+    embedding: bool,
+    embedding_output: EmbeddingOutput,
+    dump_logits: bool,
+    bench: bool,
+    profile: bool,
+    kv_format: KvFormat,
+}
+
 fn parse_embedding_output(value: Option<&str>) -> Result<EmbeddingOutput, String> {
     match value {
         Some("summary") => Ok(EmbeddingOutput::Summary),
@@ -27,6 +48,38 @@ fn parse_embedding_output(value: Option<&str>) -> Result<EmbeddingOutput, String
             "Invalid --embedding-output {value:?}; expected summary or raw"
         )),
         None => Err("Missing value for --embedding-output".into()),
+    }
+}
+
+fn validate_qwen3vl_decoder_mode(
+    arch: &str,
+    dump_logits: bool,
+    bench: bool,
+    profile: bool,
+    kv_format: KvFormat,
+    interactive: bool,
+) -> Result<(), String> {
+    if arch != "qwen3vl" {
+        return Ok(());
+    }
+    let unsupported = if dump_logits {
+        Some("--dump-logits")
+    } else if bench {
+        Some("--bench")
+    } else if profile {
+        Some("--profile")
+    } else if kv_format == KvFormat::F32 {
+        Some("--kv-cache f32")
+    } else if interactive {
+        Some("interactive mode")
+    } else {
+        None
+    };
+    match unsupported {
+        Some(option) => Err(format!(
+            "{option} is not supported for qwen3vl; use default F16 generation"
+        )),
+        None => Ok(()),
     }
 }
 
@@ -453,6 +506,47 @@ mod cli_tests {
     }
 
     #[test]
+    fn qwen3vl_rejects_legacy_decoder_modes() {
+        for (result, expected_mode) in [
+            (
+                validate_qwen3vl_decoder_mode("qwen3vl", true, false, false, KvFormat::F16, false),
+                "--dump-logits",
+            ),
+            (
+                validate_qwen3vl_decoder_mode("qwen3vl", false, true, false, KvFormat::F16, false),
+                "--bench",
+            ),
+            (
+                validate_qwen3vl_decoder_mode("qwen3vl", false, false, true, KvFormat::F16, false),
+                "--profile",
+            ),
+            (
+                validate_qwen3vl_decoder_mode("qwen3vl", false, false, false, KvFormat::F32, false),
+                "--kv-cache f32",
+            ),
+            (
+                validate_qwen3vl_decoder_mode("qwen3vl", false, false, false, KvFormat::F16, true),
+                "interactive mode",
+            ),
+        ] {
+            assert!(result.unwrap_err().contains(expected_mode));
+        }
+
+        assert!(validate_qwen3vl_decoder_mode(
+            "qwen3vl",
+            false,
+            false,
+            false,
+            KvFormat::F16,
+            false
+        )
+        .is_ok());
+        assert!(
+            validate_qwen3vl_decoder_mode("qwen3", true, true, true, KvFormat::F32, true).is_ok()
+        );
+    }
+
+    #[test]
     fn embedding_config_rejects_missing_malformed_or_unsupported_pooling() {
         assert!(embedding_config("qwen3", |_| None)
             .unwrap_err()
@@ -562,87 +656,243 @@ mod cli_tests {
             );
         }
     }
+
+    fn asr_cli_options() -> CliOptions {
+        CliOptions {
+            model: "missing.gguf".into(),
+            audio: Some("missing.wav".into()),
+            ..CliOptions::default()
+        }
+    }
+
+    #[test]
+    fn asr_cli_rejects_conflicting_modes_before_model_load() {
+        let mut options = asr_cli_options();
+        options.image = Some("missing.png".into());
+        assert!(validate_cli_options(&options).unwrap_err().contains("--image"));
+
+        let mut options = asr_cli_options();
+        options.embedding = true;
+        assert!(validate_cli_options(&options).unwrap_err().contains("--embedding"));
+
+        let mut options = asr_cli_options();
+        options.dump_logits = true;
+        assert!(validate_cli_options(&options).unwrap_err().contains("--dump-logits"));
+
+        let mut options = asr_cli_options();
+        options.bench = true;
+        assert!(validate_cli_options(&options).unwrap_err().contains("--bench"));
+
+        let mut options = asr_cli_options();
+        options.profile = true;
+        assert!(validate_cli_options(&options).unwrap_err().contains("--profile"));
+
+        let mut options = asr_cli_options();
+        options.temperature = Some(0.1);
+        assert!(validate_cli_options(&options).unwrap_err().contains("--temp"));
+
+        let mut options = asr_cli_options();
+        options.max_tokens = Some(0);
+        assert!(validate_cli_options(&options)
+            .unwrap_err()
+            .contains("--max-tokens"));
+
+        let mut options = asr_cli_options();
+        options.audio = None;
+        options.language = Some("English".into());
+        assert!(validate_cli_options(&options).unwrap_err().contains("--language"));
+
+        let mut options = asr_cli_options();
+        options.prompt = Some("domain context".into());
+        assert!(validate_cli_options(&options).is_ok());
+
+        let args = ["rmi".to_string(), "--audio".to_string()];
+        assert!(parse_cli_options(&args).unwrap_err().contains("--audio"));
+    }
+
+    #[test]
+    fn asr_cli_rejects_empty_and_flag_shaped_values() {
+        for args in [
+            vec!["rmi", "--audio", ""],
+            vec!["rmi", "--audio", "--image", "missing.png"],
+            vec!["rmi", "--audio", "--language", "English"],
+        ] {
+            let args: Vec<String> = args.into_iter().map(str::to_string).collect();
+            assert!(parse_cli_options(&args).unwrap_err().contains("--audio"));
+        }
+
+        let args: Vec<String> = ["rmi", "--audio", "missing.wav", "--language", "--prompt"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert!(parse_cli_options(&args)
+            .unwrap_err()
+            .contains("--language"));
+
+        let args: Vec<String> = ["rmi", "--audio", "-recording.wav", "--language", "English"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let options = parse_cli_options(&args).unwrap();
+        assert_eq!(options.audio.as_deref(), Some(Path::new("-recording.wav")));
+        assert_eq!(options.language.as_deref(), Some("English"));
+
+        let args: Vec<String> = ["rmi", "--audio", "missing.wav", "--language", ""]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let options = parse_cli_options(&args).unwrap();
+        assert!(validate_cli_options(&options).is_ok());
+        assert!(normalize_language(
+            transcription_options(&options).language.as_deref()
+        )
+        .unwrap()
+        .is_none());
+    }
+
+    #[test]
+    fn asr_cli_defaults_are_greedy_and_256_tokens() {
+        let mut options = asr_cli_options();
+        options.language = Some("auto".into());
+        options.prompt = Some("domain context".into());
+
+        let (max_tokens, temperature) = resolve_cli_generation_options(&options);
+        assert_eq!(max_tokens, 256);
+        assert_eq!(temperature, 0.0);
+        let transcription = transcription_options(&options);
+        assert_eq!(transcription.language, None);
+        assert_eq!(transcription.prompt.as_deref(), Some("domain context"));
+        assert_eq!(transcription.max_new_tokens, 256);
+        assert!(normalize_language(Some("auto")).is_err());
+
+        let args = [
+            "rmi".to_string(),
+            "--audio".to_string(),
+            "missing.wav".to_string(),
+            "--n-gen".to_string(),
+            "7".to_string(),
+        ];
+        assert_eq!(parse_cli_options(&args).unwrap().max_tokens, Some(7));
+
+        let args = [
+            "rmi".to_string(),
+            "--unknown".to_string(),
+            "--prompt".to_string(),
+            "hello".to_string(),
+        ];
+        let text = parse_cli_options(&args).unwrap();
+        assert_eq!(text.prompt.as_deref(), Some("hello"));
+        assert_eq!(resolve_cli_generation_options(&text), (128, 0.6));
+    }
+
+    #[test]
+    fn legacy_cli_parser_and_dispatch_semantics_are_preserved() {
+        type Check = fn(&CliOptions) -> bool;
+        let parse = |args: &[&str]| {
+            let args: Vec<String> = args.iter().map(ToString::to_string).collect();
+            parse_cli_options(&args).unwrap()
+        };
+        let cases: &[(&[&str], &str, Check)] = &[
+            (&["rmi", "--embedding", "--prompt", "x"], "embedding", |o| o.embedding && o.prompt.as_deref() == Some("x")),
+            (&["rmi", "--image", "image.png"], "image", |o| o.image.as_deref() == Some(Path::new("image.png"))),
+            (&["rmi", "--mmproj", "projector.gguf"], "mmproj", |o| o.mmproj.as_deref() == Some(Path::new("projector.gguf"))),
+            (&["rmi", "--model", "model.gguf"], "interactive", |o| o.prompt.is_none() && o.image.is_none() && o.mmproj.is_none()),
+            (&["rmi", "positional", "--prompt", "x"], "unknown/positional", |o| o.prompt.as_deref() == Some("x")),
+            (&["rmi"], "text defaults", |o| resolve_cli_generation_options(o) == (128, 0.6)),
+            (&["rmi", "--max-tokens", "bad"], "malformed max", |o| o.max_tokens == Some(128)),
+            (&["rmi", "--n-gen", "bad"], "malformed n-gen", |o| o.max_tokens == Some(128)),
+            (&["rmi", "--temp", "bad"], "malformed temp", |o| o.temperature == Some(0.6)),
+            (&["rmi", "--threads", "bad"], "malformed threads", |o| o.threads == 0),
+            (&["rmi", "--kv-cache", "f32"], "F32 KV", |o| o.kv_format == KvFormat::F32),
+            (&["rmi", "--kv-cache", "bad"], "fallback F16 KV", |o| o.kv_format == KvFormat::F16),
+            (&["rmi", "--model", "", "--prompt", "", "--max-tokens", "", "--temp", "", "--threads", "", "--kv-cache", "", "--mmproj", "", "--image", ""], "empty legacy values", |o| o.model.as_os_str().is_empty() && o.prompt.as_deref() == Some("") && o.max_tokens == Some(128) && o.temperature == Some(0.6) && o.threads == 0 && o.kv_format == KvFormat::F16 && o.mmproj.as_deref() == Some(Path::new("")) && o.image.as_deref() == Some(Path::new(""))),
+        ];
+        for (args, name, check) in cases {
+            assert!(check(&parse(args)), "{name}");
+        }
+
+        let absent: &[(&str, Check)] = &[
+            ("--model", |o| o.model.as_os_str().is_empty()),
+            ("--prompt", |o| o.prompt.is_none()),
+            ("--max-tokens", |o| o.max_tokens.is_none()),
+            ("--n-gen", |o| o.max_tokens.is_none()),
+            ("--temp", |o| o.temperature.is_none()),
+            ("--threads", |o| o.threads == 0),
+            ("--kv-cache", |o| o.kv_format == KvFormat::F16),
+            ("--mmproj", |o| o.mmproj.is_none()),
+            ("--image", |o| o.image.is_none()),
+        ];
+        for (flag, check) in absent {
+            assert!(check(&parse(&["rmi", flag])), "absent {flag}");
+        }
+        assert!(parse_cli_options(&["rmi".into(), "--embedding-output".into()]).is_err());
+
+        for (value, expected) in [
+            ("0", 0.0),
+            ("-1", -1.0),
+            ("NaN", f32::NAN),
+            ("inf", f32::INFINITY),
+            ("-inf", f32::NEG_INFINITY),
+        ] {
+            let options = parse(&["rmi", "--temp", value]);
+            let actual = options.temperature.unwrap();
+            if expected.is_nan() {
+                assert!(actual.is_nan());
+            } else {
+                assert_eq!(actual, expected);
+            }
+            assert!(validate_cli_options(&options).is_ok());
+        }
+    }
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
-
-    let mut model_path = String::new();
-    let mut prompt = String::new();
-    let mut max_tokens = 128usize;
-    let mut temperature = 0.6f32;
-
-    let mut n_threads = 0usize;
-    let mut dump_logits = false;
-    let mut bench = false;
-    let mut profile = false;
-    let mut embedding_mode = false;
-    let mut embedding_output = EmbeddingOutput::Summary;
-    let mut kv_format = KvFormat::F16;
-    let mut mmproj_path = String::new();
-    let mut image_path = String::new();
+fn parse_cli_options(args: &[String]) -> Result<CliOptions, String> {
+    let mut options = CliOptions::default();
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "--model" => {
                 if i + 1 < args.len() {
-                    model_path = args[i + 1].clone();
+                    options.model = args[i + 1].as_str().into();
                     i += 1;
                 }
             }
             "--prompt" => {
                 if i + 1 < args.len() {
-                    prompt = args[i + 1].clone();
+                    options.prompt = Some(args[i + 1].clone());
                     i += 1;
                 }
             }
-            "--max-tokens" => {
+            "--max-tokens" | "--n-gen" => {
                 if i + 1 < args.len() {
-                    max_tokens = args[i + 1].parse().unwrap_or(128);
-                    i += 1;
-                }
-            }
-            "--n-gen" => {
-                if i + 1 < args.len() {
-                    max_tokens = args[i + 1].parse().unwrap_or(128);
+                    options.max_tokens = Some(args[i + 1].parse().unwrap_or(128));
                     i += 1;
                 }
             }
             "--temp" => {
                 if i + 1 < args.len() {
-                    temperature = args[i + 1].parse().unwrap_or(0.6);
+                    options.temperature = Some(args[i + 1].parse().unwrap_or(0.6));
                     i += 1;
                 }
             }
             "--threads" => {
                 if i + 1 < args.len() {
-                    n_threads = args[i + 1].parse().unwrap_or(0);
+                    options.threads = args[i + 1].parse().unwrap_or(0);
                     i += 1;
                 }
             }
-            "--dump-logits" => {
-                dump_logits = true;
-            }
-            "--embedding" => {
-                embedding_mode = true;
-            }
+            "--dump-logits" => options.dump_logits = true,
+            "--embedding" => options.embedding = true,
             "--embedding-output" => {
-                embedding_output = parse_embedding_output(args.get(i + 1).map(String::as_str))
-                    .unwrap_or_else(|error| {
-                        eprintln!("{error}");
-                        std::process::exit(2);
-                    });
+                options.embedding_output =
+                    parse_embedding_output(args.get(i + 1).map(String::as_str))?;
                 i += 1;
             }
-            "--bench" => {
-                bench = true;
-            }
-            "--profile" => {
-                profile = true;
-            }
+            "--bench" => options.bench = true,
+            "--profile" => options.profile = true,
             "--kv-cache" => {
                 if i + 1 < args.len() {
-                    kv_format = match args[i + 1].as_str() {
+                    options.kv_format = match args[i + 1].as_str() {
                         "f32" => KvFormat::F32,
                         _ => KvFormat::F16,
                     };
@@ -651,34 +901,135 @@ fn main() {
             }
             "--mmproj" => {
                 if i + 1 < args.len() {
-                    mmproj_path = args[i + 1].clone();
+                    options.mmproj = Some(args[i + 1].as_str().into());
                     i += 1;
                 }
             }
             "--image" => {
                 if i + 1 < args.len() {
-                    image_path = args[i + 1].clone();
+                    options.image = Some(args[i + 1].as_str().into());
                     i += 1;
                 }
+            }
+            "--audio" => {
+                let value = args
+                    .get(i + 1)
+                    .filter(|value| !value.is_empty() && !value.starts_with("--"))
+                    .ok_or("Missing value for --audio")?;
+                options.audio = Some(value.as_str().into());
+                i += 1;
+            }
+            "--language" => {
+                let value = args
+                    .get(i + 1)
+                    .filter(|value| !value.starts_with("--"))
+                    .ok_or("Missing value for --language")?;
+                options.language = Some(value.clone());
+                i += 1;
             }
             _ => {}
         }
         i += 1;
     }
+    Ok(options)
+}
 
-    if model_path.is_empty() {
+fn validate_cli_options(options: &CliOptions) -> Result<(), String> {
+    if options.audio.is_none() {
+        return if options.language.is_some() {
+            Err("--language requires --audio".into())
+        } else {
+            Ok(())
+        };
+    }
+    let conflict = if options.image.is_some() {
+        Some("--image")
+    } else if options.embedding {
+        Some("--embedding")
+    } else if options.dump_logits {
+        Some("--dump-logits")
+    } else if options.bench {
+        Some("--bench")
+    } else if options.profile {
+        Some("--profile")
+    } else {
+        None
+    };
+    if let Some(conflict) = conflict {
+        return Err(format!("--audio cannot be used with {conflict}"));
+    }
+    if options.temperature.is_some_and(|temperature| temperature != 0.0) {
+        return Err("--audio requires greedy decoding; --temp must be 0".into());
+    }
+    if options.max_tokens == Some(0) {
+        return Err("--audio requires --max-tokens greater than 0".into());
+    }
+    Ok(())
+}
+
+fn resolve_cli_generation_options(options: &CliOptions) -> (usize, f32) {
+    (
+        options
+            .max_tokens
+            .unwrap_or(if options.audio.is_some() { 256 } else { 128 }),
+        options
+            .temperature
+            .unwrap_or(if options.audio.is_some() { 0.0 } else { 0.6 }),
+    )
+}
+
+fn transcription_options(options: &CliOptions) -> TranscriptionOptions {
+    let language = options
+        .language
+        .as_ref()
+        .filter(|language| !language.eq_ignore_ascii_case("auto"))
+        .cloned();
+    TranscriptionOptions {
+        language,
+        prompt: options.prompt.clone(),
+        max_new_tokens: resolve_cli_generation_options(options).0,
+    }
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let options = parse_cli_options(&args).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(2);
+    });
+    validate_cli_options(&options).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(2);
+    });
+
+    if options.model.as_os_str().is_empty() {
         run_self_test();
         return;
     }
 
-    let model_path = Path::new(&model_path);
-    let source = open_or_exit(model_path, ComponentRole::Llm);
+    if options.audio.is_some() {
+        run_or_exit(run_asr_cli(&options));
+        return;
+    }
+
+    let (max_tokens, temperature) = resolve_cli_generation_options(&options);
+    let prompt = options.prompt.as_deref().unwrap_or_default();
+
+    let model_path = options.model.as_path();
+    let source: std::sync::Arc<dyn TensorSource> =
+        std::sync::Arc::from(open_or_exit(model_path, ComponentRole::Llm));
     let arch = source
         .metadata("general.architecture")
         .and_then(MetaValue::to_string_val)
         .unwrap_or_default();
-    let explicit_mmproj = (!mmproj_path.is_empty()).then(|| Path::new(mmproj_path.as_str()));
-    let image = (!image_path.is_empty()).then(|| Path::new(image_path.as_str()));
+    let explicit_mmproj = options
+        .mmproj
+        .as_deref()
+        .filter(|path| !path.as_os_str().is_empty());
+    let image = options
+        .image
+        .as_deref()
+        .filter(|path| !path.as_os_str().is_empty());
 
     if explicit_mmproj.is_some() || image.is_some() {
         run_or_exit(run_multimodal(
@@ -686,10 +1037,10 @@ fn main() {
             model_path,
             explicit_mmproj,
             image,
-            &prompt,
+            prompt,
             max_tokens,
             temperature,
-            n_threads,
+            options.threads,
         ));
     } else if !prompt.is_empty() {
         if arch == "qwen35" {
@@ -698,47 +1049,124 @@ fn main() {
                 model_path,
                 None,
                 None,
-                &prompt,
+                prompt,
                 max_tokens,
                 temperature,
-                n_threads,
+                options.threads,
             ));
-        } else if embedding_mode {
+        } else if options.embedding {
             run_embedding(
                 source.as_ref(),
-                &prompt,
-                n_threads,
-                kv_format,
-                embedding_output,
+                prompt,
+                options.threads,
+                options.kv_format,
+                options.embedding_output,
             );
-        } else if dump_logits {
-            run_or_exit(run_dump_logits(
-                source.as_ref(),
-                &prompt,
-                max_tokens,
-                n_threads,
-                kv_format,
+        } else if arch == "qwen3vl" {
+            run_or_exit(validate_qwen3vl_decoder_mode(
+                &arch,
+                options.dump_logits,
+                options.bench,
+                options.profile,
+                options.kv_format,
+                false,
             ));
-        } else {
-            run_or_exit(run_inference(
-                source.as_ref(),
-                &prompt,
+            run_or_exit(run_shared_inference(
+                std::sync::Arc::clone(&source),
+                prompt,
                 max_tokens,
                 temperature,
-                n_threads,
-                bench,
-                profile,
-                kv_format,
+                options.threads,
+            ));
+        } else if options.dump_logits {
+            run_or_exit(run_dump_logits(
+                source.as_ref(),
+                prompt,
+                max_tokens,
+                options.threads,
+                options.kv_format,
+            ));
+        } else if options.bench || options.profile || options.kv_format == KvFormat::F32 {
+            run_or_exit(run_inference(
+                source.as_ref(),
+                prompt,
+                max_tokens,
+                temperature,
+                options.threads,
+                options.bench,
+                options.profile,
+                options.kv_format,
+            ));
+        } else {
+            run_or_exit(run_shared_inference(
+                std::sync::Arc::clone(&source),
+                prompt,
+                max_tokens,
+                temperature,
+                options.threads,
             ));
         }
     } else {
+        run_or_exit(validate_qwen3vl_decoder_mode(
+            &arch,
+            options.dump_logits,
+            options.bench,
+            options.profile,
+            options.kv_format,
+            true,
+        ));
         run_or_exit(run_interactive(
             source.as_ref(),
             max_tokens,
             temperature,
-            n_threads,
+            options.threads,
         ));
     }
+}
+
+fn run_asr_cli(options: &CliOptions) -> Result<(), String> {
+    let started = Instant::now();
+    eprintln!("Loading ASR decoder from {}", options.model.display());
+    let llm_source: Arc<dyn TensorSource> = Arc::from(
+        open_model_source(&options.model, ComponentRole::Llm).map_err(|error| error.to_string())?,
+    );
+    let tokenizer = Arc::new(BPETokenizer::from_gguf_metadata(|key| {
+        llm_source.metadata(key).cloned()
+    })?);
+    let available = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1);
+    let pool = Arc::new(thread_pool::ComputePool::new(resolve_thread_count(
+        options.threads,
+        available,
+    )));
+    let decoder = Arc::new(Qwen3Model::from_source(llm_source, tokenizer, pool)?);
+    if decoder.config().architecture != "qwen3vl" {
+        return Err("--audio requires a qwen3vl decoder".into());
+    }
+    let audio_source: Arc<dyn TensorSource> = match options.mmproj.as_deref() {
+        Some(path) => Arc::from(
+            open_model_source(path, ComponentRole::Mmproj).map_err(|error| error.to_string())?,
+        ),
+        None => open_bundled_audio_source(&options.model)?
+            .ok_or("raw GGUF ASR requires --mmproj")?,
+    };
+    let runtime = AsrRuntime::new(decoder, audio_source).map_err(|error| error.to_string())?;
+    let audio = options.audio.as_ref().expect("validated audio option");
+    let wav = std::fs::read(audio)
+        .map_err(|error| format!("Failed to read {}: {error}", audio.display()))?;
+    let result = runtime
+        .transcribe_wav(&wav, &transcription_options(options))
+        .map_err(|error| error.to_string())?;
+    eprintln!(
+        "ASR: {} prompt tokens, {} audio tokens, {} output tokens in {:.3}s",
+        result.prompt_tokens,
+        result.audio_tokens,
+        result.token_ids.len(),
+        started.elapsed().as_secs_f64(),
+    );
+    println!("{}", result.text);
+    Ok(())
 }
 
 fn open_or_exit(path: &Path, role: ComponentRole) -> Box<dyn TensorSource> {
@@ -2207,6 +2635,78 @@ fn run_dump_logits(
     Ok(())
 }
 
+fn run_shared_inference(
+    source: std::sync::Arc<dyn TensorSource>,
+    prompt: &str,
+    max_tokens: usize,
+    temperature: f32,
+    n_threads_arg: usize,
+) -> Result<(), String> {
+    let started = Instant::now();
+    let tokenizer = std::sync::Arc::new(
+        BPETokenizer::from_gguf_metadata(|key| source.metadata(key).cloned())
+            .map_err(|error| format!("Failed to initialize tokenizer: {error}"))?,
+    );
+    let available_threads = std::thread::available_parallelism()
+        .map(|threads| threads.get())
+        .unwrap_or(4);
+    let pool = std::sync::Arc::new(thread_pool::ComputePool::new(resolve_thread_count(
+        n_threads_arg,
+        available_threads,
+    )));
+    let model = Qwen3Model::from_source(source, std::sync::Arc::clone(&tokenizer), pool)?;
+    let input_tokens = build_qwen_chat_prompt(
+        &tokenizer,
+        &[QwenMessage {
+            role: "user",
+            content: prompt,
+        }],
+    )?;
+    let positions = qwen_text_positions(input_tokens.len());
+    println!(
+        "Model: {} | n_embd={} n_layer={} n_head={} n_head_kv={} n_ff={} | loaded in {}ms",
+        model.config().architecture,
+        model.config().n_embd,
+        model.config().n_layer,
+        model.config().n_head,
+        model.config().n_head_kv,
+        model.config().n_ff,
+        started.elapsed().as_millis(),
+    );
+    eprintln!("compute pool: {} threads", model.pool().n_threads());
+    println!("Prompt: {} ({} tokens)", prompt, input_tokens.len());
+    print!("Output: ");
+    io::stdout().flush().map_err(|error| error.to_string())?;
+    let inference_started = Instant::now();
+    let generation = model.generate(
+        Qwen3Input {
+            token_ids: &input_tokens,
+            positions: &positions,
+            embeddings: None,
+        },
+        Qwen3GenerateOptions {
+            max_new_tokens: max_tokens,
+            temperature,
+        },
+    )?;
+    print!("{}", generation.text);
+    io::stdout().flush().map_err(|error| error.to_string())?;
+    let elapsed_ms = inference_started.elapsed().as_millis();
+    let tokens_per_second = if elapsed_ms > 0 {
+        generation.token_ids.len() as f64 / elapsed_ms as f64 * 1000.0
+    } else {
+        0.0
+    };
+    println!();
+    println!(
+        "[end-to-end: {} output tokens in {}ms | {:.1} tok/s]",
+        generation.token_ids.len(),
+        elapsed_ms,
+        tokens_per_second,
+    );
+    Ok(())
+}
+
 fn run_inference(
     source: &dyn TensorSource,
     prompt: &str,
@@ -3039,6 +3539,9 @@ fn run_self_test() {
     println!("\nUsage: cargo run -- --model <path.gguf> --prompt \"hello\"");
     println!("       cargo run -- --model <path.gguf>  (interactive mode)");
     println!("       cargo run -- --model <llm.gguf> --mmproj <mmproj.gguf> --image <image.png> --prompt \"describe\"");
+    println!(
+        "       cargo run --release --bin rust-model-inference -- --model models/qwen3-asr-0.6b/Qwen3-ASR-0.6B-Q8_0.gguf --mmproj models/qwen3-asr-0.6b/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf --audio sample.wav --language English --max-tokens 256 --threads 8"
+    );
 }
 
 fn inject_vision_embeddings(
