@@ -343,6 +343,41 @@ impl Scheduler {
         self.execute_on_devices(&active_devices, &chunks)
     }
 
+    pub fn execute_parallel(&self, spec: WorkSpec) -> Result<Vec<f32>> {
+        let active_devices = self.active_devices();
+        if active_devices.is_empty() {
+            return Err(ComputeError::DeviceNotAvailable("No devices available".to_string()));
+        }
+
+        if active_devices.len() == 1 {
+            return active_devices[0].execute_matmul_q8(&spec);
+        }
+
+        let parts = active_devices.len();
+        let chunks = spec.split_for(parts);
+
+        let handles: Vec<_> = active_devices
+            .iter()
+            .zip(chunks.iter())
+            .map(|(device, chunk)| {
+                let device = Arc::clone(device);
+                let chunk = chunk.clone();
+                std::thread::spawn(move || device.execute_matmul_q8(&chunk))
+            })
+            .collect();
+
+        let mut results = Vec::with_capacity(parts);
+        for h in handles {
+            results.push(h.join().map_err(|_| ComputeError::ExecutionError("Thread panicked".to_string()))??);
+        }
+
+        let mut combined = Vec::with_capacity(spec.n_out);
+        for r in results {
+            combined.extend(r);
+        }
+        Ok(combined)
+    }
+
     fn execute_on_devices(&self, devices: &[Arc<dyn ComputeDevice>], chunks: &[WorkSpec]) -> Result<Vec<f32>> {
         let parts = devices.len();
         let handles: Vec<_> = devices

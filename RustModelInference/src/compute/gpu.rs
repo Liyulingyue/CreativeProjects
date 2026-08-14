@@ -410,28 +410,20 @@ impl ComputeDevice for GpuDevice {
         let n_in = spec.n_in;
         let n_out = spec.n_out;
 
-        let block_size = 32;
-        let blocks_per_row = (n_in + block_size - 1) / block_size;
-        let row_stride = blocks_per_row * 34;
-
-        let weight_packed: Vec<u32> = (0..n_out).flat_map(|row| {
-            (0..blocks_per_row).map(move |blk| {
-                let block_off = row * row_stride + blk * 34;
-                let scale_off = block_off + 32;
-                let mut bytes = [0u8; 4];
-                bytes[0] = spec.weight.get(scale_off).copied().unwrap_or(0);
-                bytes[1] = spec.weight.get(scale_off + 1).copied().unwrap_or(0);
-                bytes[2] = spec.weight.get(scale_off + 2).copied().unwrap_or(0);
-                bytes[3] = spec.weight.get(scale_off + 3).copied().unwrap_or(0);
-                u32::from_le_bytes(bytes)
+        let weight_packed: Vec<u32> = spec
+            .weight
+            .chunks(4)
+            .map(|c| {
+                u32::from_le_bytes([
+                    c[0],
+                    c.get(1).copied().unwrap_or(0),
+                    c.get(2).copied().unwrap_or(0),
+                    c.get(3).copied().unwrap_or(0),
+                ])
             })
-        }).collect();
-        let weight_size = weight_packed.len() * 4;
-
-        let input_packed: Vec<u32> = spec.input.chunks(4)
-            .map(|c| u32::from_le_bytes([c[0], c.get(1).copied().unwrap_or(0), c.get(2).copied().unwrap_or(0), c.get(3).copied().unwrap_or(0)]))
             .collect();
-        let input_size = input_packed.len() * 4;
+        let weight_size = weight_packed.len() * 4;
+        let input_size = spec.input.len();
         let scales_size = spec.scales.len() * 4;
         let output_size = n_out * 4;
 
@@ -445,7 +437,7 @@ impl ComputeDevice for GpuDevice {
             weight_mem,
             unsafe { std::slice::from_raw_parts(weight_packed.as_ptr() as *const u8, weight_size) },
         )?;
-        self.copy_to_device(device, input_mem, unsafe { std::slice::from_raw_parts(input_packed.as_ptr() as *const u8, input_size) })?;
+        self.copy_to_device(device, input_mem, &spec.input)?;
         self.copy_to_device(
             device,
             scales_mem,
