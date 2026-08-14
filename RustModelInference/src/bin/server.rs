@@ -1004,6 +1004,53 @@ async fn main() {
                     i += 1;
                 }
             }
+            "--layer-mode" => {
+                let mode = if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+                    args[i + 1].parse().unwrap_or_else(|_| "auto".to_string())
+                } else {
+                    "auto".to_string()
+                };
+                match mode.as_str() {
+                    "disabled" => {
+                        eprintln!("Layer mode: disabled");
+                    }
+                    "auto" => {
+                        eprintln!("Layer mode: auto (layer affinity)");
+                    }
+                    "layer" => {
+                        eprintln!("Layer mode: layer affinity");
+                    }
+                    _ => {
+                        eprintln!("Unknown layer mode: {}, using 'auto'", mode);
+                    }
+                }
+                if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+                    i += 1;
+                }
+            }
+            "--layer-device" => {
+                let device = if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+                    args[i + 1].parse().unwrap_or_else(|_| "cpu".to_string())
+                } else {
+                    "cpu".to_string()
+                };
+                match device.as_str() {
+                    "gpu" | "GPU" => {
+                        compute::set_device_ratio(compute::DeviceKind::Gpu(0), 100);
+                        eprintln!("Layer device: GPU");
+                    }
+                    "cpu" | "CPU" => {
+                        compute::set_device_ratio(compute::DeviceKind::Cpu(0), 100);
+                        eprintln!("Layer device: CPU");
+                    }
+                    _ => {
+                        eprintln!("Unknown device: {}, using CPU", device);
+                    }
+                }
+                if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+                    i += 1;
+                }
+            }
             _ => {}
         }
         i += 1;
