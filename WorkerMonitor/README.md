@@ -60,6 +60,7 @@ npm run dev:desktop
 ```
 
 说明：桌面端在 `DEV_MODE=1` 时默认连接 `http://localhost:5175`（与当前 Vite 配置一致）。
+默认不写入文件日志。排查问题时可先设置 `WORKER_MONITOR_ENABLE_LOG=1`，日志会写入 `%LOCALAPPDATA%\WorkerMonitor\logs\worker-monitor.log.YYYY-MM-DD`。
 
 ### 3. 构建
 

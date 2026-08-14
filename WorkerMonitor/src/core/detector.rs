@@ -1,6 +1,7 @@
 use mixpipe::{MoveNet, MoveNetVariant, PretrainedModel, download_model_blocking, Keypoint as MixpipeKeypoint};
 use once_cell::sync::OnceCell;
 use std::sync::Mutex;
+use tracing::info;
 
 static DETECTOR: OnceCell<Mutex<MoveNet>> = OnceCell::new();
 
@@ -87,14 +88,32 @@ impl PoseDetector {
         let persons = detector.infer(pixels, width, height)
             .map_err(|e| format!("detection failed: {}", e))?;
 
-        if persons.is_empty() {
+        info!(persons = persons.len(), "[Detector] infer completed");
+        let Some(person) = persons.first() else {
             return Ok(PoseOutput {
                 keypoints: vec![],
                 person_detected: false,
             });
+        };
+
+        let confident_keypoints = person.iter().filter(|keypoint| keypoint.confidence >= 0.3).count();
+        let valid_pose = person.len() == 17
+            && confident_keypoints >= 2;
+
+        info!(
+            confident_keypoints,
+            valid_pose,
+            "[Detector] normalized MoveNet pose"
+        );
+
+        if !valid_pose {
+            return Ok(PoseOutput {
+                keypoints: person.iter().map(Keypoint::from).collect(),
+                person_detected: false,
+            });
         }
 
-        let kps: Vec<Keypoint> = persons[0].iter()
+        let kps: Vec<Keypoint> = person.iter()
             .map(Keypoint::from)
             .collect();
 

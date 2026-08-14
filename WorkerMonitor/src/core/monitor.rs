@@ -3,6 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
+use tracing::info;
 
 use super::config::AppConfig;
 use super::detector::{Keypoint, PoseOutput};
@@ -270,6 +271,7 @@ impl Monitor {
             }
             inner.status = MonitorStatus::Present;
         } else if !person_detected && was_present {
+            info!("[Monitor] Person left - switching to Away");
             if let Some(start) = inner.work_start {
                 let work_secs = start.elapsed().as_secs_f64();
                 inner.total_work_secs += work_secs;

@@ -1,5 +1,5 @@
 import { MouseEvent, useRef, useState, useEffect } from "react";
-import { PostureResult } from "../types";
+import { DetectionResult, PostureResult } from "../types";
 import { CameraTransportMode } from "../hooks/useCamera";
 
 interface MonitorViewProps {
@@ -7,6 +7,7 @@ interface MonitorViewProps {
   isCameraReady: boolean;
   cameraError: string | null;
   cameraTransportMode: CameraTransportMode;
+  lastDetection: DetectionResult | null;
   status: "idle" | "present" | "away" | "overworked";
   isMonitoring: boolean;
   personDetected: boolean;
@@ -98,6 +99,7 @@ export default function MonitorView({
   isCameraReady,
   cameraError,
   cameraTransportMode,
+  lastDetection,
   status,
   isMonitoring,
   personDetected,
@@ -206,6 +208,21 @@ export default function MonitorView({
               {isMonitoring && !isPoseReady && !poseError && (
                 <div className="pose-loading-overlay">
                   {isPoseLoading ? "加载模型中..." : "初始化..."}
+                </div>
+              )}
+            </div>
+            <div className="last-detection" aria-live="polite">
+              <div className="last-detection-header">
+                <span>最近一次检测</span>
+                <span className={`last-detection-state ${lastDetection?.person_detected ? "detected" : "not-detected"}`}>
+                  {lastDetection ? (lastDetection.person_detected ? "检测到人员" : "未检测到人员") : "暂无结果"}
+                </span>
+              </div>
+              {lastDetection && (
+                <div className="last-detection-details">
+                  <span>样本 #{lastDetection.sample_seq}</span>
+                  <span>关键点 {lastDetection.keypoints.length}/17</span>
+                  <span>坐姿 {lastDetection.score} 分</span>
                 </div>
               )}
             </div>

@@ -262,10 +262,12 @@ fn handle_ipc(state: &AppState, req: &IpcRequest, stats: &RuntimeStats) -> Resul
             serde_json::to_value(snap).map_err(|e| e.to_string())
         }
         "start_monitoring" => {
+            println!("[IPC] start_monitoring called");
             let camera = state.camera.lock().map_err(|e| e.to_string())?;
             let monitor = state.monitor.lock().map_err(|e| e.to_string())?;
             camera.start()?;
             monitor.start()?;
+            println!("[IPC] start_monitoring completed");
             Ok(serde_json::json!({ "ok": true }))
         }
         "stop_monitoring" => {
@@ -401,10 +403,12 @@ fn spawn_background_detection_worker(app_state: Arc<AppState>, stats: Arc<Runtim
             };
 
             if let Some(frame) = frame {
+                info!("[DetectLoop] running detection");
                 let t0 = Instant::now();
                 let mut ok = true;
                 match core::PoseDetector::detect(&frame) {
                     Ok(pose) => {
+                        info!(person_detected = pose.person_detected, "[DetectLoop] detection result");
                         let monitor = match app_state.monitor.lock() {
                             Ok(guard) => guard,
                             Err(poisoned) => {
@@ -661,6 +665,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
         })
         .with_ipc_handler(move |_window, request| {
+            println!("[IPC Handler] Received raw request: {:?}", request);
             let _ = tx_clone.send(request);
         });
 
@@ -689,6 +694,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
 
                 let mut handled_in_ui = true;
+                println!("[IPC] Received: method={}, id={:?}", req.method, req.id);
                 let ui_result: Result<serde_json::Value, String> = match req.method.as_str() {
                     "enter_compact_mode" => {
                         let win = webview.window();

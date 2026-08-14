@@ -4,7 +4,7 @@ import { usePoseDetector } from "./hooks/usePoseDetector";
 import { useMonitor } from "./hooks/useMonitor";
 import { getConfig, saveConfig, dismissBreakAlert } from "./api";
 import { enterCompactMode, enterExpandedMode, hideToTray, quitApp, startWindowDrag } from "./utils/windowMode";
-import { AppConfig, MonitorSnapshot, PostureResult } from "./types";
+import { AppConfig, DetectionResult, MonitorSnapshot, PostureResult } from "./types";
 import { playBreakAlertSound, playWelcomeBackSound } from "./utils/alertSound";
 import MonitorView from "./components/MonitorView";
 import CompactView from "./components/CompactView";
@@ -23,6 +23,7 @@ export default function App() {
   const [welcomeBack, setWelcomeBack] = useState<{ breakSecs: number } | null>(null);
   const [posture, setPosture] = useState<PostureResult | null>(null);
   const [personDetected, setPersonDetected] = useState(false);
+  const [lastDetection, setLastDetection] = useState<DetectionResult | null>(null);
 
   const toggleFnRef = useRef(toggleMonitoring);
   toggleFnRef.current = toggleMonitoring;
@@ -37,6 +38,9 @@ export default function App() {
   useEffect(() => {
     if (!snapshot) return;
     const det = snapshot.detection;
+    if (det) {
+      setLastDetection(det);
+    }
     if (det && det.person_detected) {
       setPersonDetected(true);
       setPosture({
@@ -234,6 +238,7 @@ export default function App() {
             isCameraReady={isCameraReady}
             cameraError={cameraError}
             cameraTransportMode={cameraTransportMode}
+            lastDetection={lastDetection}
             status={status}
             isMonitoring={isMonitoring}
             personDetected={personDetected}

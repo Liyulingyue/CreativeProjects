@@ -191,6 +191,43 @@
   transform: scaleX(-1);
 }
 
+.last-detection {
+  flex: 0 0 auto;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.last-detection-header,
+.last-detection-details {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.last-detection-header {
+  justify-content: space-between;
+  color: var(--text-secondary);
+}
+
+.last-detection-state.detected {
+  color: var(--accent-green);
+}
+
+.last-detection-state.not-detected {
+  color: var(--accent-yellow);
+}
+
+.last-detection-details {
+  margin-top: 5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .camera-overlay {
   position: absolute;
   inset: 0;

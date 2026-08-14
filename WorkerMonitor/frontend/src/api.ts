@@ -32,7 +32,9 @@ declare global {
 }
 
 function handleResponse(response: IpcResponse): void {
+  console.log("[API] handleResponse called:", response);
   if (!response.id) {
+    console.log("[API] Response has no id, ignoring");
     return;
   }
   const pending = pendingRequests.get(response.id);
@@ -40,19 +42,25 @@ function handleResponse(response: IpcResponse): void {
     clearTimeout(pending.timeout);
     pendingRequests.delete(response.id);
     if (response.ok) {
+      console.log("[API] Resolving request", response.id);
       pending.resolve(response.result);
     } else {
+      console.error("[API] Rejecting request", response.id, response.error);
       pending.reject(new Error(response.error || "unknown error"));
     }
+  } else {
+    console.warn("[API] No pending request found for id:", response.id);
   }
 }
 
 window[RESPONSE_HANDLER_KEY] = handleResponse;
 
 function sendIpc(method: string, params?: unknown): Promise<unknown> {
+  console.log("[API] sendIpc called:", method);
   return new Promise((resolve, reject) => {
     const ipc = window.ipc;
     if (!ipc || typeof ipc.postMessage !== "function") {
+      console.error("[API] IPC bridge unavailable:", ipc);
       reject(new Error("IPC bridge unavailable. Please run inside WorkerMonitor desktop app."));
       return;
     }
@@ -60,17 +68,20 @@ function sendIpc(method: string, params?: unknown): Promise<unknown> {
     const id = String(++requestId);
     const timeout = setTimeout(() => {
       pendingRequests.delete(id);
+      console.error("[API] IPC timeout for method:", method);
       reject(new Error(`IPC timeout for method: ${method}`));
     }, IPC_TIMEOUT_MS);
 
     pendingRequests.set(id, { resolve, reject, timeout });
 
     const payload: IpcMessage = { id, method, params };
+    console.log("[API] Sending payload:", payload);
     try {
       ipc.postMessage(JSON.stringify(payload));
     } catch (error) {
       clearTimeout(timeout);
       pendingRequests.delete(id);
+      console.error("[API] postMessage error:", error);
       reject(error);
     }
   });
