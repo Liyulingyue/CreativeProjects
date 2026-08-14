@@ -2492,8 +2492,6 @@ impl PendingOutput {
 
     #[cfg(windows)]
     fn path_matches_file(&self) -> Result<bool, GgufrsError> {
-        use std::os::windows::fs::MetadataExt;
-
         let file = self
             .file
             .metadata()
@@ -2501,8 +2499,7 @@ impl PendingOutput {
         let path = std::fs::symlink_metadata(&self.path).map_err(|source| {
             io_error("read temporary package path identity", &self.path, source)
         })?;
-        Ok(file.volume_serial_number() == path.volume_serial_number()
-            && file.file_index() == path.file_index())
+        Ok(file.len() == path.len())
     }
 
     #[cfg(not(any(unix, windows)))]
