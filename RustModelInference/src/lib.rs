@@ -1,5 +1,7 @@
 pub mod asr;
 pub mod clip_config;
+#[cfg(feature = "gpu")]
+pub mod compute;
 pub mod ggufrs;
 pub mod load_plan;
 pub mod memory;

@@ -964,6 +964,25 @@ async fn main() {
                     i += 1;
                 }
             }
+            "--gpu" => {
+                #[cfg(feature = "gpu")]
+                {
+                    let id = if i + 1 < args.len() {
+                        args[i + 1].parse().unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    compute::enable_gpu(id, 100);
+                    eprintln!("GPU {} enabled at 100%", id);
+                    if i + 1 < args.len() && args[i + 1].parse::<u8>().is_ok() {
+                        i += 1;
+                    }
+                }
+                #[cfg(not(feature = "gpu"))]
+                {
+                    eprintln!("GPU support not compiled in");
+                }
+            }
             _ => {}
         }
         i += 1;

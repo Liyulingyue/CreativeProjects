@@ -8,6 +8,7 @@ license = "MIT"
 [features]
 default = []
 parity-trace = []
+gpu = ["ash", "thiserror"]
 
 [dependencies]
 memmap2 = "0.9"
@@ -23,6 +24,8 @@ tower-http = { version = "0.6", features = ["cors"] }
 rand = "0.8"
 unicode_categories = "0.1"
 sha2 = "0.10"
+ash = { version = "0.38", optional = true }
+thiserror = { version = "1", optional = true }
 
 [profile.release]
 opt-level = 3
