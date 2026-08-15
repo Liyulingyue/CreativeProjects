@@ -1,0 +1,44 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+
+layout(local_size_x = 32) in;
+
+layout(push_constant) uniform Params {
+    uint n_in;
+    uint n_out;
+} params;
+
+layout(set = 0, binding = 0) readonly buffer Weight {
+    uint8_t w_data[];
+};
+
+layout(set = 0, binding = 1) writeonly buffer Output {
+    float16_t y[];
+};
+
+float unpack_scale(uint8_t b0, uint8_t b1) {
+    uint u = uint(b0) | (uint(b1) << 8);
+    return unpackFloat2x16(u).x;
+}
+
+void main() {
+    uint block_idx = gl_WorkGroupID.x;
+    uint row = block_idx;
+
+    if (row >= params.n_out) return;
+
+    uint blocks_per_row = (params.n_in + 31) / 32;
+    uint row_stride = blocks_per_row * 34;
+
+    for (uint blk = 0; blk < blocks_per_row; blk++) {
+        uint block_off = row * row_stride + blk * 34;
+
+        float scale_val = unpack_scale(w_data[block_off], w_data[block_off + 1]);
+
+        for (uint i = 0; i < 32; i++) {
+            int8_t val = int8_t(w_data[block_off + 2 + i]);
+            uint y_idx = row * params.n_in + blk * 32 + i;
+            y[y_idx] = float16_t(scale_val * float(val));
+        }
+    }
+}

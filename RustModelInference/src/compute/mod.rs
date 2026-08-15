@@ -116,7 +116,10 @@ pub fn matmul_q8(
         );
         if let Ok(sched) = scheduler().lock() {
             if let Ok(result) = sched.execute_parallel(spec) {
-                return result;
+                if !result.iter().any(|v| v.is_nan()) {
+                    return result;
+                }
+                eprintln!("DEBUG: GPU result has NaN, using CPU");
             }
         }
     }

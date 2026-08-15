@@ -228,7 +228,7 @@ impl GpuDevice {
 
     #[cfg(feature = "gpu")]
     fn create_pipeline(device: &ash::Device) -> Result<(vk::Pipeline, vk::PipelineLayout, vk::DescriptorSetLayout, vk::DescriptorPool, Vec<vk::DescriptorSet>)> {
-        let shader_code = include_bytes!("kernels/matmul_q8_0.spv");
+        let shader_code = include_bytes!("kernels/mul_mat_f16.spv");
         let module = unsafe {
             device
                 .create_shader_module(
@@ -253,7 +253,7 @@ impl GpuDevice {
         let push_constant_ranges = [vk::PushConstantRange {
             stage_flags: vk::ShaderStageFlags::COMPUTE,
             offset: 0,
-            size: 12,
+            size: 8,
         }];
 
         let bindings = [
@@ -278,20 +278,13 @@ impl GpuDevice {
                 stage_flags: vk::ShaderStageFlags::COMPUTE,
                 ..Default::default()
             },
-            vk::DescriptorSetLayoutBinding {
-                binding: 3,
-                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                descriptor_count: 1,
-                stage_flags: vk::ShaderStageFlags::COMPUTE,
-                ..Default::default()
-            },
         ];
 
         let descriptor_set_layout = unsafe {
             device
                 .create_descriptor_set_layout(
                     &vk::DescriptorSetLayoutCreateInfo {
-                        binding_count: 4,
+                        binding_count: 3,
                         p_bindings: bindings.as_ptr(),
                         ..Default::default()
                     },
@@ -342,7 +335,7 @@ impl GpuDevice {
                         pool_size_count: 1,
                         p_pool_sizes: &vk::DescriptorPoolSize {
                             ty: vk::DescriptorType::STORAGE_BUFFER,
-                            descriptor_count: 4,
+                            descriptor_count: 3,
                         },
                         ..Default::default()
                     },
@@ -410,77 +403,64 @@ impl ComputeDevice for GpuDevice {
         let n_in = spec.n_in;
         let n_out = spec.n_out;
 
-        let block_size = 32;
-        let blocks_per_row = (n_in + block_size - 1) / block_size;
+        let blocks_per_row = (n_in + 31) / 32;
         let row_stride = blocks_per_row * 34;
 
-        // GPU kernel expects: [blocks_per_row][9] where 9 = 8*uint32(quantized) + 1*uint32(scale)
-        // CPU Q8_0 format: [n_out][blocks_per_row][34] = 32 bytes + 2 bytes scale per block
-        // For each blk, we need to collect 32 bytes (8 uint32) from each of n_out rows, plus 1 scale
-        let mut weight_packed: Vec<u32> = Vec::with_capacity(blocks_per_row * 9);
-        for blk in 0..blocks_per_row {
-            for row in 0..n_out {
+        let weight_f16_size = n_out * n_in * 2;
+        let mut weight_f16 = vec![0u8; weight_f16_size];
+
+        for row in 0..n_out {
+            for blk in 0..blocks_per_row {
                 let block_off = row * row_stride + blk * 34;
-                // Extract 32 bytes (8 uint32) of quantized values from offset 0-31
-                for i in 0..8 {
-                    let offset = block_off + i * 4;
-                    let mut bytes = [0u8; 4];
-                    bytes[0] = spec.weight.get(offset).copied().unwrap_or(0);
-                    bytes[1] = spec.weight.get(offset + 1).copied().unwrap_or(0);
-                    bytes[2] = spec.weight.get(offset + 2).copied().unwrap_or(0);
-                    bytes[3] = spec.weight.get(offset + 3).copied().unwrap_or(0);
-                    weight_packed.push(u32::from_le_bytes(bytes));
+                let scale_bits = u16::from_le_bytes([spec.weight[block_off], spec.weight[block_off + 1]]);
+                let scale = half::f16::from_bits(scale_bits).to_f32();
+                for i in 0..32 {
+                    let val = spec.weight[block_off + 2 + i] as i8 as f32;
+                    let f16_val = half::f16::from_f32(scale * val);
+                    let bytes = f16_val.to_le_bytes();
+                    let pos = (row * n_in + blk * 32 + i) * 2;
+                    weight_f16[pos] = bytes[0];
+                    weight_f16[pos + 1] = bytes[1];
                 }
             }
-            // After all rows for this blk, append scale as uint32
-            // Scale is at offset 32-33 (2 bytes), but kernel expects 4 bytes at position 8
-            let mut scale_bytes = [0u8; 4];
-            scale_bytes[0] = spec.weight.get(blk * row_stride + 32).copied().unwrap_or(0);
-            scale_bytes[1] = spec.weight.get(blk * row_stride + 33).copied().unwrap_or(0);
-            weight_packed.push(u32::from_le_bytes(scale_bytes));
         }
-        let weight_size = weight_packed.len() * 4;
 
-        // Input: same layout CPU and GPU
-        let input_packed: Vec<u32> = spec.input.chunks(4)
-            .map(|c| u32::from_le_bytes([c[0], c.get(1).copied().unwrap_or(0), c.get(2).copied().unwrap_or(0), c.get(3).copied().unwrap_or(0)]))
-            .collect();
-        let input_size = input_packed.len() * 4;
-        let scales_size = spec.scales.len() * 4;
+        let input_blocks = (n_in + 31) / 32;
+        let input_f16_size = n_in * 2;
+        let mut input_f16 = vec![0u8; input_f16_size];
+        for blk in 0..input_blocks {
+            let scale = spec.scales[blk];
+            for i in 0..32 {
+                if blk * 32 + i < n_in {
+                    let val = spec.input[blk * 32 + i] as i8 as f32;
+                    let f16_val = half::f16::from_f32(scale * val);
+                    let bytes = f16_val.to_le_bytes();
+                    let pos = (blk * 32 + i) * 2;
+                    input_f16[pos] = bytes[0];
+                    input_f16[pos + 1] = bytes[1];
+                }
+            }
+        }
+
         let output_size = n_out * 4;
 
-        let (weight_buf, weight_mem) = self.create_buffer(device, weight_size as u64)?;
-        let (input_buf, input_mem) = self.create_buffer(device, input_size as u64)?;
-        let (scales_buf, scales_mem) = self.create_buffer(device, scales_size as u64)?;
+        let (weight_buf, weight_mem) = self.create_buffer(device, weight_f16_size as u64)?;
+        let (input_buf, input_mem) = self.create_buffer(device, input_f16_size as u64)?;
         let (output_buf, output_mem) = self.create_buffer(device, output_size as u64)?;
 
-        self.copy_to_device(
-            device,
-            weight_mem,
-            unsafe { std::slice::from_raw_parts(weight_packed.as_ptr() as *const u8, weight_size) },
-        )?;
-        self.copy_to_device(device, input_mem, &spec.input)?;
-        self.copy_to_device(
-            device,
-            scales_mem,
-            unsafe { std::slice::from_raw_parts(spec.scales.as_ptr() as *const u8, scales_size) },
-        )?;
+        self.copy_to_device(device, weight_mem, &weight_f16)?;
+        self.copy_to_device(device, input_mem, &input_f16)?;
 
         let buffer_infos = [
             vk::DescriptorBufferInfo {
                 buffer: weight_buf,
                 offset: 0,
-                range: weight_size as u64,
+                range: weight_f16_size as u64,
             },
             vk::DescriptorBufferInfo {
                 buffer: input_buf,
                 offset: 0,
-                range: input_size as u64,
-            },
-            vk::DescriptorBufferInfo {
-                buffer: scales_buf,
-                offset: 0,
-                range: scales_size as u64,
+                range: input_f16_size as u64,
             },
             vk::DescriptorBufferInfo {
                 buffer: output_buf,
@@ -513,14 +493,6 @@ impl ComputeDevice for GpuDevice {
                 descriptor_count: 1,
                 descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
                 p_buffer_info: &buffer_infos[2],
-                ..Default::default()
-            },
-            vk::WriteDescriptorSet {
-                dst_set: *ds,
-                dst_binding: 3,
-                descriptor_count: 1,
-                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
-                p_buffer_info: &buffer_infos[3],
                 ..Default::default()
             },
         ];
@@ -562,26 +534,26 @@ impl ComputeDevice for GpuDevice {
                 .map_err(|e| ComputeError::DeviceNotAvailable(format!("CB begin: {:?}", e)))?
         };
 
+        let pipeline = self.pipeline.unwrap();
+        let pipeline_layout = self.pipeline_layout.unwrap();
+
         unsafe {
-            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::COMPUTE, self.pipeline.unwrap())
+            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::COMPUTE, pipeline)
         };
         unsafe {
             device.cmd_bind_descriptor_sets(
                 command_buffer,
                 vk::PipelineBindPoint::COMPUTE,
-                self.pipeline_layout.unwrap(),
+                pipeline_layout,
                 0,
                 &[*ds],
                 &[],
             )
         };
 
-        let block_size = 32;
-        let blocks_per_row = (n_in + block_size - 1) / block_size;
-        let n_blocks = (n_out + block_size - 1) / block_size;
-        let push_constants_u32 = [n_in as u32, n_out as u32, blocks_per_row as u32];
+        let push_constants_u32 = [n_in as u32, n_out as u32];
         let push_constants =
-            unsafe { std::slice::from_raw_parts(push_constants_u32.as_ptr() as *const u8, 12) };
+            unsafe { std::slice::from_raw_parts(push_constants_u32.as_ptr() as *const u8, 8) };
         unsafe {
             device.cmd_push_constants(
                 command_buffer,
@@ -592,7 +564,7 @@ impl ComputeDevice for GpuDevice {
             )
         };
 
-        unsafe { device.cmd_dispatch(command_buffer, blocks_per_row as u32, 1, 1) };
+        unsafe { device.cmd_dispatch(command_buffer, 1, ((n_out + 31) / 32) as u32, 1) };
 
         unsafe { device.end_command_buffer(command_buffer) }
             .map_err(|e| ComputeError::DeviceNotAvailable(format!("CB end: {:?}", e)))?;
@@ -621,11 +593,9 @@ impl ComputeDevice for GpuDevice {
             device.destroy_command_pool(command_pool, None);
             device.destroy_buffer(weight_buf, None);
             device.destroy_buffer(input_buf, None);
-            device.destroy_buffer(scales_buf, None);
             device.destroy_buffer(output_buf, None);
             device.free_memory(weight_mem, None);
             device.free_memory(input_mem, None);
-            device.free_memory(scales_mem, None);
             device.free_memory(output_mem, None);
         }
 

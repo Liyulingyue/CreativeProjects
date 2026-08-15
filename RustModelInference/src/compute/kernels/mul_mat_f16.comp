@@ -1,0 +1,40 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+
+layout(local_size_x = 32, local_size_y = 32) in;
+
+layout(push_constant) uniform Params {
+    uint n_in;
+    uint n_out;
+} params;
+
+layout(set = 0, binding = 0) readonly buffer Weight {
+    float16_t w[];
+};
+
+layout(set = 0, binding = 1) readonly buffer Input {
+    float16_t x[];
+};
+
+layout(set = 0, binding = 2) writeonly buffer Output {
+    float y[];
+};
+
+void main() {
+    uint tid_x = gl_LocalInvocationIndex;
+    uint tid_y = gl_LocalInvocationID.y;
+    uint row = gl_WorkGroupID.y * 32 + tid_y;
+    uint col = gl_WorkGroupID.x * 32 + tid_x;
+
+    if (row >= params.n_out || col >= 1) return;
+
+    float16_t sum = float16_t(0.0);
+
+    for (uint k = 0; k < params.n_in; k++) {
+        float16_t w_val = w[row * params.n_in + k];
+        float16_t x_val = x[k];
+        sum += w_val * x_val;
+    }
+
+    y[row] = float(sum);
+}
