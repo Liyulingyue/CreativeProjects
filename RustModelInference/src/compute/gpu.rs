@@ -570,7 +570,7 @@ impl ComputeDevice for GpuDevice {
             )
         };
 
-        unsafe { device.cmd_dispatch(command_buffer, n_blocks as u32, 1, 1) };
+        unsafe { device.cmd_dispatch(command_buffer, blocks_per_row as u32, 1, 1) };
 
         unsafe { device.end_command_buffer(command_buffer) }
             .map_err(|e| ComputeError::DeviceNotAvailable(format!("CB end: {:?}", e)))?;
