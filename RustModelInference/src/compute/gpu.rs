@@ -410,20 +410,42 @@ impl ComputeDevice for GpuDevice {
         let n_in = spec.n_in;
         let n_out = spec.n_out;
 
-        let weight_packed: Vec<u32> = spec
-            .weight
-            .chunks(4)
-            .map(|c| {
-                u32::from_le_bytes([
-                    c[0],
-                    c.get(1).copied().unwrap_or(0),
-                    c.get(2).copied().unwrap_or(0),
-                    c.get(3).copied().unwrap_or(0),
-                ])
-            })
-            .collect();
+        let block_size = 32;
+        let blocks_per_row = (n_in + block_size - 1) / block_size;
+        let row_stride = blocks_per_row * 34;
+
+        // GPU kernel expects: [blocks_per_row][9] where 9 = 8*uint32(quantized) + 1*uint32(scale)
+        // CPU Q8_0 format: [n_out][blocks_per_row][34] = 32 bytes + 2 bytes scale per block
+        // For each blk, we need to collect 32 bytes (8 uint32) from each of n_out rows, plus 1 scale
+        let mut weight_packed: Vec<u32> = Vec::with_capacity(blocks_per_row * 9);
+        for blk in 0..blocks_per_row {
+            for row in 0..n_out {
+                let block_off = row * row_stride + blk * 34;
+                // Extract 32 bytes (8 uint32) of quantized values from offset 0-31
+                for i in 0..8 {
+                    let offset = block_off + i * 4;
+                    let mut bytes = [0u8; 4];
+                    bytes[0] = spec.weight.get(offset).copied().unwrap_or(0);
+                    bytes[1] = spec.weight.get(offset + 1).copied().unwrap_or(0);
+                    bytes[2] = spec.weight.get(offset + 2).copied().unwrap_or(0);
+                    bytes[3] = spec.weight.get(offset + 3).copied().unwrap_or(0);
+                    weight_packed.push(u32::from_le_bytes(bytes));
+                }
+            }
+            // After all rows for this blk, append scale as uint32
+            // Scale is at offset 32-33 (2 bytes), but kernel expects 4 bytes at position 8
+            let mut scale_bytes = [0u8; 4];
+            scale_bytes[0] = spec.weight.get(blk * row_stride + 32).copied().unwrap_or(0);
+            scale_bytes[1] = spec.weight.get(blk * row_stride + 33).copied().unwrap_or(0);
+            weight_packed.push(u32::from_le_bytes(scale_bytes));
+        }
         let weight_size = weight_packed.len() * 4;
-        let input_size = spec.input.len();
+
+        // Input: same layout CPU and GPU
+        let input_packed: Vec<u32> = spec.input.chunks(4)
+            .map(|c| u32::from_le_bytes([c[0], c.get(1).copied().unwrap_or(0), c.get(2).copied().unwrap_or(0), c.get(3).copied().unwrap_or(0)]))
+            .collect();
+        let input_size = input_packed.len() * 4;
         let scales_size = spec.scales.len() * 4;
         let output_size = n_out * 4;
 
