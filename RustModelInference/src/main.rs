@@ -1102,13 +1102,16 @@ fn main() {
                 options.kv_format,
             ));
         } else {
-            run_or_exit(run_shared_inference(
-                std::sync::Arc::clone(&source),
+            run_or_exit(run_inference(
+                source.as_ref(),
                 prompt,
                 max_tokens,
                 temperature,
                 options.threads,
                 options.thinking,
+                false,
+                false,
+                options.kv_format,
             ));
         }
     } else {
