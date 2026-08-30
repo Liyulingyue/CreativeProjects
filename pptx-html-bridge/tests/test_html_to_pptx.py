@@ -56,11 +56,11 @@ def test_html_to_pptx_roundtrip(converted_html, tmp_path):
     output_pptx = os.path.join(str(tmp_path), "rebuilt.pptx")
     result = convert_html_to_pptx(converted_html, output_pptx)
 
-    assert result["slides_count"] == 4
+    assert result["slides_count"] == 5
     assert os.path.isfile(output_pptx)
 
     prs = Presentation(output_pptx)
-    assert len(prs.slides) == 4
+    assert len(prs.slides) == 5
 
     # slide size preserved (px -> EMU)
     assert prs.slide_width == Emu(960 * 9525)

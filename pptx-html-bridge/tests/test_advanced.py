@@ -13,16 +13,7 @@ from pptx_html_bridge.html_parsers import parse_slide_html
 from pptx_html_bridge.themes import resolve_theme_color
 
 
-@pytest.fixture
-def advanced_html(sample_pptx, tmp_path):
-    output_dir = os.path.join(str(tmp_path), "html")
-    PPTXToHTMLConverter().convert_file(sample_pptx, output_dir)
-    return output_dir
-
-
-@pytest.fixture
-def advanced_pptx(sample_pptx):
-    return Presentation(sample_pptx)
+# fixtures advanced_html / advanced_pptx live in conftest.py
 
 
 # ---------- forward conversion ----------
@@ -152,6 +143,6 @@ def test_reverse_works_on_directory_output(sample_pptx, tmp_path):
 
     rebuilt = os.path.join(str(tmp_path), "alpha_rebuilt.pptx")
     result = convert_html_to_pptx(os.path.join(out_dir, "alpha"), rebuilt)
-    assert result["slides_count"] == 4
+    assert result["slides_count"] == 5
     prs = Presentation(rebuilt)
-    assert len(prs.slides) == 4
+    assert len(prs.slides) == 5

@@ -201,6 +201,48 @@ def _add_line_shape(shapes, shape):
     return connector
 
 
+def _add_chart_shape(shapes, shape):
+    try:
+        from pptx.chart.data import CategoryChartData
+        from pptx.enum.chart import XL_CHART_TYPE
+        type_map = {
+            'column': XL_CHART_TYPE.COLUMN_CLUSTERED,
+            'bar': XL_CHART_TYPE.BAR_CLUSTERED,
+            'line': XL_CHART_TYPE.LINE,
+            'pie': XL_CHART_TYPE.PIE,
+            'doughnut': XL_CHART_TYPE.DOUGHNUT,
+            'area': XL_CHART_TYPE.AREA,
+        }
+        data = CategoryChartData()
+        data.categories = shape.get('categories') or []
+        for name, values in shape.get('series') or []:
+            data.add_series(name, tuple(v if v is not None else 0.0 for v in values))
+        chart_type = type_map.get(shape.get('chart_type') or 'column', XL_CHART_TYPE.COLUMN_CLUSTERED)
+        shapes.add_chart(
+            chart_type,
+            Emu(px_to_emu(shape['left'])), Emu(px_to_emu(shape['top'])),
+            Emu(px_to_emu(shape['width'])), Emu(px_to_emu(shape['height'])),
+            data,
+        )
+    except Exception:
+        _add_placeholder(shapes, shape, '[chart]')
+
+
+def _add_freeform_shape(shapes, shape):
+    points = shape.get('points') or []
+    if len(points) < 2:
+        _add_placeholder(shapes, shape, '[freeform]')
+        return
+    try:
+        builder = shapes.build_freeform(points[0][0], points[0][1], scale=9525)
+        builder.add_line_segments(points[1:], close=True)
+        builder.convert_to_shape(
+            origin_x=px_to_emu(shape['left']), origin_y=px_to_emu(shape['top']),
+        )
+    except Exception:
+        _add_placeholder(shapes, shape, '[freeform]')
+
+
 def _add_video_shape(shapes, shape, html_path):
     video_path = resolve_media_path(html_path, shape.get('src'))
     poster_path = resolve_media_path(html_path, shape.get('poster')) if shape.get('poster') else None
@@ -266,6 +308,10 @@ def build_presentation(slide_models, html_dir, output_path, slide_width_px=None,
                 _add_autoshape(shapes, shape)
             elif kind == 'line':
                 _add_line_shape(shapes, shape)
+            elif kind == 'chart':
+                _add_chart_shape(shapes, shape)
+            elif kind == 'freeform':
+                _add_freeform_shape(shapes, shape)
             elif kind == 'video':
                 _add_video_shape(shapes, shape, html_path)
 

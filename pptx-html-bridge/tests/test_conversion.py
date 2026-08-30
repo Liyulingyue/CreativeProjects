@@ -7,13 +7,13 @@ def test_convert_file_creates_structure(sample_pptx, tmp_path):
     output_dir = os.path.join(str(tmp_path), "out")
     result = convert_pptx_to_html(sample_pptx, output_dir)
 
-    assert result["slides_count"] == 4
+    assert result["slides_count"] == 5
     assert os.path.isdir(os.path.join(output_dir, "slides"))
     assert os.path.isdir(os.path.join(output_dir, "media"))
-    for i in (1, 2, 3, 4):
+    for i in (1, 2, 3, 4, 5):
         assert os.path.isfile(os.path.join(output_dir, "slides", f"slide{i}.html"))
     assert os.path.isfile(os.path.join(output_dir, "sample_index.html"))
-    assert len(result["generated_files"]) == 5  # 4 slides + index
+    assert len(result["generated_files"]) == 6  # 5 slides + index
 
 
 def test_slide1_dark_background_and_white_text(sample_pptx, tmp_path):

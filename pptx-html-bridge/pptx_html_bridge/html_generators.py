@@ -125,8 +125,9 @@ def _group_transform_params(group_shape):
 def _outer_shadow_css(shape):
     """Build a CSS box-shadow from an outerShdw effect, or ''."""
     try:
+        # spPr lives in the p: namespace; its effect children in a:
         shdw = shape._element.find(
-            f".//{qn('a:spPr')}/{qn('a:effectLst')}/{qn('a:outerShdw')}"
+            f".//{qn('p:spPr')}/{qn('a:effectLst')}/{qn('a:outerShdw')}"
         )
         if shdw is None:
             return ''
@@ -319,6 +320,120 @@ def _render_table_html(shape, prs):
     return ''.join(parts)
 
 
+_CHART_TYPE_NAMES = {
+    'COLUMN_CLUSTERED': 'column', 'BAR_CLUSTERED': 'bar', 'LINE': 'line',
+    'LINE_MARKERS': 'line', 'PIE': 'pie', 'DOUGHNUT': 'doughnut',
+    'AREA': 'area',
+}
+
+
+def _render_chart_html(shape, prs):
+    """Render a chart graphic frame as a structured data table.
+
+    Browsers cannot render native OOXML charts, so the chart's data is
+    emitted as a .chart-data table; the reverse converter rebuilds a
+    native chart from it.
+    """
+    try:
+        chart = shape.chart
+    except Exception:
+        return '<div class="chart">[Chart]</div>'
+    type_name = _CHART_TYPE_NAMES.get(str(getattr(chart, 'chart_type', '')).split(' ')[0], 'column')
+    title = ''
+    try:
+        if chart.has_title:
+            title = chart.chart_title.text_frame.text
+    except Exception:
+        pass
+    categories = []
+    series = []
+    try:
+        plot = chart.plots[0]
+        categories = [str(c) if c is not None else '' for c in plot.categories]
+        for s in plot.series:
+            series.append((str(s.name or ''), list(s.values or [])))
+    except Exception:
+        pass
+    parts = [f'<div class="chart" data-chart-type="{type_name}">']
+    if title:
+        parts.append(f'<div class="chart-title">{escape_text(title)}</div>')
+    parts.append('<table class="chart-data">')
+    parts.append('<tr><th></th>' + ''.join(f'<th>{escape_text(c)}</th>' for c in categories) + '</tr>')
+    for name, values in series:
+        cells = ''.join(f'<td>{v if v is not None else ""}</td>' for v in values)
+        parts.append(f'<tr><th>{escape_text(name)}</th>{cells}</tr>')
+    parts.append('</table></div>')
+    return ''.join(parts)
+
+
+def _is_smart_art(shape):
+    """True when the graphic frame holds a SmartArt diagram."""
+    try:
+        graphic_data = shape._element.find(f'.//{qn("a:graphic")}/{qn("a:graphicData")}')
+        return graphic_data is not None and 'diagram' in (graphic_data.get('uri') or '')
+    except Exception:
+        return False
+
+
+def _freeform_svg(shape, width_px, height_px):
+    """Render a freeform shape's custom geometry as an inline SVG polygon."""
+    try:
+        cust_geom = shape._element.find(f".//{qn('p:spPr')}/{qn('a:custGeom')}")
+        if cust_geom is None:
+            return '[Freeform]'
+        path = cust_geom.find(f"{qn('a:pathLst')}/{qn('a:path')}")
+        if path is None:
+            return '[Freeform]'
+        path_w = int(path.get('w') or 0) or max(1, width_px)
+        path_h = int(path.get('h') or 0) or max(1, height_px)
+        points = []
+        for cmd in path:
+            tag = cmd.tag
+            if tag in (qn('a:moveTo'), qn('a:lnTo')):
+                pt = cmd.find(qn('a:pt'))
+                if pt is not None and pt.get('x') and pt.get('y'):
+                    x = int(pt.get('x')) / path_w * width_px
+                    y = int(pt.get('y')) / path_h * height_px
+                    points.append(f"{x:.1f},{y:.1f}")
+        if len(points) < 2:
+            return '[Freeform]'
+        fill_color = 'transparent'
+        try:
+            if shape.fill.type == MSO_FILL.SOLID:
+                fill_color = color_to_hex(shape.fill.fore_color) or 'transparent'
+        except Exception:
+            pass
+        stroke = 'none'
+        stroke_width = 0
+        try:
+            if shape.line.color and shape.line.color.rgb:
+                stroke = color_to_hex(shape.line.color) or 'none'
+            if shape.line.width:
+                stroke_width = max(1, int(emu_to_pt(shape.line.width) / 1.333))
+        except Exception:
+            pass
+        return (
+            f'<svg class="freeform" width="{width_px}" height="{height_px}" '
+            f'viewBox="0 0 {width_px} {height_px}">'
+            f'<polygon points="{" ".join(points)}" style="fill: {fill_color}; '
+            f'stroke: {stroke}; stroke-width: {stroke_width}px;" /></svg>'
+        )
+    except Exception:
+        return '[Freeform]'
+
+
+def _slide_transition_css(slide):
+    """CSS fade-in animation when the slide defines a fade transition."""
+    try:
+        trans = slide._element.find(f".//{qn('p:transition')}")
+        if trans is not None and trans.find(qn('p:fade')) is not None:
+            return ('@keyframes slideFadeIn { from { opacity: 0; } to { opacity: 1; } }\n'
+                    '            ')
+    except Exception:
+        pass
+    return ''
+
+
 def generate_index_html(filename_base, num_slides, html_dir, compact):
     """Generate index.html for the presentation slides."""
     add_idx, to_str_idx = html_builder()
@@ -401,6 +516,9 @@ def generate_slide_html(i, num_slides, theme_minor_font, slide_width_px, slide_h
     add(f'<title>Slide {i}</title>', 2)
     add('<style>', 2)
     add(f'body {{ font-family: {default_font_family}; padding: 20px; }}', 3)
+    transition_css = _slide_transition_css(slide)
+    if transition_css:
+        add(transition_css.rstrip() + ' .slide { animation: slideFadeIn 0.7s ease-out; }', 3)
     add(f'.slide {{ position: relative; width: {slide_width_px}px; height: {slide_height_px}px; {background_style} border: 1px solid #ccc; margin: 0 auto; box-sizing: border-box; overflow: hidden; }}', 3)
     add('.shape { position: absolute; z-index: 2; box-sizing: border-box; }', 3)
     add('.layout-image { position: absolute; z-index: 0; }', 3)
@@ -474,6 +592,12 @@ def generate_slide_html(i, num_slides, theme_minor_font, slide_width_px, slide_h
             img_count += 1
         elif shape.shape_type == MSO_SHAPE_TYPE.TABLE:
             add(f'<div class="shape" style="{shape_style}">{_render_table_html(shape, prs)}</div>', 3)
+        elif getattr(shape, 'has_chart', False):
+            add(f'<div class="shape" style="{shape_style}">{_render_chart_html(shape, prs)}</div>', 3)
+        elif shape.shape_type == MSO_SHAPE_TYPE.FREEFORM:
+            add(f'<div class="shape" style="{shape_style}">{_freeform_svg(shape, width_px, height_px)}</div>', 3)
+        elif _is_smart_art(shape):
+            add(f'<div class="shape" style="{shape_style}"><div style="width: 100%; height: 100%; background: #eef2ff; border: 1px dashed #93a3d0; display: flex; align-items: center; justify-content: center;">[SmartArt]</div></div>', 3)
         elif shape.shape_type == MSO_SHAPE_TYPE.MEDIA:
             # Handle videos
             try:

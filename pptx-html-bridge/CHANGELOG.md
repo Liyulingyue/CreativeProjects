@@ -2,6 +2,15 @@
 
 ## 0.4.0 (2026-08-30)
 
+### 图表 / SmartArt / 自由形状 / 切换动画
+
+- **图表（Chart）**：渲染为结构化数据表（`data-chart-type` + `.chart-data` 表格），
+  反向转换重建为原生 PPTX 图表（支持 column/bar/line/pie/doughnut/area）
+- **自由形状（Freeform）**：custGeom 路径提取为内联 SVG polygon（含填充/描边），
+  反向转换通过 `build_freeform` 重建
+- **SmartArt**：渲染为可见占位框（不再静默消失）
+- **切换动画**：fade 切换转 CSS 淡入动画（反向不支持，见已知限制）
+
 ### 反向转换增强（HTML → PPTX）
 
 - 文本框旋转回写（`transform: rotate()` → `shape.rotation`）

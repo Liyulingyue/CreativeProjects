@@ -160,6 +160,29 @@ def parse_slide_html(html_path):
             model['shapes'].append({**base, 'kind': 'image', 'src': imgs[0].get('src')})
             continue
 
+        # chart (structured data table emitted by forward conversion)
+        chart_divs = elem.xpath('./div[contains(@class, "chart")]')
+        if chart_divs:
+            chart_div = chart_divs[0]
+            data_tables = chart_div.xpath('./table[contains(@class, "chart-data")]')
+            categories, series = _parse_chart_data(data_tables[0]) if data_tables else ([], [])
+            model['shapes'].append({
+                **base, 'kind': 'chart',
+                'chart_type': chart_div.get('data-chart-type') or 'column',
+                'categories': categories,
+                'series': series,
+            })
+            continue
+
+        # freeform custom geometry (inline SVG polygon)
+        svgs = elem.xpath('./svg[contains(@class, "freeform")]')
+        if svgs:
+            polygons = svgs[0].xpath('./polygon')
+            points = _parse_polygon_points(polygons[0].get('points')) if polygons else []
+            if points:
+                model['shapes'].append({**base, 'kind': 'freeform', 'points': points})
+                continue
+
         # table
         tables = elem.xpath('./table')
         if tables:
@@ -221,6 +244,38 @@ def parse_slide_html(html_path):
             model['notes'] = notes_text
 
     return model
+
+
+def _parse_chart_data(table_elem):
+    """Parse a .chart-data table back into (categories, [(series_name, values)])."""
+    rows = table_elem.xpath('./tr')
+    if not rows:
+        return [], []
+    header = rows[0].xpath('./th')
+    categories = [th.text_content().strip() for th in header][1:]
+    series = []
+    for tr in rows[1:]:
+        ths = tr.xpath('./th')
+        name = ths[0].text_content().strip() if ths else ''
+        values = []
+        for td in tr.xpath('./td'):
+            txt = td.text_content().strip()
+            try:
+                values.append(float(txt))
+            except ValueError:
+                values.append(None)
+        series.append((name, values))
+    return categories, series
+
+
+def _parse_polygon_points(points_attr):
+    """Parse an SVG polygon points attribute into [(x, y), ...].
+
+    Handles both 'x,y x,y' and 'x y x y' SVG number formats.
+    """
+    import re
+    nums = [float(t) for t in re.split(r'[,\s]+', (points_attr or '').strip()) if t]
+    return [(nums[i], nums[i + 1]) for i in range(0, len(nums) - 1, 2)]
 
 
 def resolve_media_path(html_path, src):

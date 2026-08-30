@@ -8,9 +8,14 @@ import pytest
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
+from pptx.chart.data import CategoryChartData
+from pptx.enum.chart import XL_CHART_TYPE
 from pptx.enum.dml import MSO_THEME_COLOR
 from pptx.enum.text import PP_ALIGN
 from pptx.enum.shapes import MSO_SHAPE
+from pptx.oxml.ns import qn
+
+from pptx_html_bridge import PPTXToHTMLConverter
 
 PNG_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVR4nGP8z8Dwn4GBgYEA"
@@ -124,6 +129,35 @@ def sample_pptx(tmp_path):
     # speaker notes
     slide.notes_slide.notes_text_frame.text = "备注：组合形状与主题色测试"
 
+    # Slide 5: chart + freeform + fade transition
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    bg = slide.background.fill
+    bg.solid()
+    bg.fore_color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+
+    chart_data = CategoryChartData()
+    chart_data.categories = ["Q1", "Q2", "Q3"]
+    chart_data.add_series("sales", (12.0, 25.0, 31.0))
+    slide.shapes.add_chart(
+        XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(0.5), Inches(0.5),
+        Inches(4), Inches(3), chart_data,
+    )
+
+    builder = slide.shapes.build_freeform(5, 0.5, scale=914400)
+    builder.add_line_segments([
+        (6.5, 0.5),
+        (6.5, 1.5),
+        (5, 1.5),
+    ], close=True)
+    free = builder.convert_to_shape()
+    free.fill.solid()
+    free.fill.fore_color.rgb = RGBColor(0x22, 0xAA, 0x66)
+
+    # fade transition (raw XML; python-pptx has no API)
+    transition = slide._element.makeelement(qn('p:transition'), {})
+    transition.append(transition.makeelement(qn('p:fade'), {}))
+    slide._element.append(transition)
+
     prs.save(path)
     return path
 
@@ -138,3 +172,16 @@ def _set_bullet(paragraph, char=None, marL=342900, indent=-342900):
         p_pr.append(p_pr.makeelement(qn('a:buAutoNum'), {'type': 'arabicPeriod'}))
     else:
         p_pr.append(p_pr.makeelement(qn('a:buChar'), {'char': char}))
+
+
+@pytest.fixture
+def advanced_html(sample_pptx, tmp_path):
+    """Forward-convert the sample pptx (pretty mode) for advanced tests."""
+    output_dir = os.path.join(str(tmp_path), "adv_html")
+    PPTXToHTMLConverter().convert_file(sample_pptx, output_dir)
+    return output_dir
+
+
+@pytest.fixture
+def advanced_pptx(sample_pptx):
+    return Presentation(sample_pptx)
