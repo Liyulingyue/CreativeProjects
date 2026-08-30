@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pptx-html-bridge"
-version = "0.2.0"
+version = "0.3.0"
 description = "Convert PPTX files to HTML and vice versa"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -25,3 +25,4 @@ Repository = "https://github.com/Liyulingyue/pptx-html-bridge"
 
 [project.scripts]
 pptx-to-html = "pptx_html_bridge.converter:main"
+html-to-pptx = "pptx_html_bridge.html_converter:main"

@@ -1,6 +1,6 @@
 # pptx-html-bridge
 
-将PPTX文件转换为HTML的Python库。
+将PPTX文件转换为HTML的Python库，并支持将生成的HTML反向转换回PPTX（双向桥接）。
 
 ## 安装
 
@@ -26,6 +26,8 @@ pip install git+https://github.com/Liyulingyue/pptx-html-bridge.git
 ## 使用
 
 ### 作为库
+
+#### PPTX -> HTML
 
 #### 使用类接口
 
@@ -54,6 +56,21 @@ result = convert_pptx_to_html('presentation.pptx', 'output_dir', compact=True)
 result = convert_pptx_to_html('pptx_files/', 'output_dir')
 ```
 
+#### HTML -> PPTX（反向转换）
+
+```python
+from pptx_html_bridge import HTMLToPPTXConverter, convert_html_to_pptx
+
+# 将正向转换生成的 HTML 目录重建为 PPTX
+result = convert_html_to_pptx('output_dir', 'rebuilt.pptx')
+
+# 或使用类接口
+converter = HTMLToPPTXConverter()
+result = converter.convert_file('output_dir', 'rebuilt.pptx')
+```
+
+反向转换支持还原：背景（纯色/渐变/图片）、文本（字体/字号/加粗/斜体/下划线/颜色/对齐/缩进）、图片、表格、自动形状（填充/边框/旋转）、线条（含虚线）、视频（mp4 直接嵌入，其余为占位符）。
+
 ### 演示脚本
 
 先生成演示用的 PPTX 文件，再运行转换演示：
@@ -61,6 +78,7 @@ result = convert_pptx_to_html('pptx_files/', 'output_dir')
 ```bash
 python demos/make_sample_pptx.py   # 生成 demos/source/test.pptx
 python demos/convert_demo.py       # 转换到 demos/outputs/
+python demos/roundtrip_demo.py     # PPTX -> HTML -> PPTX 双向桥接演示
 ```
 
 此脚本会：
@@ -83,6 +101,9 @@ pptx-to-html pptx_directory/ --output output_dir
 
 # 紧凑输出（无换行）
 pptx-to-html input.pptx --output output_dir --compact
+
+# 反向转换：HTML 目录重建为 PPTX
+html-to-pptx output_dir --output rebuilt.pptx
 ```
 
 ## 输出结构
@@ -107,6 +128,7 @@ output_directory/
 ## 功能
 
 - 将PPTX文件转换为HTML，每个幻灯片一个HTML文件
+- **HTML 反向转换回 PPTX**：完整双向桥接，round-trip 保留文本样式、图片、表格、形状与背景
 - 支持背景、字体、颜色等样式
 - **增强的文本颜色提取**：正确处理PowerPoint中的自动颜色，未显式设置颜色时根据背景亮度选择可读的默认文字颜色
 - **背景填充支持**：纯色 / 渐变（转 CSS linear-gradient）/ 图片填充，从幻灯片、版式或母版逐级提取

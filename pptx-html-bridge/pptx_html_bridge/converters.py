@@ -4,6 +4,22 @@ def emu_to_px(emu):
     # Approximate conversion: 1 inch = 914400 EMU, 1 inch = 96 px
     return int(emu * 96 / 914400)
 
+
+def px_to_emu(px):
+    # 1 px = 9525 EMU (96 px per inch)
+    try:
+        return int(round(float(px) * 9525))
+    except (TypeError, ValueError):
+        return 0
+
+
+def px_to_pt(px):
+    # 96 px per inch, 72 pt per inch
+    try:
+        return float(px) * 72.0 / 96.0
+    except (TypeError, ValueError):
+        return None
+
 def emu_to_pt(emu):
     # 1 pt = 12700 EMU
     try:
