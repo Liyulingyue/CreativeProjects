@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+
+node_modules/
+dist/
+
+# 运行时数据（AI 生成的测评、会话）
+backend/data/
+.DS_Store

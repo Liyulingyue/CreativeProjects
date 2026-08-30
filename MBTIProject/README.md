@@ -1,43 +1,87 @@
-# CatMBTIProject
-猫猫心理学！一个类似于人格测试的，进行猫格测试的开发项目！
+# 测评实验室（MBTIProject）
 
-## About Project
-本项目的目标是构建一个评测工具链。LLM（例如ChatGLM）会扮演一个口头问卷助手，跟你进行一些问答，你需要根据问题回复你的猫咪的表现情况，整个流程大约10mins，最后LLM会给出一份类似于MBTI人格分析的 `猫格分析` 报告，详尽的介绍性格和饲养注意事项。
+一个**通用测评平台**：从「猫格测评」起步，但不止于猫格。任何基于问卷的心理/性格测评——MBTI、领导力风格、拖延倾向、狗狗性格——都由同一套「维度 + 题目 + 计分规则」引擎驱动，并支持 **AI 自动生成测评** 与 **测评合理性评价（LLM-as-a-Judge）**。
 
-最后的呈现形式，可以是基于Gradio等web界面，或者基于插件的，也可以基于本地程序的。
+## 项目结构
 
-## 项目计划
+```
+MBTIProject/
+├── backend/                  # FastAPI 后端（Python 3.12+）
+│   ├── .venv/                # 虚拟环境
+│   ├── requirements.txt
+│   ├── .env.example          # LLM 配置示例
+│   └── app/
+│       ├── main.py           # API 路由
+│       ├── schemas.py        # 领域模型（测评/会话/报告）
+│       ├── scoring（services/）
+│       │   ├── session.py    # 会话流程：开始 → 逐题作答 → 报告
+│       │   ├── scoring.py    # 确定性计分引擎 + 报告生成
+│       │   ├── generator.py  # ✨ AI 自动生成测评
+│       │   └── evaluator.py  # ✨ 测评合理性评价
+│       ├── llm.py            # OpenAI 兼容 LLM 封装（ChatGLM/DeepSeek/…）
+│       ├── store.py          # JSON 文件存储
+│       └── data/             # 内置测评（mbti-lite / cat-personality）
+└── frontend/                 # Vite + React + TS 前端
+```
 
-### 第一阶段
-基于大模型，构建基于Prompt信息补全工程。
+## 核心能力
 
-初步目标是能够基于一些大模型底座，通过一些封装好的Prompt，进行多轮对话，能够在容忍一定失败的前提下，以大约超过1/3的成功率近乎完成`猫格分析`。
+1. **统一测评引擎**：一份测评 = 维度（dimensions）+ 题目（questions）+ 结果模板（types / profile_levels）。支持两种报告类型：
+   - `type_matching`：二极轴拼类型码查表（MBTI 的 16 型、猫格的 16 型猫）
+   - `dimension_profile`：维度 0-100 分画像（适合领导力等连续特质）
+2. **确定性计分**：不依赖 LLM 也能稳定出分出报告；LLM 只负责锦上添花的深度解读。
+3. **AI 自动生成测评**：给一个主题（如「职场领导力」），LLM 设计维度、题目、反向计分与结果模板，schema 校验后自动入库，立即可测。
+4. **测评合理性评价**：
+   - 结构化体检（无 LLM）：题量、维度覆盖、反向题比例（经验区间 10%-50%）、类型码极性可区分性等；
+   - LLM 质性评审：内容效度、表述清晰度、计分逻辑三项 0-100 打分 + 问题清单与改进建议。
 
-### 第二阶段
-基于大模型微调，进行`猫格分析`。
+## 快速开始
 
-从认知方面，应当明确自己是一个问卷助手，不应出现对自身的认知错误。
+### 后端
 
-从对话方面，需要能够进行多轮对话，一问一答，不能一次性展示所有问题，不需要用户提示它进行下一个问题，也不需要用户提示它结束对话。
+```bash
+cd backend
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+# 可选：配置 LLM（默认走智谱，也支持 DeepSeek/OpenAI 等兼容接口）
+cp .env.example .env && $EDITOR .env
+.venv/bin/uvicorn app.main:app --reload --port 8000
+```
 
-### 第三阶段
-基于大模型微调，进行`猫格分析`。
+### 前端
 
-从对话方面，能够较为完整地进行问卷调查。
+```bash
+cd frontend
+npm install
+npm run dev        # http://localhost:5173，已代理 /api → 127.0.0.1:8000
+```
 
-从分析方面，能够根据调查结果，进行分析，并出具对应地报告信息。
+## API 一览
 
-### 第四阶段
-基于大模型微调，进行`猫格分析`。
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/assessments` | 测评列表（内置 + AI 生成） |
+| GET | `/api/assessments/{id}` | 测评详情 |
+| POST | `/api/assessments/{id}/sessions` | 开始一次测评会话 |
+| POST | `/api/sessions/{sid}/answers` | 提交一题作答，返回进度或完成态 |
+| GET | `/api/sessions/{sid}/report` | 测评报告（`?use_llm=false` 可关闭 AI 解读） |
+| POST | `/api/assessments/generate` | ✨ AI 生成测评并入库 |
+| POST | `/api/assessments/{id}/evaluation` | ✨ 测评合理性评价 |
 
-从对话方面，能够有所测重地，根据历史对话信息，决定后续的问题内容。
+交互式文档：http://localhost:8000/docs
 
-从分析方面，能够根据调查结果，进行分析，相比于第三阶段应当更为深化和专业。
+## 路线图（承接原 README 的五阶段计划）
 
-### 第五阶段
-基于大模型微调，进行`猫格分析`。
+- [x] 统一测评引擎与确定性计分（第一阶段基础）
+- [x] 逐题作答的多轮问答流程
+- [x] LLM 深度报告解读（配置 Key 即启用）
+- [x] AI 自动生成测评
+- [x] 测评合理性评价（结构化体检 + LLM 评审）
+- [ ] 对话式测评：LLM 主导提问，根据历史回答动态决定下一题（原计划第四阶段的自适应提问）
+- [ ] 生成测评的「评价 → 自动修订 → 再评价」闭环
+- [ ] 数据库存储与用户体系
 
-从对话方面和分析方面，较之前更为深入。
+## 设计说明
 
-从界面方面，能够建设基于web的调用界面或基于本地的封装应用程序。
-
+- 未配置 `LLM_API_KEY` 时平台完整可用：计分、报告、结构化体检均为确定性逻辑，LLM 相关接口返回明确提示。
+- 存储为 JSON 文件（`backend/data/`），原型阶段够用，后续可平滑替换为数据库。
