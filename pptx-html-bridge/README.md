@@ -56,11 +56,11 @@ result = convert_pptx_to_html('pptx_files/', 'output_dir')
 
 ### 演示脚本
 
-项目包含一个演示脚本 `demos/convert_demo.py`，展示了如何使用import方式调用库：
+先生成演示用的 PPTX 文件，再运行转换演示：
 
 ```bash
-cd demos
-python convert_demo.py
+python demos/make_sample_pptx.py   # 生成 demos/source/test.pptx
+python demos/convert_demo.py       # 转换到 demos/outputs/
 ```
 
 此脚本会：
@@ -108,11 +108,24 @@ output_directory/
 
 - 将PPTX文件转换为HTML，每个幻灯片一个HTML文件
 - 支持背景、字体、颜色等样式
-- **增强的文本颜色提取**：正确处理PowerPoint中的自动颜色（白色文本等）
+- **增强的文本颜色提取**：正确处理PowerPoint中的自动颜色，未显式设置颜色时根据背景亮度选择可读的默认文字颜色
+- **背景填充支持**：纯色 / 渐变（转 CSS linear-gradient）/ 图片填充，从幻灯片、版式或母版逐级提取
 - **视频资源支持**：提取并嵌入PPTX中的视频文件，支持海报帧显示
+- **形状与表格**：自动形状（含填充/边框/旋转）、线条（含虚线样式）、表格，文本 HTML 转义防止注入
 - 生成导航索引页面
 - 支持紧凑HTML输出
 - 命令行和编程接口
+
+## 开发
+
+```bash
+# 创建虚拟环境并安装（可编辑模式 + 测试依赖）
+python -m venv .venv
+.venv/bin/pip install -e . pytest
+
+# 运行测试
+.venv/bin/python -m pytest tests/ -v
+```
 
 ## 依赖
 

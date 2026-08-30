@@ -32,10 +32,12 @@ def dash_style_to_css(dash_style):
         mapping = {
             MSO_LINE_DASH_STYLE.SOLID: 'solid',
             MSO_LINE_DASH_STYLE.DASH: 'dashed',
-            MSO_LINE_DASH_STYLE.DOT: 'dotted',
-            MSO_LINE_DASH_STYLE.DASH_DOT: 'dashed',
             MSO_LINE_DASH_STYLE.LONG_DASH: 'dashed',
+            MSO_LINE_DASH_STYLE.DASH_DOT: 'dashed',
             MSO_LINE_DASH_STYLE.DASH_DOT_DOT: 'dashed',
+            MSO_LINE_DASH_STYLE.LONG_DASH_DOT: 'dashed',
+            MSO_LINE_DASH_STYLE.ROUND_DOT: 'dotted',
+            MSO_LINE_DASH_STYLE.SQUARE_DOT: 'dotted',
         }
         return mapping.get(dash_style, 'solid')
     except Exception:

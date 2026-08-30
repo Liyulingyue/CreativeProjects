@@ -1,4 +1,5 @@
 import os
+import html as html_module
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.enum.shapes import PP_PLACEHOLDER
 from .converters import emu_to_px, emu_to_pt, color_to_hex, pt_to_px
@@ -14,6 +15,29 @@ def html_builder():
             return ''.join(line.lstrip() for line in lines)
         return '\n'.join(lines)
     return add, to_str
+
+def escape_text(text):
+    """Escape text for safe inclusion in HTML."""
+    return html_module.escape(text or '', quote=False)
+
+def pick_default_text_color(background_style):
+    """Choose a readable default text color based on the background color.
+
+    Parses the background-color from the style string and uses its
+    relative luminance; falls back to dark text on an unknown/light
+    background and white on a dark background.
+    """
+    import re
+    default_color = '#1f2937'  # near-black for unknown/light backgrounds
+    if not background_style:
+        return default_color
+    match = re.search(r'background-color:\s*#([0-9a-fA-F]{6})', background_style)
+    if not match:
+        return default_color
+    hexval = match.group(1)
+    r, g, b = (int(hexval[i:i + 2], 16) for i in (0, 2, 4))
+    luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    return '#ffffff' if luminance < 128 else default_color
 
 def generate_index_html(filename_base, num_slides, html_dir, compact):
     """Generate index.html for the presentation slides."""
@@ -70,7 +94,15 @@ def generate_main_html(source_dir, html_dir, compact):
     with open(os.path.join(html_dir, 'main.html'), 'w', encoding='utf-8') as f:
         f.write(main_to_str(compact=compact))
 
-def generate_slide_html(i, num_slides, theme_minor_font, slide_width_px, slide_height_px, background_style, nav, layout_images_filtered, layout_shapes, slide, prs, layout_placeholder_defaults, html_dir, compact):
+def generate_slide_html(i, num_slides, theme_minor_font, slide_width_px, slide_height_px, background_style, nav, layout_images_filtered, layout_shapes, slide, prs, layout_placeholder_defaults, html_dir, compact, media_dir=None):
+    """Generate HTML for a single slide.
+
+    html_dir is the directory the slide HTML file is written to; media_dir
+    is where extracted media (images/videos) are saved. When media_dir is
+    not provided it is derived from html_dir's sibling 'media' directory.
+    """
+    if media_dir is None:
+        media_dir = os.path.join(os.path.dirname(html_dir), "media")
     """Generate HTML for a single slide."""
     add, to_str = html_builder()
     # Prepare fallback font-family: theme minor font -> Chinese fallback -> Arial -> sans-serif
@@ -151,8 +183,6 @@ def generate_slide_html(i, num_slides, theme_minor_font, slide_width_px, slide_h
             image_bytes = image.blob
             ext = image.ext
             img_filename = f"slide{i}_img{img_count}.{ext}"
-            # Save image to media directory (passed as html_dir parameter)
-            media_dir = os.path.join(os.path.dirname(html_dir), "media")
             with open(os.path.join(media_dir, img_filename), 'wb') as f:
                 f.write(image_bytes)
             add(f'<div class="shape" style="{shape_style}"><img src="../media/{img_filename}" style="width: 100%; height: 100%;" alt="Image"></div>', 3)
@@ -164,7 +194,7 @@ def generate_slide_html(i, num_slides, theme_minor_font, slide_width_px, slide_h
             for row in table.rows:
                 table_html += "<tr>"
                 for cell in row.cells:
-                    table_html += f"<td>{cell.text.replace(chr(13), '<br>')}</td>"
+                    table_html += f"<td>{escape_text(cell.text).replace(chr(13), '<br>')}</td>"
                 table_html += "</tr>"
             table_html += "</table>"
             add(f'<div class="shape" style="{shape_style}">{table_html}</div>', 3)
@@ -194,11 +224,9 @@ def generate_slide_html(i, num_slides, theme_minor_font, slide_width_px, slide_h
                             ext = 'wmv'
                     
                     video_filename = f"slide{i}_video{img_count}.{ext}"
-                    # Save video to media directory
-                    media_dir = os.path.join(os.path.dirname(html_dir), "media")
                     with open(os.path.join(media_dir, video_filename), 'wb') as f:
                         f.write(video_bytes)
-                    
+
                     # Generate video HTML with poster frame if available
                     poster_attr = ""
                     if shape.poster_frame:
@@ -215,16 +243,20 @@ def generate_slide_html(i, num_slides, theme_minor_font, slide_width_px, slide_h
             except Exception as e:
                 # Fallback: just show a placeholder
                 add(f'<div class="shape" style="{shape_style}"><div style="width: 100%; height: 100%; background: #f0f0f0; display: flex; align-items: center; justify-content: center; border: 1px solid #ccc;">[Video]</div></div>', 3)
-        elif hasattr(shape, "text_frame") and shape.text_frame:
-            # Handle text shapes with full styling
+        elif hasattr(shape, "text_frame") and shape.text_frame and (
+            shape.shape_type != MSO_SHAPE_TYPE.AUTO_SHAPE or shape.text_frame.text.strip()
+        ):
+            # Handle text shapes with full styling; autoshapes with real text
+            # also land here so their text styling is preserved
             text_html = ""
             try:
                 for paragraph in shape.text_frame.paragraphs:
                     para_style = ""
                     # Get paragraph level properties
                     if paragraph.alignment:
-                        align_map = {0: "left", 1: "center", 2: "right", 3: "justify"}
-                        para_style += f"text-align: {align_map.get(paragraph.alignment, 'left')}; "
+                        # PP_ALIGN: LEFT=1, CENTER=2, RIGHT=3, JUSTIFY=4
+                        align_map = {1: "left", 2: "center", 3: "right", 4: "justify"}
+                        para_style += f"text-align: {align_map.get(int(paragraph.alignment), 'left')}; "
                     # indentation for bullet/levels
                     try:
                         level = getattr(paragraph, 'level', 0) or 0
@@ -325,20 +357,23 @@ def generate_slide_html(i, num_slides, theme_minor_font, slide_width_px, slide_h
                             except Exception:
                                 pass
                         
-                        # Apply the color if found
+                        # Apply the color if found, else fall back to a
+                        # readable default based on the slide background
                         if text_color:
                             run_style += f"color: {text_color}; "
                         else:
-                            # Last resort: default to white for visibility on dark backgrounds
-                            run_style += "color: #ffffff; "
+                            run_style += f"color: {pick_default_text_color(background_style)}; "
                         if run.font.name:
                             run_style += f"font-family: {run.font.name}; "
-                        para_html += f'<span style="{run_style}">{run.text}</span>'
+                        para_html += f'<span style="{run_style}">{escape_text(run.text)}</span>'
+                    if not paragraph.runs and paragraph.text:
+                        # Paragraph without explicit runs (e.g. line breaks / field text)
+                        para_html += escape_text(paragraph.text)
                     para_html += '</p>'
                     text_html += para_html
-            except Exception as e:
+            except Exception:
                 # Fallback: just use the text
-                text_html = f'<p>{shape.text}</p>'
+                text_html = f'<p>{escape_text(shape.text)}</p>'
             
             add(f'<div class="shape" style="{shape_style}">{text_html}</div>', 3)
         elif shape.shape_type == MSO_SHAPE_TYPE.LINE:
@@ -377,7 +412,10 @@ def generate_slide_html(i, num_slides, theme_minor_font, slide_width_px, slide_h
                     border_style = f"border: {stroke_width}px solid {stroke_color};"
                 rot = getattr(shape, 'rotation', 0) or 0
                 sstyle = f"left: {left_px}px; top: {top_px}px; width: {width_px}px; height: {height_px}px; background-color: {fill_color}; {border_style}; transform-origin: left top; transform: rotate({rot}deg);"
-                add(f'<div class="shape auto-shape" style="{sstyle}"></div>', 3)
+                # autoshapes whose text frame is empty are rendered as plain
+                # shapes; any text content is escaped into the div
+                inner_text = escape_text(shape.text_frame.text) if getattr(shape, 'text_frame', None) and shape.text_frame.text.strip() else ''
+                add(f'<div class="shape auto-shape" style="{sstyle}">{inner_text}</div>', 3)
             except Exception:
                 pass
     

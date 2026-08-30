@@ -62,8 +62,13 @@ class PPTXToHTMLConverter:
         slide_width_px = emu_to_px(prs.slide_width)
         slide_height_px = emu_to_px(prs.slide_height)
 
-        # Map layouts to index for unique naming
-        layout_index_map = {id(layout): idx for idx, layout in enumerate(prs.slide_layouts, start=1)}
+        # Map layouts (across all masters) to index for unique naming
+        layout_index_map = {}
+        layout_counter = 0
+        for master in prs.slide_masters:
+            for layout in master.slide_layouts:
+                layout_counter += 1
+                layout_index_map[id(layout)] = layout_counter
 
         # Extract layout placeholder defaults per layout
         layout_placeholder_defaults = {}
@@ -85,18 +90,22 @@ class PPTXToHTMLConverter:
         # Process each slide
         generated_files = []
         for i, slide in enumerate(prs.slides, 1):
-            # Get background style
-            bg_info = get_background_style(slide, prs)
-            if bg_info.startswith("picture:"):
-                # Handle picture background
-                parts = bg_info.split(':')
-                bg_img_bytes = eval(parts[1].split(',')[0])
-                bg_ext = parts[1].split(',')[1]
+            # Get background style and optional background image (bytes, ext)
+            bg_info, bg_image = get_background_style(slide, prs)
+            if bg_image:
+                bg_bytes, bg_ext = bg_image
                 bg_filename = f"slide{i}_bg.{bg_ext}"
                 with open(os.path.join(media_dir, bg_filename), 'wb') as f:
-                    f.write(bg_img_bytes)
-                background_style = f"background-image: url('media/{bg_filename}'); background-size: cover; background-repeat: no-repeat; background-position: center;"
+                    f.write(bg_bytes)
+                # Slides live in slides/, media in media/ -> relative prefix
+                background_style = (
+                    f"background-image: url('../media/{bg_filename}'); "
+                    "background-size: cover; background-repeat: no-repeat; background-position: center;"
+                )
                 generated_files.append(f"media/{bg_filename}")
+            elif bg_info == "picture":
+                # Picture fill detected but the image could not be resolved
+                background_style = "background-color: #ffffff;"
             else:
                 background_style = bg_info
 
@@ -109,8 +118,7 @@ class PPTXToHTMLConverter:
             layout_images_filtered = [(f"../media/{fname}", left, top, w, h) for fname, left, top, w, h in layout_images_filtered]
 
             # Update background style to use media/ prefix if it contains a picture
-            if "url('" in background_style and not background_style.startswith("background-image: url('media/"):
-                # Replace url('filename') with url('media/filename')
+            if "url('" in background_style and "url('../media/" not in background_style:
                 import re
                 background_style = re.sub(r"url\('([^']+)'\)", r"url('../media/\1')", background_style)
 
