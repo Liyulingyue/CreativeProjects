@@ -203,6 +203,30 @@ def get_scheme_color(prs, scheme_name):
     return None
 
 
+def resolve_theme_color(prs, theme_color):
+    """Resolve an MSO_THEME_COLOR enum member to a '#rrggbb' string via the theme.
+
+    Returns None when the color cannot be resolved.
+    """
+    try:
+        from pptx.enum.dml import MSO_THEME_COLOR
+        mapping = {
+            'ACCENT_1': 'accent1', 'ACCENT_2': 'accent2', 'ACCENT_3': 'accent3',
+            'ACCENT_4': 'accent4', 'ACCENT_5': 'accent5', 'ACCENT_6': 'accent6',
+            'DARK_1': 'dk1', 'DARK_2': 'dk2', 'LIGHT_1': 'lt1', 'LIGHT_2': 'lt2',
+            'TEXT_1': 'dk1', 'TEXT_2': 'dk2',
+            'BACKGROUND_1': 'lt1', 'BACKGROUND_2': 'lt2',
+            'HYPERLINK': 'hlink', 'FOLLOWED_HYPERLINK': 'hlinkFollow',
+        }
+        name = mapping.get(getattr(theme_color, 'name', None))
+        if not name:
+            return None
+        hexval = get_scheme_color(prs, name)
+        return f"#{hexval.lower()}" if hexval else None
+    except Exception:
+        return None
+
+
 def get_theme_fonts(prs):
     """Return (major_font, minor_font) from the theme, or (None,None)"""
     try:

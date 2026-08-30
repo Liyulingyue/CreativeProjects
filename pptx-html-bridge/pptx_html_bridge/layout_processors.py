@@ -1,6 +1,15 @@
+import hashlib
 import os
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from .converters import emu_to_px, color_to_hex, dash_style_to_css
+
+
+def _media_name(kind, idx, blob, ext):
+    """Content-hash based name so identical layout/master images dedupe
+    across slides and source presentations without ever colliding."""
+    digest = hashlib.md5(blob).hexdigest()[:10]
+    return f"{kind}{idx}_{digest}.{ext}"
+
 
 def collect_layout_elements(layout, layout_index_map, html_dir, slide_width_px, slide_height_px, background_style):
     """Collect layout images and shapes, and update background_style if full-slide image."""
@@ -15,7 +24,7 @@ def collect_layout_elements(layout, layout_index_map, html_dir, slide_width_px, 
                     limg = lshape.image
                     lbytes = limg.blob
                     lext = limg.ext
-                    lfname = f"layout{layout_idx}_img{li}.{lext}"
+                    lfname = _media_name("layout", layout_idx, lbytes, lext)
                     lpath = os.path.join(html_dir, lfname)
                     if not os.path.exists(lpath):
                         with open(lpath, 'wb') as _f:
@@ -74,7 +83,7 @@ def collect_layout_elements(layout, layout_index_map, html_dir, slide_width_px, 
                         mimg = mshape.image
                         mbytes = mimg.blob
                         mext = mimg.ext
-                        mfname = f"master_img{mi}.{mext}"
+                        mfname = _media_name("master", mi, mbytes, mext)
                         mpath = os.path.join(html_dir, mfname)
                         if not os.path.exists(mpath):
                             with open(mpath, 'wb') as _f:

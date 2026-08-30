@@ -47,19 +47,20 @@ def test_parse_slide2_shapes(converted_html):
 def test_parse_slide3_table(converted_html):
     model = parse_slide_html(os.path.join(converted_html, "slides", "slide3.html"))
     table = next(s for s in model["shapes"] if s["kind"] == "table")
-    assert table["rows"][0] == ["A&B", "<tag>"]
-    assert table["rows"][1] == ["cell", "value"]
+    assert table["rows"][0][0]["text"] == "A&B"
+    assert table["rows"][0][1]["text"] == "<tag>"
+    assert table["rows"][1][0]["text"] == "cell"
 
 
 def test_html_to_pptx_roundtrip(converted_html, tmp_path):
     output_pptx = os.path.join(str(tmp_path), "rebuilt.pptx")
     result = convert_html_to_pptx(converted_html, output_pptx)
 
-    assert result["slides_count"] == 3
+    assert result["slides_count"] == 4
     assert os.path.isfile(output_pptx)
 
     prs = Presentation(output_pptx)
-    assert len(prs.slides) == 3
+    assert len(prs.slides) == 4
 
     # slide size preserved (px -> EMU)
     assert prs.slide_width == Emu(960 * 9525)

@@ -16,7 +16,7 @@ from .html_converter import (
     convert_html_to_pptx,
 )
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __all__ = [
     "PPTXToHTMLConverter",
     "convert_pptx_to_html",

@@ -33,14 +33,23 @@ def _geometry(style):
 
 
 def _parse_paragraphs(container):
-    """Parse <p> elements into paragraph models with styled runs."""
+    """Parse <p> elements into paragraph models with styled runs.
+
+    Runs wrapped in <a href="..."> keep the link target in 'href'.
+    """
     paragraphs = []
     for p in container.xpath('./p'):
         style = parse_style(p.get('style'))
         align_map = {'left': 'left', 'center': 'center', 'right': 'right', 'justify': 'justify'}
         runs = []
-        for span in p.xpath('./span'):
+        span_nodes = p.xpath('./span | ./a/span')
+        href_nodes = p.xpath('./a')
+        hrefs = {id(a): a.get('href') for a in href_nodes}
+        for span in span_nodes:
             span_style = parse_style(span.get('style'))
+            # find enclosing <a>, if any
+            parent = span.getparent()
+            href = hrefs.get(id(parent)) if parent is not None else None
             runs.append({
                 'text': span.text_content(),
                 'font_size_px': parse_px(span_style.get('font-size')),
@@ -49,11 +58,12 @@ def _parse_paragraphs(container):
                 'italic': 'font-style' in span_style and 'italic' in span_style['font-style'].lower(),
                 'underline': 'text-decoration' in span_style and 'underline' in span_style['text-decoration'].lower(),
                 'color': parse_color(span_style.get('color')),
+                'href': href,
             })
         if not runs and p.text_content().strip():
             runs.append({'text': p.text_content(), 'font_size_px': None,
                          'font_family': None, 'bold': False, 'italic': False,
-                         'underline': False, 'color': None})
+                         'underline': False, 'color': None, 'href': None})
         margin_px = parse_px(style.get('margin-left'), 0.0)
         paragraphs.append({
             'align': align_map.get(style.get('text-align', '').strip(), None),
@@ -64,9 +74,42 @@ def _parse_paragraphs(container):
 
 
 def _parse_table(table_elem):
+    """Parse a table into a grid of cell models.
+
+    Returns rows as lists aligned to the table grid; cells covered by a
+    rowspan/colspan merge are None. Visible cells carry text, optional
+    background color and span information.
+    """
+    covered = {}
     rows = []
-    for tr in table_elem.xpath('./tr'):
-        rows.append([td.text_content().replace('\n', ' ').strip() for td in tr.xpath('./td')])
+    for r, tr in enumerate(table_elem.xpath('./tr')):
+        row_cells = []
+        c = 0
+        for td in tr.xpath('./td'):
+            while covered.get((r, c)):
+                row_cells.append(None)
+                c += 1
+            style = parse_style(td.get('style'))
+            cell = {
+                'text': td.text_content().replace('\n', ' ').strip(),
+                'bg': parse_color(style.get('background-color')),
+            }
+            rowspan = int(td.get('rowspan') or 1)
+            colspan = int(td.get('colspan') or 1)
+            if rowspan > 1:
+                cell['rowspan'] = rowspan
+            if colspan > 1:
+                cell['colspan'] = colspan
+            for rr in range(r, r + rowspan):
+                for cc in range(c, c + colspan):
+                    if (rr, cc) != (r, c):
+                        covered[(rr, cc)] = True
+            row_cells.append(cell)
+            c += colspan
+        while covered.get((r, c)):
+            row_cells.append(None)
+            c += 1
+        rows.append(row_cells)
     return {'kind': 'table', 'rows': rows}
 
 
@@ -125,10 +168,16 @@ def parse_slide_html(html_path):
             model['shapes'].append(shape)
             continue
 
-        # video
-        videos = elem.xpath('.//video//source')
+        # video (source + optional poster frame)
+        videos = elem.xpath('.//video')
         if videos:
-            model['shapes'].append({**base, 'kind': 'video', 'src': videos[0].get('src')})
+            video = videos[0]
+            sources = video.xpath('./source')
+            model['shapes'].append({
+                **base, 'kind': 'video',
+                'src': sources[0].get('src') if sources else None,
+                'poster': video.get('poster'),
+            })
             continue
 
         # styled text paragraphs
@@ -163,6 +212,13 @@ def parse_slide_html(html_path):
                 'text': text or None,
             })
             continue
+
+    # speaker notes (hidden div)
+    notes = tree.xpath('//div[contains(@class, "notes")]')
+    if notes:
+        notes_text = notes[0].text_content().strip()
+        if notes_text:
+            model['notes'] = notes_text
 
     return model
 

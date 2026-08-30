@@ -94,7 +94,7 @@ class PPTXToHTMLConverter:
             bg_info, bg_image = get_background_style(slide, prs)
             if bg_image:
                 bg_bytes, bg_ext = bg_image
-                bg_filename = f"slide{i}_bg.{bg_ext}"
+                bg_filename = f"{filename_base}_slide{i}_bg.{bg_ext}"
                 with open(os.path.join(media_dir, bg_filename), 'wb') as f:
                     f.write(bg_bytes)
                 # Slides live in slides/, media in media/ -> relative prefix
@@ -131,7 +131,8 @@ class PPTXToHTMLConverter:
             generate_slide_html(
                 i, num_slides, theme_minor_font, slide_width_px, slide_height_px,
                 background_style, nav, layout_images_filtered, layout_shapes,
-                slide, prs, layout_placeholder_defaults, slides_dir, self.compact
+                slide, prs, layout_placeholder_defaults, slides_dir, self.compact,
+                media_dir=media_dir, media_prefix=filename_base
             )
             generated_files.append(f"slides/slide{i}.html")
 
@@ -177,7 +178,11 @@ class PPTXToHTMLConverter:
         for filename in pptx_files:
             pptx_path = os.path.join(src_dir, filename)
             try:
-                result = self.convert_file(pptx_path, html_dir)
+                # each source file gets its own subdirectory so slides/,
+                # media/ and index files never collide between files
+                file_base = os.path.splitext(filename)[0]
+                file_output = os.path.join(html_dir, file_base)
+                result = self.convert_file(pptx_path, file_output)
                 results.append(result)
                 print(f"Converted {filename} to HTML")
             except Exception as e:

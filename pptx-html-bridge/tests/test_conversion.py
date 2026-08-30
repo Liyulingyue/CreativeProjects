@@ -7,13 +7,13 @@ def test_convert_file_creates_structure(sample_pptx, tmp_path):
     output_dir = os.path.join(str(tmp_path), "out")
     result = convert_pptx_to_html(sample_pptx, output_dir)
 
-    assert result["slides_count"] == 3
+    assert result["slides_count"] == 4
     assert os.path.isdir(os.path.join(output_dir, "slides"))
     assert os.path.isdir(os.path.join(output_dir, "media"))
-    for i in (1, 2, 3):
+    for i in (1, 2, 3, 4):
         assert os.path.isfile(os.path.join(output_dir, "slides", f"slide{i}.html"))
     assert os.path.isfile(os.path.join(output_dir, "sample_index.html"))
-    assert len(result["generated_files"]) == 4  # 3 slides + index
+    assert len(result["generated_files"]) == 5  # 4 slides + index
 
 
 def test_slide1_dark_background_and_white_text(sample_pptx, tmp_path):
@@ -40,10 +40,10 @@ def test_slide2_shapes_line_picture(sample_pptx, tmp_path):
     assert "auto-shape" in html
     assert "background-color: #2563eb;" in html
     assert "class=\"shape line\"" in html
-    # picture extracted to media/ with correct relative path
-    assert "../media/slide2_img0.png" in html
+    # picture extracted to media/ with correct relative path (prefixed by source name)
+    assert "../media/sample_slide2_img0.png" in html
     media_files = os.listdir(os.path.join(output_dir, "media"))
-    assert "slide2_img0.png" in media_files
+    assert "sample_slide2_img0.png" in media_files
 
 
 def test_slide3_table_escapes_html(sample_pptx, tmp_path):
@@ -51,7 +51,7 @@ def test_slide3_table_escapes_html(sample_pptx, tmp_path):
     convert_pptx_to_html(sample_pptx, output_dir)
 
     html = open(os.path.join(output_dir, "slides", "slide3.html"), encoding="utf-8").read()
-    assert "<table>" in html
+    assert '<table style="table-layout: fixed' in html
     assert "A&amp;B" in html
     assert "&lt;tag&gt;" in html
     assert "<tag>" not in html

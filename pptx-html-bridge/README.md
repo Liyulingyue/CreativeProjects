@@ -108,7 +108,7 @@ html-to-pptx output_dir --output rebuilt.pptx
 
 ## 输出结构
 
-转换后的文件会按照以下结构组织：
+单个文件转换时：
 
 ```
 output_directory/
@@ -116,13 +116,23 @@ output_directory/
 │   ├── slide1.html
 │   ├── slide2.html
 │   └── ...
-├── media/            # 图片、视频等媒体文件
-│   ├── slide1_img0.jpg
-│   ├── slide5_video1.mp4    # 视频文件
-│   ├── slide5_poster1.png   # 视频海报帧
-│   ├── master_img0.png
+├── media/            # 图片、视频等媒体文件（文件名带源文件前缀）
+│   ├── [filename]_slide1_img0.jpg
+│   ├── [filename]_slide5_video1.mp4   # 视频文件
+│   ├── [filename]_slide5_poster1.png  # 视频海报帧
 │   └── ...
 └── [filename]_index.html  # 幻灯片索引页面
+```
+
+目录批量转换时，每个源文件输出到独立子目录，避免相互覆盖：
+
+```
+output_directory/
+├── main.html              # 总入口
+├── file_a/
+│   ├── slides/  ├── media/  └── file_a_index.html
+└── file_b/
+    ├── slides/  ├── media/  └── file_b_index.html
 ```
 
 ## 功能
@@ -130,6 +140,11 @@ output_directory/
 - 将PPTX文件转换为HTML，每个幻灯片一个HTML文件
 - **HTML 反向转换回 PPTX**：完整双向桥接，round-trip 保留文本样式、图片、表格、形状与背景
 - 支持背景、字体、颜色等样式
+- **组合形状递归展开**（含嵌套组合、子坐标系变换）
+- **主题色提取**：scheme color 经主题解析为具体 RGB
+- **表格样式**：列宽/行高/单元格填充/合并/垂直对齐/边距
+- **项目符号与编号列表**、段落行距、文本框旋转、autofit 缩放、阴影、超链接
+- **演讲者备注**：输出为隐藏 div，可反向还原
 - **增强的文本颜色提取**：正确处理PowerPoint中的自动颜色，未显式设置颜色时根据背景亮度选择可读的默认文字颜色
 - **背景填充支持**：纯色 / 渐变（转 CSS linear-gradient）/ 图片填充，从幻灯片、版式或母版逐级提取
 - **视频资源支持**：提取并嵌入PPTX中的视频文件，支持海报帧显示

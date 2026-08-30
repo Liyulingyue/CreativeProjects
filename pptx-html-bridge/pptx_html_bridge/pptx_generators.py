@@ -67,6 +67,8 @@ def _add_text_shape(shapes, shape):
         Emu(px_to_emu(shape['left'])), Emu(px_to_emu(shape['top'])),
         Emu(px_to_emu(shape['width'])), Emu(px_to_emu(shape['height'])),
     )
+    if shape.get('rotation'):
+        box.rotation = shape['rotation']
     tf = box.text_frame
     tf.word_wrap = True
     for idx, para in enumerate(shape.get('paragraphs', [])):
@@ -91,6 +93,11 @@ def _add_text_shape(shapes, shape):
                 font.underline = True
             if run_model.get('color'):
                 font.color.rgb = _rgb(run_model['color'])
+            if run_model.get('href'):
+                try:
+                    run.hyperlink.address = run_model['href']
+                except Exception:
+                    pass
     return box
 
 
@@ -109,15 +116,42 @@ def _add_table_shape(shapes, shape):
     rows = shape.get('rows') or []
     if not rows:
         return
+    n_rows = len(rows)
+    n_cols = max(len(row) for row in rows)
     graphic_frame = shapes.add_table(
-        len(rows), max(len(r) for r in rows),
+        n_rows, n_cols,
         Emu(px_to_emu(shape['left'])), Emu(px_to_emu(shape['top'])),
         Emu(px_to_emu(shape['width'])), Emu(px_to_emu(shape['height'])),
     )
     table = graphic_frame.table
     for r, row in enumerate(rows):
-        for c, cell_text in enumerate(row):
-            table.cell(r, c).text = cell_text
+        c = 0
+        for cell_model in row:
+            # grid slots consumed by earlier merges are spanned cells
+            while c < n_cols and table.cell(r, c).is_spanned:
+                c += 1
+            if c >= n_cols:
+                break
+            if cell_model is not None:
+                cell = table.cell(r, c)
+                cell.text = cell_model.get('text') or ''
+                if cell_model.get('bg'):
+                    try:
+                        cell.fill.solid()
+                        cell.fill.fore_color.rgb = _rgb(cell_model['bg'])
+                    except Exception:
+                        pass
+                rowspan = cell_model.get('rowspan', 1)
+                colspan = cell_model.get('colspan', 1)
+                if rowspan > 1 or colspan > 1:
+                    try:
+                        cell.merge(table.cell(
+                            min(r + rowspan - 1, n_rows - 1),
+                            min(c + colspan - 1, n_cols - 1),
+                        ))
+                    except Exception:
+                        pass
+            c += 1
 
 
 def _add_autoshape(shapes, shape):
@@ -168,13 +202,17 @@ def _add_line_shape(shapes, shape):
 
 
 def _add_video_shape(shapes, shape, html_path):
-    video_path = resolve_media_path(html_path, shape['src'])
+    video_path = resolve_media_path(html_path, shape.get('src'))
+    poster_path = resolve_media_path(html_path, shape.get('poster')) if shape.get('poster') else None
     if video_path and os.path.isfile(video_path):
         try:
+            kwargs = {}
+            if poster_path and os.path.isfile(poster_path):
+                kwargs['poster_frame_image'] = poster_path
             shapes.add_movie(
                 video_path, Emu(px_to_emu(shape['left'])), Emu(px_to_emu(shape['top'])),
                 width=Emu(px_to_emu(shape['width'])), height=Emu(px_to_emu(shape['height'])),
-                mime_type='video/mp4',
+                mime_type='video/mp4', **kwargs,
             )
             return
         except Exception:
@@ -230,6 +268,14 @@ def build_presentation(slide_models, html_dir, output_path, slide_width_px=None,
                 _add_line_shape(shapes, shape)
             elif kind == 'video':
                 _add_video_shape(shapes, shape, html_path)
+
+        # speaker notes
+        notes = model.get('notes')
+        if notes:
+            try:
+                slide.notes_slide.notes_text_frame.text = notes
+            except Exception:
+                pass
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     prs.save(output_path)
