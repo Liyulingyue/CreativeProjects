@@ -31,9 +31,16 @@ export function SimpleChat() {
 
       const data = await res.json();
 
+      let reply = data.response || '抱歉，我没有得到回应。';
+      const plans = data.plans || [];
+      if (plans.length > 0) {
+        const actionCount = plans.reduce((n: number, p: { actions?: unknown[] }) => n + (p.actions?.length ?? 0), 0);
+        reply += `\n\n🛡️ 已生成 ${plans.length} 份整理计划（共 ${actionCount} 个操作），请到「整理」页的审批中心批准后执行。`;
+      }
+
       await addMessage(sessionId, {
         role: 'assistant',
-        content: data.response || '抱歉，我没有得到回应。',
+        content: reply,
       });
     } catch (error) {
       await addMessage(sessionId, {
@@ -58,7 +65,7 @@ export function SimpleChat() {
             <div className="text-5xl">🤖</div>
             <div className="text-center">
               <div className="font-medium text-slate-600 mb-1">Agent 对话</div>
-              <div className="text-sm">我可以执行命令、读写文件、搜索内容</div>
+              <div className="text-sm">我可以分析文件、搜索内容，并生成待你审批的整理计划</div>
             </div>
           </div>
         }

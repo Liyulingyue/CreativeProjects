@@ -8,9 +8,9 @@ from typing import Optional
 from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException
 from ..models import SnapshotRecord, FileSnapshot, FileChange, Suggestion, CompareResponse
-from ..deps import state
+from ..deps import state, get_storage_root
 
-organizer = APIRouter(prefix="/api/organizer", tags=["organizer"])
+organizer = APIRouter()
 
 
 class OrganizerService:
@@ -283,10 +283,7 @@ def get_organizer_service() -> OrganizerService:
 
 @organizer.post("/snapshot")
 def take_snapshot():
-    settings = state.get_settings()
-    storage_path = settings.storage_path
-    base_dir = Path(__file__).resolve().parent.parent.parent
-    root_path = str(base_dir / storage_path)
+    root_path = str(get_storage_root())
 
     svc = get_organizer_service()
     return svc.take_snapshot(root_path)

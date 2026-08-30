@@ -1,4 +1,7 @@
 import { useState, useEffect } from 'react';
+import { ApprovalCenter } from './Organizer/ApprovalCenter';
+import { createPlan } from '../api';
+import type { PlanActionType } from '../types';
 
 interface Snapshot {
   date: string;
@@ -99,6 +102,27 @@ export function OrganizerPage() {
     }
   };
 
+  const handleSuggestionToPlan = async (sug: Suggestion) => {
+    try {
+      await createPlan({
+        title: sug.message,
+        summary: sug.reason,
+        source: 'suggestions',
+        actions: [
+          {
+            action_type: (sug.type === 'move' ? 'move' : 'create_folder') as PlanActionType,
+            source_path: sug.source_path,
+            target_path: sug.target_path,
+            reason: sug.reason,
+          },
+        ],
+      });
+      alert('已生成整理计划，请在上方「审批中心」批准后执行');
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '生成计划失败');
+    }
+  };
+
   const formatDate = (dateStr: string) => {
     const d = new Date(dateStr);
     return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -142,6 +166,9 @@ export function OrganizerPage() {
           </div>
         ) : (
           <div className="space-y-6">
+            {/* Approval Center */}
+            <ApprovalCenter />
+
             {/* Snapshot List */}
             <div className="bg-white rounded-2xl border border-slate-200 p-6">
               <div className="text-lg font-semibold text-slate-700 mb-4">历史快照</div>
@@ -228,6 +255,14 @@ export function OrganizerPage() {
                             )}
                             <div className="text-xs text-slate-400">{sug.reason}</div>
                           </div>
+                          {sug.type === 'move' && sug.source_path && sug.target_path && (
+                            <button
+                              onClick={() => handleSuggestionToPlan(sug)}
+                              className="px-3 py-1.5 rounded-lg bg-indigo-50 text-indigo-600 text-xs font-medium hover:bg-indigo-100 transition-colors whitespace-nowrap"
+                            >
+                              转为计划
+                            </button>
+                          )}
                         </div>
                       ))}
                     </div>

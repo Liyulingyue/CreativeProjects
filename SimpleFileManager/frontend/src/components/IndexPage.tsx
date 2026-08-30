@@ -1,4 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { fetchAutoIndexStatus, runAutoIndexNow, updateSettings } from '../api';
+import type { AutoIndexStatus } from '../types';
 
 interface IndexedFile {
   id: string;
@@ -16,6 +18,18 @@ export function IndexPage() {
   const [files, setFiles] = useState<IndexedFile[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isClearing, setIsClearing] = useState(false);
+  const [autoStatus, setAutoStatus] = useState<AutoIndexStatus | null>(null);
+  const [isToggling, setIsToggling] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
+
+  const loadAutoStatus = useCallback(async () => {
+    try {
+      const data = await fetchAutoIndexStatus();
+      setAutoStatus(data);
+    } catch (e) {
+      console.error('Failed to load auto index status:', e);
+    }
+  }, []);
 
   const loadIndex = async () => {
     setIsLoading(true);
@@ -43,7 +57,35 @@ export function IndexPage() {
 
   useEffect(() => {
     loadIndex();
-  }, []);
+    loadAutoStatus();
+    const timer = setInterval(loadAutoStatus, 10000);
+    return () => clearInterval(timer);
+  }, [loadAutoStatus]);
+
+  const handleToggleAuto = async () => {
+    if (!autoStatus) return;
+    setIsToggling(true);
+    try {
+      await updateSettings({ auto_index_enabled: !autoStatus.enabled });
+      await loadAutoStatus();
+    } catch (e) {
+      console.error('Failed to toggle auto index:', e);
+    } finally {
+      setIsToggling(false);
+    }
+  };
+
+  const handleScanNow = async () => {
+    setIsScanning(true);
+    try {
+      await runAutoIndexNow();
+      await Promise.all([loadIndex(), loadAutoStatus()]);
+    } catch (e) {
+      console.error('Failed to run scan:', e);
+    } finally {
+      setIsScanning(false);
+    }
+  };
 
   const handleClearIndex = async () => {
     if (!confirm('确定要清空所有索引吗？此操作不可恢复。')) return;
@@ -97,8 +139,47 @@ export function IndexPage() {
             <div className="text-xl font-bold text-indigo-600">{stats?.vector_count ?? '-'}</div>
             <div className="text-xs text-slate-500">向量数</div>
           </div>
+          {autoStatus && (
+            <div className="bg-slate-50 rounded-lg px-4 py-2 text-center">
+              <div className="text-xl font-bold text-slate-600">{autoStatus.indexed_files}</div>
+              <div className="text-xs text-slate-500">自动索引清单</div>
+            </div>
+          )}
         </div>
-        <div className="flex gap-3">
+        <div className="flex gap-3 items-center">
+          {autoStatus && (
+            <div className="flex items-center gap-2 mr-2">
+              <span className="text-xs text-slate-500">
+                自动索引{autoStatus.enabled ? (
+                  <> · 每 {autoStatus.interval}s
+                    {autoStatus.last_scan_time && ` · 上次 ${autoStatus.last_scan_time}`}
+                    {autoStatus.pending_changes > 0 && ` · ${autoStatus.pending_changes} 待处理`}
+                  </>
+                ) : '（已关闭）'}
+              </span>
+              <button
+                onClick={handleToggleAuto}
+                disabled={isToggling}
+                className={`relative w-11 h-6 rounded-full transition-colors disabled:opacity-50 ${
+                  autoStatus.enabled ? 'bg-indigo-600' : 'bg-slate-300'
+                }`}
+                title={autoStatus.enabled ? '关闭自动索引' : '开启自动索引'}
+              >
+                <span
+                  className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
+                    autoStatus.enabled ? 'translate-x-5' : ''
+                  }`}
+                />
+              </button>
+            </div>
+          )}
+          <button
+            onClick={handleScanNow}
+            disabled={isScanning}
+            className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+          >
+            {isScanning ? '扫描中...' : '立即扫描'}
+          </button>
           <button
             onClick={loadIndex}
             className="px-4 py-2 rounded-lg bg-slate-100 text-slate-600 text-sm font-medium hover:bg-slate-200 transition-colors"

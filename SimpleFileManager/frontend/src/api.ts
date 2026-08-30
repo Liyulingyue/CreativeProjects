@@ -1,3 +1,5 @@
+import type { AgentPlan, AppSettings, AutoIndexStatus, PlanActionType } from './types';
+
 const API_BASE = '/api';
 
 export async function fetchBrowse(path?: string): Promise<BrowseResult> {
@@ -116,14 +118,7 @@ export interface TreeNode {
   children?: TreeNode[];
 }
 
-export interface AppSettings {
-  openai_api_key: string;
-  openai_base_url: string;
-  embedding_model: string;
-  index_interval: number;
-  storage_path: string;
-  theme: string;
-}
+export type { AppSettings };
 
 export interface ChatMessage {
   id: string;
@@ -219,7 +214,8 @@ export interface AgentResponse {
     arguments: Record<string, unknown>;
     result: unknown;
   }>;
-  needs_tool_calls: boolean;
+  plans: AgentPlan[];
+  steps_used: number;
   available_tools: string[];
 }
 
@@ -239,5 +235,152 @@ export async function sendAgentMessage(
 export async function getAgentTools(): Promise<{ tools: string[] }> {
   const res = await fetch(`${API_BASE}/agent/tools`);
   if (!res.ok) throw new Error('Failed to get agent tools');
+  return res.json();
+}
+
+// ---- Plans & Approval ----
+
+export async function fetchPlans(status?: string): Promise<AgentPlan[]> {
+  const params = status ? `?status=${encodeURIComponent(status)}` : '';
+  const res = await fetch(`${API_BASE}/plans${params}`);
+  if (!res.ok) throw new Error('Failed to fetch plans');
+  const data = await res.json();
+  return data.plans || [];
+}
+
+export async function fetchPlan(planId: string): Promise<AgentPlan> {
+  const res = await fetch(`${API_BASE}/plans/${planId}`);
+  if (!res.ok) throw new Error('Failed to fetch plan');
+  return res.json();
+}
+
+export async function fetchPlanLog(
+  planId: string
+): Promise<Array<Record<string, unknown>>> {
+  const res = await fetch(`${API_BASE}/plans/${planId}/log`);
+  if (!res.ok) throw new Error('Failed to fetch plan log');
+  const data = await res.json();
+  return data.log || [];
+}
+
+export interface CreatePlanInput {
+  title: string;
+  summary?: string;
+  source?: string;
+  actions: Array<{
+    action_type: PlanActionType;
+    source_path?: string | null;
+    target_path?: string | null;
+    reason?: string;
+  }>;
+}
+
+export async function createPlan(input: CreatePlanInput): Promise<AgentPlan> {
+  const res = await fetch(`${API_BASE}/plans`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error('Failed to create plan');
+  return res.json();
+}
+
+export async function approvePlan(planId: string): Promise<AgentPlan> {
+  const res = await fetch(`${API_BASE}/plans/${planId}/approve`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to approve plan');
+  return res.json();
+}
+
+export async function rejectPlan(planId: string): Promise<AgentPlan> {
+  const res = await fetch(`${API_BASE}/plans/${planId}/reject`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to reject plan');
+  return res.json();
+}
+
+export async function executePlan(planId: string): Promise<AgentPlan> {
+  const res = await fetch(`${API_BASE}/plans/${planId}/execute`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to execute plan');
+  return res.json();
+}
+
+export async function deletePlan(planId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/plans/${planId}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error('Failed to delete plan');
+}
+
+// ---- Auto Indexer ----
+
+export async function fetchAutoIndexStatus(): Promise<AutoIndexStatus> {
+  const res = await fetch(`${API_BASE}/settings/auto_index_status`);
+  if (!res.ok) throw new Error('Failed to fetch auto index status');
+  return res.json();
+}
+
+export async function runAutoIndexNow(): Promise<Record<string, number>> {
+  const res = await fetch(`${API_BASE}/settings/auto_index/run`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to run auto index');
+  return res.json();
+}
+
+// ---- Hybrid Search ----
+
+export interface HybridSearchResult {
+  path: string;
+  name: string;
+  preview: string;
+  score: number;
+  sources: string[];
+}
+
+export interface HybridSearchResponse {
+  results: HybridSearchResult[];
+  keyword_count: number;
+  semantic_count: number;
+  query: string;
+}
+
+export async function hybridSearch(query: string, topK: number = 10): Promise<HybridSearchResponse> {
+  const params = new URLSearchParams({ query, top_k: String(topK) });
+  const res = await fetch(`${API_BASE}/search/hybrid?${params}`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to search');
+  return res.json();
+}
+
+// ---- Knowledge Digest ----
+
+export interface DigestMeta {
+  date: string;
+  files_count: number;
+  generated_by: string;
+  created_at: number;
+}
+
+export interface Digest extends DigestMeta {
+  content: string | null;
+}
+
+export async function generateDigest(date?: string): Promise<{ success: boolean; message?: string; date?: string; files_count?: number }> {
+  const params = date ? `?date=${date}` : '';
+  const res = await fetch(`${API_BASE}/digest/generate${params}`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to generate digest');
+  return res.json();
+}
+
+export async function fetchLatestDigest(): Promise<Digest> {
+  const res = await fetch(`${API_BASE}/digest/latest`);
+  if (!res.ok) throw new Error('Failed to fetch latest digest');
+  return res.json();
+}
+
+export async function fetchDigestList(): Promise<DigestMeta[]> {
+  const res = await fetch(`${API_BASE}/digest/list`);
+  if (!res.ok) throw new Error('Failed to fetch digest list');
+  const data = await res.json();
+  return data.digests || [];
+}
+
+export async function fetchDigest(date: string): Promise<Digest> {
+  const res = await fetch(`${API_BASE}/digest/${date}`);
+  if (!res.ok) throw new Error('Failed to fetch digest');
   return res.json();
 }

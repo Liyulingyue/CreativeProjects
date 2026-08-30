@@ -3,10 +3,26 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 from ..deps import state
 from ..models import FileNode, SearchResult
+from ..search_engine import search_engine
 
 search = APIRouter()
+
+
+class HybridSearchResponse(BaseModel):
+    results: list[dict]
+    keyword_count: int
+    semantic_count: int
+    query: str
+
+
+@search.post("/hybrid", response_model=HybridSearchResponse)
+def hybrid_search(query: str, top_k: int = 10) -> HybridSearchResponse:
+    if not query.strip():
+        raise HTTPException(status_code=400, detail="Query is empty")
+    return HybridSearchResponse(**search_engine.hybrid_search(query, top_k))
 
 
 def _get_mime_type(path: Path) -> str:

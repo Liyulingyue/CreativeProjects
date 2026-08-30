@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
-from ..deps import state
+from ..deps import state, get_storage_root
 from ..models import (
     BrowseResult,
     CreateFolderRequest,
@@ -93,7 +93,7 @@ def _path_to_filenode(path: Path) -> FileNode:
 
 @fs.get("/browse")
 def browse(path: Optional[str] = None) -> BrowseResult:
-    storage_path = state.get_settings().storage_path
+    storage_path = str(get_storage_root())
     if not path:
         target = Path(storage_path)
     else:
@@ -135,7 +135,7 @@ def browse(path: Optional[str] = None) -> BrowseResult:
 
 @fs.post("/create_folder")
 def create_folder(req: CreateFolderRequest) -> FileOperation:
-    storage_path = state.get_settings().storage_path
+    storage_path = str(get_storage_root())
     target = _safe_path(storage_path, Path(req.path) / req.name)
 
     try:
@@ -149,7 +149,7 @@ def create_folder(req: CreateFolderRequest) -> FileOperation:
 
 @fs.post("/move")
 def move(req: MoveRequest) -> FileOperation:
-    storage_path = state.get_settings().storage_path
+    storage_path = str(get_storage_root())
     src = _safe_path(storage_path, req.src)
     dest = _safe_path(storage_path, req.dest)
 
@@ -165,7 +165,7 @@ def move(req: MoveRequest) -> FileOperation:
 
 @fs.post("/copy")
 def copy(req: MoveRequest) -> FileOperation:
-    storage_path = state.get_settings().storage_path
+    storage_path = str(get_storage_root())
     src = _safe_path(storage_path, req.src)
     dest = _safe_path(storage_path, req.dest)
 
@@ -184,7 +184,7 @@ def copy(req: MoveRequest) -> FileOperation:
 
 @fs.post("/delete")
 def delete(req: DeleteRequest) -> FileOperation:
-    storage_path = state.get_settings().storage_path
+    storage_path = str(get_storage_root())
     target = _safe_path(storage_path, req.path)
 
     if not target.exists():
@@ -202,7 +202,7 @@ def delete(req: DeleteRequest) -> FileOperation:
 
 @fs.get("/info")
 def get_info(path: str) -> FileNode:
-    storage_path = state.get_settings().storage_path
+    storage_path = str(get_storage_root())
     target = _safe_path(storage_path, path)
 
     if not target.exists():
@@ -213,7 +213,7 @@ def get_info(path: str) -> FileNode:
 
 @fs.get("/tree")
 def get_tree(path: Optional[str] = None, depth: int = 2) -> dict:
-    storage_path = state.get_settings().storage_path
+    storage_path = str(get_storage_root())
     if not path:
         target = Path(storage_path)
     else:

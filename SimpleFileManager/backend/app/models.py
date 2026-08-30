@@ -63,6 +63,9 @@ class AppSettings(BaseModel):
     embedding_model: str = "text-embedding-3-small"
     embedding_dim: str = "AUTO"
     index_interval: int = 300
+    auto_index_enabled: bool = True
+    index_debounce_seconds: int = 10
+    max_agent_steps: int = 8
     storage_path: str = "./data"
     theme: str = "light"
 
@@ -163,3 +166,54 @@ class CompareResponse(BaseModel):
     deleted_files: list[FileChange]
     deleted_dirs: list[FileChange]
     suggestions: list[Suggestion]
+
+
+# ---- Agent Plan & Approval ----
+
+class PlanAction(BaseModel):
+    id: str
+    action_type: str  # move | rename | create_folder | delete
+    source_path: Optional[str] = None
+    target_path: Optional[str] = None
+    reason: str = ""
+    status: str = "pending"  # pending | done | failed | skipped
+    result: Optional[str] = None
+
+
+class PlanActionInput(BaseModel):
+    action_type: str
+    source_path: Optional[str] = None
+    target_path: Optional[str] = None
+    reason: str = ""
+
+
+class AgentPlan(BaseModel):
+    id: str
+    title: str
+    summary: str = ""
+    status: str = "pending"  # pending | approved | rejected | executed | executed_with_errors | failed
+    source: str = "agent"  # agent | suggestions | manual
+    actions: list[PlanAction] = []
+    created_at: int
+    decided_at: Optional[int] = None
+    executed_at: Optional[int] = None
+
+
+class CreatePlanRequest(BaseModel):
+    title: str
+    summary: str = ""
+    source: str = "manual"
+    actions: list[PlanActionInput]
+
+
+# ---- Auto Indexer ----
+
+class AutoIndexStatus(BaseModel):
+    enabled: bool
+    running: bool
+    interval: int
+    debounce_seconds: int
+    last_scan_time: Optional[str] = None
+    last_scan_files: int = 0
+    indexed_files: int = 0
+    pending_changes: int = 0

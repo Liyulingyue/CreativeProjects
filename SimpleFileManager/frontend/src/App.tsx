@@ -4,6 +4,8 @@ import { SearchPage } from './components/SearchPage';
 import { IndexPage } from './components/IndexPage';
 import { SimpleChat } from './components/SimpleChat';
 import { OrganizerPage } from './components/OrganizerPage';
+import { DigestPage } from './components/DigestPage';
+import { SettingsPage } from './components/SettingsPage';
 
 function App() {
   return (
@@ -62,6 +64,26 @@ function App() {
             >
               📋 整理
             </NavLink>
+            <NavLink
+              to="/digest"
+              className={({ isActive }) =>
+                `px-4 py-2 rounded-xl text-sm font-medium transition-colors ${
+                  isActive ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`
+              }
+            >
+              📰 日报
+            </NavLink>
+            <NavLink
+              to="/settings"
+              className={({ isActive }) =>
+                `px-4 py-2 rounded-xl text-sm font-medium transition-colors ${
+                  isActive ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`
+              }
+            >
+              ⚙️ 设置
+            </NavLink>
           </nav>
         </header>
 
@@ -72,6 +94,8 @@ function App() {
             <Route path="/index" element={<IndexPage />} />
             <Route path="/chat" element={<SimpleChat />} />
             <Route path="/organizer" element={<OrganizerPage />} />
+            <Route path="/digest" element={<DigestPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
           </Routes>
         </div>
       </div>
