@@ -167,6 +167,21 @@ export function Analysis() {
     }
   };
 
+  const selectUnanalyzed = () => {
+    if (!browse) return;
+    const analyzedPaths = new Set(
+      allResults.filter((r) => r.success).map((r) => r.file_path),
+    );
+    const unanalyzed = browse.items
+      .filter((i) => !i.is_dir && !analyzedPaths.has(i.path))
+      .map((i) => i.path);
+    setSelectedPaths((prev) => {
+      const next = new Set(prev);
+      for (const p of unanalyzed) next.add(p);
+      return next;
+    });
+  };
+
   const handleStartAll = async () => {
     if (!currentDir) return;
     setLoading(true);
@@ -271,6 +286,7 @@ export function Analysis() {
           onToggleSelect={toggleSelect}
           onSelect={handleNavigate}
           onSelectAll={selectAll}
+          onSelectUnanalyzed={selectUnanalyzed}
           onAction={handleStartSelected}
           onActionAll={handleStartAll}
           imageCount={imageCount}
@@ -351,6 +367,10 @@ export function Analysis() {
 
       <ImagePreview
         item={previewItem}
+        items={browse?.items.filter((i) => !i.is_dir)}
+        onNavigate={setPreviewItem}
+        selectedPaths={selectedPaths}
+        onToggleSelect={toggleSelect}
         onClose={() => setPreviewItem(null)}
         onAnalysisComplete={() => {
           listResults().then(setAllResults).catch(() => {});

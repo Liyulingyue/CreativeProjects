@@ -1329,6 +1329,31 @@ select {
   padding: var(--space-3) var(--space-5);
   border-bottom: 1px solid var(--c-border);
   flex-shrink: 0;
+  gap: var(--space-3);
+}
+
+.image-preview__header > .image-preview__name {
+  flex: 1;
+  min-width: 0;
+}
+
+.image-preview__check {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.image-preview__check input {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  accent-color: var(--c-primary, #4a9eff);
+}
+
+.image-preview__counter {
+  color: var(--c-text-3, var(--c-text-2));
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .image-preview__header button {
@@ -1338,6 +1363,11 @@ select {
   cursor: pointer;
   padding: var(--space-1) var(--space-2);
   color: var(--c-text-2);
+}
+
+.image-preview__header button:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 .image-preview__header button:hover {
