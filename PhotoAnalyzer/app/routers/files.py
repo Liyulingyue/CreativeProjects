@@ -219,7 +219,7 @@ def get_file_siblings(path: str = Query(...)):
     return {"siblings": siblings, "count": len(siblings)}
 
 
-RAW_EXTENSIONS = {".cr2", ".arw", ".dng", ".nef", ".orf", ".rw2", ".pef", ".srw", ".raf"}
+RAW_EXTENSIONS = {".cr2", ".cr3", ".arw", ".dng", ".nef", ".orf", ".rw2", ".pef", ".srw", ".raf"}
 
 
 @router.get("/files/orphaned-raws")

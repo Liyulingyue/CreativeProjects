@@ -4,7 +4,7 @@ use std::path::Path;
 use crate::models::{FsBrowseResult, FsEntry, FsSuggestResult};
 
 const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff"];
-const RAW_EXTENSIONS: &[&str] = &["cr2", "arw", "dng", "nef", "orf", "rw2", "pef", "srw", "raf"];
+const RAW_EXTENSIONS: &[&str] = &["cr2", "cr3", "arw", "dng", "nef", "orf", "rw2", "pef", "srw", "raf"];
 
 fn get_home() -> String {
     std::env::var("USERPROFILE")
