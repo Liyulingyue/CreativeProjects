@@ -367,14 +367,8 @@ export function FileManagerPage() {
   };
 
   return (
-    <>
-      <input
-        ref={fileInputRef}
-        type="file"
-        multiple
-        className="hidden"
-        onChange={handleUpload}
-      />
+    <div className="flex flex-col h-full overflow-hidden">
+      <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleUpload} />
       <Toolbar
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
@@ -390,9 +384,9 @@ export function FileManagerPage() {
         viewMode={viewMode}
         onViewModeChange={setViewMode}
       />
-      <div className="flex" style={{ height: 'calc(100vh - 130px)' }}>
+      <div className="flex flex-1 overflow-hidden">
         <Sidebar tree={tree} onNavigate={handleNavigate} currentPath={currentPath} />
-        <div className="flex-1 overflow-auto bg-slate-50/50">
+        <div className="flex-1 overflow-auto flex flex-col">
           <Breadcrumb path={currentPath} onNavigate={handleNavigate} />
           {isLoading ? (
             <div className="flex items-center justify-center py-12">
@@ -403,13 +397,11 @@ export function FileManagerPage() {
             <div className="text-center py-12 text-red-500">{error}</div>
           ) : browseResult ? (
             <>
-              <div className="px-4 py-2 text-xs text-slate-500 bg-white border-b border-slate-100 flex items-center justify-between">
-                <span>{browseResult.total_count} 项 | {browseResult.dirs_count} 文件夹 | {browseResult.files_count} 文件</span>
-                {selectedPaths.size > 0 && (
-                  <span className="text-indigo-600 font-medium">已选 {selectedPaths.size} 项</span>
-                )}
+              <div className="px-4 py-1.5 text-xs text-slate-500 bg-white border-b border-slate-100 flex items-center justify-between flex-shrink-0">
+                <span>{browseResult.total_count} 项 · {browseResult.dirs_count} 文件夹 · {browseResult.files_count} 文件</span>
+                {selectedPaths.size > 0 && <span className="text-indigo-600 font-medium">已选 {selectedPaths.size} 项</span>}
               </div>
-              {renderFileList()}
+              <div className="flex-1 overflow-auto bg-slate-50/30">{renderFileList()}</div>
             </>
           ) : null}
         </div>
@@ -422,20 +414,18 @@ export function FileManagerPage() {
           items={[
             {
               label: contextMenu.node.is_dir ? '打开' : '预览',
-              icon: contextMenu.node.is_dir ? '📂' : '👁',
+              icon: contextMenu.node.is_dir ? 'folder' : 'eye',
               onClick: () => handleDoubleClick(contextMenu.node),
             },
-            { label: '下载', icon: '⬇', onClick: () => handleDownload(contextMenu.node) },
-            { label: '重命名', icon: '✏️', onClick: () => handleRename(contextMenu.node) },
-            { label: '删除', icon: '🗑', danger: true, onClick: () => handleDelete(contextMenu.node) },
+            { label: '下载', icon: 'download', onClick: () => handleDownload(contextMenu.node) },
+            { label: '重命名', icon: 'edit', onClick: () => handleRename(contextMenu.node) },
+            { label: '删除', icon: 'trash', danger: true, onClick: () => handleDelete(contextMenu.node) },
           ]}
           onClose={() => setContextMenu(null)}
         />
       )}
 
-      {previewNode && (
-        <FilePreview node={previewNode} onClose={() => setPreviewNode(null)} />
-      )}
+      {previewNode && <FilePreview node={previewNode} onClose={() => setPreviewNode(null)} />}
 
       {confirmDialog && (
         <ConfirmDialog
@@ -458,6 +448,6 @@ export function FileManagerPage() {
           onCancel={() => setPromptDialog(null)}
         />
       )}
-    </>
+    </div>
   );
 }

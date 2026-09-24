@@ -9,6 +9,10 @@ export function useCamera() {
 
   const start = useCallback(async (facingMode) => {
     try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error('相机 API 不可用，请通过 HTTPS 或 localhost 访问');
+      }
+
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((t) => t.stop());
       }

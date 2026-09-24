@@ -1,6 +1,7 @@
 import type { MouseEvent, DragEvent } from 'react';
 import type { FileNode } from '../../api';
-import { formatSize, formatDate, getFileIcon } from './utils';
+import { formatSize, formatDate } from './utils';
+import { FileIcon, Icon } from '../ui/Icon';
 
 interface FileCompactListProps {
   items: FileNode[];
@@ -26,40 +27,29 @@ export default function FileCompactList({
 }: FileCompactListProps) {
   const folders = items.filter(i => i.is_dir);
   const files = items.filter(i => !i.is_dir);
+  const hoverBtn = 'p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors';
+  const hoverBtnDanger = 'p-1 rounded text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors';
 
   return (
-    <div className="flex flex-col space-y-1 p-2">
-      {/* Compact View Header */}
-      <div className="flex items-center px-4 py-1.5 bg-slate-50/50 rounded-lg text-[8px] font-bold text-slate-400 uppercase tracking-tight border border-slate-100/50 mb-1">
-        <div className="w-8"></div>
+    <div className="flex flex-col p-2 gap-0.5">
+      {/* Header */}
+      <div className="flex items-center px-2 py-1.5 text-[10px] font-medium text-slate-400 uppercase tracking-wider border-b border-slate-200 mb-0.5">
+        <div className="w-7"></div>
         <div className="flex-1">名称</div>
-        <div className="w-16 text-center">类型</div>
-        <div className="w-16 text-center">大小</div>
-        <div className="w-24 text-center">修改日期</div>
-        <div className="w-20 text-right pr-2">操作</div>
+        <div className="w-14 text-right">大小</div>
+        <div className="w-20 text-right">修改日期</div>
+        <div className="w-16 text-right pr-1">操作</div>
       </div>
 
-      {/* Back Button */}
+      {/* Back */}
       {hasParent && (
         <div
           onClick={onBack}
           onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-          }}
-          className="group flex items-center px-4 py-2 transition-all border bg-slate-50/50 border-slate-100 hover:shadow-sm rounded-lg cursor-pointer hover:bg-slate-100"
+          className="flex items-center px-2 py-1.5 rounded-md hover:bg-slate-100 cursor-pointer transition-colors group"
         >
-          <div className="w-8 flex items-center justify-center">
-            <span className="text-base group-hover:scale-110 transition-transform">⬆</span>
-          </div>
-          <div className="flex-1 text-[10px] font-bold text-slate-600 uppercase">..</div>
-          <div className="w-16 text-[8px] text-slate-400 font-medium uppercase text-center">BACK</div>
-          <div className="w-16 text-[8px] text-slate-300 font-medium text-center">--</div>
-          <div className="w-24 text-[8px] text-slate-300 font-medium text-center">--</div>
-          <div className="w-20 flex justify-end">
-            <span className="text-[7px] text-slate-300 mr-1">返回</span>
-          </div>
+          <div className="w-7 flex items-center"><Icon name="arrowLeft" size={14} className="text-slate-400" /></div>
+          <div className="flex-1 text-xs text-slate-500">..</div>
         </div>
       )}
 
@@ -73,42 +63,27 @@ export default function FileCompactList({
             key={folder.path}
             draggable
             onDragStart={(e) => onDragStart(e, folder)}
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDragOverFolder(folder.path);
-            }}
+            onDragOver={(e) => { e.preventDefault(); setDragOverFolder(folder.path); }}
             onDragLeave={() => setDragOverFolder(null)}
-            onDrop={(e) => {
-              setDragOverFolder(null);
-              onDrop(e, folder.path);
-            }}
+            onDrop={(e) => { setDragOverFolder(null); onDrop(e, folder.path); }}
             onClick={(e) => onSelect(folder, e)}
             onDoubleClick={() => onDoubleClick(folder)}
             onContextMenu={(e) => onContextMenu(e, folder)}
-            className={`group flex items-center px-4 py-2 transition-all border rounded-lg cursor-pointer ${
+            className={`group flex items-center px-2 py-1.5 rounded-md transition-colors border cursor-pointer ${
               isDragOver
-                ? 'bg-indigo-50 border-indigo-400 translate-x-1'
+                ? 'bg-indigo-50 border-indigo-300'
                 : isSelected
-                  ? 'bg-indigo-50 border-indigo-300'
-                  : 'bg-white border-slate-50 hover:shadow-sm'
+                  ? 'bg-indigo-50 border-transparent'
+                  : 'border-transparent hover:bg-slate-50'
             }`}
           >
-            <div className="w-8 flex items-center justify-center">
-              <span className="text-base group-hover:scale-110 transition-transform">{getFileIcon(folder)}</span>
-            </div>
-            <div className="flex-1 text-[10px] font-bold text-slate-700 tracking-tight truncate">{folder.name}</div>
-            <div className="w-16 text-[8px] text-slate-400 font-medium uppercase text-center">FOLDER</div>
-            <div className="w-16 text-[8px] text-slate-300 font-medium text-center">--</div>
-            <div className="w-24 text-[8px] text-slate-300 font-medium text-center">{formatDate(folder.modified)}</div>
-            <div className="w-20 flex justify-end space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
-              <button
-                onClick={(e) => { e.stopPropagation(); onRename(folder); }}
-                className="w-5 h-5 flex items-center justify-center rounded bg-slate-100 text-slate-600 hover:bg-slate-200 active:scale-90 transition-all text-[7px]"
-              >✏️</button>
-              <button
-                onClick={(e) => { e.stopPropagation(); onDelete(folder); }}
-                className="w-5 h-5 flex items-center justify-center rounded bg-red-100 text-red-600 hover:bg-red-200 active:scale-90 transition-all text-[7px]"
-              >✕</button>
+            <div className="w-7 flex items-center"><FileIcon node={folder} size={16} /></div>
+            <div className="flex-1 text-xs text-slate-700 truncate">{folder.name}</div>
+            <div className="w-14 text-[10px] text-slate-400 text-right">—</div>
+            <div className="w-20 text-[10px] text-slate-400 text-right">{formatDate(folder.modified)}</div>
+            <div className="w-16 flex justify-end gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+              <button onClick={(e) => { e.stopPropagation(); onRename(folder); }} className={hoverBtn}><Icon name="edit" size={12} /></button>
+              <button onClick={(e) => { e.stopPropagation(); onDelete(folder); }} className={hoverBtnDanger}><Icon name="trash" size={12} /></button>
             </div>
           </div>
         );
@@ -126,33 +101,20 @@ export default function FileCompactList({
             onClick={(e) => onSelect(file, e)}
             onDoubleClick={() => onDoubleClick(file)}
             onContextMenu={(e) => onContextMenu(e, file)}
-            className={`group flex items-center px-4 py-2 rounded-lg transition-all border ${
+            className={`group flex items-center px-2 py-1.5 rounded-md transition-colors border ${
               isSelected
-                ? 'bg-indigo-50 border-indigo-300'
-                : 'bg-white border-slate-50 hover:shadow-sm'
+                ? 'bg-indigo-50 border-transparent'
+                : 'border-transparent hover:bg-slate-50'
             }`}
           >
-            <div className="w-8 flex items-center justify-center">
-              <span className="text-base group-hover:scale-110 transition-transform">{getFileIcon(file)}</span>
-            </div>
-            <div className="flex-1 text-[10px] font-bold text-slate-800 tracking-tight truncate">{file.name}</div>
-            <div className="w-16 text-[8px] text-slate-400 font-medium uppercase text-center">{file.extension.slice(1) || 'FILE'}</div>
-            <div className="w-16 text-[8px] text-slate-500 font-medium text-center">{formatSize(file.size)}</div>
-            <div className="w-24 text-[8px] text-slate-400 font-medium text-center">{formatDate(file.modified)}</div>
-            <div className="w-20 flex justify-end space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
-              <button
-                onClick={(e) => { e.stopPropagation(); onDownload(file); }}
-                className="w-5 h-5 flex items-center justify-center rounded bg-indigo-600 text-white shadow-sm hover:bg-indigo-700 active:scale-90 transition-all text-[7px]"
-                title="下载"
-              >⬇</button>
-              <button
-                onClick={(e) => { e.stopPropagation(); onRename(file); }}
-                className="w-5 h-5 flex items-center justify-center rounded bg-slate-100 text-slate-600 hover:bg-slate-200 active:scale-90 transition-all text-[7px]"
-              >✏️</button>
-              <button
-                onClick={(e) => { e.stopPropagation(); onDelete(file); }}
-                className="w-5 h-5 flex items-center justify-center rounded bg-red-100 text-red-600 hover:bg-red-200 active:scale-90 transition-all text-[7px]"
-              >✕</button>
+            <div className="w-7 flex items-center"><FileIcon node={file} size={16} /></div>
+            <div className="flex-1 text-xs text-slate-800 truncate">{file.name}</div>
+            <div className="w-14 text-[10px] text-slate-500 text-right">{formatSize(file.size)}</div>
+            <div className="w-20 text-[10px] text-slate-400 text-right">{formatDate(file.modified)}</div>
+            <div className="w-16 flex justify-end gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+              <button onClick={(e) => { e.stopPropagation(); onDownload(file); }} className={hoverBtn}><Icon name="download" size={12} /></button>
+              <button onClick={(e) => { e.stopPropagation(); onRename(file); }} className={hoverBtn}><Icon name="edit" size={12} /></button>
+              <button onClick={(e) => { e.stopPropagation(); onDelete(file); }} className={hoverBtnDanger}><Icon name="trash" size={12} /></button>
             </div>
           </div>
         );
