@@ -384,3 +384,56 @@ export async function fetchDigest(date: string): Promise<Digest> {
   if (!res.ok) throw new Error('Failed to fetch digest');
   return res.json();
 }
+
+// ---- File Download / Upload / Content ----
+
+export function downloadUrl(path: string): string {
+  return `${API_BASE}/fs/download?path=${encodeURIComponent(path)}`;
+}
+
+export function downloadFile(path: string): void {
+  const link = document.createElement('a');
+  link.href = downloadUrl(path);
+  link.download = path.split(/[/\\]/).pop() || 'download';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+export async function uploadFiles(path: string, files: FileList): Promise<{ success: boolean; uploaded: string[]; count: number }> {
+  const formData = new FormData();
+  for (const file of Array.from(files)) {
+    formData.append('files', file);
+  }
+  const res = await fetch(`${API_BASE}/fs/upload?path=${encodeURIComponent(path)}`, {
+    method: 'POST',
+    body: formData,
+  });
+  if (!res.ok) throw new Error('Failed to upload files');
+  return res.json();
+}
+
+export interface FileContent {
+  path: string;
+  name: string;
+  content: string;
+  truncated: boolean;
+  size: number;
+  mime_type: string;
+}
+
+export async function fetchFileContent(path: string): Promise<FileContent> {
+  const res = await fetch(`${API_BASE}/fs/content?path=${encodeURIComponent(path)}`);
+  if (!res.ok) throw new Error('Failed to fetch file content');
+  return res.json();
+}
+
+export async function copyPath(src: string, dest: string): Promise<FileOperation> {
+  const res = await fetch(`${API_BASE}/fs/copy`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ src, dest }),
+  });
+  if (!res.ok) throw new Error('Failed to copy');
+  return res.json();
+}

@@ -1,17 +1,26 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { fetchBrowse, fetchTree, createFolder, deletePath, movePath, searchFiles, type BrowseResult, type FileNode, type TreeNode } from '../api';
-import { FileGrid, FileList, FileCompactList, Toolbar, Breadcrumb } from './FileExplorer';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import {
+  fetchBrowse, fetchTree, createFolder, deletePath, movePath, searchFiles,
+  uploadFiles, downloadFile,
+  type BrowseResult, type FileNode, type TreeNode,
+} from '../api';
+import { FileGrid, FileList, FileCompactList, Toolbar, Breadcrumb, isPreviewable } from './FileExplorer';
 import { Sidebar } from './Sidebar';
+import { FilePreview } from './FilePreview';
 import ContextMenu from './ui/ContextMenu';
 import { ConfirmDialog, PromptDialog } from './ui/Dialog';
+import { useToast } from './ui/Toast';
 
 type ViewMode = 'grid' | 'list' | 'compact';
 
 export function FileManagerPage() {
+  const { toast } = useToast();
+
   const [browseResult, setBrowseResult] = useState<BrowseResult | null>(null);
   const [tree, setTree] = useState<TreeNode | null>(null);
   const [currentPath, setCurrentPath] = useState<string>('');
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
+  const [lastSelectedPath, setLastSelectedPath] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -24,9 +33,12 @@ export function FileManagerPage() {
   const [newFolderName, setNewFolderName] = useState('');
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; node: FileNode } | null>(null);
+  const [previewNode, setPreviewNode] = useState<FileNode | null>(null);
 
   const [confirmDialog, setConfirmDialog] = useState<{ open: boolean; title: string; message: string; onConfirm: () => void } | null>(null);
   const [promptDialog, setPromptDialog] = useState<{ open: boolean; title: string; message: string; defaultValue: string; onConfirm: (value: string) => void } | null>(null);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const loadBrowse = useCallback(async (path?: string) => {
     setIsLoading(true);
@@ -57,22 +69,49 @@ export function FileManagerPage() {
   }, [loadBrowse, loadTree]);
 
   const handleNavigate = (path: string) => {
-    setSelectedPath(null);
+    setSelectedPaths(new Set());
+    setLastSelectedPath(null);
     loadBrowse(path);
     loadTree();
   };
 
-  const handleSelect = (node: FileNode) => {
-    if (node.is_dir) {
-      handleNavigate(node.path);
+  const handleSelect = (node: FileNode, e: React.MouseEvent) => {
+    if (e.ctrlKey || e.metaKey) {
+      setSelectedPaths(prev => {
+        const next = new Set(prev);
+        if (next.has(node.path)) {
+          next.delete(node.path);
+        } else {
+          next.add(node.path);
+        }
+        return next;
+      });
+      setLastSelectedPath(node.path);
+    } else if (e.shiftKey && lastSelectedPath && browseResult) {
+      const items = browseResult.items;
+      const startIdx = items.findIndex(i => i.path === lastSelectedPath);
+      const endIdx = items.findIndex(i => i.path === node.path);
+      if (startIdx !== -1 && endIdx !== -1) {
+        const from = Math.min(startIdx, endIdx);
+        const to = Math.max(startIdx, endIdx);
+        const range = new Set(items.slice(from, to + 1).map(i => i.path));
+        setSelectedPaths(range);
+      }
     } else {
-      setSelectedPath(node.path);
+      if (node.is_dir) {
+        handleNavigate(node.path);
+      } else {
+        setSelectedPaths(new Set([node.path]));
+        setLastSelectedPath(node.path);
+      }
     }
   };
 
   const handleDoubleClick = (node: FileNode) => {
     if (node.is_dir) {
       handleNavigate(node.path);
+    } else if (isPreviewable(node)) {
+      setPreviewNode(node);
     }
   };
 
@@ -92,10 +131,11 @@ export function FileManagerPage() {
       await movePath(dragSource.path, targetFolder + '/' + dragSource.name);
       setDragSource(null);
       setDragOverFolder(null);
+      toast('已移动到 ' + targetFolder.split(/[/\\]/).pop(), 'success');
       loadBrowse(currentPath);
       loadTree();
     } catch (err) {
-      alert('移动失败: ' + (err instanceof Error ? err.message : 'Unknown error'));
+      toast('移动失败: ' + (err instanceof Error ? err.message : 'Unknown error'), 'error');
     }
   };
 
@@ -120,8 +160,9 @@ export function FileManagerPage() {
         dirs_count: 0,
         files_count: result.items.length,
       });
+      setSelectedPaths(new Set());
     } catch (err) {
-      alert('搜索失败: ' + (err instanceof Error ? err.message : 'Unknown error'));
+      toast('搜索失败: ' + (err instanceof Error ? err.message : 'Unknown error'), 'error');
     } finally {
       setIsLoading(false);
     }
@@ -129,48 +170,85 @@ export function FileManagerPage() {
 
   const handleContextMenu = (e: React.MouseEvent, node: FileNode) => {
     e.preventDefault();
+    if (!selectedPaths.has(node.path)) {
+      setSelectedPaths(new Set([node.path]));
+      setLastSelectedPath(node.path);
+    }
     setContextMenu({ x: e.clientX, y: e.clientY, node });
   };
 
-  const handleDelete = async () => {
-    if (!selectedPath) return;
-    const item = browseResult?.items.find(i => i.path === selectedPath);
+  const handleDelete = (nodes?: FileNode | FileNode[]) => {
+    const toDelete = nodes
+      ? (Array.isArray(nodes) ? nodes : [nodes])
+      : Array.from(selectedPaths).map(p => browseResult?.items.find(i => i.path === p)).filter(Boolean) as FileNode[];
+
+    if (toDelete.length === 0) return;
+
+    const names = toDelete.map(n => n.name).join(', ');
+    const isMulti = toDelete.length > 1;
+    const hasFolder = toDelete.some(n => n.is_dir);
+
     setConfirmDialog({
       open: true,
-      title: `删除${item?.is_dir ? '文件夹' : '文件'}`,
-      message: `确定要删除 "${item?.name}" 吗？${item?.is_dir ? '文件夹内的所有内容将被删除。' : ''}`,
+      title: `删除${isMulti ? `${toDelete.length} 项` : (hasFolder ? '文件夹' : '文件')}`,
+      message: `确定要删除 "${names}" 吗？${hasFolder ? '文件夹内的所有内容将被删除。' : ''}此操作不可恢复。`,
       onConfirm: async () => {
-        try {
-          await deletePath(selectedPath);
-          setSelectedPath(null);
-          loadBrowse(currentPath);
-          loadTree();
-        } catch (err) {
-          alert('删除失败: ' + (err instanceof Error ? err.message : 'Unknown error'));
+        let succeeded = 0;
+        let failed = 0;
+        for (const node of toDelete) {
+          try {
+            await deletePath(node.path);
+            succeeded++;
+          } catch {
+            failed++;
+          }
         }
+        if (succeeded > 0) {
+          toast(`已删除 ${succeeded} 项${failed > 0 ? `，${failed} 项失败` : ''}`, failed > 0 ? 'error' : 'success');
+        } else {
+          toast('删除失败', 'error');
+        }
+        setSelectedPaths(new Set());
         setConfirmDialog(null);
-      }
+        loadBrowse(currentPath);
+        loadTree();
+      },
     });
   };
 
   const handleMove = () => {
-    if (!selectedPath || !tree) return;
+    if (selectedPaths.size === 0 || !tree) return;
+    const firstPath = Array.from(selectedPaths)[0];
     setPromptDialog({
       open: true,
-      title: '移动',
-      message: '输入新的完整路径：',
-      defaultValue: selectedPath,
-      onConfirm: async (newPath) => {
-        try {
-          await movePath(selectedPath, newPath);
-          setSelectedPath(null);
-          loadBrowse(currentPath);
-          loadTree();
-        } catch (err) {
-          alert('移动失败: ' + (err instanceof Error ? err.message : 'Unknown error'));
+      title: selectedPaths.size > 1 ? `移动 ${selectedPaths.size} 项` : '移动',
+      message: selectedPaths.size > 1
+        ? `输入目标目录路径（${selectedPaths.size} 个文件将移动到此目录下）：`
+        : '输入新的完整路径：',
+      defaultValue: selectedPaths.size > 1 ? currentPath : firstPath,
+      onConfirm: async (targetPath) => {
+        let succeeded = 0;
+        let failed = 0;
+        for (const srcPath of selectedPaths) {
+          const name = srcPath.split(/[/\\]/).pop() || '';
+          const dest = selectedPaths.size > 1 ? targetPath + '/' + name : targetPath;
+          try {
+            await movePath(srcPath, dest);
+            succeeded++;
+          } catch {
+            failed++;
+          }
         }
+        if (succeeded > 0) {
+          toast(`已移动 ${succeeded} 项${failed > 0 ? `，${failed} 项失败` : ''}`, failed > 0 ? 'error' : 'success');
+        } else {
+          toast('移动失败', 'error');
+        }
+        setSelectedPaths(new Set());
         setPromptDialog(null);
-      }
+        loadBrowse(currentPath);
+        loadTree();
+      },
     });
   };
 
@@ -178,12 +256,13 @@ export function FileManagerPage() {
     if (!newFolderName.trim()) return;
     try {
       await createFolder(currentPath, newFolderName.trim());
+      toast('文件夹已创建', 'success');
       setIsCreatingFolder(false);
       setNewFolderName('');
       loadBrowse(currentPath);
       loadTree();
     } catch (err) {
-      alert('创建失败: ' + (err instanceof Error ? err.message : 'Unknown error'));
+      toast('创建失败: ' + (err instanceof Error ? err.message : 'Unknown error'), 'error');
     }
   };
 
@@ -200,14 +279,49 @@ export function FileManagerPage() {
         const newPath = parentPath + sep + newName;
         try {
           await movePath(node.path, newPath);
+          toast('已重命名', 'success');
           loadBrowse(currentPath);
           loadTree();
         } catch (err) {
-          alert('重命名失败: ' + (err instanceof Error ? err.message : 'Unknown error'));
+          toast('重命名失败: ' + (err instanceof Error ? err.message : 'Unknown error'), 'error');
         }
         setPromptDialog(null);
-      }
+      },
     });
+  };
+
+  const handleDownload = (node?: FileNode) => {
+    if (node) {
+      downloadFile(node.path);
+      toast('开始下载 ' + node.name, 'info');
+    } else if (selectedPaths.size === 1) {
+      const path = Array.from(selectedPaths)[0];
+      const node = browseResult?.items.find(i => i.path === path);
+      if (node && !node.is_dir) {
+        downloadFile(node.path);
+        toast('开始下载 ' + node.name, 'info');
+      }
+    }
+  };
+
+  const handleUploadClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    try {
+      const result = await uploadFiles(currentPath, files);
+      toast(`已上传 ${result.count} 个文件`, 'success');
+      loadBrowse(currentPath);
+      loadTree();
+    } catch (err) {
+      toast('上传失败: ' + (err instanceof Error ? err.message : 'Unknown error'), 'error');
+    }
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
   };
 
   const renderFileList = () => {
@@ -215,17 +329,15 @@ export function FileManagerPage() {
 
     const props = {
       items: browseResult.items,
-      selectedPath,
+      selectedPaths,
       onSelect: handleSelect,
       onDoubleClick: handleDoubleClick,
       onContextMenu: handleContextMenu,
       onDragStart: handleDragStart,
       onDrop: handleDrop,
       onRename: handleRename,
-      onDelete: (node: FileNode) => {
-        setSelectedPath(node.path);
-        handleDelete();
-      },
+      onDelete: (node: FileNode) => handleDelete(node),
+      onDownload: (node: FileNode) => handleDownload(node),
       dragOverFolder,
       setDragOverFolder,
       onBack: () => browseResult.parent_path && handleNavigate(browseResult.parent_path),
@@ -256,15 +368,25 @@ export function FileManagerPage() {
 
   return (
     <>
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={handleUpload}
+      />
       <Toolbar
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         onSearch={handleSearch}
         onRefresh={handleRefresh}
         onNewFolder={() => setIsCreatingFolder(true)}
-        onDelete={handleDelete}
+        onDelete={() => handleDelete()}
         onMove={handleMove}
-        hasSelection={!!selectedPath}
+        onUpload={handleUploadClick}
+        onDownload={() => handleDownload()}
+        hasSelection={selectedPaths.size > 0}
+        selectionCount={selectedPaths.size}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
       />
@@ -281,8 +403,11 @@ export function FileManagerPage() {
             <div className="text-center py-12 text-red-500">{error}</div>
           ) : browseResult ? (
             <>
-              <div className="px-4 py-2 text-xs text-slate-500 bg-white border-b border-slate-100">
-                {browseResult.total_count} 项 | {browseResult.dirs_count} 文件夹 | {browseResult.files_count} 文件
+              <div className="px-4 py-2 text-xs text-slate-500 bg-white border-b border-slate-100 flex items-center justify-between">
+                <span>{browseResult.total_count} 项 | {browseResult.dirs_count} 文件夹 | {browseResult.files_count} 文件</span>
+                {selectedPaths.size > 0 && (
+                  <span className="text-indigo-600 font-medium">已选 {selectedPaths.size} 项</span>
+                )}
               </div>
               {renderFileList()}
             </>
@@ -295,12 +420,21 @@ export function FileManagerPage() {
           x={contextMenu.x}
           y={contextMenu.y}
           items={[
-            { label: '打开', icon: contextMenu.node.is_dir ? '📂' : '📄', onClick: () => handleDoubleClick(contextMenu.node) },
+            {
+              label: contextMenu.node.is_dir ? '打开' : '预览',
+              icon: contextMenu.node.is_dir ? '📂' : '👁',
+              onClick: () => handleDoubleClick(contextMenu.node),
+            },
+            { label: '下载', icon: '⬇', onClick: () => handleDownload(contextMenu.node) },
             { label: '重命名', icon: '✏️', onClick: () => handleRename(contextMenu.node) },
-            { label: '删除', icon: '🗑', danger: true, onClick: () => { setSelectedPath(contextMenu.node.path); handleDelete(); } },
+            { label: '删除', icon: '🗑', danger: true, onClick: () => handleDelete(contextMenu.node) },
           ]}
           onClose={() => setContextMenu(null)}
         />
+      )}
+
+      {previewNode && (
+        <FilePreview node={previewNode} onClose={() => setPreviewNode(null)} />
       )}
 
       {confirmDialog && (

@@ -1,16 +1,18 @@
 import type { MouseEvent, DragEvent } from 'react';
 import type { FileNode } from '../../api';
+import { formatSize, getFileIcon } from './utils';
 
 interface FileGridProps {
   items: FileNode[];
-  selectedPath: string | null;
-  onSelect: (node: FileNode) => void;
+  selectedPaths: Set<string>;
+  onSelect: (node: FileNode, e: MouseEvent) => void;
   onDoubleClick: (node: FileNode) => void;
   onContextMenu: (e: MouseEvent, node: FileNode) => void;
   onDragStart: (e: DragEvent, node: FileNode) => void;
   onDrop: (e: DragEvent, targetFolder: string) => void;
   onRename: (node: FileNode) => void;
   onDelete: (node: FileNode) => void;
+  onDownload: (node: FileNode) => void;
   dragOverFolder: string | null;
   setDragOverFolder: (folder: string | null) => void;
   isCreatingFolder: boolean;
@@ -22,35 +24,9 @@ interface FileGridProps {
   hasParent: boolean;
 }
 
-function formatSize(bytes: number): string {
-  if (bytes === 0) return '';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-}
-
-function getFileIcon(node: FileNode): string {
-  if (node.is_dir) return '📁';
-  const ext = node.extension.toLowerCase();
-  const iconMap: Record<string, string> = {
-    '.jpg': '🖼️', '.jpeg': '🖼️', '.png': '🖼️', '.gif': '🖼️', '.webp': '🖼️', '.svg': '🖼️',
-    '.mp4': '🎬', '.avi': '🎬', '.mkv': '🎬', '.mov': '🎬',
-    '.mp3': '🎵', '.wav': '🎵', '.ogg': '🎵', '.flac': '🎵',
-    '.pdf': '📄', '.doc': '📝', '.docx': '📝',
-    '.xls': '📊', '.xlsx': '📊',
-    '.zip': '📦', '.tar': '📦', '.gz': '📦', '.7z': '📦', '.rar': '📦',
-    '.txt': '📃', '.md': '📃',
-    '.json': '📋', '.xml': '📋', '.yaml': '📋', '.yml': '📋',
-    '.html': '🌐', '.css': '🎨', '.js': '💻', '.ts': '💻',
-    '.py': '🐍', '.rs': '🦀', '.go': '🐹', '.java': '☕',
-  };
-  return iconMap[ext] || '📄';
-}
-
 export default function FileGrid({
-  items, selectedPath, onSelect, onDoubleClick, onContextMenu,
-  onDragStart, onDrop, onRename, onDelete, dragOverFolder, setDragOverFolder,
+  items, selectedPaths, onSelect, onDoubleClick, onContextMenu,
+  onDragStart, onDrop, onRename, onDelete, onDownload, dragOverFolder, setDragOverFolder,
   isCreatingFolder, newFolderName, setNewFolderName, onCreateFolder, onCancelCreateFolder,
   onBack, hasParent
 }: FileGridProps) {
@@ -104,7 +80,7 @@ export default function FileGrid({
       {/* Folders */}
       {folders.map(folder => {
         const isDragOver = dragOverFolder === folder.path;
-        const isSelected = selectedPath === folder.path;
+        const isSelected = selectedPaths.has(folder.path);
 
         return (
           <div
@@ -120,38 +96,36 @@ export default function FileGrid({
               setDragOverFolder(null);
               onDrop(e, folder.path);
             }}
-            onClick={() => onSelect(folder)}
+            onClick={(e) => onSelect(folder, e)}
             onDoubleClick={() => onDoubleClick(folder)}
             onContextMenu={(e) => onContextMenu(e, folder)}
             className={`group relative flex flex-col items-center p-4 rounded-2xl transition-all border-2 cursor-pointer ${
               isDragOver
                 ? 'bg-indigo-50 border-indigo-400 scale-110 z-10 shadow-2xl'
                 : isSelected
-                  ? 'bg-indigo-50 border-indigo-200 shadow-lg'
+                  ? 'bg-indigo-50 border-indigo-300 shadow-lg'
                   : 'hover:bg-white hover:shadow-xl border-transparent hover:scale-105'
             }`}
           >
+            {selectedPaths.size > 1 && isSelected && (
+              <div className="absolute top-1 left-1 w-5 h-5 rounded-full bg-indigo-600 text-white text-[10px] flex items-center justify-center font-bold z-10">
+                {selectedPaths.size}
+              </div>
+            )}
             <div className="text-5xl mb-2 transition-transform duration-500 group-hover:rotate-12">{getFileIcon(folder)}</div>
             <span className="text-[11px] font-black text-slate-700 truncate w-full text-center px-2 tracking-tight">
               {folder.name}
             </span>
 
-            {/* Hover Actions */}
             <div className="absolute -bottom-2 opacity-0 group-hover:opacity-100 transition-all flex space-x-2 bg-white px-3 py-1.5 rounded-2xl shadow-xl border border-slate-50 z-10">
               <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onRename(folder);
-                }}
+                onClick={(e) => { e.stopPropagation(); onRename(folder); }}
                 className="text-[10px] grayscale hover:grayscale-0 transition-all"
               >
                 ✏️
               </button>
               <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDelete(folder);
-                }}
+                onClick={(e) => { e.stopPropagation(); onDelete(folder); }}
                 className="text-[10px] grayscale hover:grayscale-0 transition-all"
               >
                 ✕
@@ -163,22 +137,27 @@ export default function FileGrid({
 
       {/* Files */}
       {files.map(file => {
-        const isSelected = selectedPath === file.path;
+        const isSelected = selectedPaths.has(file.path);
 
         return (
           <div
             key={file.path}
             draggable
             onDragStart={(e) => onDragStart(e, file)}
-            onClick={() => onSelect(file)}
+            onClick={(e) => onSelect(file, e)}
             onDoubleClick={() => onDoubleClick(file)}
             onContextMenu={(e) => onContextMenu(e, file)}
             className={`group relative flex flex-col items-center p-4 rounded-2xl cursor-default transition-all border hover:scale-105 ${
               isSelected
-                ? 'bg-indigo-50 border-indigo-200 shadow-lg'
+                ? 'bg-indigo-50 border-indigo-300 shadow-lg'
                 : 'hover:bg-white hover:shadow-xl border-transparent'
             }`}
           >
+            {selectedPaths.size > 1 && isSelected && (
+              <div className="absolute top-1 left-1 w-5 h-5 rounded-full bg-indigo-600 text-white text-[10px] flex items-center justify-center font-bold z-10">
+                {selectedPaths.size}
+              </div>
+            )}
             <div className="text-5xl mb-2 transition-transform duration-500 group-hover:-rotate-12">{getFileIcon(file)}</div>
             <span className="text-[11px] font-black text-slate-800 truncate w-full text-center px-1 tracking-tight" title={file.name}>
               {file.name}
@@ -187,22 +166,21 @@ export default function FileGrid({
               {formatSize(file.size)}
             </span>
 
-            {/* Hover Actions */}
             <div className="absolute -bottom-2 opacity-0 group-hover:opacity-100 transition-all flex space-x-2 bg-white px-3 py-1.5 rounded-2xl shadow-xl border border-slate-50 z-10">
               <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onRename(file);
-                }}
+                onClick={(e) => { e.stopPropagation(); onDownload(file); }}
+                className="text-[10px] grayscale hover:grayscale-0 transition-all"
+              >
+                ⬇
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); onRename(file); }}
                 className="text-[10px] grayscale hover:grayscale-0 transition-all"
               >
                 ✏️
               </button>
               <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDelete(file);
-                }}
+                onClick={(e) => { e.stopPropagation(); onDelete(file); }}
                 className="text-[10px] grayscale hover:grayscale-0 transition-all"
               >
                 ✕

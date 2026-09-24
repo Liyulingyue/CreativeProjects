@@ -1,59 +1,27 @@
 import type { MouseEvent, DragEvent } from 'react';
 import type { FileNode } from '../../api';
+import { formatSize, formatDate, getFileIcon } from './utils';
 
 interface FileListProps {
   items: FileNode[];
-  selectedPath: string | null;
-  onSelect: (node: FileNode) => void;
+  selectedPaths: Set<string>;
+  onSelect: (node: FileNode, e: MouseEvent) => void;
   onDoubleClick: (node: FileNode) => void;
   onContextMenu: (e: MouseEvent, node: FileNode) => void;
   onDragStart: (e: DragEvent, node: FileNode) => void;
   onDrop: (e: DragEvent, targetFolder: string) => void;
   onRename: (node: FileNode) => void;
   onDelete: (node: FileNode) => void;
+  onDownload: (node: FileNode) => void;
   dragOverFolder: string | null;
   setDragOverFolder: (folder: string | null) => void;
   onBack: () => void;
   hasParent: boolean;
 }
 
-function formatSize(bytes: number): string {
-  if (bytes === 0) return '';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-}
-
-function formatDate(dateStr: string): string {
-  try {
-    return new Date(dateStr).toLocaleDateString();
-  } catch {
-    return dateStr;
-  }
-}
-
-function getFileIcon(node: FileNode): string {
-  if (node.is_dir) return '📂';
-  const ext = node.extension.toLowerCase();
-  const iconMap: Record<string, string> = {
-    '.jpg': '🖼️', '.jpeg': '🖼️', '.png': '🖼️', '.gif': '🖼️', '.webp': '🖼️', '.svg': '🖼️',
-    '.mp4': '🎬', '.avi': '🎬', '.mkv': '🎬', '.mov': '🎬',
-    '.mp3': '🎵', '.wav': '🎵', '.ogg': '🎵', '.flac': '🎵',
-    '.pdf': '📄', '.doc': '📝', '.docx': '📝',
-    '.xls': '📊', '.xlsx': '📊',
-    '.zip': '📦', '.tar': '📦', '.gz': '📦', '.7z': '📦', '.rar': '📦',
-    '.txt': '📃', '.md': '📃',
-    '.json': '📋', '.xml': '📋', '.yaml': '📋', '.yml': '📋',
-    '.html': '🌐', '.css': '🎨', '.js': '💻', '.ts': '💻',
-    '.py': '🐍', '.rs': '🦀', '.go': '🐹', '.java': '☕',
-  };
-  return iconMap[ext] || '📄';
-}
-
 export default function FileList({
-  items, selectedPath, onSelect, onDoubleClick, onContextMenu,
-  onDragStart, onDrop, onRename, onDelete, dragOverFolder, setDragOverFolder,
+  items, selectedPaths, onSelect, onDoubleClick, onContextMenu,
+  onDragStart, onDrop, onRename, onDelete, onDownload, dragOverFolder, setDragOverFolder,
   onBack, hasParent
 }: FileListProps) {
   const folders = items.filter(i => i.is_dir);
@@ -100,7 +68,7 @@ export default function FileList({
       {/* Folders */}
       {folders.map(folder => {
         const isDragOver = dragOverFolder === folder.path;
-        const isSelected = selectedPath === folder.path;
+        const isSelected = selectedPaths.has(folder.path);
 
         return (
           <div
@@ -116,14 +84,14 @@ export default function FileList({
               setDragOverFolder(null);
               onDrop(e, folder.path);
             }}
-            onClick={() => onSelect(folder)}
+            onClick={(e) => onSelect(folder, e)}
             onDoubleClick={() => onDoubleClick(folder)}
             onContextMenu={(e) => onContextMenu(e, folder)}
             className={`group flex items-center px-8 py-4 transition-all border rounded-xl cursor-pointer ${
               isDragOver
                 ? 'bg-indigo-50 border-indigo-400 translate-x-2'
                 : isSelected
-                  ? 'bg-indigo-50 border-indigo-200 shadow-lg'
+                  ? 'bg-indigo-50 border-indigo-300 shadow-lg'
                   : 'bg-white border-slate-50 hover:shadow-xl'
             }`}
           >
@@ -150,19 +118,19 @@ export default function FileList({
 
       {/* Files */}
       {files.map(file => {
-        const isSelected = selectedPath === file.path;
+        const isSelected = selectedPaths.has(file.path);
 
         return (
           <div
             key={file.path}
             draggable
             onDragStart={(e) => onDragStart(e, file)}
-            onClick={() => onSelect(file)}
+            onClick={(e) => onSelect(file, e)}
             onDoubleClick={() => onDoubleClick(file)}
             onContextMenu={(e) => onContextMenu(e, file)}
             className={`group flex items-center px-8 py-4 rounded-xl transition-all border ${
               isSelected
-                ? 'bg-indigo-50 border-indigo-200 shadow-lg'
+                ? 'bg-indigo-50 border-indigo-300 shadow-lg'
                 : 'bg-white border-slate-50 hover:shadow-xl'
             }`}
           >
@@ -174,7 +142,11 @@ export default function FileList({
             <div className="w-32 text-[10px] font-black text-slate-500">{formatSize(file.size)}</div>
             <div className="w-40 text-[10px] font-black text-slate-500">{formatDate(file.modified)}</div>
             <div className="w-48 flex justify-end space-x-3">
-              <button className="w-9 h-9 flex items-center justify-center rounded-xl bg-indigo-600 text-white shadow-lg hover:bg-indigo-700 active:scale-90 transition-all">⬇</button>
+              <button
+                onClick={(e) => { e.stopPropagation(); onDownload(file); }}
+                className="w-9 h-9 flex items-center justify-center rounded-xl bg-indigo-600 text-white shadow-lg hover:bg-indigo-700 active:scale-90 transition-all"
+                title="下载"
+              >⬇</button>
               <button
                 onClick={(e) => { e.stopPropagation(); onRename(file); }}
                 className="w-9 h-9 flex items-center justify-center rounded-xl bg-slate-100 text-slate-600 hover:bg-slate-200 active:scale-90 transition-all"

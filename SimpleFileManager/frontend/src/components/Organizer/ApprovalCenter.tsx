@@ -6,6 +6,8 @@ import {
   fetchPlans,
   rejectPlan,
 } from '../../api';
+import { useToast } from '../ui/Toast';
+import { ConfirmDialog } from '../ui/Dialog';
 import type { AgentPlan, PlanAction, PlanStatus } from '../../types';
 
 const ACTION_META: Record<string, { icon: string; label: string; color: string }> = {
@@ -59,8 +61,10 @@ function PlanCard({
   plan: AgentPlan;
   onChanged: () => void;
 }) {
+  const { toast } = useToast();
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [confirmExecute, setConfirmExecute] = useState(false);
   const statusMeta = STATUS_META[plan.status] ?? STATUS_META.pending;
   const isPending = plan.status === 'pending';
   const isApproved = plan.status === 'approved';
@@ -72,15 +76,14 @@ function PlanCard({
       onChanged();
     } catch (e) {
       console.error(e);
-      alert(e instanceof Error ? e.message : '操作失败');
+      toast(e instanceof Error ? e.message : '操作失败', 'error');
     } finally {
       setBusy(false);
     }
   };
 
   const handleExecute = () => {
-    if (!confirm(`确认执行计划「${plan.title}」？该操作将真实修改文件系统。`)) return;
-    run(() => executePlan(plan.id));
+    setConfirmExecute(true);
   };
 
   return (
@@ -155,6 +158,15 @@ function PlanCard({
           ))}
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmExecute}
+        title="执行计划"
+        message={`确认执行计划「${plan.title}」？该操作将真实修改文件系统。`}
+        onConfirm={() => { setConfirmExecute(false); run(() => executePlan(plan.id)); }}
+        onCancel={() => setConfirmExecute(false)}
+        danger
+      />
     </div>
   );
 }

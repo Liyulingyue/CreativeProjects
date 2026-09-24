@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { fetchAutoIndexStatus, runAutoIndexNow, updateSettings } from '../api';
+import { useToast } from './ui/Toast';
+import { ConfirmDialog } from './ui/Dialog';
 import type { AutoIndexStatus } from '../types';
 
 interface IndexedFile {
@@ -14,6 +16,7 @@ interface IndexStats {
 }
 
 export function IndexPage() {
+  const { toast } = useToast();
   const [stats, setStats] = useState<IndexStats | null>(null);
   const [files, setFiles] = useState<IndexedFile[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -21,6 +24,8 @@ export function IndexPage() {
   const [autoStatus, setAutoStatus] = useState<AutoIndexStatus | null>(null);
   const [isToggling, setIsToggling] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [confirmDeleteFile, setConfirmDeleteFile] = useState<string | null>(null);
 
   const loadAutoStatus = useCallback(async () => {
     try {
@@ -68,7 +73,9 @@ export function IndexPage() {
     try {
       await updateSettings({ auto_index_enabled: !autoStatus.enabled });
       await loadAutoStatus();
+      toast(autoStatus.enabled ? '已关闭自动索引' : '已开启自动索引', 'success');
     } catch (e) {
+      toast('切换自动索引失败', 'error');
       console.error('Failed to toggle auto index:', e);
     } finally {
       setIsToggling(false);
@@ -80,7 +87,9 @@ export function IndexPage() {
     try {
       await runAutoIndexNow();
       await Promise.all([loadIndex(), loadAutoStatus()]);
+      toast('扫描完成', 'success');
     } catch (e) {
+      toast('扫描失败', 'error');
       console.error('Failed to run scan:', e);
     } finally {
       setIsScanning(false);
@@ -88,25 +97,24 @@ export function IndexPage() {
   };
 
   const handleClearIndex = async () => {
-    if (!confirm('确定要清空所有索引吗？此操作不可恢复。')) return;
-
     setIsClearing(true);
     try {
       const res = await fetch('/api/rag/clear', { method: 'DELETE' });
       if (res.ok) {
         setFiles([]);
         setStats({ indexed_count: 0, vector_count: 0 });
+        toast('索引已清空', 'success');
       }
     } catch (e) {
+      toast('清空索引失败', 'error');
       console.error('Failed to clear index:', e);
     } finally {
       setIsClearing(false);
+      setConfirmClear(false);
     }
   };
 
   const handleDeleteFile = async (filePath: string) => {
-    if (!confirm(`确定要删除 "${filePath}" 的索引吗？`)) return;
-
     try {
       const res = await fetch(`/api/rag/files/${encodeURIComponent(filePath)}`, {
         method: 'DELETE',
@@ -120,9 +128,13 @@ export function IndexPage() {
             vector_count: Math.max(0, stats.vector_count - 1),
           });
         }
+        toast('已删除索引', 'success');
       }
     } catch (e) {
+      toast('删除索引失败', 'error');
       console.error('Failed to delete file index:', e);
+    } finally {
+      setConfirmDeleteFile(null);
     }
   };
 
@@ -187,7 +199,7 @@ export function IndexPage() {
             刷新
           </button>
           <button
-            onClick={handleClearIndex}
+            onClick={() => setConfirmClear(true)}
             disabled={isClearing || (stats?.indexed_count ?? 0) === 0}
             className="px-4 py-2 rounded-lg bg-red-100 text-red-600 text-sm font-medium hover:bg-red-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
@@ -213,7 +225,7 @@ export function IndexPage() {
           <div className="text-center py-16 text-slate-400">
             <div className="text-5xl mb-4">📭</div>
             <div className="text-lg">暂无索引文件</div>
-            <div className="text-sm mt-2">在文件管理中右键文件，选择「索引到向量库」</div>
+            <div className="text-sm mt-2">开启自动索引或点击「立即扫描」</div>
           </div>
         ) : (
           <div className="space-y-3">
@@ -232,7 +244,7 @@ export function IndexPage() {
                       </div>
                     </div>
                     <button
-                      onClick={() => handleDeleteFile(file.file_path)}
+                      onClick={() => setConfirmDeleteFile(file.file_path)}
                       className="px-3 py-1.5 rounded-lg bg-red-50 text-red-600 text-xs font-medium hover:bg-red-100 transition-colors whitespace-nowrap"
                     >
                       删除
@@ -250,6 +262,26 @@ export function IndexPage() {
           </div>
         )}
       </div>
+
+      {/* Confirm dialogs */}
+      <ConfirmDialog
+        open={confirmClear}
+        title="清空所有索引"
+        message="确定要清空所有索引吗？此操作不可恢复。"
+        onConfirm={handleClearIndex}
+        onCancel={() => setConfirmClear(false)}
+        danger
+      />
+      {confirmDeleteFile && (
+        <ConfirmDialog
+          open={!!confirmDeleteFile}
+          title="删除索引"
+          message={`确定要删除 "${confirmDeleteFile.split(/[/\\]/).pop()}" 的索引吗？`}
+          onConfirm={() => handleDeleteFile(confirmDeleteFile)}
+          onCancel={() => setConfirmDeleteFile(null)}
+          danger
+        />
+      )}
     </div>
   );
 }

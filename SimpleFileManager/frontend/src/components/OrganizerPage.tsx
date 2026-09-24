@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { ApprovalCenter } from './Organizer/ApprovalCenter';
 import { createPlan } from '../api';
+import { useToast } from './ui/Toast';
 import type { PlanActionType } from '../types';
 
 interface Snapshot {
@@ -39,6 +40,7 @@ interface CompareResult {
 }
 
 export function OrganizerPage() {
+  const { toast } = useToast();
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [latestSnapshot, setLatestSnapshot] = useState<{ has_snapshot: boolean; date?: string; files?: number; dirs?: number } | null>(null);
   const [compareResult, setCompareResult] = useState<CompareResult | null>(null);
@@ -117,9 +119,9 @@ export function OrganizerPage() {
           },
         ],
       });
-      alert('已生成整理计划，请在上方「审批中心」批准后执行');
+      toast('已生成整理计划，请在「审批中心」批准后执行', 'success');
     } catch (e) {
-      alert(e instanceof Error ? e.message : '生成计划失败');
+      toast(e instanceof Error ? e.message : '生成计划失败', 'error');
     }
   };
 
