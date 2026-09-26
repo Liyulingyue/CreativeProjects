@@ -11,11 +11,11 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ..deps import state, get_storage_root, resolve_under_root, PathOutsideRoot, validate_plan_action
+from ..llm_client import chat_completion
 
 agent = APIRouter()
 
@@ -312,18 +312,10 @@ def execute_tool(name: str, arguments: dict) -> dict:
 # ---- LLM plumbing ----
 
 def chat_with_llm(messages: list[dict], tools: list[dict]) -> dict:
-    settings = state.get_settings()
-    headers = {"Authorization": f"Bearer {settings.llm_api_key}"} if settings.llm_api_key else {}
-    payload = {
-        "model": settings.llm_model,
-        "messages": messages,
-        "tools": tools,
-        "temperature": 0.7,
-    }
     try:
-        resp = httpx.post(settings.llm_base_url, headers=headers, json=payload, timeout=120)
-        resp.raise_for_status()
-        return resp.json()
+        result = chat_completion(messages, tools=tools)
+        choice = {"message": result}
+        return {"choices": [choice]}
     except Exception as e:
         return {"error": str(e)}
 

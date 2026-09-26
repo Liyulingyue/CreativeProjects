@@ -68,6 +68,8 @@ class AppSettings(BaseModel):
     max_agent_steps: int = 8
     storage_path: str = "./data"
     theme: str = "light"
+    auto_digest_enabled: bool = False
+    auto_digest_hour: int = 23
 
 
 class IndexStats(BaseModel):

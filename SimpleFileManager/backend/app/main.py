@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .routers import fs, search, settings, rag, chat, chat_history_router, agent, organizer, plans, digest, auth, get_current_auth
 from .routers.auth import is_auth_enabled, set_password
 from .indexer import indexer
+from .auto_digest import auto_digest
 
 
 def _init_auth():
@@ -18,8 +19,10 @@ def _init_auth():
 async def lifespan(app: FastAPI):
     _init_auth()
     indexer.start()
+    auto_digest.start()
     yield
     indexer.stop()
+    auto_digest.stop()
 
 
 app = FastAPI(title="SimpleFileManager", version="0.4.0", lifespan=lifespan)

@@ -35,29 +35,16 @@ EMBEDDING_DIM_MAP = {
 
 def _detect_embedding_dim(model: str, api_key: str, base_url: str) -> int:
     try:
-        import httpx
-        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-        resp = httpx.post(
-            base_url,
-            headers=headers,
-            json={"input": "test", "model": model},
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            embedding = data.get("data", [{}])[0]
-            embedding_vector = embedding.get("embedding", [])
-            if embedding_vector:
-                return len(embedding_vector)
-        for known_model, dim in EMBEDDING_DIM_MAP.items():
-            if model.startswith(known_model):
-                return dim
-        return 1536
+        from .llm_client import get_embedding
+        vec = get_embedding("test")
+        if vec:
+            return len(vec)
     except Exception:
-        for known_model, dim in EMBEDDING_DIM_MAP.items():
-            if model.startswith(known_model):
-                return dim
-        return 1536
+        pass
+    for known_model, dim in EMBEDDING_DIM_MAP.items():
+        if model.startswith(known_model):
+            return dim
+    return 1536
 
 
 def _load_json(path: Path, default=None):
@@ -92,16 +79,8 @@ class EmbeddingService:
         self.model = model
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        resp = httpx.post(
-            self.base_url,
-            headers=headers,
-            json={"input": texts, "model": self.model},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return [item["embedding"] for item in data.get("data", [])]
+        from .llm_client import get_embedding
+        return [get_embedding(t) for t in texts]
 
 
 class LanceDBVectorStore:
@@ -213,23 +192,15 @@ class RAGService:
 
 回答:"""
 
-        headers = {"Authorization": f"Bearer {self.llm_api_key}"} if self.llm_api_key else {}
-        resp = httpx.post(
-            self.llm_base_url,
-            headers=headers,
-            json={
-                "model": self.llm_model,
-                "messages": [
-                    {"role": "system", "content": "你是一个基于文档的问答助手。请根据提供的文档内容回答问题。"},
-                    {"role": "user", "content": prompt}
-                ],
-                "temperature": 0.7,
-            },
-            timeout=60,
+        from .llm_client import chat_completion
+        result = chat_completion(
+            messages=[
+                {"role": "system", "content": "你是一个基于文档的问答助手。请根据提供的文档内容回答问题。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.7,
         )
-        resp.raise_for_status()
-        data = resp.json()
-        answer = data["choices"][0]["message"]["content"]
+        answer = result.get("content", "")
 
         return {
             "answer": answer,
@@ -643,7 +614,12 @@ def _get_default_settings() -> AppSettings:
         embedding_model=embedding_model,
         embedding_dim=embedding_dim_str,
         index_interval=int(os.getenv("INDEX_INTERVAL", "300")),
+        auto_index_enabled=os.getenv("AUTO_INDEX_ENABLED", "true").lower() in ("true", "1", "yes"),
+        index_debounce_seconds=int(os.getenv("INDEX_DEBOUNCE_SECONDS", "10")),
+        max_agent_steps=int(os.getenv("MAX_AGENT_STEPS", "8")),
         storage_path=os.getenv("STORAGE_PATH", "./data"),
+        auto_digest_enabled=os.getenv("AUTO_DIGEST_ENABLED", "false").lower() in ("true", "1", "yes"),
+        auto_digest_hour=int(os.getenv("AUTO_DIGEST_HOUR", "23")),
     )
 
 
@@ -662,7 +638,11 @@ class AppState:
     def _load(self):
         settings_data = _load_json(SETTINGS_FILE, None)
         if settings_data:
-            self._settings = AppSettings(**settings_data)
+            env_defaults = _get_default_settings().model_dump()
+            env_defaults.update(settings_data)
+            self._settings = AppSettings(**env_defaults)
+        else:
+            self._settings = _get_default_settings()
 
         stats_data = _load_json(INDEX_STATS_FILE, None)
         if stats_data:

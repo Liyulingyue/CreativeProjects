@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useChatSessions } from '../hooks/useChatSessions';
 import { authFetch } from '../auth';
 import { ChatLayout } from './ui/ChatLayout';
@@ -5,15 +6,18 @@ import { Icon } from './ui/Icon';
 
 export function SimpleChat() {
   const { sessions, currentSessionId, createSession, selectSession, deleteSession, addMessage } = useChatSessions('agent');
+  const [isLoading, setIsLoading] = useState(false);
 
   const handleSendMessage = async (content: string) => {
     let sessionId = currentSessionId;
     if (!sessionId) sessionId = await createSession();
     await addMessage(sessionId, { role: 'user', content });
+
+    setIsLoading(true);
     try {
       const res = await authFetch('/api/agent/chat', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: content }),
+        body: JSON.stringify({ message: content, session_id: sessionId }),
       });
       if (!res.ok) throw new Error('Request failed');
       const data = await res.json();
@@ -26,6 +30,8 @@ export function SimpleChat() {
       await addMessage(sessionId, { role: 'assistant', content: reply });
     } catch (error) {
       await addMessage(sessionId, { role: 'assistant', content: '发生错误：' + (error instanceof Error ? error.message : '未知错误') });
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -38,7 +44,7 @@ export function SimpleChat() {
         onNewSession={createSession}
         onDeleteSession={deleteSession}
         onSendMessage={handleSendMessage}
-        isLoading={false}
+        isLoading={isLoading}
         emptyState={
           <div className="h-full flex flex-col items-center justify-center text-slate-400 space-y-3">
             <Icon name="chat" size={40} className="text-slate-300" />

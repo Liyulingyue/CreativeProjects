@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from ..deps import state
+from ..llm_client import chat_completion
 
 chat = APIRouter()
 
@@ -18,24 +18,13 @@ class ChatResponse(BaseModel):
 @chat.post("/query")
 def chat_query(req: ChatRequest) -> ChatResponse:
     try:
-        settings = state.get_settings()
-        import httpx
-        headers = {"Authorization": f"Bearer {settings.llm_api_key}"} if settings.llm_api_key else {}
-        resp = httpx.post(
-            settings.llm_base_url,
-            headers=headers,
-            json={
-                "model": settings.llm_model,
-                "messages": [
-                    {"role": "system", "content": req.system_prompt},
-                    {"role": "user", "content": req.message}
-                ],
-                "temperature": 0.7,
-            },
-            timeout=60,
+        result = chat_completion(
+            messages=[
+                {"role": "system", "content": req.system_prompt},
+                {"role": "user", "content": req.message},
+            ],
+            temperature=0.7,
         )
-        resp.raise_for_status()
-        data = resp.json()
-        return ChatResponse(response=data["choices"][0]["message"]["content"])
+        return ChatResponse(response=result.get("content", ""))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -98,6 +98,29 @@ export function SettingsPage() {
             </div>
           </div>
 
+          {/* Auto Digest */}
+          <div className="bg-white rounded-lg border border-slate-200 p-5 space-y-3">
+            <div className="text-base font-semibold text-slate-700 flex items-center gap-2">
+              <Icon name="newspaper" size={18} className="text-orange-500" />
+              自动日报
+            </div>
+            <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
+              <div>
+                <div className="text-sm font-medium text-slate-700">自动生成日报</div>
+                <div className="text-xs text-slate-400">每天到点自动扫描当日变动文件并生成知识日报</div>
+              </div>
+              <button onClick={() => set({ auto_digest_enabled: !settings.auto_digest_enabled })}
+                className={`relative rounded-full transition-colors ${settings.auto_digest_enabled ? 'bg-indigo-600' : 'bg-slate-300'}`}
+                style={{ width: '40px', height: '22px' }}>
+                <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform`}
+                  style={{ transform: settings.auto_digest_enabled ? 'translateX(18px)' : 'translateX(0)' }} />
+              </button>
+            </div>
+            <Field label="生成时间（小时，0-23）" hint={`每天 ${settings.auto_digest_hour}:00 自动生成`}>
+              <input type="number" min={0} max={23} className={inputClass} value={settings.auto_digest_hour} onChange={e => set({ auto_digest_hour: Math.max(0, Math.min(23, Number(e.target.value))) })} />
+            </Field>
+          </div>
+
           {/* Security */}
           <div className="bg-white rounded-lg border border-slate-200 p-5 space-y-3">
             <div className="text-base font-semibold text-slate-700 flex items-center gap-2">

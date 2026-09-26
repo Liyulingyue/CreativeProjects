@@ -11,8 +11,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-import httpx
-
 from .deps import DATA_DIR, get_storage_root, state
 
 MAX_FILES_PER_DIGEST = 40
@@ -78,7 +76,6 @@ class DigestService:
     # ---- generation ----
 
     def _llm_compose(self, date: str, items: list[dict]) -> Optional[str]:
-        settings = state.get_settings()
         file_list = "\n".join(
             f"- 【{i['name']}】 {i['path']}\n  内容摘要: {i['preview'][:200]}"
             for i in items
@@ -93,23 +90,16 @@ class DigestService:
 文件清单:
 {file_list}"""
 
-        headers = {"Authorization": f"Bearer {settings.llm_api_key}"} if settings.llm_api_key else {}
         try:
-            resp = httpx.post(
-                settings.llm_base_url,
-                headers=headers,
-                json={
-                    "model": settings.llm_model,
-                    "messages": [
-                        {"role": "system", "content": "你是一个私有知识库助手，负责把每天新增的文件整理成简洁实用的知识日报。"},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": 0.5,
-                },
-                timeout=120,
+            from .llm_client import chat_completion
+            result = chat_completion(
+                messages=[
+                    {"role": "system", "content": "你是一个私有知识库助手，负责把每天新增的文件整理成简洁实用的知识日报。"},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.5,
             )
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
+            return result.get("content")
         except Exception:
             traceback.print_exc()
             return None

@@ -44,6 +44,8 @@ export interface AppSettings {
   max_agent_steps: number;
   storage_path: string;
   theme: string;
+  auto_digest_enabled: boolean;
+  auto_digest_hour: number;
 }
 
 export interface AutoIndexStatus {

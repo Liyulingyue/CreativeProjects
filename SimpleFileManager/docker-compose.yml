@@ -17,6 +17,11 @@ services:
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-Qwen3-Embedding-0.6B-Q8_0}
       - EMBEDDING_DIM=${EMBEDDING_DIM:-1024}
       - INDEX_INTERVAL=${INDEX_INTERVAL:-300}
+      - AUTO_INDEX_ENABLED=${AUTO_INDEX_ENABLED:-true}
+      - INDEX_DEBOUNCE_SECONDS=${INDEX_DEBOUNCE_SECONDS:-10}
+      - MAX_AGENT_STEPS=${MAX_AGENT_STEPS:-8}
+      - AUTO_DIGEST_ENABLED=${AUTO_DIGEST_ENABLED:-false}
+      - AUTO_DIGEST_HOUR=${AUTO_DIGEST_HOUR:-23}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
