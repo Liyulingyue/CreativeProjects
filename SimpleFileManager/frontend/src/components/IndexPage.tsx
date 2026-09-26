@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { fetchAutoIndexStatus, runAutoIndexNow, updateSettings } from '../api';
+import { authFetch } from '../auth';
 import { useToast } from './ui/Toast';
 import { ConfirmDialog } from './ui/Dialog';
 import { Icon } from './ui/Icon';
@@ -27,7 +28,7 @@ export function IndexPage() {
   const loadIndex = async () => {
     setIsLoading(true);
     try {
-      const [statsRes, filesRes] = await Promise.all([fetch('/api/rag/status'), fetch('/api/rag/files')]);
+      const [statsRes, filesRes] = await Promise.all([authFetch('/api/rag/status'), authFetch('/api/rag/files')]);
       if (statsRes.ok) setStats(await statsRes.json());
       if (filesRes.ok) setFiles((await filesRes.json()).files || []);
     } catch (e) { console.error('Failed:', e); } finally { setIsLoading(false); }
@@ -54,13 +55,13 @@ export function IndexPage() {
 
   const handleClearIndex = async () => {
     setIsClearing(true);
-    try { await fetch('/api/rag/clear', { method: 'DELETE' }); setFiles([]); setStats({ indexed_count: 0, vector_count: 0 }); toast('索引已清空', 'success'); }
+    try { await authFetch('/api/rag/clear', { method: 'DELETE' }); setFiles([]); setStats({ indexed_count: 0, vector_count: 0 }); toast('索引已清空', 'success'); }
     catch { toast('清空失败', 'error'); } finally { setIsClearing(false); setConfirmClear(false); }
   };
 
   const handleDeleteFile = async (filePath: string) => {
     try {
-      await fetch(`/api/rag/files/${encodeURIComponent(filePath)}`, { method: 'DELETE' });
+      await authFetch(`/api/rag/files/${encodeURIComponent(filePath)}`, { method: 'DELETE' });
       setFiles(prev => prev.filter(f => f.file_path !== filePath));
       if (stats) setStats({ ...stats, indexed_count: Math.max(0, stats.indexed_count - 1), vector_count: Math.max(0, stats.vector_count - 1) });
       toast('已删除索引', 'success');
@@ -70,7 +71,7 @@ export function IndexPage() {
   return (
     <div className="flex flex-col h-full bg-slate-50">
       {/* Header */}
-      <div className="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between flex-shrink-0">
+      <div className="bg-white border-b border-slate-200 px-4 sm:px-6 py-3 flex items-center justify-between flex-wrap gap-2 flex-shrink-0">
         <div className="flex gap-3">
           <div className="bg-indigo-50 rounded-lg px-4 py-2 text-center">
             <div className="text-xl font-bold text-indigo-600">{stats?.indexed_count ?? '-'}</div>
@@ -135,7 +136,7 @@ export function IndexPage() {
         ) : (
           <div className="space-y-3">
             <div className="text-sm text-slate-500">已索引文件 ({files.length})</div>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {files.map(file => (
                 <div key={file.id} className="bg-white rounded-lg border border-slate-200 p-4 hover:shadow-card transition-shadow">
                   <div className="flex items-start justify-between gap-3 mb-2">

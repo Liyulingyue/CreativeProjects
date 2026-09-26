@@ -35,9 +35,9 @@ export default function FileList({
       {/* Header */}
       <div className="flex items-center px-3 py-2 text-xs font-medium text-slate-400 uppercase tracking-wider border-b border-slate-200">
         <div className="flex-1 ml-9">名称</div>
-        <div className="w-24 text-right">大小</div>
-        <div className="w-36 text-right">修改时间</div>
-        <div className="w-24 text-right pr-1">操作</div>
+        <div className="w-24 text-right hidden sm:block">大小</div>
+        <div className="w-36 text-right hidden md:block">修改时间</div>
+        <div className="w-24 text-right pr-1 hidden sm:block">操作</div>
       </div>
 
       {/* Back */}
@@ -77,10 +77,10 @@ export default function FileList({
             }`}
           >
             <div className="w-9 flex items-center"><FileIcon node={folder} size={20} /></div>
-            <div className="flex-1 text-sm text-slate-700 truncate">{folder.name}</div>
-            <div className="w-24 text-xs text-slate-400 text-right">—</div>
-            <div className="w-36 text-xs text-slate-400 text-right">{formatDate(folder.modified)}</div>
-            <div className="w-24 flex justify-end gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            <div className="flex-1 text-sm text-slate-700 truncate min-w-0">{folder.name}</div>
+            <div className="w-24 text-xs text-slate-400 text-right hidden sm:block">—</div>
+            <div className="w-36 text-xs text-slate-400 text-right hidden md:block">{formatDate(folder.modified)}</div>
+            <div className="w-24 flex justify-end gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity hidden sm:flex">
               <button onClick={(e) => { e.stopPropagation(); onRename(folder); }} className={hoverBtn}><Icon name="edit" size={15} /></button>
               <button onClick={(e) => { e.stopPropagation(); onDelete(folder); }} className={hoverBtnDanger}><Icon name="trash" size={15} /></button>
             </div>
@@ -107,10 +107,10 @@ export default function FileList({
             }`}
           >
             <div className="w-9 flex items-center"><FileIcon node={file} size={20} /></div>
-            <div className="flex-1 text-sm text-slate-700 truncate">{file.name}</div>
-            <div className="w-24 text-xs text-slate-500 text-right">{formatSize(file.size)}</div>
-            <div className="w-36 text-xs text-slate-400 text-right">{formatDate(file.modified)}</div>
-            <div className="w-24 flex justify-end gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            <div className="flex-1 text-sm text-slate-700 truncate min-w-0">{file.name}</div>
+            <div className="w-24 text-xs text-slate-500 text-right hidden sm:block">{formatSize(file.size)}</div>
+            <div className="w-36 text-xs text-slate-400 text-right hidden md:block">{formatDate(file.modified)}</div>
+            <div className="w-24 flex justify-end gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity hidden sm:flex">
               <button onClick={(e) => { e.stopPropagation(); onDownload(file); }} className={hoverBtn}><Icon name="download" size={15} /></button>
               <button onClick={(e) => { e.stopPropagation(); onRename(file); }} className={hoverBtn}><Icon name="edit" size={15} /></button>
               <button onClick={(e) => { e.stopPropagation(); onDelete(file); }} className={hoverBtnDanger}><Icon name="trash" size={15} /></button>

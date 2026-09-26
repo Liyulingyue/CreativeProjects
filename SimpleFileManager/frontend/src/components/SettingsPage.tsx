@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { fetchSettings, updateSettings } from '../api';
+import { changePassword, checkAuthStatus } from '../auth';
+import { useToast } from './ui/Toast';
 import { Icon } from './ui/Icon';
 import type { AppSettings } from '../types';
 
@@ -16,11 +18,21 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 const inputClass = 'w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 transition-all';
 
 export function SettingsPage() {
+  const { toast } = useToast();
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [hasPassword, setHasPassword] = useState(false);
+  const [oldPwd, setOldPwd] = useState('');
+  const [newPwd, setNewPwd] = useState('');
+  const [isChangingPwd, setIsChangingPwd] = useState(false);
 
-  useEffect(() => { (async () => { try { setSettings(await fetchSettings()); } catch (e) { console.error('Failed:', e); } })(); }, []);
+  useEffect(() => {
+    (async () => {
+      try { setSettings(await fetchSettings()); } catch (e) { console.error('Failed:', e); }
+    })();
+    checkAuthStatus().then(s => setHasPassword(s.has_password)).catch(() => {});
+  }, []);
 
   const set = (patch: Partial<AppSettings>) => { if (settings) setSettings({ ...settings, ...patch }); };
 
@@ -52,7 +64,7 @@ export function SettingsPage() {
       {message && <div className="px-6 py-2 bg-indigo-50 text-indigo-700 text-sm">{message}</div>}
 
       <div className="flex-1 overflow-y-auto p-6">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="bg-white rounded-lg border border-slate-200 p-5 space-y-3">
             <div className="text-base font-semibold text-slate-700 flex items-center gap-2"><Icon name="bot" size={18} className="text-indigo-500" /> LLM（对话 / Agent / 日报）</div>
             <Field label="Base URL" hint="OpenAI 兼容接口"><input className={inputClass} value={settings.llm_base_url} onChange={e => set({ llm_base_url: e.target.value })} /></Field>
@@ -85,6 +97,46 @@ export function SettingsPage() {
               </button>
             </div>
           </div>
+
+          {/* Security */}
+          <div className="bg-white rounded-lg border border-slate-200 p-5 space-y-3">
+            <div className="text-base font-semibold text-slate-700 flex items-center gap-2">
+              <Icon name="shield" size={18} className="text-green-500" />
+              {hasPassword ? '修改密码' : '设置密码'}
+            </div>
+            {!hasPassword && (
+              <div className="text-xs text-slate-400 bg-amber-50 rounded-lg px-3 py-2">
+                当前未设置密码，所有人可直接访问。设置密码后所有 API 请求需要登录。
+              </div>
+            )}
+            {hasPassword && (
+              <Field label="旧密码">
+                <input type="password" className={inputClass} value={oldPwd} onChange={e => setOldPwd(e.target.value)} />
+              </Field>
+            )}
+            <Field label={hasPassword ? '新密码' : '密码'} hint="至少 4 个字符">
+              <input type="password" className={inputClass} value={newPwd} onChange={e => setNewPwd(e.target.value)} />
+            </Field>
+            <button
+              onClick={async () => {
+                if (newPwd.length < 4) { toast('密码至少 4 个字符', 'error'); return; }
+                setIsChangingPwd(true);
+                try {
+                  const result = await changePassword(oldPwd, newPwd);
+                  setHasPassword(true);
+                  setOldPwd(''); setNewPwd('');
+                  toast(result.message || '密码已设置', 'success');
+                } catch (e) {
+                  toast(e instanceof Error ? e.message : '操作失败', 'error');
+                } finally { setIsChangingPwd(false); }
+              }}
+              disabled={isChangingPwd || newPwd.length < 4 || (hasPassword && !oldPwd)}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:opacity-40 transition-colors"
+            >
+              {isChangingPwd ? '保存中...' : hasPassword ? '更新密码' : '设置密码'}
+            </button>
+          </div>
+
           <div className="text-xs text-slate-400 text-center pb-4">保存后即时生效，无需重启服务</div>
         </div>
       </div>

@@ -36,9 +36,9 @@ export default function FileCompactList({
       <div className="flex items-center px-2 py-1.5 text-[10px] font-medium text-slate-400 uppercase tracking-wider border-b border-slate-200 mb-0.5">
         <div className="w-7"></div>
         <div className="flex-1">名称</div>
-        <div className="w-14 text-right">大小</div>
-        <div className="w-20 text-right">修改日期</div>
-        <div className="w-16 text-right pr-1">操作</div>
+        <div className="w-14 text-right hidden sm:block">大小</div>
+        <div className="w-20 text-right hidden md:block">修改日期</div>
+        <div className="w-16 text-right pr-1 hidden sm:block">操作</div>
       </div>
 
       {/* Back */}
@@ -78,10 +78,10 @@ export default function FileCompactList({
             }`}
           >
             <div className="w-7 flex items-center"><FileIcon node={folder} size={16} /></div>
-            <div className="flex-1 text-xs text-slate-700 truncate">{folder.name}</div>
-            <div className="w-14 text-[10px] text-slate-400 text-right">—</div>
-            <div className="w-20 text-[10px] text-slate-400 text-right">{formatDate(folder.modified)}</div>
-            <div className="w-16 flex justify-end gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            <div className="flex-1 text-xs text-slate-700 truncate min-w-0">{folder.name}</div>
+            <div className="w-14 text-[10px] text-slate-400 text-right hidden sm:block">—</div>
+            <div className="w-20 text-[10px] text-slate-400 text-right hidden md:block">{formatDate(folder.modified)}</div>
+            <div className="w-16 flex justify-end gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity hidden sm:flex">
               <button onClick={(e) => { e.stopPropagation(); onRename(folder); }} className={hoverBtn}><Icon name="edit" size={12} /></button>
               <button onClick={(e) => { e.stopPropagation(); onDelete(folder); }} className={hoverBtnDanger}><Icon name="trash" size={12} /></button>
             </div>
@@ -108,10 +108,10 @@ export default function FileCompactList({
             }`}
           >
             <div className="w-7 flex items-center"><FileIcon node={file} size={16} /></div>
-            <div className="flex-1 text-xs text-slate-800 truncate">{file.name}</div>
-            <div className="w-14 text-[10px] text-slate-500 text-right">{formatSize(file.size)}</div>
-            <div className="w-20 text-[10px] text-slate-400 text-right">{formatDate(file.modified)}</div>
-            <div className="w-16 flex justify-end gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            <div className="flex-1 text-xs text-slate-800 truncate min-w-0">{file.name}</div>
+            <div className="w-14 text-[10px] text-slate-500 text-right hidden sm:block">{formatSize(file.size)}</div>
+            <div className="w-20 text-[10px] text-slate-400 text-right hidden md:block">{formatDate(file.modified)}</div>
+            <div className="w-16 flex justify-end gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity hidden sm:flex">
               <button onClick={(e) => { e.stopPropagation(); onDownload(file); }} className={hoverBtn}><Icon name="download" size={12} /></button>
               <button onClick={(e) => { e.stopPropagation(); onRename(file); }} className={hoverBtn}><Icon name="edit" size={12} /></button>
               <button onClick={(e) => { e.stopPropagation(); onDelete(file); }} className={hoverBtnDanger}><Icon name="trash" size={12} /></button>

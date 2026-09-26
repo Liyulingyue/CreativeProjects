@@ -20,7 +20,7 @@ export function Dialog({ open, title, onClose, children }: DialogProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="fixed inset-0 bg-black/30 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-white rounded-xl shadow-popover max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
+      <div className="relative bg-white rounded-xl shadow-popover max-w-md w-full mx-3 sm:mx-4" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
           <h3 className="text-base font-semibold text-slate-900">{title}</h3>
           <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors">

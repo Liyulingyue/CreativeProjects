@@ -32,3 +32,10 @@ Thumbs.db
 .simplefilemanager/
 .env
 *.db
+
+./data/
+
+# LLMServices - local model inference
+LLMServices/bin/
+LLMServices/logs/
+LLMServices/models/

@@ -1,0 +1,31 @@
+services:
+  backend:
+    build: ./backend
+    container_name: sfm-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+    environment:
+      - STORAGE_PATH=/data
+      - INIT_PASSWORD=${INIT_PASSWORD:-}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:9010/v1/chat/completions}
+      - LLM_MODEL=${LLM_MODEL:-LFM2.5-8B-A1B-Q8_0}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
+      - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL:-http://host.docker.internal:9011/v1/embeddings}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-Qwen3-Embedding-0.6B-Q8_0}
+      - EMBEDDING_DIM=${EMBEDDING_DIM:-1024}
+      - INDEX_INTERVAL=${INDEX_INTERVAL:-300}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: sfm-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped

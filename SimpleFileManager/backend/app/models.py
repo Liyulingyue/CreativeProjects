@@ -217,3 +217,24 @@ class AutoIndexStatus(BaseModel):
     last_scan_files: int = 0
     indexed_files: int = 0
     pending_changes: int = 0
+
+
+# ---- Auth ----
+
+class LoginRequest(BaseModel):
+    password: str
+
+
+class LoginResponse(BaseModel):
+    token: str
+    requires_auth: bool
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
+
+
+class AuthStatus(BaseModel):
+    requires_auth: bool
+    has_password: bool

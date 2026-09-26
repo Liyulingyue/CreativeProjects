@@ -58,7 +58,7 @@ export function DigestPage() {
             <div className="text-sm mt-1">先运行自动索引，然后点击「生成今日日报」</div>
           </div>
         ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div className="lg:col-span-1">
               <div className="bg-white rounded-lg border border-slate-200 p-3">
                 <div className="text-sm font-semibold text-slate-700 mb-2">历史日报</div>

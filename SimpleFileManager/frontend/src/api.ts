@@ -1,10 +1,11 @@
 import type { AgentPlan, AppSettings, AutoIndexStatus, PlanActionType } from './types';
+import { authFetch } from './auth';
 
 const API_BASE = '/api';
 
 export async function fetchBrowse(path?: string): Promise<BrowseResult> {
   const url = path ? `${API_BASE}/fs/browse?path=${encodeURIComponent(path)}` : `${API_BASE}/fs/browse`;
-  const res = await fetch(url);
+  const res = await authFetch(url);
   if (!res.ok) throw new Error('Failed to fetch directory');
   return res.json();
 }
@@ -13,13 +14,13 @@ export async function fetchTree(path?: string, depth?: number): Promise<TreeNode
   const params = new URLSearchParams();
   if (path) params.set('path', path);
   if (depth !== undefined) params.set('depth', String(depth));
-  const res = await fetch(`${API_BASE}/fs/tree?${params}`);
+  const res = await authFetch(`${API_BASE}/fs/tree?${params}`);
   if (!res.ok) throw new Error('Failed to fetch tree');
   return res.json();
 }
 
 export async function createFolder(path: string, name: string): Promise<FileOperation> {
-  const res = await fetch(`${API_BASE}/fs/create_folder`, {
+  const res = await authFetch(`${API_BASE}/fs/create_folder`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path, name }),
@@ -29,7 +30,7 @@ export async function createFolder(path: string, name: string): Promise<FileOper
 }
 
 export async function deletePath(path: string): Promise<FileOperation> {
-  const res = await fetch(`${API_BASE}/fs/delete`, {
+  const res = await authFetch(`${API_BASE}/fs/delete`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path }),
@@ -39,7 +40,7 @@ export async function deletePath(path: string): Promise<FileOperation> {
 }
 
 export async function movePath(src: string, dest: string): Promise<FileOperation> {
-  const res = await fetch(`${API_BASE}/fs/move`, {
+  const res = await authFetch(`${API_BASE}/fs/move`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ src, dest }),
@@ -52,19 +53,19 @@ export async function searchFiles(query: string, path?: string, limit?: number):
   const params = new URLSearchParams({ query });
   if (path) params.set('path', path);
   if (limit) params.set('limit', String(limit));
-  const res = await fetch(`${API_BASE}/search/query?${params}`);
+  const res = await authFetch(`${API_BASE}/search/query?${params}`);
   if (!res.ok) throw new Error('Failed to search');
   return res.json();
 }
 
 export async function fetchSettings(): Promise<AppSettings> {
-  const res = await fetch(`${API_BASE}/settings`);
+  const res = await authFetch(`${API_BASE}/settings`);
   if (!res.ok) throw new Error('Failed to fetch settings');
   return res.json();
 }
 
 export async function updateSettings(updates: Partial<AppSettings>): Promise<AppSettings> {
-  const res = await fetch(`${API_BASE}/settings`, {
+  const res = await authFetch(`${API_BASE}/settings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updates),
@@ -74,7 +75,7 @@ export async function updateSettings(updates: Partial<AppSettings>): Promise<App
 }
 
 export async function checkHealth(): Promise<{ status: string }> {
-  const res = await fetch(`${API_BASE}/health`);
+  const res = await authFetch(`${API_BASE}/health`);
   if (!res.ok) throw new Error('Failed to check health');
   return res.json();
 }
@@ -143,13 +144,13 @@ export interface ChatHistoryResponse {
 
 export async function fetchChatSessions(sessionType?: string): Promise<ChatHistoryResponse> {
   const params = sessionType ? `?session_type=${sessionType}` : '';
-  const res = await fetch(`${API_BASE}/chat_history/sessions${params}`);
+  const res = await authFetch(`${API_BASE}/chat_history/sessions${params}`);
   if (!res.ok) throw new Error('Failed to fetch chat sessions');
   return res.json();
 }
 
 export async function createChatSession(sessionType: string = 'chat'): Promise<ChatSession> {
-  const res = await fetch(`${API_BASE}/chat_history/sessions`, {
+  const res = await authFetch(`${API_BASE}/chat_history/sessions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_type: sessionType }),
@@ -159,13 +160,13 @@ export async function createChatSession(sessionType: string = 'chat'): Promise<C
 }
 
 export async function fetchChatSession(sessionId: string): Promise<ChatSession> {
-  const res = await fetch(`${API_BASE}/chat_history/sessions/${sessionId}`);
+  const res = await authFetch(`${API_BASE}/chat_history/sessions/${sessionId}`);
   if (!res.ok) throw new Error('Failed to fetch chat session');
   return res.json();
 }
 
 export async function deleteChatSession(sessionId: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/chat_history/sessions/${sessionId}`, {
+  const res = await authFetch(`${API_BASE}/chat_history/sessions/${sessionId}`, {
     method: 'DELETE',
   });
   if (!res.ok) throw new Error('Failed to delete chat session');
@@ -177,7 +178,7 @@ export async function addChatMessage(
   content: string,
   sources?: { file_path: string; score: number }[]
 ): Promise<ChatMessage> {
-  const res = await fetch(`${API_BASE}/chat_history/messages`, {
+  const res = await authFetch(`${API_BASE}/chat_history/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId, role, content, sources }),
@@ -187,7 +188,7 @@ export async function addChatMessage(
 }
 
 export async function updateChatSessionTitle(sessionId: string, title: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/chat_history/sessions/${sessionId}/title`, {
+  const res = await authFetch(`${API_BASE}/chat_history/sessions/${sessionId}/title`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId, title }),
@@ -223,7 +224,7 @@ export async function sendAgentMessage(
   message: string,
   sessionId?: string
 ): Promise<AgentResponse> {
-  const res = await fetch(`${API_BASE}/agent/chat`, {
+  const res = await authFetch(`${API_BASE}/agent/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message, session_id: sessionId }),
@@ -233,7 +234,7 @@ export async function sendAgentMessage(
 }
 
 export async function getAgentTools(): Promise<{ tools: string[] }> {
-  const res = await fetch(`${API_BASE}/agent/tools`);
+  const res = await authFetch(`${API_BASE}/agent/tools`);
   if (!res.ok) throw new Error('Failed to get agent tools');
   return res.json();
 }
@@ -242,14 +243,14 @@ export async function getAgentTools(): Promise<{ tools: string[] }> {
 
 export async function fetchPlans(status?: string): Promise<AgentPlan[]> {
   const params = status ? `?status=${encodeURIComponent(status)}` : '';
-  const res = await fetch(`${API_BASE}/plans${params}`);
+  const res = await authFetch(`${API_BASE}/plans${params}`);
   if (!res.ok) throw new Error('Failed to fetch plans');
   const data = await res.json();
   return data.plans || [];
 }
 
 export async function fetchPlan(planId: string): Promise<AgentPlan> {
-  const res = await fetch(`${API_BASE}/plans/${planId}`);
+  const res = await authFetch(`${API_BASE}/plans/${planId}`);
   if (!res.ok) throw new Error('Failed to fetch plan');
   return res.json();
 }
@@ -257,7 +258,7 @@ export async function fetchPlan(planId: string): Promise<AgentPlan> {
 export async function fetchPlanLog(
   planId: string
 ): Promise<Array<Record<string, unknown>>> {
-  const res = await fetch(`${API_BASE}/plans/${planId}/log`);
+  const res = await authFetch(`${API_BASE}/plans/${planId}/log`);
   if (!res.ok) throw new Error('Failed to fetch plan log');
   const data = await res.json();
   return data.log || [];
@@ -276,7 +277,7 @@ export interface CreatePlanInput {
 }
 
 export async function createPlan(input: CreatePlanInput): Promise<AgentPlan> {
-  const res = await fetch(`${API_BASE}/plans`, {
+  const res = await authFetch(`${API_BASE}/plans`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
@@ -286,38 +287,38 @@ export async function createPlan(input: CreatePlanInput): Promise<AgentPlan> {
 }
 
 export async function approvePlan(planId: string): Promise<AgentPlan> {
-  const res = await fetch(`${API_BASE}/plans/${planId}/approve`, { method: 'POST' });
+  const res = await authFetch(`${API_BASE}/plans/${planId}/approve`, { method: 'POST' });
   if (!res.ok) throw new Error('Failed to approve plan');
   return res.json();
 }
 
 export async function rejectPlan(planId: string): Promise<AgentPlan> {
-  const res = await fetch(`${API_BASE}/plans/${planId}/reject`, { method: 'POST' });
+  const res = await authFetch(`${API_BASE}/plans/${planId}/reject`, { method: 'POST' });
   if (!res.ok) throw new Error('Failed to reject plan');
   return res.json();
 }
 
 export async function executePlan(planId: string): Promise<AgentPlan> {
-  const res = await fetch(`${API_BASE}/plans/${planId}/execute`, { method: 'POST' });
+  const res = await authFetch(`${API_BASE}/plans/${planId}/execute`, { method: 'POST' });
   if (!res.ok) throw new Error('Failed to execute plan');
   return res.json();
 }
 
 export async function deletePlan(planId: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/plans/${planId}`, { method: 'DELETE' });
+  const res = await authFetch(`${API_BASE}/plans/${planId}`, { method: 'DELETE' });
   if (!res.ok) throw new Error('Failed to delete plan');
 }
 
 // ---- Auto Indexer ----
 
 export async function fetchAutoIndexStatus(): Promise<AutoIndexStatus> {
-  const res = await fetch(`${API_BASE}/settings/auto_index_status`);
+  const res = await authFetch(`${API_BASE}/settings/auto_index_status`);
   if (!res.ok) throw new Error('Failed to fetch auto index status');
   return res.json();
 }
 
 export async function runAutoIndexNow(): Promise<Record<string, number>> {
-  const res = await fetch(`${API_BASE}/settings/auto_index/run`, { method: 'POST' });
+  const res = await authFetch(`${API_BASE}/settings/auto_index/run`, { method: 'POST' });
   if (!res.ok) throw new Error('Failed to run auto index');
   return res.json();
 }
@@ -341,7 +342,7 @@ export interface HybridSearchResponse {
 
 export async function hybridSearch(query: string, topK: number = 10): Promise<HybridSearchResponse> {
   const params = new URLSearchParams({ query, top_k: String(topK) });
-  const res = await fetch(`${API_BASE}/search/hybrid?${params}`, { method: 'POST' });
+  const res = await authFetch(`${API_BASE}/search/hybrid?${params}`, { method: 'POST' });
   if (!res.ok) throw new Error('Failed to search');
   return res.json();
 }
@@ -361,43 +362,44 @@ export interface Digest extends DigestMeta {
 
 export async function generateDigest(date?: string): Promise<{ success: boolean; message?: string; date?: string; files_count?: number }> {
   const params = date ? `?date=${date}` : '';
-  const res = await fetch(`${API_BASE}/digest/generate${params}`, { method: 'POST' });
+  const res = await authFetch(`${API_BASE}/digest/generate${params}`, { method: 'POST' });
   if (!res.ok) throw new Error('Failed to generate digest');
   return res.json();
 }
 
 export async function fetchLatestDigest(): Promise<Digest> {
-  const res = await fetch(`${API_BASE}/digest/latest`);
+  const res = await authFetch(`${API_BASE}/digest/latest`);
   if (!res.ok) throw new Error('Failed to fetch latest digest');
   return res.json();
 }
 
 export async function fetchDigestList(): Promise<DigestMeta[]> {
-  const res = await fetch(`${API_BASE}/digest/list`);
+  const res = await authFetch(`${API_BASE}/digest/list`);
   if (!res.ok) throw new Error('Failed to fetch digest list');
   const data = await res.json();
   return data.digests || [];
 }
 
 export async function fetchDigest(date: string): Promise<Digest> {
-  const res = await fetch(`${API_BASE}/digest/${date}`);
+  const res = await authFetch(`${API_BASE}/digest/${date}`);
   if (!res.ok) throw new Error('Failed to fetch digest');
   return res.json();
 }
 
 // ---- File Download / Upload / Content ----
 
-export function downloadUrl(path: string): string {
-  return `${API_BASE}/fs/download?path=${encodeURIComponent(path)}`;
-}
-
-export function downloadFile(path: string): void {
+export async function downloadFile(path: string): Promise<void> {
+  const res = await authFetch(`${API_BASE}/fs/download?path=${encodeURIComponent(path)}`);
+  if (!res.ok) throw new Error('Failed to download');
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
-  link.href = downloadUrl(path);
+  link.href = url;
   link.download = path.split(/[/\\]/).pop() || 'download';
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
 
 export async function uploadFiles(path: string, files: FileList): Promise<{ success: boolean; uploaded: string[]; count: number }> {
@@ -405,7 +407,7 @@ export async function uploadFiles(path: string, files: FileList): Promise<{ succ
   for (const file of Array.from(files)) {
     formData.append('files', file);
   }
-  const res = await fetch(`${API_BASE}/fs/upload?path=${encodeURIComponent(path)}`, {
+  const res = await authFetch(`${API_BASE}/fs/upload?path=${encodeURIComponent(path)}`, {
     method: 'POST',
     body: formData,
   });
@@ -423,13 +425,13 @@ export interface FileContent {
 }
 
 export async function fetchFileContent(path: string): Promise<FileContent> {
-  const res = await fetch(`${API_BASE}/fs/content?path=${encodeURIComponent(path)}`);
+  const res = await authFetch(`${API_BASE}/fs/content?path=${encodeURIComponent(path)}`);
   if (!res.ok) throw new Error('Failed to fetch file content');
   return res.json();
 }
 
 export async function copyPath(src: string, dest: string): Promise<FileOperation> {
-  const res = await fetch(`${API_BASE}/fs/copy`, {
+  const res = await authFetch(`${API_BASE}/fs/copy`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ src, dest }),

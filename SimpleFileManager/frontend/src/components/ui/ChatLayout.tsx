@@ -75,47 +75,56 @@ export function ChatLayout({
     return '新对话';
   };
 
+  const [sessionsOpen, setSessionsOpen] = useState(false);
+
   return (
-    <div className="flex h-full">
-      {/* Sessions sidebar */}
-      <div className="w-64 bg-white border-r border-slate-200 flex flex-col flex-shrink-0">
-        <div className="p-3 border-b border-slate-100">
-          <button
-            onClick={() => onNewSession()}
-            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 transition-colors"
-          >
-            <Icon name="plus" size={16} />
-            新建对话
-          </button>
-        </div>
-        <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
-          {sessions.length === 0 ? (
-            <div className="p-4 text-center text-sm text-slate-400">暂无对话记录</div>
-          ) : sessions.map(session => (
-            <div
-              key={session.id}
-              className={`group relative rounded-lg transition-colors ${
-                session.id === currentSessionId ? 'bg-indigo-50' : 'hover:bg-slate-100'
-              }`}
-            >
-              <button onClick={() => onSelectSession(session.id)} className="w-full text-left px-3 py-2.5 pr-8">
-                <div className="text-sm font-medium text-slate-700 truncate">{getTitle(session)}</div>
-                <div className="text-xs text-slate-400 mt-0.5">{formatTime(session.updated_at)}</div>
-              </button>
-              <button
-                onClick={(e) => { e.stopPropagation(); onDeleteSession(session.id); }}
-                className="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all flex items-center justify-center"
-                title="删除对话"
-              >
-                <Icon name="trash" size={14} />
-              </button>
-            </div>
-          ))}
-        </div>
+    <div className="flex h-full relative">
+      {/* Mobile overlay */}
+      {sessionsOpen && (
+        <div className="fixed inset-0 z-30 bg-black/30 lg:hidden" onClick={() => setSessionsOpen(false)} />
+      )}
+
+      {/* Sessions sidebar — desktop */}
+      <div className="hidden lg:flex w-64 bg-white border-r border-slate-200 flex-col flex-shrink-0">
+        <SessionList
+          sessions={sessions}
+          currentSessionId={currentSessionId}
+          onNewSession={onNewSession}
+          onSelectSession={onSelectSession}
+          onDeleteSession={onDeleteSession}
+          getTitle={getTitle}
+          formatTime={formatTime}
+        />
       </div>
+
+      {/* Sessions sidebar — mobile drawer */}
+      {sessionsOpen && (
+        <div className="fixed left-0 top-0 bottom-0 z-40 w-64 bg-white border-r border-slate-200 flex flex-col lg:hidden shadow-popover">
+          <SessionList
+            sessions={sessions}
+            currentSessionId={currentSessionId}
+            onNewSession={onNewSession}
+            onSelectSession={(id) => { onSelectSession(id); setSessionsOpen(false); }}
+            onDeleteSession={onDeleteSession}
+            getTitle={getTitle}
+            formatTime={formatTime}
+          />
+        </div>
+      )}
 
       {/* Chat area */}
       <div className="flex-1 flex flex-col bg-white min-w-0">
+        {/* Mobile top bar */}
+        <div className="lg:hidden flex items-center gap-2 px-3 py-2 border-b border-slate-100 flex-shrink-0">
+          <button
+            onClick={() => setSessionsOpen(true)}
+            className="p-2 rounded-lg text-slate-500 hover:bg-slate-100"
+          >
+            <Icon name="chat" size={18} />
+          </button>
+          <span className="text-sm font-medium text-slate-700 truncate">{currentSession ? getTitle(currentSession) : '新对话'}</span>
+        </div>
+
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {!currentSession || currentSession.messages.length === 0 ? (
             emptyState || <div className="h-full flex items-center justify-center text-slate-400">开始一个新对话吧</div>
@@ -186,5 +195,55 @@ export function ChatLayout({
         </div>
       </div>
     </div>
+  );
+}
+
+function SessionList({
+  sessions, currentSessionId, onNewSession, onSelectSession, onDeleteSession, getTitle, formatTime,
+}: {
+  sessions: ChatSession[];
+  currentSessionId: string | null;
+  onNewSession: () => Promise<string>;
+  onSelectSession: (id: string) => void;
+  onDeleteSession: (id: string) => void;
+  getTitle: (s: ChatSession) => string;
+  formatTime: (t: number) => string;
+}) {
+  return (
+    <>
+      <div className="p-3 border-b border-slate-100">
+        <button
+          onClick={() => onNewSession()}
+          className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 transition-colors"
+        >
+          <Icon name="plus" size={16} />
+          新建对话
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
+        {sessions.length === 0 ? (
+          <div className="p-4 text-center text-sm text-slate-400">暂无对话记录</div>
+        ) : sessions.map(session => (
+          <div
+            key={session.id}
+            className={`group relative rounded-lg transition-colors ${
+              session.id === currentSessionId ? 'bg-indigo-50' : 'hover:bg-slate-100'
+            }`}
+          >
+            <button onClick={() => onSelectSession(session.id)} className="w-full text-left px-3 py-2.5 pr-8">
+              <div className="text-sm font-medium text-slate-700 truncate">{getTitle(session)}</div>
+              <div className="text-xs text-slate-400 mt-0.5">{formatTime(session.updated_at)}</div>
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onDeleteSession(session.id); }}
+              className="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all flex items-center justify-center"
+              title="删除对话"
+            >
+              <Icon name="trash" size={14} />
+            </button>
+          </div>
+        ))}
+      </div>
+    </>
   );
 }

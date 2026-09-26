@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { hybridSearch } from '../api';
+import { authFetch } from '../auth';
 import type { HybridSearchResult } from '../api';
 import { Icon } from './ui/Icon';
 import { useToast } from './ui/Toast';
@@ -43,7 +44,7 @@ export function SearchPage() {
     if (!query.trim() || isSummarizing) return;
     setIsSummarizing(true); setAiAnswer(null);
     try {
-      const res = await fetch('/api/rag/query', {
+      const res = await authFetch('/api/rag/query', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question: query, top_k: 5 }),
       });
@@ -58,13 +59,13 @@ export function SearchPage() {
   return (
     <div className="flex flex-col h-full bg-slate-50">
       {/* Search bar */}
-      <div className="bg-white border-b border-slate-200 px-6 py-4 flex-shrink-0">
-        <form onSubmit={handleSearch} className="flex items-center gap-3">
-          <div className="relative flex-1">
+      <div className="bg-white border-b border-slate-200 px-4 sm:px-6 py-3 sm:py-4 flex-shrink-0">
+        <form onSubmit={handleSearch} className="flex items-center gap-2 sm:gap-3">
+          <div className="relative flex-1 min-w-0">
             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"><Icon name="search" size={18} /></span>
             <input type="text" value={query} onChange={e => setQuery(e.target.value)}
-              placeholder="关键词或自然语言搜索..."
-              className="w-full pl-10 pr-4 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-base focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 transition-all" />
+              placeholder="搜索..."
+              className="w-full pl-10 pr-3 sm:pr-4 py-2 sm:py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm sm:text-base focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 transition-all" />
           </div>
           <button type="submit" disabled={isSearching || !query.trim()}
             className="flex items-center gap-1.5 px-5 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:opacity-40 transition-colors whitespace-nowrap">

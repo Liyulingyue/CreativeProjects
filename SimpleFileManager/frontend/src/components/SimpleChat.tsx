@@ -1,4 +1,5 @@
 import { useChatSessions } from '../hooks/useChatSessions';
+import { authFetch } from '../auth';
 import { ChatLayout } from './ui/ChatLayout';
 import { Icon } from './ui/Icon';
 
@@ -10,7 +11,7 @@ export function SimpleChat() {
     if (!sessionId) sessionId = await createSession();
     await addMessage(sessionId, { role: 'user', content });
     try {
-      const res = await fetch('/api/agent/chat', {
+      const res = await authFetch('/api/agent/chat', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: content }),
       });

@@ -10,6 +10,7 @@ import { FilePreview } from './FilePreview';
 import ContextMenu from './ui/ContextMenu';
 import { ConfirmDialog, PromptDialog } from './ui/Dialog';
 import { useToast } from './ui/Toast';
+import { Icon } from './ui/Icon';
 
 type ViewMode = 'grid' | 'list' | 'compact';
 
@@ -25,6 +26,7 @@ export function FileManagerPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const [dragSource, setDragSource] = useState<FileNode | null>(null);
   const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
@@ -292,14 +294,12 @@ export function FileManagerPage() {
 
   const handleDownload = (node?: FileNode) => {
     if (node) {
-      downloadFile(node.path);
-      toast('开始下载 ' + node.name, 'info');
+      downloadFile(node.path).then(() => toast('开始下载 ' + node.name, 'info')).catch(() => toast('下载失败', 'error'));
     } else if (selectedPaths.size === 1) {
       const path = Array.from(selectedPaths)[0];
       const node = browseResult?.items.find(i => i.path === path);
       if (node && !node.is_dir) {
-        downloadFile(node.path);
-        toast('开始下载 ' + node.name, 'info');
+        downloadFile(node.path).then(() => toast('开始下载 ' + node.name, 'info')).catch(() => toast('下载失败', 'error'));
       }
     }
   };
@@ -383,11 +383,31 @@ export function FileManagerPage() {
         selectionCount={selectedPaths.size}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
+        onToggleSidebar={() => setSidebarOpen(v => !v)}
       />
-      <div className="flex flex-1 overflow-hidden">
-        <Sidebar tree={tree} onNavigate={handleNavigate} currentPath={currentPath} />
-        <div className="flex-1 overflow-auto flex flex-col">
-          <Breadcrumb path={currentPath} onNavigate={handleNavigate} />
+      <div className="flex flex-1 overflow-hidden relative">
+        {/* Mobile overlay */}
+        {sidebarOpen && (
+          <div className="fixed inset-0 z-30 bg-black/30 lg:hidden" onClick={() => setSidebarOpen(false)} />
+        )}
+        <Sidebar
+          tree={tree}
+          onNavigate={(p) => { handleNavigate(p); setSidebarOpen(false); }}
+          currentPath={currentPath}
+          mobileOpen={sidebarOpen}
+        />
+        <div className="flex-1 overflow-auto flex flex-col min-w-0">
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <button
+              className="lg:hidden p-2 ml-1 rounded-lg text-slate-500 hover:bg-slate-100"
+              onClick={() => setSidebarOpen(true)}
+            >
+              <Icon name="folder" size={18} />
+            </button>
+            <div className="flex-1 min-w-0">
+              <Breadcrumb path={currentPath} onNavigate={handleNavigate} />
+            </div>
+          </div>
           {isLoading ? (
             <div className="flex items-center justify-center py-12">
               <div className="loading-spinner mr-3" />

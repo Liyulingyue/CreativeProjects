@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { ApprovalCenter } from './Organizer/ApprovalCenter';
 import { createPlan } from '../api';
+import { authFetch } from '../auth';
 import { useToast } from './ui/Toast';
 import { Icon } from './ui/Icon';
 import type { PlanActionType } from '../types';
@@ -21,7 +22,7 @@ export function OrganizerPage() {
   const loadSnapshots = async () => {
     setIsLoading(true);
     try {
-      const [snapRes, latestRes] = await Promise.all([fetch('/api/organizer/snapshots'), fetch('/api/organizer/latest')]);
+      const [snapRes, latestRes] = await Promise.all([authFetch('/api/organizer/snapshots'), authFetch('/api/organizer/latest')]);
       if (snapRes.ok) setSnapshots((await snapRes.json()).snapshots || []);
       if (latestRes.ok) setLatestSnapshot(await latestRes.json());
     } catch (e) { console.error('Failed:', e); } finally { setIsLoading(false); }
@@ -31,13 +32,13 @@ export function OrganizerPage() {
 
   const handleTakeSnapshot = async () => {
     setIsTakingSnapshot(true);
-    try { await fetch('/api/organizer/snapshot', { method: 'POST' }); await loadSnapshots(); toast('快照已拍摄', 'success'); }
+    try { await authFetch('/api/organizer/snapshot', { method: 'POST' }); await loadSnapshots(); toast('快照已拍摄', 'success'); }
     catch { toast('拍摄失败', 'error'); } finally { setIsTakingSnapshot(false); }
   };
 
   const handleCompare = async (dateFrom: string, dateTo: string) => {
     setIsLoading(true);
-    try { const res = await fetch(`/api/organizer/compare?date_from=${dateFrom}&date_to=${dateTo}`); if (res.ok) setCompareResult(await res.json()); }
+    try { const res = await authFetch(`/api/organizer/compare?date_from=${dateFrom}&date_to=${dateTo}`); if (res.ok) setCompareResult(await res.json()); }
     catch { toast('对比失败', 'error'); } finally { setIsLoading(false); }
   };
 
@@ -112,7 +113,7 @@ export function OrganizerPage() {
             {compareResult && (
               <div className="bg-white rounded-lg border border-slate-200 p-5">
                 <div className="text-base font-semibold text-slate-700 mb-4">变化分析: {formatDate(compareResult.date_to)} vs {formatDate(compareResult.date_from)}</div>
-                <div className="grid grid-cols-4 gap-3 mb-5">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
                   <div className="bg-green-50 rounded-lg p-3 text-center"><div className="text-xl font-bold text-green-600">{compareResult.added_files.length}</div><div className="text-xs text-slate-500">新增文件</div></div>
                   <div className="bg-blue-50 rounded-lg p-3 text-center"><div className="text-xl font-bold text-blue-600">{compareResult.added_dirs.length}</div><div className="text-xs text-slate-500">新增目录</div></div>
                   <div className="bg-red-50 rounded-lg p-3 text-center"><div className="text-xl font-bold text-red-600">{compareResult.deleted_files.length}</div><div className="text-xs text-slate-500">删除文件</div></div>

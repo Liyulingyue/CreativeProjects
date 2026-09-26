@@ -6,6 +6,14 @@ interface SidebarProps {
   tree: TreeNode | null;
   onNavigate: (path: string) => void;
   currentPath: string;
+  mobileOpen?: boolean;
+}
+
+interface TreeItemProps {
+  node: TreeNode;
+  level: number;
+  currentPath: string;
+  onNavigate: (path: string) => void;
 }
 
 function TreeItem({ node, level, currentPath, onNavigate }: TreeItemProps) {
@@ -55,16 +63,27 @@ function TreeItem({ node, level, currentPath, onNavigate }: TreeItemProps) {
   );
 }
 
-interface TreeItemProps {
-  node: TreeNode;
-  level: number;
-  currentPath: string;
-  onNavigate: (path: string) => void;
+export function Sidebar({ tree, onNavigate, currentPath, mobileOpen = false }: SidebarProps) {
+  return (
+    <>
+      {/* Desktop */}
+      <div className="hidden lg:flex w-56 bg-white border-r border-slate-200 flex-col overflow-hidden flex-shrink-0">
+        <SidebarContent tree={tree} onNavigate={onNavigate} currentPath={currentPath} />
+      </div>
+
+      {/* Mobile drawer */}
+      {mobileOpen && (
+        <div className="fixed left-0 top-0 bottom-0 z-40 w-64 bg-white border-r border-slate-200 flex flex-col lg:hidden shadow-popover">
+          <SidebarContent tree={tree} onNavigate={onNavigate} currentPath={currentPath} />
+        </div>
+      )}
+    </>
+  );
 }
 
-export function Sidebar({ tree, onNavigate, currentPath }: SidebarProps) {
+function SidebarContent({ tree, onNavigate, currentPath }: { tree: TreeNode | null; onNavigate: (p: string) => void; currentPath: string }) {
   return (
-    <div className="w-56 bg-white border-r border-slate-200 flex flex-col overflow-hidden flex-shrink-0">
+    <>
       <div className="px-4 py-2.5 text-xs font-semibold text-slate-400 uppercase tracking-wider border-b border-slate-100 flex items-center gap-2">
         <Icon name="folder" size={14} />
         文件夹
@@ -76,6 +95,6 @@ export function Sidebar({ tree, onNavigate, currentPath }: SidebarProps) {
           <TreeItem node={tree} level={0} currentPath={currentPath} onNavigate={onNavigate} />
         )}
       </div>
-    </div>
+    </>
   );
 }
