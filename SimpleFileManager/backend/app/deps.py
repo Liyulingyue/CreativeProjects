@@ -619,7 +619,9 @@ def _get_default_settings() -> AppSettings:
         max_agent_steps=int(os.getenv("MAX_AGENT_STEPS", "8")),
         storage_path=os.getenv("STORAGE_PATH", "./data"),
         auto_digest_enabled=os.getenv("AUTO_DIGEST_ENABLED", "false").lower() in ("true", "1", "yes"),
+        auto_digest_mode=os.getenv("AUTO_DIGEST_MODE", "scheduled"),
         auto_digest_hour=int(os.getenv("AUTO_DIGEST_HOUR", "23")),
+        auto_digest_interval_hours=int(os.getenv("AUTO_DIGEST_INTERVAL_HOURS", "6")),
     )
 
 

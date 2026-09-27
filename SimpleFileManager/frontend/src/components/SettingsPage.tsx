@@ -107,7 +107,7 @@ export function SettingsPage() {
             <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
               <div>
                 <div className="text-sm font-medium text-slate-700">自动生成日报</div>
-                <div className="text-xs text-slate-400">每天到点自动扫描当日变动文件并生成知识日报</div>
+                <div className="text-xs text-slate-400">自动扫描当日变动文件并生成知识日报</div>
               </div>
               <button onClick={() => set({ auto_digest_enabled: !settings.auto_digest_enabled })}
                 className={`relative rounded-full transition-colors ${settings.auto_digest_enabled ? 'bg-indigo-600' : 'bg-slate-300'}`}
@@ -116,9 +116,33 @@ export function SettingsPage() {
                   style={{ transform: settings.auto_digest_enabled ? 'translateX(18px)' : 'translateX(0)' }} />
               </button>
             </div>
-            <Field label="生成时间（小时，0-23）" hint={`每天 ${settings.auto_digest_hour}:00 自动生成`}>
-              <input type="number" min={0} max={23} className={inputClass} value={settings.auto_digest_hour} onChange={e => set({ auto_digest_hour: Math.max(0, Math.min(23, Number(e.target.value))) })} />
-            </Field>
+            {settings.auto_digest_enabled && (
+              <>
+                <div className="flex rounded-lg border border-slate-200 overflow-hidden">
+                  <button type="button"
+                    onClick={() => set({ auto_digest_mode: 'scheduled' })}
+                    className={`flex-1 px-4 py-2 text-sm font-medium transition-colors ${settings.auto_digest_mode === 'scheduled' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}>
+                    定时生成
+                  </button>
+                  <button type="button"
+                    onClick={() => set({ auto_digest_mode: 'interval' })}
+                    className={`flex-1 px-4 py-2 text-sm font-medium transition-colors ${settings.auto_digest_mode === 'interval' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}>
+                    间隔生成
+                  </button>
+                </div>
+                {settings.auto_digest_mode === 'scheduled' ? (
+                  <Field label="生成时间（小时，0-23）" hint={`每天 ${settings.auto_digest_hour}:00 自动生成`}>
+                    <input type="number" min={0} max={23} className={inputClass} value={settings.auto_digest_hour}
+                      onChange={e => set({ auto_digest_hour: Math.max(0, Math.min(23, Number(e.target.value))) })} />
+                  </Field>
+                ) : (
+                  <Field label="间隔时间（小时）" hint={`每 ${settings.auto_digest_interval_hours} 小时自动生成一次`}>
+                    <input type="number" min={1} max={168} className={inputClass} value={settings.auto_digest_interval_hours}
+                      onChange={e => set({ auto_digest_interval_hours: Math.max(1, Number(e.target.value)) })} />
+                  </Field>
+                )}
+              </>
+            )}
           </div>
 
           {/* Security */}

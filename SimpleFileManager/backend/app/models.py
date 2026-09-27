@@ -69,7 +69,9 @@ class AppSettings(BaseModel):
     storage_path: str = "./data"
     theme: str = "light"
     auto_digest_enabled: bool = False
+    auto_digest_mode: str = "scheduled"  # scheduled | interval
     auto_digest_hour: int = 23
+    auto_digest_interval_hours: int = 6
 
 
 class IndexStats(BaseModel):

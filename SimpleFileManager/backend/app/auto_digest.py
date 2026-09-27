@@ -1,13 +1,14 @@
 """Auto digest scheduler.
 
-Checks every minute if auto_digest_enabled is on and current hour
-matches auto_digest_hour. Generates a digest for today if not already done.
+Two modes:
+- scheduled: generate at a fixed hour every day (e.g. 23:00)
+- interval: generate every N hours since last generation
 """
 
 import threading
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from .deps import state
@@ -18,7 +19,7 @@ class AutoDigestScheduler:
     def __init__(self):
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self._last_run_date: Optional[str] = None
+        self._last_run_ts: float = 0.0
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -41,22 +42,33 @@ class AutoDigestScheduler:
         settings = state.get_settings()
         if not settings.auto_digest_enabled:
             return
+
         now = datetime.now()
         today = now.strftime("%Y-%m-%d")
-        if self._last_run_date == today:
-            return
-        if now.hour < settings.auto_digest_hour:
-            return
+
+        if settings.auto_digest_mode == "interval":
+            hours = max(1, settings.auto_digest_interval_hours)
+            if self._last_run_ts > 0 and (time.time() - self._last_run_ts) < hours * 3600:
+                return
+        else:
+            if now.hour < settings.auto_digest_hour:
+                return
+            if self._last_run_ts > 0:
+                last_run = datetime.fromtimestamp(self._last_run_ts)
+                if last_run.date() == now.date():
+                    return
+
         existing = digest_service.get(today)
         if existing:
-            self._last_run_date = today
+            self._last_run_ts = time.time()
             return
+
         result = digest_service.generate(today)
         if result.get("success"):
-            self._last_run_date = today
+            self._last_run_ts = time.time()
 
     def reset(self):
-        self._last_run_date = None
+        self._last_run_ts = 0.0
 
 
 auto_digest = AutoDigestScheduler()

@@ -45,7 +45,9 @@ export interface AppSettings {
   storage_path: string;
   theme: string;
   auto_digest_enabled: boolean;
+  auto_digest_mode: 'scheduled' | 'interval';
   auto_digest_hour: number;
+  auto_digest_interval_hours: number;
 }
 
 export interface AutoIndexStatus {

@@ -21,7 +21,9 @@ services:
       - INDEX_DEBOUNCE_SECONDS=${INDEX_DEBOUNCE_SECONDS:-10}
       - MAX_AGENT_STEPS=${MAX_AGENT_STEPS:-8}
       - AUTO_DIGEST_ENABLED=${AUTO_DIGEST_ENABLED:-false}
+      - AUTO_DIGEST_MODE=${AUTO_DIGEST_MODE:-scheduled}
       - AUTO_DIGEST_HOUR=${AUTO_DIGEST_HOUR:-23}
+      - AUTO_DIGEST_INTERVAL_HOURS=${AUTO_DIGEST_INTERVAL_HOURS:-6}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
