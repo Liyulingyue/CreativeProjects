@@ -79,8 +79,8 @@ class EmbeddingService:
         self.model = model
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        from .llm_client import get_embedding
-        return [get_embedding(t) for t in texts]
+        from .llm_client import get_embeddings
+        return get_embeddings(texts)
 
 
 class LanceDBVectorStore:
@@ -622,6 +622,7 @@ def _get_default_settings() -> AppSettings:
         auto_digest_mode=os.getenv("AUTO_DIGEST_MODE", "scheduled"),
         auto_digest_hour=int(os.getenv("AUTO_DIGEST_HOUR", "23")),
         auto_digest_interval_hours=int(os.getenv("AUTO_DIGEST_INTERVAL_HOURS", "6")),
+        max_context_tokens=int(os.getenv("MAX_CONTEXT_TOKENS", "32768")),
     )
 
 

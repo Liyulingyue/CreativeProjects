@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
-import { fetchSettings, updateSettings } from '../api';
+import { fetchSettings, updateSettings, testConnections } from '../api';
 import { changePassword, checkAuthStatus } from '../auth';
 import { useToast } from './ui/Toast';
 import { Icon } from './ui/Icon';
 import type { AppSettings } from '../types';
+
+interface ProbeResult { ok: boolean; detail?: string; latency_ms?: number; }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
@@ -26,6 +28,20 @@ export function SettingsPage() {
   const [oldPwd, setOldPwd] = useState('');
   const [newPwd, setNewPwd] = useState('');
   const [isChangingPwd, setIsChangingPwd] = useState(false);
+  const [probes, setProbes] = useState<Record<string, ProbeResult> | null>(null);
+  const [isTesting, setIsTesting] = useState(false);
+
+  const handleTestConnection = async () => {
+    setIsTesting(true);
+    setProbes(null);
+    try {
+      setProbes(await testConnections());
+    } catch (e) {
+      toast(e instanceof Error ? e.message : '测试失败', 'error');
+    } finally {
+      setIsTesting(false);
+    }
+  };
 
   useEffect(() => {
     (async () => {
@@ -80,10 +96,39 @@ export function SettingsPage() {
           </div>
 
           <div className="bg-white rounded-lg border border-slate-200 p-5 space-y-3">
+            <div className="text-base font-semibold text-slate-700 flex items-center gap-2"><Icon name="zap" size={18} className="text-yellow-500" /> 连接测试</div>
+            <div className="text-xs text-slate-400">测试当前配置的 LLM 与 Embedding 服务是否可达，并校验向量维度是否匹配。</div>
+            <button onClick={handleTestConnection} disabled={isTesting}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-slate-100 text-slate-700 text-sm font-medium hover:bg-slate-200 disabled:opacity-50 transition-colors">
+              <Icon name="zap" size={16} />
+              {isTesting ? '测试中...' : '测试连接'}
+            </button>
+            {probes && (
+              <div className="space-y-2">
+                {Object.entries(probes).map(([name, r]) => (
+                  <div key={name} className={`p-3 rounded-lg text-sm ${r.ok ? 'bg-green-50' : 'bg-red-50'}`}>
+                    <div className="flex items-center justify-between">
+                      <span className={`font-medium ${r.ok ? 'text-green-700' : 'text-red-700'}`}>
+                        {name === 'llm' ? 'LLM 对话' : 'Embedding'}：{r.ok ? '正常' : '异常'}
+                      </span>
+                      {r.latency_ms !== undefined && <span className="text-xs text-slate-500">{r.latency_ms}ms</span>}
+                    </div>
+                    {r.detail && <div className={`text-xs mt-1 break-all ${r.ok ? 'text-green-600' : 'text-red-600'}`}>{r.detail}</div>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="bg-white rounded-lg border border-slate-200 p-5 space-y-3">
             <div className="text-base font-semibold text-slate-700 flex items-center gap-2"><Icon name="clipboard" size={18} className="text-amber-500" /> 索引与 Agent</div>
             <Field label="自动索引间隔（秒）" hint="最低 30 秒"><input type="number" className={inputClass} value={settings.index_interval} onChange={e => set({ index_interval: Number(e.target.value) })} /></Field>
             <Field label="防抖窗口（秒）" hint="避免读到半成品"><input type="number" className={inputClass} value={settings.index_debounce_seconds} onChange={e => set({ index_debounce_seconds: Number(e.target.value) })} /></Field>
             <Field label="Agent 最大步数"><input type="number" className={inputClass} value={settings.max_agent_steps} onChange={e => set({ max_agent_steps: Number(e.target.value) })} /></Field>
+            <Field label="模型上下文大小（tokens）" hint="你的模型上下文窗口上限，超出会自动压缩历史。如 32768 / 131072 / 1048576">
+              <input type="number" min={2000} step={1000} className={inputClass} value={settings.max_context_tokens}
+                onChange={e => set({ max_context_tokens: Math.max(2000, Number(e.target.value)) })} />
+            </Field>
             <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
               <div>
                 <div className="text-sm font-medium text-slate-700">自动索引</div>

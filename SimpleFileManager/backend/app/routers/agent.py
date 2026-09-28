@@ -328,17 +328,145 @@ def _trim(result: dict) -> dict:
     return result
 
 
-# In-memory conversation history, keyed by session id
-sessions: dict[str, list[dict]] = {}
+# ---- context window management ----
+
+CONTEXT_RESERVE_TOKENS = 4096  # reserved for model response
+MAX_MEMORY_CHARS = 4000
+
+
+def estimate_tokens(text: str) -> int:
+    """Heuristic token estimate. CJK chars ~1 token each, others ~4 chars/token."""
+    if not text:
+        return 0
+    cjk = 0
+    for ch in text:
+        o = ord(ch)
+        if (0x4E00 <= o <= 0x9FFF or 0x3400 <= o <= 0x4DBF
+                or 0x3000 <= o <= 0x303F or 0xFF00 <= o <= 0xFFEF):
+            cjk += 1
+    other = len(text) - cjk
+    return cjk + max(1, other // 4)
+
+
+def estimate_messages_tokens(messages: list[dict]) -> int:
+    total = 0
+    for m in messages:
+        content = m.get("content") or ""
+        if isinstance(content, str):
+            total += estimate_tokens(content)
+        for tc in m.get("tool_calls") or []:
+            fn = tc.get("function") or {}
+            total += estimate_tokens(fn.get("name") or "") + estimate_tokens(fn.get("arguments") or "")
+        total += 4  # per-message framing overhead
+    return total
+
+
+def context_budget() -> int:
+    return max(2000, state.get_settings().max_context_tokens - CONTEXT_RESERVE_TOKENS)
+
+
+def _compress_to_memory(msgs: list[dict]) -> str:
+    """Summarize old conversation turns into a compact working memory."""
+    transcript = "\n".join(
+        f"[{m.get('role', '?')}] {(m.get('content') or '')[:800]}" for m in msgs
+    )[:16000]
+    prompt = f"""请把以下对话历史压缩成一份「工作记忆」，供后续对话衔接使用。要求：
+1. 记录：用户的核心意图、已探索过的目录/文件、得到的关键结论、已提交的计划标题
+2. 去掉冗余细节、重复内容和寒暄
+3. 不超过 500 字，中文，分点列出
+
+对话历史：
+{transcript}"""
+    try:
+        result = chat_completion(
+            messages=[
+                {"role": "system", "content": "你是对话历史压缩助手，负责提炼关键信息为简短工作记忆。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,
+        )
+        return (result.get("content") or "").strip()
+    except Exception:
+        return ""
+
+
+class Session:
+    """Conversation state: clean user/assistant history + rolling memory summary."""
+
+    def __init__(self):
+        self.history: list[dict] = []
+        self.memory: str = ""
+
+    def build_messages(self) -> list[dict]:
+        msgs = [{"role": "system", "content": SYSTEM_PROMPT}]
+        if self.memory:
+            msgs.append({"role": "system", "content": f"【历史工作记忆（早期对话摘要）】\n{self.memory}"})
+        msgs.extend(self.history[-MAX_SESSION_MESSAGES:])
+        return msgs
+
+    def compact(self) -> bool:
+        """Compress history if over context budget. Returns True if anything changed."""
+        budget = context_budget()
+        changed = False
+        for _ in range(3):
+            if estimate_messages_tokens(self.build_messages()) <= budget:
+                break
+            user_idx = [i for i, m in enumerate(self.history) if m.get("role") == "user"]
+            if len(user_idx) < 2:
+                # can't split safely — hard trim the oldest message
+                if self.history:
+                    self.history.pop(0)
+                    changed = True
+                continue
+            half = max(1, len(user_idx) // 2)
+            cut = user_idx[half]
+            old = self.history[:cut]
+            summary = _compress_to_memory(old)
+            self.history = self.history[cut:]
+            changed = True
+            if summary:
+                self.memory = (self.memory + "\n" + summary).strip()[-MAX_MEMORY_CHARS:]
+        return changed
+
+
+sessions: dict[str, Session] = {}
+
+
+def _restore_session(session_id: str) -> Session:
+    """Load session from in-memory cache, or rebuild from chat history db.
+
+    The chat history table holds the full permanent record; on cold start we
+    rebuild the agent's LLM context from the most recent turns there.
+    """
+    if session_id in sessions:
+        return sessions[session_id]
+    session = Session()
+    try:
+        chat_session = state.get_chat_history().get_session(session_id)
+        if chat_session:
+            session.history = [
+                {"role": m.role, "content": m.content}
+                for m in chat_session.messages
+                if m.role in ("user", "assistant") and m.content
+            ][-MAX_SESSION_MESSAGES:]
+    except Exception:
+        pass
+    sessions[session_id] = session
+    return session
+
+
+def _get_session(session_id: str) -> Session:
+    return _restore_session(session_id)
 
 
 @agent.post("/chat", response_model=AgentResponse)
 def agent_chat(req: AgentRequest):
     session_id = req.session_id or "default"
-    history = sessions.setdefault(session_id, [])
-    history.append({"role": "user", "content": req.message})
+    session = _get_session(session_id)
+    session.history.append({"role": "user", "content": req.message})
 
-    all_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history[-MAX_SESSION_MESSAGES:]
+    session.compact()
+    all_messages = session.build_messages()
 
     tool_results: list[dict] = []
     plan_ids: list[str] = []
@@ -395,8 +523,7 @@ def agent_chat(req: AgentRequest):
         all_messages.append({"role": "assistant", "content": final_text})
 
     # persist trimmed history (drop intermediate tool noise)
-    history.clear()
-    history.extend([m for m in all_messages[1:] if m.get("role") in ("user", "assistant")][-MAX_SESSION_MESSAGES:])
+    session.history = [m for m in all_messages if m.get("role") in ("user", "assistant")][-MAX_SESSION_MESSAGES:]
 
     plans = []
     if plan_ids:

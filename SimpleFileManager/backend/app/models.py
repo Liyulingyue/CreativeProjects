@@ -72,6 +72,7 @@ class AppSettings(BaseModel):
     auto_digest_mode: str = "scheduled"  # scheduled | interval
     auto_digest_hour: int = 23
     auto_digest_interval_hours: int = 6
+    max_context_tokens: int = 32768
 
 
 class IndexStats(BaseModel):

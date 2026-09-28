@@ -9,6 +9,7 @@ import { OrganizerPage } from './components/OrganizerPage';
 import { DigestPage } from './components/DigestPage';
 import { SettingsPage } from './components/SettingsPage';
 import { LoginPage } from './components/LoginPage';
+import { ServiceStatus } from './components/ServiceStatus';
 import { checkAuthStatus, getToken, getAuthEnabled, logout } from './auth';
 
 const NAV_ITEMS = [
@@ -106,6 +107,7 @@ function App() {
               </button>
             )}
             <div className="px-3 pt-2 text-xs text-slate-400">v0.4.0 · Local AI</div>
+            <ServiceStatus />
           </div>
         </aside>
 
