@@ -1,5 +1,5 @@
 import type { AgentPlan, AppSettings, AutoIndexStatus, PlanActionType } from './types';
-import { authFetch } from './auth';
+import { authFetch, getToken as getAuthToken } from './auth';
 
 const API_BASE = '/api';
 
@@ -317,6 +317,41 @@ export async function fetchAutoIndexStatus(): Promise<AutoIndexStatus> {
   return res.json();
 }
 
+// ---- Service Health ----
+
+export interface ServiceProbe {
+  ok: boolean;
+  detail?: string;
+  latency_ms?: number;
+}
+
+export async function fetchServiceHealth(): Promise<Record<string, { ok: boolean }>> {
+  const res = await authFetch(`${API_BASE}/settings/service_health`);
+  if (!res.ok) throw new Error('Failed to fetch service health');
+  return res.json();
+}
+
+export async function testConnections(): Promise<Record<string, ServiceProbe>> {
+  const res = await authFetch(`${API_BASE}/settings/test_connection`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to test connections');
+  return res.json();
+}
+
+export interface IndexStats {
+  total_files: number;
+  total_dirs: number;
+  indexed_files: number;
+  indexed_dirs: number;
+  last_index_time: string | null;
+  storage_used: number;
+}
+
+export async function fetchIndexStats(): Promise<IndexStats> {
+  const res = await authFetch(`${API_BASE}/settings/index_stats`);
+  if (!res.ok) throw new Error('Failed to fetch index stats');
+  return res.json();
+}
+
 export async function runAutoIndexNow(): Promise<Record<string, number>> {
   const res = await authFetch(`${API_BASE}/settings/auto_index/run`, { method: 'POST' });
   if (!res.ok) throw new Error('Failed to run auto index');
@@ -402,17 +437,34 @@ export async function downloadFile(path: string): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
-export async function uploadFiles(path: string, files: FileList): Promise<{ success: boolean; uploaded: string[]; count: number }> {
+export async function uploadFiles(
+  path: string,
+  files: FileList,
+  onProgress?: (loaded: number, total: number) => void,
+): Promise<{ success: boolean; uploaded: string[]; count: number }> {
   const formData = new FormData();
   for (const file of Array.from(files)) {
     formData.append('files', file);
   }
-  const res = await authFetch(`${API_BASE}/fs/upload?path=${encodeURIComponent(path)}`, {
-    method: 'POST',
-    body: formData,
+  // XMLHttpRequest is used because fetch has no upload progress support
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_BASE}/fs/upload?path=${encodeURIComponent(path)}`);
+    const token = getAuthToken();
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(e.loaded, e.total);
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try { resolve(JSON.parse(xhr.responseText)); } catch { resolve({ success: true, uploaded: [], count: 0 }); }
+      } else {
+        reject(new Error(`Upload failed: ${xhr.status}`));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Upload failed'));
+    xhr.send(formData);
   });
-  if (!res.ok) throw new Error('Failed to upload files');
-  return res.json();
 }
 
 export interface FileContent {

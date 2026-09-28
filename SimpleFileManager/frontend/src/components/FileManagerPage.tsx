@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   fetchBrowse, fetchTree, createFolder, deletePath, movePath, searchFiles,
-  uploadFiles, downloadFile,
+  uploadFiles, downloadFile, copyPath,
   type BrowseResult, type FileNode, type TreeNode,
 } from '../api';
-import { FileGrid, FileList, FileCompactList, Toolbar, Breadcrumb, isPreviewable } from './FileExplorer';
+import { FileGrid, FileList, FileCompactList, Toolbar, Breadcrumb, isPreviewable, formatSize } from './FileExplorer';
 import { Sidebar } from './Sidebar';
 import { FilePreview } from './FilePreview';
 import ContextMenu from './ui/ContextMenu';
@@ -13,6 +13,30 @@ import { useToast } from './ui/Toast';
 import { Icon } from './ui/Icon';
 
 type ViewMode = 'grid' | 'list' | 'compact';
+
+const PAGE_SIZE = 200;
+
+function LoadMoreSentinel({ hasMore, shown, total, onLoadMore }: { hasMore: boolean; shown: number; total: number; onLoadMore: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!hasMore || !ref.current) return;
+    const observer = new IntersectionObserver(
+      entries => { if (entries[0].isIntersecting) onLoadMore(); },
+      { rootMargin: '200px' }
+    );
+    observer.observe(ref.current);
+    return () => observer.disconnect();
+  }, [hasMore, onLoadMore]);
+
+  if (!hasMore) return null;
+
+  return (
+    <div ref={ref} className="py-6 text-center text-sm text-slate-400">
+      正在加载更多...（已显示 {shown} / {total}）
+    </div>
+  );
+}
 
 export function FileManagerPage() {
   const { toast } = useToast();
@@ -27,6 +51,11 @@ export function FileManagerPage() {
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [uploadProgress, setUploadProgress] = useState<{ loaded: number; total: number } | null>(null);
+  const [clipboard, setClipboard] = useState<string[]>([]);
+  const clipboardHasContent = clipboard.length > 0;
+  const clipboardRef = useRef<string[]>([]);
 
   const [dragSource, setDragSource] = useState<FileNode | null>(null);
   const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
@@ -45,6 +74,7 @@ export function FileManagerPage() {
   const loadBrowse = useCallback(async (path?: string) => {
     setIsLoading(true);
     setError(null);
+    setVisibleCount(PAGE_SIZE);
     try {
       const result = await fetchBrowse(path);
       setBrowseResult(result);
@@ -152,6 +182,7 @@ export function FileManagerPage() {
       return;
     }
     setIsLoading(true);
+    setVisibleCount(PAGE_SIZE);
     try {
       const result = await searchFiles(searchQuery, currentPath);
       setBrowseResult({
@@ -254,6 +285,61 @@ export function FileManagerPage() {
     });
   };
 
+  const handleCopy = () => {
+    if (selectedPaths.size === 0) return;
+    const paths = Array.from(selectedPaths);
+    setClipboard(paths);
+    clipboardRef.current = paths;
+    toast(`已复制 ${paths.length} 项到剪贴板`, 'info');
+  };
+
+  const handlePaste = async () => {
+    const paths = clipboardRef.current;
+    if (paths.length === 0) return;
+    let succeeded = 0;
+    let failed = 0;
+    for (const src of paths) {
+      const name = src.split(/[/\\]/).pop() || '';
+      const dest = currentPath + '/' + name;
+      try {
+        await copyPath(src, dest);
+        succeeded++;
+      } catch (err) {
+        failed++;
+        // handle name collision: append suffix
+        const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')) : '';
+        const base = ext ? name.slice(0, -ext.length) : name;
+        const altDest = `${currentPath}/${base}_copy${ext}`;
+        try {
+          await copyPath(src, altDest);
+          succeeded++;
+          failed--;
+        } catch {
+          // give up on this item
+        }
+      }
+    }
+    if (succeeded > 0) {
+      toast(`已粘贴 ${succeeded} 项${failed > 0 ? `，${failed} 项失败` : ''}`, failed > 0 ? 'error' : 'success');
+    } else {
+      toast('粘贴失败', 'error');
+    }
+    loadBrowse(currentPath);
+    loadTree();
+  };
+
+  const handleSelectAll = () => {
+    if (!browseResult) return;
+    setSelectedPaths(new Set(browseResult.items.map(i => i.path)));
+  };
+
+  const handleRenameSelected = () => {
+    if (selectedPaths.size !== 1) return;
+    const path = Array.from(selectedPaths)[0];
+    const node = browseResult?.items.find(i => i.path === path);
+    if (node) handleRename(node);
+  };
+
   const handleCreateFolder = async () => {
     if (!newFolderName.trim()) return;
     try {
@@ -311,24 +397,75 @@ export function FileManagerPage() {
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
+    const totalBytes = Array.from(files).reduce((sum, f) => sum + f.size, 0);
+    setUploadProgress({ loaded: 0, total: totalBytes });
     try {
-      const result = await uploadFiles(currentPath, files);
+      const result = await uploadFiles(currentPath, files, (loaded, total) => setUploadProgress({ loaded, total }));
       toast(`已上传 ${result.count} 个文件`, 'success');
       loadBrowse(currentPath);
       loadTree();
     } catch (err) {
       toast('上传失败: ' + (err instanceof Error ? err.message : 'Unknown error'), 'error');
+    } finally {
+      setUploadProgress(null);
     }
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
   };
 
+  // ---- keyboard shortcuts ----
+  const handlersRef = useRef({ handleSelectAll, handleDelete, handleRenameSelected, handleRefresh, handleCopy, handlePaste });
+  handlersRef.current = { handleSelectAll, handleDelete, handleRenameSelected, handleRefresh, handleCopy, handlePaste };
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return;
+      // ignore when a modal or context menu is open
+      if (confirmDialog || promptDialog || contextMenu || previewNode || isCreatingFolder) return;
+
+      const sel = selectedPaths;
+      const h = handlersRef.current;
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        h.handleSelectAll();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
+        e.preventDefault();
+        h.handleCopy();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
+        e.preventDefault();
+        h.handlePaste();
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (sel.size > 0) {
+          e.preventDefault();
+          h.handleDelete();
+        }
+      } else if (e.key === 'F2') {
+        e.preventDefault();
+        if (sel.size === 1) h.handleRenameSelected();
+      } else if (e.key === 'F5') {
+        e.preventDefault();
+        h.handleRefresh();
+      } else if (e.key === 'Escape') {
+        if (sel.size > 0) setSelectedPaths(new Set());
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [selectedPaths, confirmDialog, promptDialog, contextMenu, previewNode, isCreatingFolder]);
+
   const renderFileList = () => {
     if (!browseResult) return null;
 
+    // 滚动加载：大目录只渲染前 PAGE_SIZE 项，滚到底加载更多
+    const allItems = browseResult.items;
+    const visibleItems = allItems.slice(0, visibleCount);
+    const hasMore = visibleItems.length < allItems.length;
+
     const props = {
-      items: browseResult.items,
+      items: visibleItems,
       selectedPaths,
       onSelect: handleSelect,
       onDoubleClick: handleDoubleClick,
@@ -347,22 +484,35 @@ export function FileManagerPage() {
     switch (viewMode) {
       case 'grid':
         return (
-          <FileGrid
-            {...props}
-            isCreatingFolder={isCreatingFolder}
-            newFolderName={newFolderName}
-            setNewFolderName={setNewFolderName}
-            onCreateFolder={handleCreateFolder}
-            onCancelCreateFolder={() => {
-              setIsCreatingFolder(false);
-              setNewFolderName('');
-            }}
-          />
+          <>
+            <FileGrid
+              {...props}
+              isCreatingFolder={isCreatingFolder}
+              newFolderName={newFolderName}
+              setNewFolderName={setNewFolderName}
+              onCreateFolder={handleCreateFolder}
+              onCancelCreateFolder={() => {
+                setIsCreatingFolder(false);
+                setNewFolderName('');
+              }}
+            />
+            <LoadMoreSentinel hasMore={hasMore} shown={visibleItems.length} total={allItems.length} onLoadMore={() => setVisibleCount(c => c + PAGE_SIZE)} />
+          </>
         );
       case 'list':
-        return <FileList {...props} />;
+        return (
+          <>
+            <FileList {...props} />
+            <LoadMoreSentinel hasMore={hasMore} shown={visibleItems.length} total={allItems.length} onLoadMore={() => setVisibleCount(c => c + PAGE_SIZE)} />
+          </>
+        );
       case 'compact':
-        return <FileCompactList {...props} />;
+        return (
+          <>
+            <FileCompactList {...props} />
+            <LoadMoreSentinel hasMore={hasMore} shown={visibleItems.length} total={allItems.length} onLoadMore={() => setVisibleCount(c => c + PAGE_SIZE)} />
+          </>
+        );
     }
   };
 
@@ -379,8 +529,11 @@ export function FileManagerPage() {
         onMove={handleMove}
         onUpload={handleUploadClick}
         onDownload={() => handleDownload()}
+        onCopy={handleCopy}
+        onPaste={handlePaste}
         hasSelection={selectedPaths.size > 0}
         selectionCount={selectedPaths.size}
+        clipboardHasContent={clipboardHasContent}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
         onToggleSidebar={() => setSidebarOpen(v => !v)}
@@ -408,6 +561,20 @@ export function FileManagerPage() {
               <Breadcrumb path={currentPath} onNavigate={handleNavigate} />
             </div>
           </div>
+          {uploadProgress && (
+            <div className="px-4 py-2 bg-indigo-50 border-b border-indigo-100 flex-shrink-0">
+              <div className="flex items-center justify-between text-xs text-indigo-700 mb-1">
+                <span>正在上传 {uploadProgress.total > 0 ? formatSize(uploadProgress.loaded) + ' / ' + formatSize(uploadProgress.total) : ''}</span>
+                <span>{uploadProgress.total > 0 ? Math.round((uploadProgress.loaded / uploadProgress.total) * 100) : 0}%</span>
+              </div>
+              <div className="h-1.5 bg-indigo-100 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-indigo-600 rounded-full transition-all duration-200"
+                  style={{ width: `${uploadProgress.total > 0 ? (uploadProgress.loaded / uploadProgress.total) * 100 : 0}%` }}
+                />
+              </div>
+            </div>
+          )}
           {isLoading ? (
             <div className="flex items-center justify-center py-12">
               <div className="loading-spinner mr-3" />
@@ -438,6 +605,7 @@ export function FileManagerPage() {
               onClick: () => handleDoubleClick(contextMenu.node),
             },
             { label: '下载', icon: 'download', onClick: () => handleDownload(contextMenu.node) },
+            { label: '复制', icon: 'copy', onClick: () => { setSelectedPaths(new Set([contextMenu.node.path])); setClipboard([contextMenu.node.path]); clipboardRef.current = [contextMenu.node.path]; toast('已复制到剪贴板', 'info'); } },
             { label: '重命名', icon: 'edit', onClick: () => handleRename(contextMenu.node) },
             { label: '删除', icon: 'trash', danger: true, onClick: () => handleDelete(contextMenu.node) },
           ]}

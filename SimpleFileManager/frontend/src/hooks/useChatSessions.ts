@@ -8,6 +8,7 @@ import {
   type ChatSession,
   type ChatMessage,
 } from '../api';
+import { authFetch } from '../auth';
 
 export function useChatSessions(sessionType: string = 'chat') {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -47,7 +48,11 @@ export function useChatSessions(sessionType: string = 'chat') {
   }, []);
 
   const deleteSession = useCallback(async (id: string) => {
-    await deleteChatSession(id);
+    await Promise.all([
+      deleteChatSession(id),
+      // also drop the agent's in-memory conversation context, otherwise it leaks
+      authFetch(`/api/agent/sessions/${id}`, { method: 'DELETE' }).catch(() => {}),
+    ]);
     setSessions(prev => {
       const filtered = prev.filter(s => s.id !== id);
       if (currentSessionId === id) {

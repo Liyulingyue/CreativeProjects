@@ -10,8 +10,11 @@ interface ToolbarProps {
   onMove: () => void;
   onUpload: () => void;
   onDownload: () => void;
+  onCopy: () => void;
+  onPaste: () => void;
   hasSelection: boolean;
   selectionCount: number;
+  clipboardHasContent: boolean;
   viewMode: 'grid' | 'list' | 'compact';
   onViewModeChange: (mode: 'grid' | 'list' | 'compact') => void;
   onToggleSidebar?: () => void;
@@ -23,8 +26,8 @@ const btnDanger = `${btnBase} text-slate-500 hover:bg-red-50 hover:text-red-600`
 
 export function Toolbar({
   searchQuery, onSearchChange, onSearch, onRefresh, onNewFolder,
-  onDelete, onMove, onUpload, onDownload,
-  hasSelection, selectionCount, viewMode, onViewModeChange,
+  onDelete, onMove, onUpload, onDownload, onCopy, onPaste,
+  hasSelection, selectionCount, clipboardHasContent, viewMode, onViewModeChange,
 }: ToolbarProps) {
   return (
     <div className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-white border-b border-slate-200 flex-shrink-0">
@@ -73,6 +76,8 @@ export function Toolbar({
       </button>
       <button onClick={onDownload} disabled={!hasSelection || selectionCount > 1} className={`${btnGhost} hidden sm:flex`} title="下载"><Icon name="download" size={18} /></button>
       <button onClick={onMove} disabled={!hasSelection} className={`${btnGhost} hidden sm:flex`} title="移动"><Icon name="move" size={18} /></button>
+      <button onClick={onCopy} disabled={!hasSelection} className={`${btnGhost} hidden sm:flex`} title="复制"><Icon name="copy" size={18} /></button>
+      <button onClick={onPaste} disabled={!clipboardHasContent} className={`${btnGhost} hidden sm:flex`} title="粘贴"><Icon name="clipboard" size={18} /></button>
       <button onClick={onDelete} disabled={!hasSelection} className={btnDanger} title="删除"><Icon name="trash" size={18} /></button>
     </div>
   );

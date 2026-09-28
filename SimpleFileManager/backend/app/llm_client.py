@@ -56,17 +56,30 @@ def chat_completion(
     return result
 
 
-def get_embedding(text: str) -> list[float]:
-    """Get embedding vector for a single text."""
+def _get_embedding_client() -> OpenAI:
     settings = state.get_settings()
     base_url = settings.embedding_base_url
     if base_url.endswith("/embeddings"):
         base_url = base_url.rsplit("/embeddings", 1)[0]
-    client = OpenAI(
+    return OpenAI(
         api_key=settings.embedding_api_key or "not-needed",
         base_url=base_url,
-        timeout=30,
+        timeout=60,
         max_retries=3,
     )
-    resp = client.embeddings.create(input=text, model=settings.embedding_model)
-    return resp.data[0].embedding
+
+
+def get_embeddings(texts: list[str]) -> list[list[float]]:
+    """Batch embed — one API call for all texts. Falls back to per-item on failure."""
+    if not texts:
+        return []
+    settings = state.get_settings()
+    client = _get_embedding_client()
+    resp = client.embeddings.create(input=texts, model=settings.embedding_model)
+    by_index = {item.index: item.embedding for item in resp.data}
+    return [by_index.get(i, []) for i in range(len(texts))]
+
+
+def get_embedding(text: str) -> list[float]:
+    """Single-text embed (used for queries and dim detection)."""
+    return get_embeddings([text])[0]
