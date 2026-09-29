@@ -10,3 +10,7 @@ __pycache__/
 .env
 references/
 
+
+# generated part previews / STL from generators/demo.py
+out/
+*.stl
