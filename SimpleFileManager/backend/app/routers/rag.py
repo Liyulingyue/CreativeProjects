@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ..deps import state
+from ..search_engine import search_engine
 
 rag = APIRouter()
 
@@ -59,6 +60,7 @@ def index_file(req: IndexRequest) -> dict:
     try:
         rag_svc = state.get_rag_service()
         rag_svc.index_file(req.file_path, req.content)
+        search_engine.upsert_file(req.file_path, req.content)
         return {"success": True, "message": "File indexed"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -69,6 +71,8 @@ def index_files(req: IndexBatchRequest) -> dict:
     try:
         rag_svc = state.get_rag_service()
         rag_svc.index_files(req.files)
+        for f in req.files:
+            search_engine.upsert_file(f.get("file_path", ""), f.get("content", ""))
         return {"success": True, "count": len(req.files)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -129,6 +133,7 @@ def delete_indexed_file(file_path: str) -> dict:
     try:
         rag_svc = state.get_rag_service()
         rag_svc.vector_store.delete_by_file(file_path)
+        search_engine.remove_file(file_path)
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -139,6 +144,7 @@ def clear_index() -> dict:
     try:
         rag_svc = state.get_rag_service()
         rag_svc.clear_index()
+        search_engine.clear()
         return {"success": True, "message": "Index cleared"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

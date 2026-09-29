@@ -1,5 +1,6 @@
 use axum::{extract::{Path as AxumPath, State}, Json};
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{path::{Path, PathBuf}, sync::Arc, time::Duration};
+use image::imageops::FilterType;
 use openaijsonwrapper::{
     ChatOptions, ContentPart, Message, MessageContent, OpenAIClientBuilder, OpenAIJsonWrapper,
 };
@@ -11,6 +12,7 @@ use crate::services::{AnalysisJobUpdate, AppState};
 
 const MAX_RETRIES: usize = 3;
 const RETRY_DELAY_MS: u64 = 5000;
+const MIN_RESIZE_DIM: u32 = 100;
 
 #[derive(serde::Deserialize)]
 pub struct StartAnalysisRequest {
@@ -319,7 +321,95 @@ fn analyze_with_wrapper_with_settings(
         Some("你是一名专业的旅行照片分析师，擅长从图片中分析出丰富的细节和信息。"),
     );
 
-    let messages = vec![Message {
+    let original_path = path.to_string();
+    let mut current_path = original_path.clone();
+    let mut temp_paths: Vec<PathBuf> = Vec::new();
+    let mut last_error: Option<String> = None;
+    let mut last_reasoning: String = String::new();
+
+    for attempt in 0..MAX_RETRIES {
+        let messages = build_messages(&current_path);
+
+        match wrapper.chat(messages, ChatOptions::default()) {
+            Ok(chat_result) => {
+                if !chat_result.reasoning.is_empty() {
+                    last_reasoning = chat_result.reasoning.clone();
+                }
+
+                if let Some(data_value) = chat_result.data {
+                    let result = build_success_result(
+                        path,
+                        file_name,
+                        data_value,
+                        &chat_result.reasoning,
+                    );
+                    cleanup_temp(&temp_paths);
+                    return result;
+                }
+
+                let err = chat_result
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "模型未返回结构化 JSON".to_string());
+                last_error = Some(err.clone());
+                let action = handle_failure(
+                    &err,
+                    &mut current_path,
+                    &original_path,
+                    &mut temp_paths,
+                );
+
+                match action {
+                    RetryAction::GiveUp => break,
+                    RetryAction::ContinueImmediate => continue,
+                    RetryAction::SleepAndRetry => {
+                        if attempt + 1 < MAX_RETRIES {
+                            std::thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
+                            continue;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                last_error = Some(e.clone());
+                let action = handle_failure(
+                    &e,
+                    &mut current_path,
+                    &original_path,
+                    &mut temp_paths,
+                );
+
+                match action {
+                    RetryAction::GiveUp => break,
+                    RetryAction::ContinueImmediate => continue,
+                    RetryAction::SleepAndRetry => {
+                        if attempt + 1 < MAX_RETRIES {
+                            std::thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    cleanup_temp(&temp_paths);
+    AnalysisResult {
+        file_path: path.to_string(),
+        file_name: file_name.to_string(),
+        success: false,
+        error: last_error.or(Some("分析失败".to_string())),
+        data: None,
+        reasoning: if last_reasoning.is_empty() {
+            None
+        } else {
+            Some(last_reasoning)
+        },
+    }
+}
+
+fn build_messages(path: &str) -> Vec<Message> {
+    vec![Message {
         role: "user".to_string(),
         content: MessageContent::Array(vec![
             ContentPart::Text {
@@ -331,85 +421,101 @@ fn analyze_with_wrapper_with_settings(
                 image_path: path.to_string(),
             },
         ]),
-    }];
+    }]
+}
 
-    let mut last_error: Option<String> = None;
-
-    for attempt in 0..MAX_RETRIES {
-        match wrapper.chat(messages.clone(), ChatOptions::default()) {
-            Ok(chat_result) => {
-                if let Some(err) = chat_result.error.clone() {
-                    last_error = Some(err);
-                    if attempt + 1 < MAX_RETRIES {
-                        std::thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
-                        continue;
-                    }
-                    return AnalysisResult {
-                        file_path: path.to_string(),
-                        file_name: file_name.to_string(),
-                        success: false,
-                        error: last_error.or(Some("模型未返回结构化 JSON".to_string())),
-                        data: None,
-                        reasoning: if chat_result.reasoning.is_empty() {
-                            None
-                        } else {
-                            Some(chat_result.reasoning)
-                        },
-                    };
-                }
-
-                if let Some(data_value) = chat_result.data {
-                    return match serde_json::from_value::<PhotoAnalysis>(data_value) {
-                        Ok(data) => AnalysisResult {
-                            file_path: path.to_string(),
-                            file_name: file_name.to_string(),
-                            success: true,
-                            error: None,
-                            data: Some(data),
-                            reasoning: if chat_result.reasoning.is_empty() {
-                                None
-                            } else {
-                                Some(chat_result.reasoning)
-                            },
-                        },
-                        Err(e) => AnalysisResult {
-                            file_path: path.to_string(),
-                            file_name: file_name.to_string(),
-                            success: false,
-                            error: Some(format!("模型返回结构解析失败: {}", e)),
-                            data: None,
-                            reasoning: if chat_result.reasoning.is_empty() {
-                                None
-                            } else {
-                                Some(chat_result.reasoning)
-                            },
-                        },
-                    };
-                }
-
-                last_error = Some("模型未返回结构化 JSON".to_string());
-                if attempt + 1 < MAX_RETRIES {
-                    std::thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
-                    continue;
-                }
-            }
-            Err(e) => {
-                last_error = Some(e);
-                if attempt + 1 < MAX_RETRIES {
-                    std::thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
-                    continue;
-                }
-            }
-        }
+fn build_success_result(
+    path: &str,
+    file_name: &str,
+    data_value: serde_json::Value,
+    reasoning: &str,
+) -> AnalysisResult {
+    match serde_json::from_value::<PhotoAnalysis>(data_value) {
+        Ok(data) => AnalysisResult {
+            file_path: path.to_string(),
+            file_name: file_name.to_string(),
+            success: true,
+            error: None,
+            data: Some(data),
+            reasoning: if reasoning.is_empty() {
+                None
+            } else {
+                Some(reasoning.to_string())
+            },
+        },
+        Err(e) => AnalysisResult {
+            file_path: path.to_string(),
+            file_name: file_name.to_string(),
+            success: false,
+            error: Some(format!("模型返回结构解析失败: {}", e)),
+            data: None,
+            reasoning: if reasoning.is_empty() {
+                None
+            } else {
+                Some(reasoning.to_string())
+            },
+        },
     }
+}
 
-    AnalysisResult {
-        file_path: path.to_string(),
-        file_name: file_name.to_string(),
-        success: false,
-        error: last_error,
-        data: None,
-        reasoning: None,
+#[derive(Debug)]
+enum RetryAction {
+    /// 已成功缩小，立即用新图重试（不 sleep）。
+    ContinueImmediate,
+    /// 用当前（原图）路径重试，需要 sleep 后再试。
+    SleepAndRetry,
+    /// 无法继续挽救，放弃。
+    GiveUp,
+}
+
+fn handle_failure(
+    err_msg: &str,
+    current_path: &mut String,
+    original_path: &str,
+    temp_paths: &mut Vec<PathBuf>,
+) -> RetryAction {
+    if err_msg.to_lowercase().contains("exceeds size") {
+        match resize_image_half(Path::new(current_path.as_str())) {
+            Some(resized) => {
+                *current_path = resized.to_string_lossy().to_string();
+                if !temp_paths.contains(&resized) {
+                    temp_paths.push(resized);
+                }
+                RetryAction::ContinueImmediate
+            }
+            None => RetryAction::GiveUp,
+        }
+    } else {
+        if *current_path != original_path {
+            *current_path = original_path.to_string();
+        }
+        RetryAction::SleepAndRetry
+    }
+}
+
+fn resize_image_half(path: &Path) -> Option<PathBuf> {
+    let img = image::open(path).ok()?;
+    let (w, h) = (img.width(), img.height());
+    let new_w = w / 2;
+    let new_h = h / 2;
+    if new_w < MIN_RESIZE_DIM || new_h < MIN_RESIZE_DIM {
+        return None;
+    }
+    let resized = img.resize(new_w, new_h, FilterType::Lanczos3);
+
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("jpg");
+    let parent = path.parent()?;
+    let temp_path = parent.join(format!("{}.half.{}", stem, ext));
+
+    let fmt = image::ImageFormat::from_extension(ext).unwrap_or(image::ImageFormat::Jpeg);
+    resized.save_with_format(&temp_path, fmt).ok()?;
+    Some(temp_path)
+}
+
+fn cleanup_temp(paths: &[PathBuf]) {
+    for p in paths {
+        let _ = std::fs::remove_file(p);
     }
 }
 

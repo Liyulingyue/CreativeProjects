@@ -6,11 +6,23 @@ import { ProgressModal } from "@/components/ProgressModal";
 
 interface ImagePreviewProps {
   item: FileNode | null;
+  items?: FileNode[];
+  onNavigate?: (item: FileNode) => void;
+  selectedPaths?: Set<string>;
+  onToggleSelect?: (path: string) => void;
   onClose: () => void;
   onAnalysisComplete?: () => void;
 }
 
-export function ImagePreview({ item, onClose, onAnalysisComplete }: ImagePreviewProps) {
+export function ImagePreview({
+  item,
+  items,
+  onNavigate,
+  selectedPaths,
+  onToggleSelect,
+  onClose,
+  onAnalysisComplete,
+}: ImagePreviewProps) {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [activeJob, setActiveJob] = useState<AnalysisJob | null>(null);
@@ -64,11 +76,33 @@ export function ImagePreview({ item, onClose, onAnalysisComplete }: ImagePreview
   useEffect(() => {
     if (!item) return;
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
+
+      const list = items;
+      if (!list || !onNavigate) return;
+      const idx = list.findIndex((i) => i.path === item.path);
+
+      if (e.key === "ArrowLeft" && idx > 0) {
+        e.preventDefault();
+        const prev = list[idx - 1];
+        if (prev) onNavigate(prev);
+      } else if (e.key === "ArrowRight" && idx >= 0 && idx < list.length - 1) {
+        e.preventDefault();
+        const next = list[idx + 1];
+        if (next) onNavigate(next);
+      } else if (e.key === " " && onToggleSelect) {
+        e.preventDefault();
+        onToggleSelect(item.path);
+      }
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [item, onClose]);
+  }, [item, onClose, items, onNavigate, onToggleSelect]);
 
   useEffect(() => {
     if (!item) return;
@@ -101,6 +135,28 @@ export function ImagePreview({ item, onClose, onAnalysisComplete }: ImagePreview
   if (!item) return null;
 
   const analyzing = activeJob?.status === "running" || activeJob?.status === "pending";
+
+  const list = items;
+  const currentIndex = list ? list.findIndex((i) => i.path === item.path) : -1;
+  const hasPrev = !!list && !!onNavigate && currentIndex > 0;
+  const hasNext = !!list && !!onNavigate && currentIndex >= 0 && currentIndex < list.length - 1;
+  const isSelected = !!selectedPaths && selectedPaths.has(item.path);
+  const canSelect = !!onToggleSelect;
+  const goPrev = () => {
+    if (hasPrev && list && onNavigate) {
+      const prev = list[currentIndex - 1];
+      if (prev) onNavigate(prev);
+    }
+  };
+  const goNext = () => {
+    if (hasNext && list && onNavigate) {
+      const next = list[currentIndex + 1];
+      if (next) onNavigate(next);
+    }
+  };
+  const toggleSelect = () => {
+    if (canSelect) onToggleSelect(item.path);
+  };
 
   const handleAnalyze = async () => {
     if (!item) return;
@@ -141,8 +197,40 @@ export function ImagePreview({ item, onClose, onAnalysisComplete }: ImagePreview
     <div className="overlay overlay--visible" onClick={onClose}>
       <div className="image-preview" onClick={(e) => e.stopPropagation()}>
         <div className="image-preview__header">
+          {canSelect && (
+            <label className="image-preview__check" title={isSelected ? "取消勾选" : "勾选"}>
+              <input
+                type="checkbox"
+                checked={isSelected}
+                onChange={toggleSelect}
+              />
+            </label>
+          )}
           <span className="image-preview__name" title={item.name}>{item.name}</span>
-          <button onClick={onClose}>✕</button>
+          {list && list.length > 0 && currentIndex >= 0 && (
+            <span className="image-preview__counter">
+              {currentIndex + 1}/{list.length}
+            </span>
+          )}
+          {list && list.length > 0 && (
+            <>
+              <button
+                onClick={goPrev}
+                disabled={!hasPrev}
+                title="上一张 (←)"
+              >
+                ‹
+              </button>
+              <button
+                onClick={goNext}
+                disabled={!hasNext}
+                title="下一张 (→)"
+              >
+                ›
+              </button>
+            </>
+          )}
+          <button onClick={onClose} title="关闭 (Esc)">✕</button>
         </div>
         <div className="image-preview__body">
           <div className="image-preview__image-wrap">

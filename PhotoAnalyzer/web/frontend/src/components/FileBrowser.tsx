@@ -8,6 +8,7 @@ interface FileBrowserProps {
   onToggleSelect: (path: string) => void;
   onSelect: (item: FileNode) => void;
   onSelectAll: () => void;
+  onSelectUnanalyzed?: () => void;
   onAction: () => void;
   onActionAll: () => void;
   imageCount: number;
@@ -22,6 +23,7 @@ export function FileBrowser({
   onToggleSelect,
   onSelect,
   onSelectAll,
+  onSelectUnanalyzed,
   onAction,
   onActionAll,
   imageCount,
@@ -52,6 +54,11 @@ export function FileBrowser({
                 ? "取消全选"
                 : "全选"}
             </button>
+            {onSelectUnanalyzed && (
+              <button className="btn btn--sm" onClick={onSelectUnanalyzed}>
+                全选未分析
+              </button>
+            )}
             <button
               className="btn btn--sm btn--primary"
               onClick={onAction}

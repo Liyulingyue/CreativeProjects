@@ -1,3 +1,4 @@
+from pptx.enum.shapes import PP_PLACEHOLDER
 from .themes import get_theme_fonts, get_scheme_color
 
 def get_effective_font(run, paragraph, shape, theme_minor_font, layout_default=None, default_is_title=False):
@@ -78,8 +79,9 @@ def get_layout_placeholder_defaults(layout, prs=None):
                     # find in layout lvl defaults lvl1..lvl9
                     for lvl_idx in range(1, 10):
                         lvl_tag = f'.//a:lstStyle//a:lvl{lvl_idx}pPr/a:defRPr'
-                        layout_elem.find(lvl_tag, ns)
-                        if rPr is not None:
+                        found = layout_elem.find(lvl_tag, ns)
+                        if found is not None:
+                            rPr = found
                             break
                 if rPr is not None:
                     # size in 'sz' (in hundredth of a point), e.g., 2800 => 28.0 pt
@@ -115,8 +117,9 @@ def get_layout_placeholder_defaults(layout, prs=None):
                     try:
                         master = layout.slide_master
                         master_elem = master._element
-                        # try txStyles title or body
-                        for style_type in ['title', 'body']:
+                        # title placeholders use the master title style, others the body style
+                        style_types = ['title'] if ph_type in (PP_PLACEHOLDER.TITLE, PP_PLACEHOLDER.CENTER_TITLE) else ['body']
+                        for style_type in style_types:
                             title_rpr = master_elem.find(f'.//a:txStyles/a:{style_type}/a:lvl1pPr/a:defRPr', ns)
                             if title_rpr is not None:
                                 if style.get('font_size_pt') is None and title_rpr.get('sz'):

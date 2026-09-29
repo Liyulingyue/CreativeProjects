@@ -6,5 +6,7 @@ from .chat import chat
 from .chat_history import chat_history_router
 from .agent import agent
 from .organizer import organizer
+from .plans import plans
+from .digest import digest
 
-__all__ = ["fs", "search", "settings", "rag", "chat", "chat_history_router", "agent", "organizer"]
+__all__ = ["fs", "search", "settings", "rag", "chat", "chat_history_router", "agent", "organizer", "plans", "digest"]

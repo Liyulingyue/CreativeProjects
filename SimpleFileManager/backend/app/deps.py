@@ -2,13 +2,17 @@ import json
 import os
 import time
 import sqlite3
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Optional
 
 import httpx
 from dotenv import load_dotenv
-from .models import AppSettings, IndexStats, IndexStatus, ChatSession, ChatMessage
+from .models import (
+    AppSettings, IndexStats, IndexStatus, ChatSession, ChatMessage,
+    AgentPlan, PlanAction,
+)
 
 load_dotenv()
 
@@ -148,9 +152,12 @@ class LanceDBVectorStore:
         self._ensure_table()
 
     def count(self) -> int:
-        if "file_embeddings" in self.table_names():
-            return len(self._table.to_pandas())
-        return 0
+        try:
+            return self._table.count_rows()
+        except Exception:
+            if "file_embeddings" in self.table_names():
+                return len(self._table.to_pandas())
+            return 0
 
     def list_files(self) -> list[dict]:
         if "file_embeddings" not in self.table_names() or self.count() == 0:
@@ -158,10 +165,11 @@ class LanceDBVectorStore:
         df = self._table.to_pandas()
         files = []
         for _, row in df.iterrows():
+            content = str(row["content"])
             files.append({
                 "id": row["id"],
                 "file_path": row["file_path"],
-                "content_preview": row["content"][:200] if len(row["content"]) > 200 else row["content"],
+                "content_preview": content[:200] if len(content) > 200 else content,
             })
         return files
 
@@ -235,72 +243,76 @@ class RAGService:
 class ChatHistoryService:
     def __init__(self, db_path: str):
         self.db_path = db_path
+        self._lock = threading.Lock()
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
         return sqlite3.connect(self.db_path, check_same_thread=False)
 
     def _init_db(self):
-        conn = self._get_conn()
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS chat_sessions (
-                id TEXT PRIMARY KEY,
-                title TEXT DEFAULT '',
-                session_type TEXT DEFAULT 'chat',
-                updated_at INTEGER
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS chat_messages (
-                id TEXT PRIMARY KEY,
-                session_id TEXT,
-                role TEXT,
-                content TEXT,
-                sources TEXT,
-                timestamp INTEGER,
-                FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
-            )
-        """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session ON chat_messages(session_id)")
-        conn.commit()
-        conn.close()
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS chat_sessions (
+                    id TEXT PRIMARY KEY,
+                    title TEXT DEFAULT '',
+                    session_type TEXT DEFAULT 'chat',
+                    updated_at INTEGER
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT,
+                    role TEXT,
+                    content TEXT,
+                    sources TEXT,
+                    timestamp INTEGER,
+                    FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session ON chat_messages(session_id)")
+            conn.commit()
+            conn.close()
 
     def create_session(self, session_type: str = "chat") -> ChatSession:
-        session_id = uuid.uuid4().hex
-        now = int(time.time() * 1000)
-        conn = self._get_conn()
-        conn.execute(
-            "INSERT INTO chat_sessions (id, title, session_type, updated_at) VALUES (?, ?, ?, ?)",
-            (session_id, "", session_type, now)
-        )
-        conn.commit()
-        conn.close()
+        with self._lock:
+            session_id = uuid.uuid4().hex
+            now = int(time.time() * 1000)
+            conn = self._get_conn()
+            conn.execute(
+                "INSERT INTO chat_sessions (id, title, session_type, updated_at) VALUES (?, ?, ?, ?)",
+                (session_id, "", session_type, now)
+            )
+            conn.commit()
+            conn.close()
         return ChatSession(id=session_id, title="", messages=[], updated_at=now, session_type=session_type)
 
     def get_sessions(self, session_type: Optional[str] = None) -> list[ChatSession]:
-        conn = self._get_conn()
-        if session_type:
-            rows = conn.execute(
-                "SELECT id, title, session_type, updated_at FROM chat_sessions WHERE session_type = ? ORDER BY updated_at DESC",
-                (session_type,)
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT id, title, session_type, updated_at FROM chat_sessions ORDER BY updated_at DESC"
-            ).fetchall()
+        with self._lock:
+            conn = self._get_conn()
+            if session_type:
+                rows = conn.execute(
+                    "SELECT id, title, session_type, updated_at FROM chat_sessions WHERE session_type = ? ORDER BY updated_at DESC",
+                    (session_type,)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id, title, session_type, updated_at FROM chat_sessions ORDER BY updated_at DESC"
+                ).fetchall()
 
-        sessions = []
-        for row in rows:
-            session_id, title, sess_type, updated_at = row
-            messages = self._get_messages(conn, session_id)
-            sessions.append(ChatSession(
-                id=session_id,
-                title=title or "",
-                messages=messages,
-                updated_at=updated_at,
-                session_type=sess_type
-            ))
-        conn.close()
+            sessions = []
+            for row in rows:
+                session_id, title, sess_type, updated_at = row
+                messages = self._get_messages(conn, session_id)
+                sessions.append(ChatSession(
+                    id=session_id,
+                    title=title or "",
+                    messages=messages,
+                    updated_at=updated_at,
+                    session_type=sess_type
+                ))
+            conn.close()
         return sessions
 
     def _get_messages(self, conn: sqlite3.Connection, session_id: str) -> list[ChatMessage]:
@@ -322,17 +334,18 @@ class ChatHistoryService:
         return messages
 
     def get_session(self, session_id: str) -> Optional[ChatSession]:
-        conn = self._get_conn()
-        row = conn.execute(
-            "SELECT id, title, session_type, updated_at FROM chat_sessions WHERE id = ?",
-            (session_id,)
-        ).fetchone()
-        if not row:
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute(
+                "SELECT id, title, session_type, updated_at FROM chat_sessions WHERE id = ?",
+                (session_id,)
+            ).fetchone()
+            if not row:
+                conn.close()
+                return None
+            session_id, title, sess_type, updated_at = row
+            messages = self._get_messages(conn, session_id)
             conn.close()
-            return None
-        session_id, title, sess_type, updated_at = row
-        messages = self._get_messages(conn, session_id)
-        conn.close()
         return ChatSession(
             id=session_id,
             title=title or "",
@@ -345,31 +358,271 @@ class ChatHistoryService:
         msg_id = uuid.uuid4().hex
         now = int(time.time() * 1000)
         sources_json = json.dumps(sources) if sources else None
-        conn = self._get_conn()
-        conn.execute(
-            "INSERT INTO chat_messages (id, session_id, role, content, sources, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
-            (msg_id, session_id, role, content, sources_json, now)
-        )
-        conn.execute(
-            "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
-            (now, session_id)
-        )
-        conn.commit()
-        conn.close()
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "INSERT INTO chat_messages (id, session_id, role, content, sources, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                (msg_id, session_id, role, content, sources_json, now)
+            )
+            conn.execute(
+                "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
+                (now, session_id)
+            )
+            conn.commit()
+            conn.close()
         return ChatMessage(id=msg_id, role=role, content=content, sources=sources, timestamp=now)
 
     def delete_session(self, session_id: str):
-        conn = self._get_conn()
-        conn.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
-        conn.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
-        conn.commit()
-        conn.close()
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
+            conn.commit()
+            conn.close()
 
     def update_session_title(self, session_id: str, title: str):
-        conn = self._get_conn()
-        conn.execute("UPDATE chat_sessions SET title = ? WHERE id = ?", (title, session_id))
-        conn.commit()
-        conn.close()
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute("UPDATE chat_sessions SET title = ? WHERE id = ?", (title, session_id))
+            conn.commit()
+            conn.close()
+
+
+def get_storage_root() -> Path:
+    """Resolve the user-facing storage root from current settings (never the .simplefilemanager dir)."""
+    return (BASE_DIR / state.get_settings().storage_path).resolve()
+
+
+class PathOutsideRoot(Exception):
+    pass
+
+
+def resolve_under_root(path: str) -> Path:
+    """Resolve a user/agent supplied path and guarantee it stays inside the storage root."""
+    root = get_storage_root()
+    clean = (path or "").strip()
+    if clean in ("", "."):
+        return root
+    target = (root / clean).resolve()
+    if target != root and not str(target).startswith(str(root) + "/"):
+        raise PathOutsideRoot(path)
+    return target
+
+
+def validate_plan_action(action: dict) -> Optional[str]:
+    """Return an error message if a plan action is malformed or escapes the storage root, else None."""
+    action_type = action.get("action_type", "")
+    if action_type not in ("move", "rename", "create_folder", "delete"):
+        return f"Unknown action_type: {action_type}"
+    if action_type in ("move", "rename", "delete") and not (action.get("source_path") or "").strip():
+        return f"{action_type} requires source_path"
+    if action_type in ("move", "rename", "create_folder") and not (action.get("target_path") or "").strip():
+        return f"{action_type} requires target_path"
+    try:
+        if action_type in ("move", "rename", "delete"):
+            resolve_under_root(action["source_path"])
+        if action_type in ("move", "rename", "create_folder"):
+            resolve_under_root(action["target_path"])
+    except PathOutsideRoot as e:
+        return f"Path outside storage root: {e}"
+    return None
+
+
+class PlanStore:
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self._lock = threading.Lock()
+        self._init_db()
+
+    def _get_conn(self) -> sqlite3.Connection:
+        return sqlite3.connect(self.db_path, check_same_thread=False)
+
+    def _init_db(self):
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS plans (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    summary TEXT DEFAULT '',
+                    status TEXT DEFAULT 'pending',
+                    source TEXT DEFAULT 'agent',
+                    created_at INTEGER,
+                    decided_at INTEGER,
+                    executed_at INTEGER
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS plan_actions (
+                    id TEXT PRIMARY KEY,
+                    plan_id TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    source_path TEXT,
+                    target_path TEXT,
+                    reason TEXT DEFAULT '',
+                    status TEXT DEFAULT 'pending',
+                    result TEXT,
+                    position INTEGER DEFAULT 0,
+                    FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS execution_log (
+                    id TEXT PRIMARY KEY,
+                    plan_id TEXT NOT NULL,
+                    action_id TEXT,
+                    action_type TEXT,
+                    source_path TEXT,
+                    target_path TEXT,
+                    success INTEGER,
+                    message TEXT,
+                    timestamp INTEGER
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_actions_plan ON plan_actions(plan_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_plans_status ON plans(status)")
+            conn.commit()
+            conn.close()
+
+    def create_plan(self, title: str, summary: str, source: str, actions: list[dict]) -> AgentPlan:
+        with self._lock:
+            plan_id = uuid.uuid4().hex
+            now = int(time.time() * 1000)
+            conn = self._get_conn()
+            conn.execute(
+                "INSERT INTO plans (id, title, summary, status, source, created_at) VALUES (?, ?, ?, 'pending', ?, ?)",
+                (plan_id, title, summary, source, now)
+            )
+            action_models = []
+            for pos, a in enumerate(actions):
+                action_id = uuid.uuid4().hex
+                conn.execute(
+                    "INSERT INTO plan_actions (id, plan_id, action_type, source_path, target_path, reason, position) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (action_id, plan_id, a.get("action_type", "move"), a.get("source_path"),
+                     a.get("target_path"), a.get("reason", ""), pos)
+                )
+                action_models.append(PlanAction(
+                    id=action_id,
+                    action_type=a.get("action_type", "move"),
+                    source_path=a.get("source_path"),
+                    target_path=a.get("target_path"),
+                    reason=a.get("reason", ""),
+                ))
+            conn.commit()
+            conn.close()
+        return AgentPlan(
+            id=plan_id, title=title, summary=summary, status="pending",
+            source=source, actions=action_models, created_at=now,
+        )
+
+    def _row_to_plan(self, conn: sqlite3.Connection, row) -> AgentPlan:
+        plan_id, title, summary, status, source, created_at, decided_at, executed_at = row
+        action_rows = conn.execute(
+            "SELECT id, action_type, source_path, target_path, reason, status, result FROM plan_actions WHERE plan_id = ? ORDER BY position ASC",
+            (plan_id,)
+        ).fetchall()
+        actions = [
+            PlanAction(id=r[0], action_type=r[1], source_path=r[2], target_path=r[3],
+                       reason=r[4] or "", status=r[5], result=r[6])
+            for r in action_rows
+        ]
+        return AgentPlan(
+            id=plan_id, title=title, summary=summary or "", status=status, source=source,
+            actions=actions, created_at=created_at, decided_at=decided_at, executed_at=executed_at,
+        )
+
+    def list_plans(self, status: Optional[str] = None, limit: int = 50) -> list[AgentPlan]:
+        with self._lock:
+            conn = self._get_conn()
+            if status:
+                rows = conn.execute(
+                    "SELECT id, title, summary, status, source, created_at, decided_at, executed_at FROM plans WHERE status = ? ORDER BY created_at DESC LIMIT ?",
+                    (status, limit)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id, title, summary, status, source, created_at, decided_at, executed_at FROM plans ORDER BY created_at DESC LIMIT ?",
+                    (limit,)
+                ).fetchall()
+            plans = [self._row_to_plan(conn, r) for r in rows]
+            conn.close()
+        return plans
+
+    def get_plan(self, plan_id: str) -> Optional[AgentPlan]:
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute(
+                "SELECT id, title, summary, status, source, created_at, decided_at, executed_at FROM plans WHERE id = ?",
+                (plan_id,)
+            ).fetchone()
+            if not row:
+                conn.close()
+                return None
+            plan = self._row_to_plan(conn, row)
+            conn.close()
+        return plan
+
+    def update_status(self, plan_id: str, status: str, decided: bool = False, executed: bool = False) -> Optional[AgentPlan]:
+        now = int(time.time() * 1000)
+        with self._lock:
+            conn = self._get_conn()
+            sets, args = ["status = ?"], [status]
+            if decided:
+                sets.append("decided_at = ?")
+                args.append(now)
+            if executed:
+                sets.append("executed_at = ?")
+                args.append(now)
+            args.append(plan_id)
+            conn.execute(f"UPDATE plans SET {', '.join(sets)} WHERE id = ?", args)
+            conn.commit()
+            conn.close()
+        return self.get_plan(plan_id)
+
+    def update_action(self, action_id: str, status: str, result: Optional[str] = None):
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "UPDATE plan_actions SET status = ?, result = ? WHERE id = ?",
+                (status, result, action_id)
+            )
+            conn.commit()
+            conn.close()
+
+    def add_log(self, plan_id: str, action_id: Optional[str], action_type: str,
+                source_path: Optional[str], target_path: Optional[str], success: bool, message: str):
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "INSERT INTO execution_log (id, plan_id, action_id, action_type, source_path, target_path, success, message, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (uuid.uuid4().hex, plan_id, action_id, action_type, source_path, target_path,
+                 int(success), message, int(time.time() * 1000))
+            )
+            conn.commit()
+            conn.close()
+
+    def get_log(self, plan_id: str) -> list[dict]:
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute(
+                "SELECT id, action_id, action_type, source_path, target_path, success, message, timestamp FROM execution_log WHERE plan_id = ? ORDER BY timestamp ASC",
+                (plan_id,)
+            ).fetchall()
+            conn.close()
+        return [
+            {"id": r[0], "action_id": r[1], "action_type": r[2], "source_path": r[3],
+             "target_path": r[4], "success": bool(r[5]), "message": r[6], "timestamp": r[7]}
+            for r in rows
+        ]
+
+    def delete_plan(self, plan_id: str):
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute("DELETE FROM plan_actions WHERE plan_id = ?", (plan_id,))
+            conn.execute("DELETE FROM execution_log WHERE plan_id = ?", (plan_id,))
+            conn.execute("DELETE FROM plans WHERE id = ?", (plan_id,))
+            conn.commit()
+            conn.close()
 
 
 def _get_default_settings() -> AppSettings:
@@ -403,6 +656,7 @@ class AppState:
         self._index_status: IndexStatus = IndexStatus(is_indexing=False, progress=0.0)
         self._rag_service: Optional[RAGService] = None
         self._chat_history: Optional[ChatHistoryService] = None
+        self._plan_store: Optional[PlanStore] = None
         self._load()
 
     def _load(self):
@@ -474,6 +728,12 @@ class AppState:
             db_path = str(DATA_DIR / "chat_history.db")
             self._chat_history = ChatHistoryService(db_path)
         return self._chat_history
+
+    def get_plan_store(self) -> PlanStore:
+        if self._plan_store is None:
+            db_path = str(DATA_DIR / "plans.db")
+            self._plan_store = PlanStore(db_path)
+        return self._plan_store
 
 
 state = AppState()

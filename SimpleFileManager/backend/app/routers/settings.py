@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 from ..deps import state
-from ..models import AppSettings, IndexStats, IndexStatus
+from ..indexer import indexer
+from ..models import AppSettings, IndexStats, IndexStatus, AutoIndexStatus
 
 settings = APIRouter()
 
@@ -30,3 +31,13 @@ def get_index_stats() -> IndexStats:
 @settings.get("/index_status")
 def get_index_status() -> IndexStatus:
     return state.get_index_status()
+
+
+@settings.get("/auto_index_status")
+def get_auto_index_status() -> AutoIndexStatus:
+    return indexer.status()
+
+
+@settings.post("/auto_index/run")
+def run_auto_index_now() -> dict:
+    return indexer.scan()

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field, asdict
+from PIL import Image
 
 import dotenv
 dotenv.load_dotenv()
@@ -17,6 +18,10 @@ from .config import (
     DEFAULT_TARGET_STRUCTURE, DEFAULT_BACKGROUND, DEFAULT_REQUIREMENTS,
     get_image_files, is_image_file
 )
+
+
+MIN_RESIZE_DIM = 100
+ANALYSIS_PROMPT = "请仔细观察这张图片，按指定 JSON 结构输出。"
 
 
 @dataclass
@@ -68,6 +73,29 @@ class PhotoAnalyzer:
             requirements=self.requirements,
         )
 
+    @staticmethod
+    def resize_image_half(image_path: Path) -> Optional[Path]:
+        try:
+            img = Image.open(image_path)
+            new_w, new_h = img.size[0] // 2, img.size[1] // 2
+            if new_w < MIN_RESIZE_DIM or new_h < MIN_RESIZE_DIM:
+                return None
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+            temp_path = image_path.with_name(f"{image_path.stem}.half{image_path.suffix}")
+            img.save(temp_path, quality=85, optimize=True)
+            return temp_path
+        except Exception:
+            return None
+
+    @staticmethod
+    def _cleanup_temp(paths: list[Path]) -> None:
+        for p in paths:
+            try:
+                if p.exists():
+                    p.unlink()
+            except Exception:
+                pass
+
     def analyze_image(self, image_path: str | Path) -> AnalysisResult:
         image_path = Path(image_path)
         result = AnalysisResult(
@@ -83,41 +111,78 @@ class PhotoAnalyzer:
             result.error = f"不支持的图片格式: {image_path.suffix}"
             return result
 
-        messages = [
+        original_path = image_path.absolute()
+        current_path = original_path
+        temp_paths: list[Path] = []
+        last_error: Optional[str] = None
+        last_raw_content: Optional[str] = None
+        last_reasoning: Optional[str] = None
+
+        for attempt in range(self.max_retries):
+            messages = self._build_messages(current_path)
+
+            err: str = ""
+            data = None
+            reasoning: Optional[str] = None
+            raw_content: Optional[str] = None
+
+            try:
+                response = self.wrapper.chat(messages=messages)
+                err = response.get("error", "") or ""
+                data = response.get("data")
+                reasoning = response.get("reasoning")
+                raw_content = response.get("raw_content")
+            except Exception as e:
+                err = str(e)
+
+            if not err and data is not None:
+                result.data = data
+                result.reasoning = reasoning
+                result.raw_content = raw_content
+                result.success = True
+                self._cleanup_temp(temp_paths)
+                return result
+
+            last_error = err or "模型未返回结构化 JSON"
+            last_raw_content = raw_content
+            last_reasoning = reasoning
+
+            if "exceeds size" in err.lower():
+                resized = self.resize_image_half(current_path)
+                if resized is None:
+                    break
+                self._cleanup_temp(temp_paths)
+                temp_paths = [resized]
+                current_path = resized
+                continue
+
+            if current_path != original_path:
+                self._cleanup_temp(temp_paths)
+                temp_paths = []
+                current_path = original_path
+
+            if attempt < self.max_retries - 1:
+                time.sleep(self.retry_delay)
+                continue
+            break
+
+        result.error = last_error or "分析失败"
+        result.raw_content = last_raw_content
+        result.reasoning = last_reasoning
+        self._cleanup_temp(temp_paths)
+        return result
+
+    @staticmethod
+    def _build_messages(image_path: Path) -> list[dict]:
+        return [
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "请仔细观察这张图片，按指定 JSON 结构输出。"},
+                    {"type": "text", "text": ANALYSIS_PROMPT},
                     {"type": "image_path", "image_path": str(image_path.absolute())},
                 ],
             }
         ]
-
-        for attempt in range(self.max_retries):
-            try:
-                response = self.wrapper.chat(messages=messages)
-
-                if not response["error"]:
-                    result.data = response["data"]
-                    result.reasoning = response.get("reasoning")
-                    result.success = True
-                    return result
-                else:
-                    result.raw_content = response.get("raw_content")
-                    if attempt < self.max_retries - 1:
-                        time.sleep(self.retry_delay)
-                        continue
-                    result.error = response["error"]
-                    return result
-
-            except Exception as e:
-                if attempt < self.max_retries - 1:
-                    time.sleep(self.retry_delay)
-                    continue
-                result.error = str(e)
-                return result
-
-        return result
 
     def analyze_folder(
         self,

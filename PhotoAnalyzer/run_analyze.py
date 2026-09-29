@@ -4,7 +4,6 @@ import json
 import time
 from pathlib import Path
 from typing import Optional, Callable
-from PIL import Image
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -13,33 +12,19 @@ from src import PhotoAnalyzer, AnalysisResult, get_image_files, is_image_file
 
 def load_checkpoint(checkpoint_path: Path) -> set[str]:
     if checkpoint_path.exists():
-        with open(checkpoint_path, "r", encoding="utf-8") as f:
+        with checkpoint_path.open("r", encoding="utf-8") as f:
             return set(json.load(f))
     return set()
 
 
 def save_checkpoint(checkpoint_path: Path, completed: set[str]):
-    with open(checkpoint_path, "w", encoding="utf-8") as f:
+    with checkpoint_path.open("w", encoding="utf-8") as f:
         json.dump(list(completed), f, ensure_ascii=False)
 
 
 def append_result_jsonl(result: AnalysisResult, jsonl_path: Path):
-    with open(jsonl_path, "a", encoding="utf-8") as f:
+    with jsonl_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(result.to_dict(), ensure_ascii=False) + "\n")
-
-
-def resize_image_half(image_path: Path) -> tuple[Path, bool]:
-    try:
-        img = Image.open(image_path)
-        new_size = (img.size[0] // 2, img.size[1] // 2)
-        if new_size[0] < 100 or new_size[1] < 100:
-            return image_path, False
-        img = img.resize(new_size, Image.LANCZOS)
-        temp_path = image_path.with_suffix(f'.half{image_path.suffix}')
-        img.save(temp_path, quality=85, optimize=True)
-        return temp_path, True
-    except Exception:
-        return image_path, False
 
 
 def print_progress(current: int, total: int, filename: str, success: bool, error: Optional[str] = None):
@@ -135,14 +120,6 @@ def interactive_analyze():
             continue
 
         result = analyzer.analyze_image(img_path)
-
-        if not result.success and result.error and "exceeds size" in result.error.lower():
-            temp_path, was_resized = resize_image_half(img_path)
-            if was_resized:
-                result = analyzer.analyze_image(temp_path)
-                result.file_path = str(img_path.absolute())
-                result.file_name = img_path.name
-                temp_path.unlink()
 
         results.append(result)
 

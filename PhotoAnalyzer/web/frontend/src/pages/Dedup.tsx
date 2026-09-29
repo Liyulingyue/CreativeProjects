@@ -506,6 +506,20 @@ export function Dedup() {
 
       <ImagePreview
         item={previewItem}
+        items={previewItem && job ? (() => {
+          const grp = job.groups.find((g) => g.items.some((i) => i.path === previewItem.path));
+          return grp ? grp.items.map((i) => ({
+            name: i.file_name,
+            path: i.path,
+            size: i.file_size,
+            is_dir: false,
+            modified: "",
+            thumbnail_url: i.thumbnail_url,
+          })) : undefined;
+        })() : undefined}
+        onNavigate={setPreviewItem}
+        selectedPaths={selectedForDeletion}
+        onToggleSelect={toggleItemSelection}
         onClose={() => setPreviewItem(null)}
         onAnalysisComplete={() => {
           listResults().then((res) => {

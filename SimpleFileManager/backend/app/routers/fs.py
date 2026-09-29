@@ -3,8 +3,9 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
-from ..deps import state
+from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi.responses import FileResponse
+from ..deps import state, get_storage_root, resolve_under_root, PathOutsideRoot
 from ..models import (
     BrowseResult,
     CreateFolderRequest,
@@ -93,7 +94,7 @@ def _path_to_filenode(path: Path) -> FileNode:
 
 @fs.get("/browse")
 def browse(path: Optional[str] = None) -> BrowseResult:
-    storage_path = state.get_settings().storage_path
+    storage_path = str(get_storage_root())
     if not path:
         target = Path(storage_path)
     else:
@@ -135,7 +136,7 @@ def browse(path: Optional[str] = None) -> BrowseResult:
 
 @fs.post("/create_folder")
 def create_folder(req: CreateFolderRequest) -> FileOperation:
-    storage_path = state.get_settings().storage_path
+    storage_path = str(get_storage_root())
     target = _safe_path(storage_path, Path(req.path) / req.name)
 
     try:
@@ -149,7 +150,7 @@ def create_folder(req: CreateFolderRequest) -> FileOperation:
 
 @fs.post("/move")
 def move(req: MoveRequest) -> FileOperation:
-    storage_path = state.get_settings().storage_path
+    storage_path = str(get_storage_root())
     src = _safe_path(storage_path, req.src)
     dest = _safe_path(storage_path, req.dest)
 
@@ -165,7 +166,7 @@ def move(req: MoveRequest) -> FileOperation:
 
 @fs.post("/copy")
 def copy(req: MoveRequest) -> FileOperation:
-    storage_path = state.get_settings().storage_path
+    storage_path = str(get_storage_root())
     src = _safe_path(storage_path, req.src)
     dest = _safe_path(storage_path, req.dest)
 
@@ -184,7 +185,7 @@ def copy(req: MoveRequest) -> FileOperation:
 
 @fs.post("/delete")
 def delete(req: DeleteRequest) -> FileOperation:
-    storage_path = state.get_settings().storage_path
+    storage_path = str(get_storage_root())
     target = _safe_path(storage_path, req.path)
 
     if not target.exists():
@@ -202,7 +203,7 @@ def delete(req: DeleteRequest) -> FileOperation:
 
 @fs.get("/info")
 def get_info(path: str) -> FileNode:
-    storage_path = state.get_settings().storage_path
+    storage_path = str(get_storage_root())
     target = _safe_path(storage_path, path)
 
     if not target.exists():
@@ -213,7 +214,7 @@ def get_info(path: str) -> FileNode:
 
 @fs.get("/tree")
 def get_tree(path: Optional[str] = None, depth: int = 2) -> dict:
-    storage_path = state.get_settings().storage_path
+    storage_path = str(get_storage_root())
     if not path:
         target = Path(storage_path)
     else:
@@ -238,3 +239,62 @@ def get_tree(path: Optional[str] = None, depth: int = 2) -> dict:
         return {"name": p.name, "path": str(p), "is_dir": True, "children": children}
 
     return build_tree(target, 0)
+
+
+@fs.get("/download")
+def download_file(path: str):
+    try:
+        target = resolve_under_root(path)
+    except PathOutsideRoot:
+        raise HTTPException(status_code=400, detail="Path outside storage root")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(
+        str(target),
+        filename=target.name,
+        media_type=_get_mime_type(target),
+    )
+
+
+@fs.post("/upload")
+async def upload_files(path: str = "", files: list[UploadFile] = File(...)):
+    try:
+        target_dir = resolve_under_root(path)
+    except PathOutsideRoot:
+        raise HTTPException(status_code=400, detail="Path outside storage root")
+    if not target_dir.is_dir():
+        raise HTTPException(status_code=400, detail="Destination is not a directory")
+
+    uploaded = []
+    for f in files:
+        dest = target_dir / f.filename
+        with open(dest, "wb") as out:
+            while chunk := await f.read(1024 * 1024):
+                out.write(chunk)
+        uploaded.append(f.filename)
+    return {"success": True, "uploaded": uploaded, "count": len(uploaded)}
+
+
+@fs.get("/content")
+def get_content(path: str, limit: int = 50000):
+    try:
+        target = resolve_under_root(path)
+    except PathOutsideRoot:
+        raise HTTPException(status_code=400, detail="Path outside storage root")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    if target.stat().st_size > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large to preview (max 5MB)")
+    try:
+        with open(target, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read(limit)
+        return {
+            "path": str(target),
+            "name": target.name,
+            "content": content,
+            "truncated": target.stat().st_size > limit,
+            "size": target.stat().st_size,
+            "mime_type": _get_mime_type(target),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

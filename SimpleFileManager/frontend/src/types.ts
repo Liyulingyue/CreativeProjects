@@ -31,10 +31,60 @@ export interface SearchResult {
 }
 
 export interface AppSettings {
-  openai_api_key: string;
-  openai_base_url: string;
+  llm_api_key: string;
+  llm_base_url: string;
+  llm_model: string;
+  embedding_api_key: string;
+  embedding_base_url: string;
   embedding_model: string;
+  embedding_dim: string;
   index_interval: number;
+  auto_index_enabled: boolean;
+  index_debounce_seconds: number;
+  max_agent_steps: number;
   storage_path: string;
   theme: string;
+}
+
+export interface AutoIndexStatus {
+  enabled: boolean;
+  running: boolean;
+  interval: number;
+  debounce_seconds: number;
+  last_scan_time: string | null;
+  last_scan_files: number;
+  indexed_files: number;
+  pending_changes: number;
+}
+
+export type PlanActionType = 'move' | 'rename' | 'create_folder' | 'delete';
+
+export type PlanStatus =
+  | 'pending'
+  | 'approved'
+  | 'rejected'
+  | 'executed'
+  | 'executed_with_errors'
+  | 'failed';
+
+export interface PlanAction {
+  id: string;
+  action_type: PlanActionType;
+  source_path: string | null;
+  target_path: string | null;
+  reason: string;
+  status: 'pending' | 'done' | 'failed' | 'skipped';
+  result: string | null;
+}
+
+export interface AgentPlan {
+  id: string;
+  title: string;
+  summary: string;
+  status: PlanStatus;
+  source: string;
+  actions: PlanAction[];
+  created_at: number;
+  decided_at: number | null;
+  executed_at: number | null;
 }

@@ -1,0 +1,72 @@
+{
+  "id": "cat-personality",
+  "name": "猫格测评",
+  "description": "基于主人日常观察的猫咪人格测评，12 道题定位你家猫的猫格类型，并给出饲养建议。",
+  "subject": "cat",
+  "report_type": "type_matching",
+  "time_estimate_minutes": 5,
+  "source": "builtin",
+  "dimensions": [
+    {
+      "key": "EA",
+      "name": "能量水平",
+      "pole_high": "活力 E",
+      "pole_low": "安静 A",
+      "description": "你家猫是精力充沛的运动健将，还是岁月静好的沙发搭子。"
+    },
+    {
+      "key": "CH",
+      "name": "探索欲",
+      "pole_high": "好奇 C",
+      "pole_low": "恋家 H",
+      "description": "面对新事物，它是一探究竟还是先观望为敬。"
+    },
+    {
+      "key": "SD",
+      "name": "社交倾向",
+      "pole_high": "亲人 S",
+      "pole_low": "独立 D",
+      "description": "它把你当室友、当铲屎官，还是当全世界。"
+    },
+    {
+      "key": "RG",
+      "name": "生活节律",
+      "pole_high": "随性 G",
+      "pole_low": "规律 R",
+      "description": "它的小日子是精确到分钟，还是全看心情。"
+    }
+  ],
+  "questions": [
+    { "id": "c_e1", "text": "它经常在家里突然疯狂跑酷（zoomies）。", "dimension": "EA" },
+    { "id": "c_e2", "text": "玩逗猫棒时它总是意犹未尽，比谁都难喊停。", "dimension": "EA" },
+    { "id": "c_e3", "text": "它更愿意整天躺在窗边晒太阳，能不动就不动。", "dimension": "EA", "reverse": true },
+    { "id": "c_c1", "text": "新来的快递箱或购物袋，它总是第一个钻上去检查。", "dimension": "CH" },
+    { "id": "c_c2", "text": "它能对着窗外的鸟和虫子专注观察很久。", "dimension": "CH" },
+    { "id": "c_c3", "text": "家里出现陌生物品时，它会先躲起来远远观察好几天。", "dimension": "CH", "reverse": true },
+    { "id": "c_s1", "text": "客人来访时，它会主动出来打招呼甚至蹭人。", "dimension": "SD" },
+    { "id": "c_s2", "text": "它喜欢睡在你身边、腿上，或者贴着你趴着。", "dimension": "SD" },
+    { "id": "c_s3", "text": "被摸一会儿之后，它常常自己走开，更想保持距离。", "dimension": "SD", "reverse": true },
+    { "id": "c_r1", "text": "到饭点前后，它会准时来催饭，比闹钟还准。", "dimension": "RG" },
+    { "id": "c_r2", "text": "它有一套固定的日常路线，比如每天同一时间巡视家里。", "dimension": "RG" },
+    { "id": "c_r3", "text": "它的作息和喜好经常变，对新玩具也是三分钟热度。", "dimension": "RG", "reverse": true }
+  ],
+  "types": [
+    { "code": "ECSR", "name": "元气探险家猫", "keywords": ["跑酷", "好奇", "作息精准"], "description": "家里的永动机兼巡逻队长，每天按点上班巡视领地，新事物一个都不放过。", "advice": "多备垂直爬架和互动玩具，每天固定时段高强度陪玩放电。" },
+    { "code": "ECSG", "name": "快乐散漫王猫", "keywords": ["热情", "随性", "人来疯"], "description": "精力旺盛又亲人，但生活全凭心情，今天粘人明天高冷。", "advice": "顺其自然，给它足够的玩耍出口，不用强求规律作息。" },
+    { "code": "ECHR", "name": "自信指挥官猫", "keywords": ["领地感", "活力", "仪式感"], "description": "活力四射又恋家，对家的每个角落了如指掌，偶尔固执地遵守自己的规矩。", "advice": "保持环境稳定，添置新家具时一步一步来。" },
+    { "code": "ECHG", "name": "冒险浪人猫", "keywords": ["精力旺盛", "三分钟热度", "恋家探险"], "description": "把家当成探险乐园，什么都要玩一遍，但玩腻得也快。", "advice": "轮换玩具保持新鲜感，封好窗户和危险角落。" },
+    { "code": "EHSR", "name": "客厅骑士猫", "keywords": ["活力", "认生", "规律"], "description": "能量满满但社交圈很小，在熟悉的家人和地盘里放飞，外人来了秒变隐形。", "advice": "来客时给它留好躲藏点，不要强行社交。" },
+    { "code": "EHSG", "name": "阳台观察员猫", "keywords": ["活力", "恋家", "随心"], "description": "热情都用在自己的一亩三分地上，看窗外、追影子，作息自由散漫。", "advice": "给它一个稳定的观景位，剩下的随它去。" },
+    { "code": "EHHR", "name": "规律宅将猫", "keywords": ["活力", "宅", "守时"], "description": "精力充沛但深居简出，在固定据点里按自己的时刻表快乐生活。", "advice": "尊重它的作息表，室内逗猫棒足够消耗它的电量。" },
+    { "code": "EHHG", "name": "三分钟热血宅猫", "keywords": ["爆发力", "宅", "善变"], "description": "偶尔在家爆发一波跑酷，然后光速躺平，兴趣来得快去得也快。", "advice": "短时多次的互动比长时间陪玩更适合它。" },
+    { "code": "ACSR", "name": "温柔外交官猫", "keywords": ["安静", "亲人", "懂事"], "description": "安静优雅又有礼貌，该吃饭该撒娇一个不落，是理想型的乖猫。", "advice": "保持稳定的陪伴节奏，它会用一生回报你。" },
+    { "code": "ACSG", "name": "佛系小太阳猫", "keywords": ["温顺", "亲人", "佛系"], "description": "性格温和又粘人，但对生活的秩序毫不在意，怎么舒服怎么来。", "advice": "多关注体重和饮食规律，佛系不等于放养。" },
+    { "code": "ACHR", "name": "安静的美学家猫", "keywords": ["优雅", "恋家", "仪式感"], "description": "不爱动但极有讲究，固定座位、固定路线、固定睡姿，一丝不苟。", "advice": "别轻易移动它的家具和饭碗，秩序感就是安全感。" },
+    { "code": "ACHG", "name": "淡淡的哲学家猫", "keywords": ["高冷", "淡然", "随性"], "description": "万事不关心的淡人猫代表，偶尔赏脸互动，大部分时间在思考猫生。", "advice": "不必强求互动，安静陪伴就是最好的关系。" },
+    { "code": "AHSR", "name": "规律的粘人精猫", "keywords": ["安静", "粘人", "准时"], "description": "到点睡觉、到点撒娇，像上了发条一样准时出现在你身边。", "advice": "珍惜这个闹钟，保持作息一致它最有安全感。" },
+    { "code": "AHSG", "name": "省心小棉袄猫", "keywords": ["温顺", "贴心", "随遇而安"], "description": "不闹腾不挑刺，安静地粘着你，是治愈系的满分室友。", "advice": "每天主动陪它玩一会儿，安静的孩子需求容易被忽略。" },
+    { "code": "AHHR", "name": "老派绅士猫", "keywords": ["矜持", "恋家", "守时"], "description": "有距离感但极守规矩，用自己的方式默默关心你。", "advice": "互动交给它主导，零食和梳毛是破冰好帮手。" },
+    { "code": "AHHG", "name": "极简隐士猫", "keywords": ["独立", "低调", "随性"], "description": "猫界淡人天花板，有自己的小世界，出现即是缘分。", "advice": "提供充足的安全据点，尊重它的独处，缘分到了自然贴贴。" }
+  ],
+  "profile_levels": {}
+}

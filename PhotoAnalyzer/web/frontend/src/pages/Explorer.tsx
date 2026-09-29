@@ -178,6 +178,18 @@ export function Explorer() {
     }
   };
 
+  const selectUnanalyzed = () => {
+    if (!browse) return;
+    const unanalyzed = browse.items
+      .filter((i) => !i.is_dir && results.get(i.path)?.success !== true)
+      .map((i) => i.path);
+    setSelectedPaths((prev) => {
+      const next = new Set(prev);
+      for (const p of unanalyzed) next.add(p);
+      return next;
+    });
+  };
+
   const goToAnalysis = () => {
     const paths = Array.from(selectedPaths);
     navigate("/analysis", { 
@@ -328,6 +340,9 @@ export function Explorer() {
                       ? "取消全选"
                       : "全选"}
                   </button>
+                  <button className="btn btn--sm" onClick={selectUnanalyzed}>
+                    全选未分析
+                  </button>
                   {selectedPaths.size > 0 && (
                     <>
                       <button className="btn btn--sm btn--primary" onClick={goToAnalysis}>
@@ -391,6 +406,10 @@ export function Explorer() {
 
       <ImagePreview
         item={previewItem}
+        items={browse?.items.filter((i) => !i.is_dir)}
+        onNavigate={setPreviewItem}
+        selectedPaths={selectedPaths}
+        onToggleSelect={toggleSelect}
         onClose={() => setPreviewItem(null)}
         onAnalysisComplete={() => {
           listResults().then((res) => {
