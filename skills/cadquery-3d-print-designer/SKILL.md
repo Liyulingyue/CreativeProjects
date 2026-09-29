@@ -31,6 +31,36 @@ Activate this skill when the user requests parametric 3D modeling for 3D printin
 
 ## Recommended Python Execution Blueprint
 
+### Prerequisites: Virtual Environment Setup
+
+CadQuery + PyVista（依赖 VTK、OCCT）较重，建议使用虚拟环境隔离依赖，避免污染全局 Python 环境。
+
+**Windows / Linux / macOS：**
+
+```bash
+# 1. 在项目目录下创建虚拟环境
+python -m venv .venv
+
+# 2. 激活虚拟环境
+# Windows (PowerShell):
+.venv\Scripts\Activate.ps1
+# Windows (Git Bash):
+source .venv/Scripts/activate
+# Linux / macOS:
+source .venv/bin/activate
+
+# 3. 安装核心依赖
+pip install --upgrade pip
+pip install cadquery pyvista
+
+# 4. （可选）PyVista 离屏渲染后端
+# Linux 需安装 xvfb：sudo apt-get install xvfb
+# 验证安装：
+python -c "import cadquery as cq; import pyvista as pv; print('OK', cq.__version__, pv.__version__)"
+```
+
+如果不想用 venv，也可以 `conda create -n cq3d python=3.11 && conda activate cq3d && conda install -c conda-forge cadquery pyvista`。
+
 ### Step 1: CadQuery Modeling & STL Export
 ```python
 import cadquery as cq
