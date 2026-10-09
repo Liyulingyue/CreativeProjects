@@ -39,3 +39,5 @@ Thumbs.db
 LLMServices/bin/
 LLMServices/logs/
 LLMServices/models/
+# dev stack logs and pid files
+logs/
