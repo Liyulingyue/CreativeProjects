@@ -134,10 +134,7 @@ export function SettingsPage() {
       {message && <div className="px-6 py-2 bg-indigo-50 text-indigo-700 text-sm">{message}</div>}
 
       <div className="flex-1 overflow-y-auto p-4 sm:p-6">
-        {/* Single column with a readable measure: settings are mostly URLs and
-            numbers, so a full-bleed two-column grid gave over-wide inputs and
-            forced short cards to stretch to match their row partner. */}
-        <div className="max-w-3xl mx-auto space-y-4">
+        <div className="space-y-4">
 
           {/* ---- 模型服务 ---- */}
           <div className="flex items-center gap-3">
