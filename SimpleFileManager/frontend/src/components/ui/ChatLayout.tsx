@@ -142,6 +142,52 @@ function formatTime(timestamp: number): string {
   return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
 }
 
+/**
+ * Distinguishes "waiting on a tool" from "waiting on the model".
+ *
+ * Both used to render the same bouncing dots, so a multi-second file read or a
+ * slow generation looked identical to a hang. Naming the tool — and its
+ * argument — makes it obvious the system is doing something specific.
+ */
+function RunningIndicator({ step, tools }: { step?: number; tools?: ToolActivity[] }) {
+  const running = (tools || []).filter(t => t.status === 'running');
+  const dots = (
+    <div className="flex gap-1 flex-shrink-0">
+      <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+      <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+      <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+    </div>
+  );
+
+  if (running.length > 0) {
+    return (
+      <div className="flex items-start gap-2 text-slate-600 text-sm">
+        <div className="mt-1">{dots}</div>
+        <div className="min-w-0">
+          {running.map((t, i) => {
+            const arg = t.args && Object.entries(t.args).length
+              ? ` ${Object.entries(t.args).map(([k, v]) => `${k}=${typeof v === 'string' ? (v.length > 30 ? v.slice(0, 30) + '…' : v) : JSON.stringify(v)}`).join(' ')}`
+              : '';
+            return (
+              <div key={i} className="truncate">
+                正在调用 <span className="font-mono text-indigo-600">{t.tool}</span>
+                {arg && <span className="text-slate-400 font-mono">{arg}</span>}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2 text-slate-500 text-sm">
+      {dots}
+      <span>{step ? `模型思考中... (第 ${step} 步)` : '模型思考中...'}</span>
+    </div>
+  );
+}
+
 export function ChatLayout({
   sessions, currentSessionId, onSelectSession, onNewSession,
   onDeleteSession, onSendMessage, isLoading, streamingText, toolActivity,
@@ -284,14 +330,7 @@ export function ChatLayout({
                     <span className="inline-block w-2 h-4 ml-0.5 bg-slate-400 animate-pulse align-text-bottom" />
                   </div>
                 ) : (
-                  <div className="flex items-center gap-2 text-slate-500 text-sm">
-                    <div className="flex gap-1">
-                      <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                      <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                      <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                    </div>
-                    <span>{currentStep ? `思考中... (第 ${currentStep} 步)` : '思考中...'}</span>
-                  </div>
+                  <RunningIndicator step={currentStep} tools={toolActivity} />
                 )}
               </div>
             </div>

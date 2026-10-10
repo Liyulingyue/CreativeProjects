@@ -87,7 +87,7 @@ class HybridSearchEngine:
         conn.close()
         return row[0] if row else 0
 
-    def bm25_search(self, query: str, top_k: int = 10) -> list[dict]:
+    def bm25_search(self, query: str, top_k: int = 10, path_filter: str = "") -> list[dict]:
         """Keyword search over chunks.
 
         Hits are returned per chunk, not per file: the two channels index the
@@ -112,7 +112,7 @@ class HybridSearchEngine:
         finally:
             conn.close()
 
-        return [
+        out = [
             {
                 "path": path,
                 "name": name,
@@ -123,13 +123,20 @@ class HybridSearchEngine:
             }
             for path, name, chunk_idx, preview, rank in rows
         ]
+        if path_filter:
+            out = [r for r in out if path_filter in r["path"] or path_filter in r["name"]]
+        return out[:top_k]
 
-    def vector_search(self, query: str, top_k: int = 10) -> list[dict]:
+    def vector_search(self, query: str, top_k: int = 10, path_filter: str = "") -> list[dict]:
         try:
             rag_svc = state.get_rag_service()
             query_vector = rag_svc.embedding_service.embed([query])[0]
-            results = rag_svc.vector_store.search(query_vector, top_k=top_k)
-            return [
+            # Filtering here rather than at the call site: a post-filter would
+            # only see whatever survived the per-file cap, so asking about one
+            # document could return a different document entirely.
+            over_fetch = top_k * 10 if path_filter else top_k
+            results = rag_svc.vector_store.search(query_vector, top_k=over_fetch)
+            out = [
                 {
                     "path": r.get("file_path", ""),
                     "name": Path(r.get("file_path", "")).name,
@@ -140,16 +147,16 @@ class HybridSearchEngine:
                 }
                 for r in results
             ]
+            if path_filter:
+                out = [r for r in out if path_filter in r["path"] or path_filter in r["name"]]
+            return out[:top_k]
         except Exception as e:
-            # Logged, not swallowed: an exception here used to return [] and
-            # leave the semantic channel silently dead while search still
-            # returned keyword results that looked healthy.
             log.warning("vector search failed (%s: %s); keyword results still returned", type(e).__name__, e)
             return []
 
-    def hybrid_search(self, query: str, top_k: int = 10) -> dict:
-        fts_results = self.bm25_search(query, top_k)
-        vec_results = self.vector_search(query, top_k)
+    def hybrid_search(self, query: str, top_k: int = 10, path_filter: str = "") -> dict:
+        fts_results = self.bm25_search(query, top_k, path_filter)
+        vec_results = self.vector_search(query, top_k, path_filter)
 
         # Reciprocal Rank Fusion keyed on (path, chunk_idx): both channels index
         # the same chunks, so agreement on one passage is a much stronger signal

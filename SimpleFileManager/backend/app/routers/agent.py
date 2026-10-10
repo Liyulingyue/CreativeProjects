@@ -67,12 +67,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read a file's text content (truncated). Plain text, Markdown, code, PDF and DOCX are supported; PDF text is extracted and scanned/image-only PDFs will fail. Use to understand file contents before suggesting actions.",
+            "description": "Read a file's text content. Plain text, Markdown, code, PDF and DOCX are supported; PDF text is extracted and scanned/image-only PDFs will fail. For large files prefer semantic_search, which finds the relevant passages instead of returning only the first couple of thousand characters.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Path relative to storage root."},
-                    "limit": {"type": "integer", "description": "Max characters to read (default 2000)."},
+                    "limit": {"type": "integer", "description": "Max characters to read (default 2000; raise it for long files)."},
+                    "offset": {"type": "integer", "description": "Character offset to start from, for reading a long file in parts (default 0)."},
                 },
                 "required": ["path"],
             },
@@ -104,6 +105,22 @@ TOOLS = [
                     "path": {"type": "string", "description": "Optional subdirectory to limit the search."}
                 },
                 "required": ["pattern"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "semantic_search",
+            "description": "Search by meaning rather than keywords. Use this to understand what a large document is about, or to find passages that discuss a topic whose exact wording you do not know. Returns matching passages with their file and location. Much better than read_file for large files, which can only return a small excerpt.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "A natural-language question or description of what to find."},
+                    "path": {"type": "string", "description": "Optional file name or subdirectory to restrict the search to."},
+                    "top_k": {"type": "integer", "description": "Number of passages to return (default 5, max 20)."}
+                },
+                "required": ["query"],
             },
         },
     },
@@ -151,9 +168,19 @@ TOOL_DISPLAY: dict[str, dict] = {
         "risk": "read",
         "params": {"path": "相对存储根目录的路径，留空或填 . 表示根目录"},
     },
+    "semantic_search": {
+        "title": "语义检索",
+        "summary": "按含义而非关键词检索已索引的内容。适合了解一份大文档讲了什么，或寻找措辞未知的相关段落。",
+        "risk": "read",
+        "params": {
+            "query": "用自然语言描述你想找什么",
+            "path": "可选，限定到某个文件或子目录",
+            "top_k": "返回的段落数，默认 5，最大 20",
+        },
+    },
     "read_file": {
         "title": "读取文件",
-        "summary": "读取文本文件的内容，超长会截断。支持纯文本、Markdown、代码、PDF 与 DOCX。用于在提出建议前先看清文件里有什么。",
+        "summary": "读取文本文件的内容，超长会截断，可分批续读。支持纯文本、Markdown、代码、PDF 与 DOCX。文件很大时优先用 semantic_search。",
         "risk": "read",
         "params": {
             "path": "相对存储根目录的文件路径",
@@ -246,7 +273,7 @@ def tool_list_directory(path: str) -> dict:
     return {"success": True, "path": _rel(target) if target != get_storage_root() else ".", "items": items, "count": len(items)}
 
 
-def tool_read_file(path: str, limit: int = 2000) -> dict:
+def tool_read_file(path: str, limit: int = 2000, offset: int = 0) -> dict:
     try:
         target = resolve_under_root(path)
     except PathOutsideRoot:
@@ -262,19 +289,47 @@ def tool_read_file(path: str, limit: int = 2000) -> dict:
         return {"success": False, "error": str(e)}
 
     if extracted is not None:
-        content = extracted[:limit]
-        return {
+        offset = max(0, offset)
+        content = extracted[offset: offset + limit]
+        total = len(extracted)
+        out = {
             "success": True,
             "path": _rel(target),
             "content": content,
-            "truncated": len(extracted) > limit,
-            "extracted_from": target.suffix.lower().lstrip("."),
+            "truncated": total > limit,
         }
+        if total > limit:
+            out["chars_returned"] = len(content)
+            out["total_chars"] = total
+            next_offset = offset + len(content)
+            out["next_offset"] = next_offset if next_offset < total else None
+            out["hint"] = (
+                f"This file has {total} characters; you read {len(content)}. "
+                f"Call read_file again with offset={next_offset} to continue, "
+                f"or use semantic_search to find relevant passages without "
+                f"reading the whole file."
+            )
+        return out
 
     try:
+        offset = max(0, offset)
         with open(target, "r", encoding="utf-8", errors="ignore") as f:
+            if offset:
+                f.seek(offset)
             content = f.read(limit)
-        return {"success": True, "path": _rel(target), "content": content, "truncated": target.stat().st_size > limit}
+        out = {
+            "success": True,
+            "path": _rel(target),
+            "content": content,
+            "truncated": target.stat().st_size > limit,
+        }
+        if out["truncated"]:
+            out["chars_returned"] = len(content)
+            out["hint"] = (
+                "File is longer than the limit. Pass a larger limit, or use "
+                "semantic_search to find the relevant part."
+            )
+        return out
     except (PermissionError, OSError) as e:
         return {"success": False, "error": str(e)}
 
@@ -369,6 +424,49 @@ def tool_submit_plan(title: str, summary: str = "", actions: Optional[list[dict]
             "message": "Plan submitted. It will be executed only after the user approves it."}
 
 
+def tool_semantic_search(query: str, path: str = "", top_k: int = 5) -> dict:
+    """Meaning-based retrieval over the indexed corpus.
+
+    read_file can only hand back a couple of thousand characters, which is
+    useless against a 2.5MB novel — 0.2% of it. This reads from the chunk index
+    instead, so the model can actually learn what a document contains.
+    """
+    from ..search_engine import search_engine
+
+    top_k = max(1, min(top_k, 20))
+    needle = (path or "").strip()
+    try:
+        # The filter is applied inside hybrid_search, before the per-file cap;
+        # filtering afterwards returned whatever other books happened to rank.
+        result = search_engine.hybrid_search(query, top_k=top_k, path_filter=needle)
+    except Exception as e:
+        return {"success": False, "error": f"semantic_search failed: {e}"}
+
+    items = result.get("results", [])[:top_k]
+
+    if not items:
+        return {
+            "success": True,
+            "matches": [],
+            "hint": "Nothing indexed matched. The corpus may not be indexed yet, or the path filter matched nothing — try search_content or read_file instead. Note: passages come from whichever files matched, so check each match's file before relying on it.",
+        }
+
+    return {
+        "success": True,
+        "query": query,
+        "matches": [
+            {
+                "file": r["name"],
+                "location": r["path"].split("/")[-1],
+                "chunk": r.get("chunk_idx"),
+                "matched_by": r.get("sources", []),
+                "text": (r.get("preview") or "")[:600],
+            }
+            for r in items
+        ],
+    }
+
+
 def execute_tool(name: str, arguments: dict) -> dict:
     try:
         if name == "list_directory":
@@ -379,6 +477,8 @@ def execute_tool(name: str, arguments: dict) -> dict:
             return tool_find_files(**arguments)
         if name == "search_content":
             return tool_search_content(**arguments)
+        if name == "semantic_search":
+            return tool_semantic_search(**arguments)
         if name == "submit_plan":
             return tool_submit_plan(**arguments)
         return {"success": False, "error": f"Unknown tool: {name}"}
