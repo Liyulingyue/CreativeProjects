@@ -7,8 +7,20 @@ import { Icon } from './ui/Icon';
 import type { AutoIndexStatus } from '../types';
 import type { IndexSkipped } from '../api';
 
-interface IndexedFile { id: string; file_path: string; content_preview: string; }
-interface IndexStats { indexed_count: number; vector_count: number; }
+interface IndexedFile {
+  id: string;
+  file_path: string;
+  content_preview: string;
+  chunk_count: number;
+  total_chunks: number;
+  percent: number;
+}
+interface IndexStats {
+  indexed_count: number;
+  vector_count: number;
+  total_chunks: number;
+  semantic_percent: number;
+}
 
 export function IndexPage() {
   const { toast } = useToast();
@@ -64,7 +76,7 @@ export function IndexPage() {
 
   const handleClearIndex = async () => {
     setIsClearing(true);
-    try { await authFetch('/api/rag/clear', { method: 'DELETE' }); setFiles([]); setStats({ indexed_count: 0, vector_count: 0 }); toast('索引已清空', 'success'); }
+    try { await authFetch('/api/rag/clear', { method: 'DELETE' }); setFiles([]); setStats({ indexed_count: 0, vector_count: 0, total_chunks: 0, semantic_percent: 0 }); toast('索引已清空', 'success'); }
     catch { toast('清空失败', 'error'); } finally { setIsClearing(false); setConfirmClear(false); }
   };
 
@@ -86,9 +98,18 @@ export function IndexPage() {
             <div className="text-xl font-bold text-indigo-600">{stats?.indexed_count ?? '-'}</div>
             <div className="text-xs text-slate-500">已索引</div>
           </div>
-          <div className="bg-indigo-50 rounded-lg px-4 py-2 text-center">
-            <div className="text-xl font-bold text-indigo-600">{stats?.vector_count ?? '-'}</div>
-            <div className="text-xs text-slate-500">向量数</div>
+          <div className="bg-indigo-50 rounded-lg px-4 py-2 text-center min-w-[132px]">
+            <div className="text-xl font-bold text-indigo-600">{stats?.semantic_percent ?? 0}%</div>
+            <div className="text-xs text-slate-500">语义覆盖</div>
+            <div className="mt-1 h-1 w-full rounded-full bg-indigo-100 overflow-hidden">
+              <div
+                className="h-full bg-indigo-500 rounded-full transition-all"
+                style={{ width: `${stats?.semantic_percent ?? 0}%` }}
+              />
+            </div>
+            <div className="text-[10px] text-slate-400 mt-0.5 tabular-nums">
+              {stats?.vector_count ?? 0} / {stats?.total_chunks ?? 0} 块
+            </div>
           </div>
           {autoStatus && (
             <div className="bg-slate-50 rounded-lg px-4 py-2 text-center">
@@ -96,7 +117,7 @@ export function IndexPage() {
               <div className="text-xs text-slate-500">自动清单</div>
             </div>
           )}
-          {skipped && (skipped.unsupported.length > 0 || skipped.failed.length > 0 || skipped.oversized.length > 0 || skipped.partial_vector.length > 0) && (
+          {skipped && (skipped.unsupported.length > 0 || skipped.failed.length > 0 || skipped.oversized.length > 0) && (
             <button
               onClick={() => setShowSkipped(v => !v)}
               className={`bg-amber-50 rounded-lg px-4 py-2 text-center transition-colors hover:bg-amber-100 ${
@@ -170,34 +191,6 @@ export function IndexPage() {
               </div>
             )}
 
-            {skipped.partial_vector.length > 0 && (
-              <div>
-                <div className="px-4 py-2 text-xs font-medium text-slate-500 bg-slate-50">
-                  语义索引进行中（{skipped.partial_vector.length}）
-                </div>
-                <div className="px-4 py-3 space-y-2.5">
-                  {skipped.partial_vector.map(f => (
-                    <div key={f.path}>
-                      <div className="flex items-baseline justify-between gap-2 text-xs mb-1">
-                        <span className="text-slate-600 truncate">{f.path}</span>
-                        <span className="text-slate-400 flex-shrink-0 tabular-nums">
-                          {f.done}/{f.total} 块 · {f.percent}%
-                        </span>
-                      </div>
-                      <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden">
-                        <div
-                          className="h-full bg-indigo-500 rounded-full transition-all"
-                          style={{ width: `${f.percent}%` }}
-                        />
-                      </div>
-                    </div>
-                  ))}
-                  <div className="text-[11px] text-slate-400 pt-1">
-                    这些文件已可被关键词搜索命中；语义向量化按每轮若干块持续推进，可随时离开，稍后回来继续。
-                  </div>
-                </div>
-              </div>
-            )}
 
             {skipped.oversized.length > 0 && (
               <div className="border-t border-slate-100">
@@ -250,6 +243,9 @@ export function IndexPage() {
         ) : (
           <div className="space-y-3">
             <div className="text-sm text-slate-500">已索引文件 ({files.length})</div>
+            <div className="text-xs text-slate-400 -mt-2">
+              文件一旦入库即可被关键词搜索；每张卡片下方的进度条表示语义向量化推进到哪一块，可随时离开，稍后回来继续。
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {files.map(file => (
                 <div key={file.id} className="bg-white rounded-lg border border-slate-200 p-4 hover:shadow-card transition-shadow">
@@ -263,7 +259,24 @@ export function IndexPage() {
                       <Icon name="trash" size={15} />
                     </button>
                   </div>
-                  <div className="text-xs text-slate-400 truncate mb-2">{file.file_path}</div>
+                  {/* Vectorisation is incremental, so say plainly which part of
+                      this file is embedded and which is still queued. */}
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="flex-1 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all ${
+                          file.percent >= 100 ? 'bg-green-500' : 'bg-indigo-500'
+                        }`}
+                        style={{ width: `${file.percent}%` }}
+                      />
+                    </div>
+                    <span className={`text-[11px] tabular-nums flex-shrink-0 ${
+                      file.percent >= 100 ? 'text-green-600' : 'text-slate-400'
+                    }`}>
+                      {file.chunk_count}/{file.total_chunks} 块
+                      {file.percent >= 100 ? ' ✓' : ` · ${file.percent}%`}
+                    </span>
+                  </div>
                   <div className="text-xs text-slate-500 bg-slate-50 rounded-md p-2 line-clamp-2">{file.content_preview}</div>
                 </div>
               ))}

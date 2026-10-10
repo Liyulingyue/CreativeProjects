@@ -42,6 +42,8 @@ class QueryResponse(BaseModel):
 class IndexStatusResponse(BaseModel):
     indexed_count: int
     vector_count: int
+    total_chunks: int = 0
+    semantic_percent: int = 0
 
 
 class IndexedFile(BaseModel):
@@ -51,6 +53,9 @@ class IndexedFile(BaseModel):
     # A chunked document contributes many rows upstream; they are collapsed
     # into one entry so the list and the delete action stay per-file.
     chunk_count: int = 1
+    # Chunks embedded so far / total chunks the file splits into.
+    total_chunks: int = 1
+    percent: int = 100
 
 
 class IndexedFilesResponse(BaseModel):
@@ -110,9 +115,18 @@ def query(req: QueryRequest) -> QueryResponse:
 def get_status() -> IndexStatusResponse:
     try:
         rag_svc = state.get_rag_service()
+        embedded = rag_svc.vector_store.count()
+        # Semantic coverage across everything the manifest knows about, which is
+        # what makes slow embedding visible instead of looking finished.
+        from ..indexer import indexer as _indexer
+        progress = _indexer._vector_progress()
+        total_chunks = sum(t for _d, t in progress.values() if t > 0)
+        percent = round(embedded * 100 / total_chunks) if total_chunks else 0
         return IndexStatusResponse(
-            indexed_count=rag_svc.vector_store.count(),
-            vector_count=rag_svc.vector_store.count(),
+            indexed_count=embedded,
+            vector_count=embedded,
+            total_chunks=total_chunks,
+            semantic_percent=percent,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -123,6 +137,16 @@ def get_indexed_files():
     try:
         rag_svc = state.get_rag_service()
         files = rag_svc.vector_store.list_files()
+
+        # Join in the indexer's progress so the UI can show how much of each
+        # document has actually been embedded, not just how many chunks exist.
+        from ..indexer import indexer as _indexer
+        progress = _indexer._vector_progress()
+        for f in files:
+            done, total = progress.get(f["file_path"], (f.get("chunk_count", 0), f.get("chunk_count", 0)))
+            f["total_chunks"] = total
+            f["percent"] = round(done * 100 / total) if total else 100
+
         return IndexedFilesResponse(
             files=[IndexedFile(**f) for f in files],
             total=len(files)
