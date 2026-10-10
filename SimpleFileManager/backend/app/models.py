@@ -238,6 +238,10 @@ class AutoIndexStatus(BaseModel):
     last_scan_files: int = 0
     indexed_files: int = 0
     pending_changes: int = 0
+    # Files whose vectorisation is still outstanding
+    pending_vector_files: int = 0
+    # The last scan stood down because the user was chatting or searching
+    yielded_for_interaction: bool = False
 
 
 # ---- Auth ----

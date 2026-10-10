@@ -10,6 +10,7 @@ from typing import Any, Optional
 import httpx
 from dotenv import load_dotenv
 from .chunking import chunk_file
+from .interaction import interaction
 from .models import (
     AppSettings, IndexStats, IndexStatus, ChatSession, ChatMessage,
     AgentPlan, PlanAction,
@@ -27,9 +28,10 @@ DATA_DIR.mkdir(exist_ok=True)
 SETTINGS_FILE = DATA_DIR / "settings.json"
 INDEX_STATS_FILE = DATA_DIR / "index_stats.json"
 
-# Chunks per embedding call. Large enough to keep the round trips down, small
-# enough that a batch of 1500-character chunks stays well inside the endpoint.
-EMBED_CHUNK_BATCH = 16
+# Chunks per embedding call. Deliberately small: a batch is uninterruptible,
+# so a large one keeps the embedding server busy long after the indexer has
+# noticed the user started a conversation. At 16 the batch ran ~60s.
+EMBED_CHUNK_BATCH = 4
 
 EMBEDDING_DIM_MAP = {
     "text-embedding-3-small": 1536,
@@ -220,6 +222,8 @@ class RAGService:
             self.vector_store.add_many(vectors, batch)
 
     def query(self, question: str, top_k: int = 3) -> dict:
+        # Embeds the question and calls the LLM: same interaction path as chat.
+        interaction.mark_active()
         query_vector = self.embedding_service.embed([question])[0]
         results = self.vector_store.search(query_vector, top_k=top_k)
 

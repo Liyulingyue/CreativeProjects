@@ -136,6 +136,11 @@ export function IndexPage() {
             <div className="flex items-center gap-2 mr-1">
               <span className="text-xs text-slate-500">
                 自动索引{autoStatus.enabled ? ` · 每 ${autoStatus.interval}s${autoStatus.last_scan_time ? ` · 上次 ${autoStatus.last_scan_time}` : ''}${autoStatus.pending_changes > 0 ? ` · ${autoStatus.pending_changes} 待处理` : ''}` : '（已关闭）'}
+                {autoStatus.yielded_for_interaction && (
+                  <span className="ml-1 text-indigo-500" title="检测到你正在使用对话或搜索，索引已暂停让出算力，闲置后自动继续">
+                    · 已为交互让路
+                  </span>
+                )}
               </span>
               <button onClick={handleToggleAuto} disabled={isToggling}
                 className={`relative w-10 h-5.5 rounded-full transition-colors disabled:opacity-50 ${autoStatus.enabled ? 'bg-indigo-600' : 'bg-slate-300'}`}

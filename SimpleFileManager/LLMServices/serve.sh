@@ -21,7 +21,7 @@
 # server window and the backend's compression budget stay in sync; override with
 # LLM_CTX.
 #
-# Usage:
+# Usage: ./LLMServices/serve.sh {install|start|stop|status|restart|help}
 #   ./serve.sh start    - Start both services in background
 #   ./serve.sh stop     - Stop both services
 #   ./serve.sh status   - Check if services are running
@@ -129,9 +129,12 @@ TOTAL_CTX=$((CTX * PARALLEL))
 # Absolute path of the llama-server binary, or empty when there is none.
 #
 # Searched in the order a user would expect: an explicit $LLAMA_SERVER, the
-# local ./bin (where a built binary is usually dropped), then PATH. The last two
-# `find`s cover the in-tree build layout, which is a Release build under
-# references/llama.cpp/build/bin rather than something on PATH.
+# in-tree ./bin (the supported location — see `serve.sh install`), then PATH.
+#
+# LLMServices/bin is gitignored, so the binary is deliberately not tracked; a
+# checkout that has never run `install` will fall through to PATH and fail with
+# the message below, rather than silently picking up a build out of some
+# unrelated directory.
 find_llama_server() {
     local candidate
     if [ -n "${LLAMA_SERVER:-}" ] && [ -x "$LLAMA_SERVER" ]; then
@@ -143,13 +146,6 @@ find_llama_server() {
         "$(command -v llama-server 2>/dev/null || true)"
     do
         [ -n "$candidate" ] && [ -x "$candidate" ] && { echo "$candidate"; return 0; }
-    done
-    # In-tree builds: this repo keeps references/ gitignored, so the path is
-    # resolved relative to a sibling checkout rather than a tracked location.
-    local here
-    for here in "$SCRIPT_DIR/../.." "$SCRIPT_DIR/../../.." "$HOME/Repos/rust-model-inference"; do
-        candidate="$here/references/llama.cpp/build/bin/llama-server"
-        [ -x "$candidate" ] && { echo "$candidate"; return 0; }
     done
     return 1
 }
@@ -230,7 +226,10 @@ service_argv() {
             # --pooling last llama-server pools by mean over a causal model and
             # returns a wrong-length, wrong-norm vector; --embeddings is what
             # switches the server into embedding mode.
-            echo "--model $model --host 0.0.0.0 --port $port --threads $THREADS --pooling last --embeddings"
+            # --parallel 2 so a search's query embedding is not stuck behind an
+            # in-flight indexing batch: with a single slot the query waits for
+            # the whole batch to finish.
+            echo "--model $model --host 0.0.0.0 --port $port --threads $THREADS --pooling last --embeddings --parallel 2"
         else
             # --jinja is llama-server's default, and it is what makes the server
             # render the GGUF's own tokenizer.chat_template. Turning it off would
@@ -370,6 +369,24 @@ show_backends() {
 }
 
 case "${1:-}" in
+    install)
+        # Copy a llama.cpp build into LLMServices/bin so the project is
+        # self-contained instead of reaching into an unrelated checkout.
+        # Usage: serve.sh install [path/to/llama.cpp/build/bin]
+        src="${2:-$HOME/Repos/rust-model-inference/references/llama.cpp/build/bin}"
+        if [ ! -x "$src/llama-server" ]; then
+            echo "error: no llama-server under '$src'." >&2
+            echo "usage: $0 install [path/to/llama.cpp/build/bin]" >&2
+            exit 1
+        fi
+        mkdir -p "$LOCAL_BIN"
+        # The shared libraries travel with the binary; llama-server resolves
+        # them from its own directory via rpath.
+        cp -a "$src/llama-server" "$src/libllama"*.so* "$src/libggml"*.so* "$LOCAL_BIN"/ 2>/dev/null
+        [ -x "$src/llama-bench" ] && cp -a "$src/llama-bench" "$LOCAL_BIN"/
+        echo "installed into $LOCAL_BIN"
+        "$LOCAL_BIN/llama-server" --version 2>/dev/null | head -1
+        ;;
     start)
         echo "=== Starting LLM Services ==="
         show_backends
@@ -410,10 +427,11 @@ case "${1:-}" in
     help|--help|-h)
         echo "LLM Services - Manage embedding and chat API services"
         echo ""
-        echo "Usage: $0 {start|stop|status|restart|help}"
+        echo "Usage: $0 {install|start|stop|status|restart|help}"
         echo ""
         echo "Commands:"
-        echo "  start    Start embedding + chat services in background"
+        echo "  install   Copy a llama.cpp build into LLMServices/bin (self-contained)"
+        echo "  start     Start embedding + chat services in background"
         echo "  stop     Stop both services"
         echo "  status   Show running status and which backends were found"
         echo "  restart  Restart both services"
@@ -440,7 +458,7 @@ case "${1:-}" in
         echo "Logs: $LOG_DIR/"
         ;;
     *)
-        echo "Usage: $0 {start|stop|status|restart|help}"
+        echo "Usage: $0 {install|start|stop|status|restart|help}"
         echo "Run '$0 help' for details."
         exit 1
         ;;

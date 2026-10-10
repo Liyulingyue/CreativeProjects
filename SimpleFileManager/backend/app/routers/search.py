@@ -4,6 +4,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from ..interaction import interaction
 from ..deps import state
 from ..models import FileNode, SearchResult
 from ..search_engine import search_engine
@@ -20,6 +21,9 @@ class HybridSearchResponse(BaseModel):
 
 @search.post("/hybrid", response_model=HybridSearchResponse)
 def hybrid_search(query: str, top_k: int = 10) -> HybridSearchResponse:
+    # A search embeds its query, so it competes with indexing for the same
+    # server; let indexing stand down for the duration.
+    interaction.mark_active()
     if not query.strip():
         raise HTTPException(status_code=400, detail="Query is empty")
     return HybridSearchResponse(**search_engine.hybrid_search(query, top_k))
@@ -54,6 +58,7 @@ def _path_to_filenode(path: Path) -> FileNode:
 
 @search.get("/query")
 def search_files(q: str, path: Optional[str] = None, limit: int = 50) -> SearchResult:
+    interaction.mark_active()
     storage_path = state.get_settings().storage_path
     if not q or len(q) < 2:
         raise HTTPException(status_code=400, detail="Query too short")

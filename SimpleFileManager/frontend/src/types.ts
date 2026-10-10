@@ -62,6 +62,8 @@ export interface AutoIndexStatus {
   last_scan_files: number;
   indexed_files: number;
   pending_changes: number;
+  pending_vector_files: number;
+  yielded_for_interaction: boolean;
 }
 
 export type PlanActionType = 'move' | 'rename' | 'create_folder' | 'delete';

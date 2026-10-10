@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 from .chunking import chunk_file
+from .interaction import interaction
 from .deps import DATA_DIR, EMBED_CHUNK_BATCH, get_storage_root, state
 from .doc_extract import DOCUMENT_EXTENSIONS, MAX_DOCUMENT_BYTES, ExtractionError, extract_text
 from .models import AutoIndexStatus
@@ -76,6 +77,8 @@ class AutoIndexer:
         # path -> number of chunks currently in the vector store
         self._vector_partial: dict[str, int] = {}
         self._pending_vector_files = 0
+        # True when the last scan stood down because the user was interacting
+        self._yielded_for_interaction = False
         self._failed: dict[str, str] = {}
         self._init_db()
 
@@ -251,6 +254,7 @@ class AutoIndexer:
             self._failed = {}
             self._oversized = {}
             self._vector_partial = {}
+            self._yielded_for_interaction = False
             current = self._iter_text_files(root)
             known = self._known_files()
 
@@ -306,6 +310,13 @@ class AutoIndexer:
             self._pending_vector_files = len(pending_vectors)
 
             for path in pending_vectors:
+                # Chat and embedding contend for the same four fast cores: a
+                # chat request measures ~27 tok/s idle but ~4 tok/s while this
+                # runs. Indexing is resumable, so it stands down and resumes on
+                # a later tick instead of degrading the conversation.
+                if interaction.is_busy():
+                    self._yielded_for_interaction = True
+                    break
                 done, total = progress[path]
                 content = self._read_content(path)
                 if not content:
@@ -317,14 +328,23 @@ class AutoIndexer:
                 try:
                     chunk_records = [(path, idx, text) for idx, (_off, text) in enumerate(batch)]
                     for j in range(0, len(chunk_records), EMBED_CHUNK_BATCH):
+                        # Checked per batch, not just per file: one file is
+                        # ~16 chunks, so a file-level check could sit on the
+                        # cores for a minute after the user started talking.
+                        if interaction.is_busy():
+                            self._set_vector_progress(path, done + j)
+                            self._vector_partial[path] = done + j
+                            self._yielded_for_interaction = True
+                            break
                         part = chunk_records[j: j + EMBED_CHUNK_BATCH]
                         vectors = rag_svc.embedding_service.embed([c for _, _, c in part])
                         rag_svc.vector_store.add_many(
                             vectors,
                             [{"file_path": p, "content": c, "chunk_idx": i} for p, i, c in part],
                         )
-                    self._set_vector_progress(path, min(done + len(batch), total))
-                    self._vector_partial[path] = min(done + len(batch), total)
+                    new_done = min(done + len(batch), total)
+                    self._set_vector_progress(path, new_done)
+                    self._vector_partial[path] = new_done
                 except Exception:
                     traceback.print_exc()
 
@@ -405,6 +425,8 @@ class AutoIndexer:
             last_scan_files=self._last_scan_files,
             indexed_files=self._known_count(),
             pending_changes=self._pending_changes,
+            pending_vector_files=self._pending_vector_files,
+            yielded_for_interaction=self._yielded_for_interaction,
         )
 
 

@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from ..deps import state, get_storage_root, resolve_under_root, PathOutsideRoot, validate_plan_action
 from ..doc_extract import ExtractionError, extract_text
+from ..interaction import interaction
 from ..llm_client import chat_completion, chat_completion_stream, _friendly_error
 
 log = logging.getLogger(__name__)
@@ -536,6 +537,7 @@ def _get_session(session_id: str) -> Session:
 
 @agent.post("/chat", response_model=AgentResponse)
 def agent_chat(req: AgentRequest):
+    interaction.mark_active()
     session_id = req.session_id or "default"
     session = _get_session(session_id)
     session.history.append({"role": "user", "content": req.message})
@@ -627,6 +629,9 @@ def agent_chat_stream(req: AgentRequest):
         return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
     def generate() -> Iterator[str]:
+        # Tell the indexer to stand down: chat and embedding share the fast
+        # cores, and a conversation measurably slows while indexing runs.
+        interaction.mark_active()
         session_id = req.session_id or "default"
         session = _get_session(session_id)
         session.history.append({"role": "user", "content": req.message})
