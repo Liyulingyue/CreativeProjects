@@ -16,7 +16,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from .deps import DATA_DIR, get_storage_root, state
+from .chunking import chunk_file
+from .deps import DATA_DIR, EMBED_CHUNK_BATCH, get_storage_root, state
 from .doc_extract import DOCUMENT_EXTENSIONS, MAX_DOCUMENT_BYTES, ExtractionError, extract_text
 from .models import AutoIndexStatus
 from .search_engine import search_engine
@@ -46,8 +47,13 @@ TEXT_EXTENSIONS = {
 
 INDEXABLE_EXTENSIONS = TEXT_EXTENSIONS
 
-MAX_FILE_BYTES = 512 * 1024  # skip plain-text files larger than 512KB
+MAX_FILE_BYTES = 10 * 1024 * 1024  # plain-text ceiling before a file is skipped
 EMBED_BATCH_SIZE = 16
+# Chunks per file sent to the embedding service. The whole file is still
+# indexed for keyword search; this only bounds semantic coverage.
+# Wall-clock budget for the semantic pass of a single scan. Keyword indexing
+# always completes first, so this only caps how much becomes vectorised.
+EMBED_TIME_BUDGET_SECONDS = 90
 TICK_SECONDS = 5
 MIN_INTERVAL_SECONDS = 30
 
@@ -65,6 +71,9 @@ class AutoIndexer:
         # extension vs. recognised but unparseable. Surfaced in the UI so a
         # missing search hit is explainable.
         self._unsupported: dict[str, str] = {}
+        self._oversized: dict[str, str] = {}
+        # path -> number of chunks that made it into the vector store
+        self._vector_partial: dict[str, int] = {}
         self._failed: dict[str, str] = {}
         self._init_db()
 
@@ -145,6 +154,7 @@ class AutoIndexer:
     def _iter_text_files(self, root: Path) -> dict[str, tuple[float, int]]:
         found: dict[str, tuple[float, int]] = {}
         unsupported: dict[str, str] = {}
+        oversized: dict[str, str] = {}
         try:
             for entry in root.rglob("*"):
                 if _is_hidden(entry):
@@ -161,7 +171,12 @@ class AutoIndexer:
                     # PDFs are mostly images, so the plain-text byte ceiling
                     # would reject a small file full of readable content.
                     limit = MAX_DOCUMENT_BYTES if entry.suffix.lower() in DOCUMENT_EXTENSIONS else MAX_FILE_BYTES
-                    if stat.st_size > limit or stat.st_size == 0:
+                    if stat.st_size == 0:
+                        continue
+                    if stat.st_size > limit:
+                        # Reported, not silently dropped: a user who indexed a
+                        # whole library and got no hits needs to know why.
+                        oversized[_display_path(entry)] = f"{stat.st_size // 1024 // 1024}MB"
                         continue
                     found[str(entry)] = (stat.st_mtime, stat.st_size)
                 except (PermissionError, OSError):
@@ -169,6 +184,7 @@ class AutoIndexer:
         except (PermissionError, OSError):
             pass
         self._unsupported = unsupported
+        self._oversized = oversized
         return found
 
     def _read_content(self, path: str) -> Optional[str]:
@@ -207,6 +223,8 @@ class AutoIndexer:
         state.set_indexing(True, 0.0, str(root))
         try:
             self._failed = {}
+            self._oversized = {}
+            self._vector_partial = {}
             current = self._iter_text_files(root)
             known = self._known_files()
 
@@ -225,32 +243,56 @@ class AutoIndexer:
 
             rag_svc = state.get_rag_service()
             indexed, failed = 0, 0
+            records: list[tuple[str, float, int]] = []
 
+            # Phase 1 — keyword channel. Cheap and complete: FTS only needs the
+            # file text, so every file becomes searchable immediately. Done
+            # before any embedding so a slow or unreachable embedding service
+            # can never block keyword indexing (it previously did).
+            prepared: list[tuple[str, list[tuple[int, str]]]] = []
             for i in range(0, len(to_index), EMBED_BATCH_SIZE):
-                batch_paths = to_index[i:i + EMBED_BATCH_SIZE]
-                contents = {p: self._read_content(p) for p in batch_paths}
-                valid = [(p, contents[p]) for p in batch_paths if contents[p]]
-                if not valid:
-                    continue
-                try:
-                    vectors = rag_svc.embedding_service.embed([c for _, c in valid])
-                except Exception:
-                    failed += len(valid)
-                    traceback.print_exc()
-                    continue
-                records = []
-                for (path, content), vec in zip(valid, vectors):
+                for path in to_index[i:i + EMBED_BATCH_SIZE]:
+                    content = self._read_content(path)
+                    if not content:
+                        continue
                     try:
-                        rag_svc.vector_store.add(vec, {"file_path": path, "content": content})
+                        pieces = chunk_file(content)
                         search_engine.upsert_file(path, content)
                         stat = Path(path).stat()
                         records.append((path, stat.st_mtime, stat.st_size))
+                        prepared.append((path, pieces))
                         indexed += 1
                     except Exception:
                         failed += 1
                         traceback.print_exc()
-                if records:
-                    self._record_files(records)
+            if records:
+                self._record_files(records)
+
+            # Phase 2 — semantic channel. Bounded by wall clock: the local
+            # embedding endpoint runs at roughly 100 characters/second, so a
+            # full novel would take hours. Whatever gets embedded in the budget
+            # is real coverage; the rest stays keyword-only and is reported.
+            deadline = time.time() + EMBED_TIME_BUDGET_SECONDS
+            for path, pieces in prepared:
+                if not pieces or time.time() >= deadline:
+                    continue
+                try:
+                    chunk_records = [
+                        (path, idx, text) for idx, (_off, text) in enumerate(pieces)
+                    ]
+                    for j in range(0, len(chunk_records), EMBED_CHUNK_BATCH):
+                        if time.time() >= deadline:
+                            self._vector_partial[path] = j
+                            break
+                        part = chunk_records[j: j + EMBED_CHUNK_BATCH]
+                        vectors = rag_svc.embedding_service.embed([c for _, _, c in part])
+                        rag_svc.vector_store.add_many(
+                            vectors,
+                            [{"file_path": p, "content": c, "chunk_idx": i} for p, i, c in part],
+                        )
+                        self._vector_partial[path] = j + len(part)
+                except Exception:
+                    traceback.print_exc()
 
             if removed:
                 for p in removed:
@@ -300,6 +342,12 @@ class AutoIndexer:
             ],
             "failed": [
                 {"path": p, "reason": reason} for p, reason in sorted(self._failed.items())
+            ],
+            "oversized": [
+                {"path": p, "size": size} for p, size in sorted(self._oversized.items())
+            ],
+            "partial_vector": [
+                {"path": p, "chunks": n} for p, n in sorted(self._vector_partial.items())
             ],
         }
 

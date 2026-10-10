@@ -9,6 +9,7 @@ from typing import Any, Optional
 
 import httpx
 from dotenv import load_dotenv
+from .chunking import chunk_file
 from .models import (
     AppSettings, IndexStats, IndexStatus, ChatSession, ChatMessage,
     AgentPlan, PlanAction,
@@ -25,6 +26,10 @@ DATA_DIR.mkdir(exist_ok=True)
 
 SETTINGS_FILE = DATA_DIR / "settings.json"
 INDEX_STATS_FILE = DATA_DIR / "index_stats.json"
+
+# Chunks per embedding call. Large enough to keep the round trips down, small
+# enough that a batch of 1500-character chunks stays well inside the endpoint.
+EMBED_CHUNK_BATCH = 16
 
 EMBEDDING_DIM_MAP = {
     "text-embedding-3-small": 1536,
@@ -99,6 +104,7 @@ class LanceDBVectorStore:
                 ("id", pa.string()),
                 ("file_path", pa.string()),
                 ("content", pa.string()),
+                ("chunk_idx", pa.int32()),
                 ("vector", pa.list_(pa.float32())),
             ])
             self.db.create_table("file_embeddings", schema=schema, mode="create")
@@ -108,13 +114,18 @@ class LanceDBVectorStore:
         return self.db.table_names()
 
     def add(self, vector: list[float], metadata: dict):
-        import uuid
-        self._table.add([{
+        self.add_many([vector], [metadata])
+
+    def add_many(self, vectors: list[list[float]], records: list[dict]):
+        rows = [{
             "id": uuid.uuid4().hex,
-            "file_path": metadata.get("file_path", ""),
-            "content": metadata.get("content", ""),
-            "vector": vector,
-        }])
+            "file_path": r.get("file_path", ""),
+            "content": r.get("content", ""),
+            "chunk_idx": int(r.get("chunk_idx", 0)),
+            "vector": vec,
+        } for vec, r in zip(vectors, records)]
+        if rows:
+            self._table.add(rows)
 
     def search(self, query_vector: list[float], top_k: int = 5) -> list[dict]:
         if self.count() == 0:
@@ -166,14 +177,32 @@ class RAGService:
         self.vector_store = LanceDBVectorStore(db_path)
 
     def index_file(self, file_path: str, content: str):
-        vectors = self.embedding_service.embed([content])
-        self.vector_store.add(vectors[0], {"file_path": file_path, "content": content})
+        self.index_files([{"file_path": file_path, "content": content}])
 
     def index_files(self, files: list[dict]):
-        contents = [f["content"] for f in files]
-        vectors = self.embedding_service.embed(contents)
-        for f, vec in zip(files, vectors):
-            self.vector_store.add(vec, {"file_path": f["file_path"], "content": f["content"]})
+        """Embed each file in chunks.
+
+        One vector per whole document would both overflow the embedding model's
+        context on large files and make every passage retrieve equally, so each
+        chunk becomes its own vector tagged with its file.
+        """
+        records: list[dict] = []
+        for f in files:
+            for idx, (_offset, piece) in enumerate(chunk_file(f["content"])):
+                records.append({
+                    "file_path": f["file_path"],
+                    "content": piece,
+                    "chunk_idx": idx,
+                })
+        if not records:
+            return
+
+        # Bounded so a batch stays inside what the embedding endpoint tolerates.
+        batch_size = EMBED_CHUNK_BATCH
+        for i in range(0, len(records), batch_size):
+            batch = records[i: i + batch_size]
+            vectors = self.embedding_service.embed([r["content"] for r in batch])
+            self.vector_store.add_many(vectors, batch)
 
     def query(self, question: str, top_k: int = 3) -> dict:
         query_vector = self.embedding_service.embed([question])[0]

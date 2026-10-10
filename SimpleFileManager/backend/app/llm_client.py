@@ -129,7 +129,9 @@ def _get_embedding_client() -> OpenAI:
     return OpenAI(
         api_key=settings.embedding_api_key or "not-needed",
         base_url=base_url,
-        timeout=120,
+        # Measured ~15s per 1500-character chunk on the local CPU embedding
+        # server, so a 16-chunk batch needs several minutes.
+        timeout=600,
         max_retries=0,
     )
 
