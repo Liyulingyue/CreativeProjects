@@ -17,7 +17,6 @@ interface ToolbarProps {
   clipboardHasContent: boolean;
   viewMode: 'grid' | 'list' | 'compact';
   onViewModeChange: (mode: 'grid' | 'list' | 'compact') => void;
-  onToggleSidebar?: () => void;
 }
 
 const btnBase = 'p-2 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed';

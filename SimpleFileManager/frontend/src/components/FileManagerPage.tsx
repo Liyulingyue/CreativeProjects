@@ -538,7 +538,6 @@ export function FileManagerPage() {
         clipboardHasContent={clipboardHasContent}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
-        onToggleSidebar={() => setSidebarOpen(v => !v)}
       />
       <div className="flex flex-1 overflow-hidden relative">
         {/* Mobile overlay */}

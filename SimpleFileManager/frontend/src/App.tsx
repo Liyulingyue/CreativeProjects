@@ -136,14 +136,19 @@ function App() {
             </div>
           </div>
 
-          <button
-            onClick={toggleNav}
-            title={navCollapsed ? '展开导航' : '收起导航'}
-            aria-label={navCollapsed ? '展开导航' : '收起导航'}
-            className={`absolute -right-2.5 top-3.5 hidden lg:flex items-center justify-center text-slate-400 hover:text-indigo-600 transition-colors ${navCollapsed ? '' : 'hidden'}`}
-          >
-            <Icon name="chevronRight" size={16} />
-          </button>
+          {/* Rendered only when collapsed: a conditional `hidden` class loses to
+                `lg:flex` in Tailwind's cascade, which showed this handle
+                alongside the header toggle. */}
+          {navCollapsed && (
+            <button
+              onClick={toggleNav}
+              title="展开导航"
+              aria-label="展开导航"
+              className="absolute -right-2.5 top-3.5 hidden lg:flex items-center justify-center text-slate-400 hover:text-indigo-600 transition-colors"
+            >
+              <Icon name="chevronRight" size={16} />
+            </button>
+          )}
         </aside>
 
         {/* Main */}
