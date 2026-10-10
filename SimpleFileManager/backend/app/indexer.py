@@ -3,9 +3,11 @@
 Periodically scans the storage root, diffs against a local SQLite manifest,
 and pushes new/changed text files into the vector store. Files written
 within the debounce window are deferred to the next cycle to avoid indexing
-half-written content.
+half-written content. PDF and DOCX are parsed by doc_extract rather than read
+as text.
 """
 
+import logging
 import sqlite3
 import threading
 import time
@@ -15,8 +17,20 @@ from pathlib import Path
 from typing import Optional
 
 from .deps import DATA_DIR, get_storage_root, state
+from .doc_extract import DOCUMENT_EXTENSIONS, MAX_DOCUMENT_BYTES, ExtractionError, extract_text
 from .models import AutoIndexStatus
 from .search_engine import search_engine
+
+log = logging.getLogger(__name__)
+
+
+def _display_path(path: Path) -> str:
+    """Path relative to the storage root, for log lines that must not leak
+    absolute filesystem layout."""
+    try:
+        return str(path.relative_to(get_storage_root()))
+    except (ValueError, OSError):
+        return path.name
 
 TEXT_EXTENSIONS = {
     ".txt", ".md", ".markdown", ".rst", ".log",
@@ -24,9 +38,11 @@ TEXT_EXTENSIONS = {
     ".py", ".js", ".ts", ".tsx", ".jsx", ".rs", ".go", ".java",
     ".c", ".h", ".cpp", ".hpp", ".cs", ".rb", ".php", ".sh", ".bash",
     ".html", ".css", ".scss", ".vue", ".sql",
-}
+} | DOCUMENT_EXTENSIONS
 
-MAX_FILE_BYTES = 512 * 1024  # skip files larger than 512KB
+INDEXABLE_EXTENSIONS = TEXT_EXTENSIONS
+
+MAX_FILE_BYTES = 512 * 1024  # skip plain-text files larger than 512KB
 EMBED_BATCH_SIZE = 16
 TICK_SECONDS = 5
 MIN_INTERVAL_SECONDS = 30
@@ -123,11 +139,14 @@ class AutoIndexer:
             for entry in root.rglob("*"):
                 if ".simplefilemanager" in entry.parts or entry.name.startswith("."):
                     continue
-                if not entry.is_file() or entry.suffix.lower() not in TEXT_EXTENSIONS:
+                if not entry.is_file() or entry.suffix.lower() not in INDEXABLE_EXTENSIONS:
                     continue
                 try:
                     stat = entry.stat()
-                    if stat.st_size > MAX_FILE_BYTES or stat.st_size == 0:
+                    # PDFs are mostly images, so the plain-text byte ceiling
+                    # would reject a small file full of readable content.
+                    limit = MAX_DOCUMENT_BYTES if entry.suffix.lower() in DOCUMENT_EXTENSIONS else MAX_FILE_BYTES
+                    if stat.st_size > limit or stat.st_size == 0:
                         continue
                     found[str(entry)] = (stat.st_mtime, stat.st_size)
                 except (PermissionError, OSError):
@@ -137,8 +156,24 @@ class AutoIndexer:
         return found
 
     def _read_content(self, path: str) -> Optional[str]:
+        target = Path(path)
         try:
-            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            extracted = extract_text(target)
+        except ExtractionError as e:
+            # Recognised format but unreadable (scanned, encrypted, corrupt).
+            # Skipping it keeps the scanner alive; the reason is logged rather
+            # than raised because one bad file must not stall the whole pass.
+            log.info("skipping unextractable document %s: %s", _display_path(target), e)
+            return None
+        except Exception:
+            log.warning("unexpected extraction failure for %s", _display_path(target), exc_info=True)
+            return None
+
+        if extracted is not None:
+            return extracted
+
+        try:
+            with open(target, "r", encoding="utf-8", errors="ignore") as f:
                 return f.read(MAX_FILE_BYTES)
         except (PermissionError, OSError):
             return None

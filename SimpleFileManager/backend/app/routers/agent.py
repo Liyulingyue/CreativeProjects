@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..deps import state, get_storage_root, resolve_under_root, PathOutsideRoot, validate_plan_action
+from ..doc_extract import ExtractionError, extract_text
 from ..llm_client import chat_completion, chat_completion_stream, _friendly_error
 
 log = logging.getLogger(__name__)
@@ -61,7 +62,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read a text file's content (truncated). Use to understand file contents before suggesting actions.",
+            "description": "Read a file's text content (truncated). Plain text, Markdown, code, PDF and DOCX are supported; PDF text is extracted and scanned/image-only PDFs will fail. Use to understand file contents before suggesting actions.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -147,7 +148,7 @@ TOOL_DISPLAY: dict[str, dict] = {
     },
     "read_file": {
         "title": "读取文件",
-        "summary": "读取文本文件的内容，超长会截断。用于在提出建议前先看清文件里有什么。",
+        "summary": "读取文本文件的内容，超长会截断。支持纯文本、Markdown、代码、PDF 与 DOCX。用于在提出建议前先看清文件里有什么。",
         "risk": "read",
         "params": {
             "path": "相对存储根目录的文件路径",
@@ -247,6 +248,24 @@ def tool_read_file(path: str, limit: int = 2000) -> dict:
         return {"success": False, "error": f"Path outside storage root: {path}"}
     if not target.exists() or not target.is_file():
         return {"success": False, "error": f"File not found: {path}"}
+
+    # PDFs and DOCX carry their text in a container, so they are parsed rather
+    # than decoded as UTF-8 (which would return mojibake).
+    try:
+        extracted = extract_text(target)
+    except ExtractionError as e:
+        return {"success": False, "error": str(e)}
+
+    if extracted is not None:
+        content = extracted[:limit]
+        return {
+            "success": True,
+            "path": _rel(target),
+            "content": content,
+            "truncated": len(extracted) > limit,
+            "extracted_from": target.suffix.lower().lstrip("."),
+        }
+
     try:
         with open(target, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read(limit)

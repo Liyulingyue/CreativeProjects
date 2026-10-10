@@ -123,7 +123,11 @@ class LanceDBVectorStore:
         return [{"score": 1.0 - r.get("_distance", 0), **r} for r in results]
 
     def delete_by_file(self, file_path: str):
-        self._table.delete(f'file_path = "{file_path}"')
+        # SQL string literals are single-quoted; double quotes delimit
+        # identifiers, which made lancedb read the path as a column name and
+        # silently skip the delete — leaving a removed file searchable.
+        escaped = file_path.replace("'", "''")
+        self._table.delete(f"file_path = '{escaped}'")
 
     def clear(self):
         if "file_embeddings" in self.table_names():
