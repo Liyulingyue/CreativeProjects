@@ -111,9 +111,9 @@ function SidebarContent({ tree, onNavigate, currentPath, onToggleCollapse }: { t
             onClick={onToggleCollapse}
             title="收起文件夹栏"
             aria-label="收起文件夹栏"
-            className="hidden lg:flex p-1 -mr-1 rounded hover:bg-slate-100 hover:text-indigo-600 transition-colors"
+            className="hidden lg:flex p-1.5 rounded-lg hover:bg-slate-100 hover:text-indigo-600 transition-colors"
           >
-            <Icon name="chevronRight" size={14} className="rotate-180" />
+            <Icon name="chevronRight" size={16} className="rotate-180" />
           </button>
         )}
       </div>

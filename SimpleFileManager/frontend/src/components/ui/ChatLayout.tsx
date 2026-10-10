@@ -291,7 +291,7 @@ function SessionList({
             onClick={onToggleCollapse}
             title="收起对话列表"
             aria-label="收起对话列表"
-            className="hidden lg:flex p-2 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-indigo-600 transition-colors"
+            className="hidden lg:flex p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-indigo-600 transition-colors"
           >
             <Icon name="chevronRight" size={16} className="rotate-180" />
           </button>
