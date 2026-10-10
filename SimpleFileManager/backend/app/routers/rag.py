@@ -48,6 +48,9 @@ class IndexedFile(BaseModel):
     id: str
     file_path: str
     content_preview: str
+    # A chunked document contributes many rows upstream; they are collapsed
+    # into one entry so the list and the delete action stay per-file.
+    chunk_count: int = 1
 
 
 class IndexedFilesResponse(BaseModel):

@@ -150,22 +150,37 @@ class LanceDBVectorStore:
             return self._table.count_rows()
         except Exception:
             if "file_embeddings" in self.table_names():
-                return len(self._table.to_pandas())
+                # Arrow only; pandas is not a dependency of this project.
+                return self._table.to_arrow().num_rows
             return 0
 
     def list_files(self) -> list[dict]:
+        """One entry per indexed file, not per chunk.
+
+        pyarrow is already a dependency and pandas is not, so the table is read
+        through Arrow rather than to_pandas() — that raised "No module named
+        'pandas'" as soon as the vector store held any row. Rows are collapsed
+        by file so a chunked document appears once, with its chunk count.
+        """
         if "file_embeddings" not in self.table_names() or self.count() == 0:
             return []
-        df = self._table.to_pandas()
-        files = []
-        for _, row in df.iterrows():
-            content = str(row["content"])
-            files.append({
-                "id": row["id"],
-                "file_path": row["file_path"],
-                "content_preview": content[:200] if len(content) > 200 else content,
-            })
-        return files
+        rows = self._table.to_arrow().select(["id", "file_path", "content"]).to_pylist()
+
+        merged: dict[str, dict] = {}
+        for row in rows:
+            path = row.get("file_path") or ""
+            entry = merged.get(path)
+            if entry is None:
+                content = str(row.get("content") or "")
+                merged[path] = {
+                    "id": row.get("id", ""),
+                    "file_path": path,
+                    "content_preview": content[:200] + ("…" if len(content) > 200 else ""),
+                    "chunk_count": 1,
+                }
+            else:
+                entry["chunk_count"] += 1
+        return list(merged.values())
 
 
 class RAGService:

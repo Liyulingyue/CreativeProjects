@@ -457,7 +457,15 @@ export async function fetchIndexStats(): Promise<IndexStats> {
 export async function fetchIndexSkipped(): Promise<IndexSkipped> {
   const res = await authFetch(`${API_BASE}/settings/index_skipped`);
   if (!res.ok) throw new Error('Failed to fetch skipped files');
-  return res.json();
+  const raw = await res.json() as Partial<IndexSkipped>;
+  // Defaults matter: a backend that predates a category returns no key for it,
+  // and indexing it as undefined crashed the page into a blank screen.
+  return {
+    unsupported: raw.unsupported ?? [],
+    failed: raw.failed ?? [],
+    oversized: raw.oversized ?? [],
+    partial_vector: raw.partial_vector ?? [],
+  };
 }
 
 export async function runAutoIndexNow(): Promise<Record<string, number>> {
