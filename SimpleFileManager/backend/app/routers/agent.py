@@ -134,6 +134,55 @@ TOOLS = [
 
 AVAILABLE_TOOLS = [t["function"]["name"] for t in TOOLS]
 
+# User-facing copy for the tool reference page. It lives here rather than in the
+# frontend so adding a tool touches one file: the English `description` above is
+# prompt text aimed at the model and must stay English, while this is the text a
+# human reads.
+TOOL_DISPLAY: dict[str, dict] = {
+    "list_directory": {
+        "title": "列出目录",
+        "summary": "列出存储目录下某个路径的文件与子目录，用来摸清目录结构。",
+        "risk": "read",
+        "params": {"path": "相对存储根目录的路径，留空或填 . 表示根目录"},
+    },
+    "read_file": {
+        "title": "读取文件",
+        "summary": "读取文本文件的内容，超长会截断。用于在提出建议前先看清文件里有什么。",
+        "risk": "read",
+        "params": {
+            "path": "相对存储根目录的文件路径",
+            "limit": "最多读取的字符数，默认 2000",
+        },
+    },
+    "find_files": {
+        "title": "查找文件",
+        "summary": "按正则表达式递归匹配文件名，用于定位特定命名的文件。",
+        "risk": "read",
+        "params": {"pattern": "针对文件名的正则表达式，例如 screenshot.*png"},
+    },
+    "search_content": {
+        "title": "搜索内容",
+        "summary": "在文本文件内容中搜索，返回命中的文件路径与所在行。",
+        "risk": "read",
+        "params": {
+            "pattern": "在文件内容中搜索的正则表达式",
+            "path": "可选，限定搜索的子目录",
+        },
+    },
+    "submit_plan": {
+        "title": "提交整理计划",
+        "summary": "提交一份文件整理计划等待你审批。批准前不会执行任何操作。",
+        "risk": "approval",
+        "params": {
+            "title": "计划标题",
+            "summary": "一句话说明这份计划要做什么",
+            "actions": "操作数组，每项描述一个移动、重命名或删除动作",
+        },
+    },
+}
+
+RISK_LABELS = {"read": "只读", "approval": "需审批"}
+
 SYSTEM_PROMPT = """你是 NASMind 的文件治理 Agent，负责帮助用户分析和整理他的私有存储空间。
 
 你可以使用以下只读工具来观察文件系统：
@@ -671,7 +720,21 @@ def agent_chat_stream(req: AgentRequest):
 
 @agent.get("/tools")
 def get_tools():
-    return {"tools": AVAILABLE_TOOLS, "definitions": TOOLS}
+    """Tool reference for the UI.
+
+    `definitions` keeps the raw JSON schema the model consumes; `display`
+    carries the Chinese copy so the frontend holds no tool knowledge of its
+    own and cannot drift from this list.
+    """
+    display = []
+    for t in TOOLS:
+        name = t["function"]["name"]
+        display.append({
+            "name": name,
+            "display": TOOL_DISPLAY.get(name, {}),
+            "risk_label": RISK_LABELS.get(TOOL_DISPLAY.get(name, {}).get("risk"), "未知"),
+        })
+    return {"tools": AVAILABLE_TOOLS, "definitions": TOOLS, "display": display}
 
 
 @agent.delete("/sessions/{session_id}")

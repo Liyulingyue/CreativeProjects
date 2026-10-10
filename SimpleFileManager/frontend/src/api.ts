@@ -233,7 +233,22 @@ export async function sendAgentMessage(
   return res.json();
 }
 
-export async function getAgentTools(): Promise<{ tools: string[]; definitions: AgentToolDefinition[] }> {
+export interface AgentToolDisplay {
+  name: string;
+  risk_label: string;
+  display: {
+    title?: string;
+    summary?: string;
+    risk?: 'read' | 'approval';
+    params?: Record<string, string>;
+  };
+}
+
+export async function getAgentTools(): Promise<{
+  tools: string[];
+  definitions: AgentToolDefinition[];
+  display: AgentToolDisplay[];
+}> {
   const res = await authFetch(`${API_BASE}/agent/tools`);
   if (!res.ok) throw new Error('Failed to get agent tools');
   return res.json();
