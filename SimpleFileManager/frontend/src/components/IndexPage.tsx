@@ -96,7 +96,7 @@ export function IndexPage() {
               <div className="text-xs text-slate-500">自动清单</div>
             </div>
           )}
-          {skipped && (skipped.unsupported.length > 0 || skipped.failed.length > 0) && (
+          {skipped && (skipped.unsupported.length > 0 || skipped.failed.length > 0 || skipped.oversized.length > 0 || skipped.partial_vector.length > 0) && (
             <button
               onClick={() => setShowSkipped(v => !v)}
               className={`bg-amber-50 rounded-lg px-4 py-2 text-center transition-colors hover:bg-amber-100 ${
@@ -105,7 +105,7 @@ export function IndexPage() {
               title="查看未索引的文件"
             >
               <div className="text-xl font-bold text-amber-600">
-                {skipped.unsupported.length + skipped.failed.length}
+                {skipped.unsupported.length + skipped.failed.length + skipped.oversized.length}
               </div>
               <div className="text-xs text-amber-700 flex items-center gap-1">
                 未索引
@@ -163,6 +163,51 @@ export function IndexPage() {
                   {skipped.unsupported.map(f => (
                     <div key={f.path} className="px-4 py-1.5 flex items-center gap-2 text-xs">
                       <code className="text-slate-400 font-mono flex-shrink-0">{f.ext || '无扩展名'}</code>
+                      <span className="text-slate-600 truncate">{f.path}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {skipped.partial_vector.length > 0 && (
+              <div>
+                <div className="px-4 py-2 text-xs font-medium text-slate-500 bg-slate-50">
+                  语义索引进行中（{skipped.partial_vector.length}）
+                </div>
+                <div className="px-4 py-3 space-y-2.5">
+                  {skipped.partial_vector.map(f => (
+                    <div key={f.path}>
+                      <div className="flex items-baseline justify-between gap-2 text-xs mb-1">
+                        <span className="text-slate-600 truncate">{f.path}</span>
+                        <span className="text-slate-400 flex-shrink-0 tabular-nums">
+                          {f.done}/{f.total} 块 · {f.percent}%
+                        </span>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                        <div
+                          className="h-full bg-indigo-500 rounded-full transition-all"
+                          style={{ width: `${f.percent}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                  <div className="text-[11px] text-slate-400 pt-1">
+                    这些文件已可被关键词搜索命中；语义向量化按每轮若干块持续推进，可随时离开，稍后回来继续。
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {skipped.oversized.length > 0 && (
+              <div className="border-t border-slate-100">
+                <div className="px-4 py-2 text-xs font-medium text-slate-500 bg-slate-50">
+                  超过大小限制（{skipped.oversized.length}）
+                </div>
+                <div className="max-h-48 overflow-y-auto divide-y divide-slate-50">
+                  {skipped.oversized.map(f => (
+                    <div key={f.path} className="px-4 py-1.5 flex items-center gap-2 text-xs">
+                      <span className="text-slate-400 flex-shrink-0">{f.size}</span>
                       <span className="text-slate-600 truncate">{f.path}</span>
                     </div>
                   ))}

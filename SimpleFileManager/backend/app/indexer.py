@@ -51,9 +51,10 @@ MAX_FILE_BYTES = 10 * 1024 * 1024  # plain-text ceiling before a file is skipped
 EMBED_BATCH_SIZE = 16
 # Chunks per file sent to the embedding service. The whole file is still
 # indexed for keyword search; this only bounds semantic coverage.
-# Wall-clock budget for the semantic pass of a single scan. Keyword indexing
-# always completes first, so this only caps how much becomes vectorised.
-EMBED_TIME_BUDGET_SECONDS = 90
+# Chunks embedded per file per scan. The semantic pass resumes from the stored
+# position every scan, so this only bounds how long one scan takes — it is not
+# a cap on total coverage.
+EMBED_CHUNKS_PER_PASS = 16
 TICK_SECONDS = 5
 MIN_INTERVAL_SECONDS = 30
 
@@ -72,8 +73,9 @@ class AutoIndexer:
         # missing search hit is explainable.
         self._unsupported: dict[str, str] = {}
         self._oversized: dict[str, str] = {}
-        # path -> number of chunks that made it into the vector store
+        # path -> number of chunks currently in the vector store
         self._vector_partial: dict[str, int] = {}
+        self._pending_vector_files = 0
         self._failed: dict[str, str] = {}
         self._init_db()
 
@@ -92,6 +94,14 @@ class AutoIndexer:
                 indexed_at INTEGER NOT NULL
             )
         """)
+        # How many chunks of each file are already in the vector store. Kept in
+        # the manifest so a slow embedding pass survives restarts and resumes
+        # where it stopped instead of restarting from zero every scan.
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(file_index)")]
+        if "vec_done" not in cols:
+            conn.execute("ALTER TABLE file_index ADD COLUMN vec_done INTEGER NOT NULL DEFAULT 0")
+        if "chunk_count" not in cols:
+            conn.execute("ALTER TABLE file_index ADD COLUMN chunk_count INTEGER NOT NULL DEFAULT 0")
         conn.commit()
         conn.close()
 
@@ -101,13 +111,29 @@ class AutoIndexer:
         conn.close()
         return {r[0]: (r[1], r[2]) for r in rows}
 
-    def _record_files(self, records: list[tuple[str, float, int]]):
+    def _vector_progress(self) -> dict[str, tuple[int, int]]:
+        """path -> (chunks already embedded, total chunks)."""
+        conn = self._get_conn()
+        rows = conn.execute("SELECT path, vec_done, chunk_count FROM file_index").fetchall()
+        conn.close()
+        return {r[0]: (r[1], r[2]) for r in rows}
+
+    def _record_files(self, records: list[tuple[str, float, int, int]]):
         conn = self._get_conn()
         now = int(time.time())
         conn.executemany(
-            "INSERT OR REPLACE INTO file_index (path, mtime, size, indexed_at) VALUES (?, ?, ?, ?)",
-            [(p, m, s, now) for p, m, s in records]
+            "INSERT OR REPLACE INTO file_index (path, mtime, size, indexed_at, chunk_count) "
+            "VALUES (?, ?, ?, ?, ?)",
+            # vec_done is not carried on a re-index: a changed file restarts its
+            # vector pass from zero.
+            [(p, m, s, now, n) for p, m, s, n in records]
         )
+        conn.commit()
+        conn.close()
+
+    def _set_vector_progress(self, path: str, done: int):
+        conn = self._get_conn()
+        conn.execute("UPDATE file_index SET vec_done = ? WHERE path = ?", (done, path))
         conn.commit()
         conn.close()
 
@@ -243,13 +269,12 @@ class AutoIndexer:
 
             rag_svc = state.get_rag_service()
             indexed, failed = 0, 0
-            records: list[tuple[str, float, int]] = []
+            records: list[tuple[str, float, int, int]] = []
 
             # Phase 1 — keyword channel. Cheap and complete: FTS only needs the
             # file text, so every file becomes searchable immediately. Done
             # before any embedding so a slow or unreachable embedding service
-            # can never block keyword indexing (it previously did).
-            prepared: list[tuple[str, list[tuple[int, str]]]] = []
+            # can never block keyword indexing.
             for i in range(0, len(to_index), EMBED_BATCH_SIZE):
                 for path in to_index[i:i + EMBED_BATCH_SIZE]:
                     content = self._read_content(path)
@@ -259,8 +284,7 @@ class AutoIndexer:
                         pieces = chunk_file(content)
                         search_engine.upsert_file(path, content)
                         stat = Path(path).stat()
-                        records.append((path, stat.st_mtime, stat.st_size))
-                        prepared.append((path, pieces))
+                        records.append((path, stat.st_mtime, stat.st_size, len(pieces)))
                         indexed += 1
                     except Exception:
                         failed += 1
@@ -268,29 +292,39 @@ class AutoIndexer:
             if records:
                 self._record_files(records)
 
-            # Phase 2 — semantic channel. Bounded by wall clock: the local
-            # embedding endpoint runs at roughly 100 characters/second, so a
-            # full novel would take hours. Whatever gets embedded in the budget
-            # is real coverage; the rest stays keyword-only and is reported.
-            deadline = time.time() + EMBED_TIME_BUDGET_SECONDS
-            for path, pieces in prepared:
-                if not pieces or time.time() >= deadline:
+            # Phase 2 — semantic channel, resumable. Progress lives in the
+            # manifest, so a file needing hours to vectorize converges over
+            # repeated scans and survives a restart, instead of being abandoned
+            # half-done or re-embedded from zero. Driven off every known file,
+            # not just this pass's, so earlier passes resume correctly.
+            progress = self._vector_progress()
+            pending_vectors = [
+                p for p in current
+                if progress.get(p, (0, 1))[0] < progress.get(p, (0, 1))[1]
+                and progress.get(p, (0, 0))[1] > 0
+            ]
+            self._pending_vector_files = len(pending_vectors)
+
+            for path in pending_vectors:
+                done, total = progress[path]
+                content = self._read_content(path)
+                if not content:
+                    continue
+                pieces = chunk_file(content)
+                batch = pieces[done: done + EMBED_CHUNKS_PER_PASS]
+                if not batch:
                     continue
                 try:
-                    chunk_records = [
-                        (path, idx, text) for idx, (_off, text) in enumerate(pieces)
-                    ]
+                    chunk_records = [(path, idx, text) for idx, (_off, text) in enumerate(batch)]
                     for j in range(0, len(chunk_records), EMBED_CHUNK_BATCH):
-                        if time.time() >= deadline:
-                            self._vector_partial[path] = j
-                            break
                         part = chunk_records[j: j + EMBED_CHUNK_BATCH]
                         vectors = rag_svc.embedding_service.embed([c for _, _, c in part])
                         rag_svc.vector_store.add_many(
                             vectors,
                             [{"file_path": p, "content": c, "chunk_idx": i} for p, i, c in part],
                         )
-                        self._vector_partial[path] = j + len(part)
+                    self._set_vector_progress(path, min(done + len(batch), total))
+                    self._vector_partial[path] = min(done + len(batch), total)
                 except Exception:
                     traceback.print_exc()
 
@@ -333,9 +367,20 @@ class AutoIndexer:
     def skipped_files(self) -> dict:
         """Files in storage that are absent from the index, split by cause.
 
-        `unsupported` maps path -> extension, `failed` maps path -> reason.
-        Paths are relative to the storage root.
+        `unsupported` maps path -> extension, `failed` maps path -> reason,
+        `partial_vector` maps path -> chunks embedded so far. Paths are relative
+        to the storage root.
         """
+        progress = self._vector_progress()
+        partial = []
+        for path, (done, total) in sorted(progress.items()):
+            if total > 0 and done < total:
+                partial.append({
+                    "path": _display_path(Path(path)),
+                    "done": done,
+                    "total": total,
+                    "percent": round(done * 100 / total),
+                })
         return {
             "unsupported": [
                 {"path": p, "ext": ext or ""} for p, ext in sorted(self._unsupported.items())
@@ -346,9 +391,7 @@ class AutoIndexer:
             "oversized": [
                 {"path": p, "size": size} for p, size in sorted(self._oversized.items())
             ],
-            "partial_vector": [
-                {"path": p, "chunks": n} for p, n in sorted(self._vector_partial.items())
-            ],
+            "partial_vector": partial,
         }
 
     def status(self) -> AutoIndexStatus:

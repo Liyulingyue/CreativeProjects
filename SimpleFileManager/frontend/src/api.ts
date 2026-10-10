@@ -443,6 +443,9 @@ export interface IndexStats {
 export interface IndexSkipped {
   unsupported: { path: string; ext: string }[];
   failed: { path: string; reason: string }[];
+  oversized: { path: string; size: string }[];
+  /** Keyword-searchable but still being embedded, chunk by chunk. */
+  partial_vector: { path: string; done: number; total: number; percent: number }[];
 }
 
 export async function fetchIndexStats(): Promise<IndexStats> {
