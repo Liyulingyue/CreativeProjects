@@ -89,6 +89,15 @@ class IndexStats(BaseModel):
     indexed_dirs: int
     last_index_time: Optional[str] = None
     storage_used: int
+    # Files that exist but cannot be searched, split by cause so the user can
+    # tell "we do not parse this format" from "this file failed to parse".
+    unsupported_count: int = 0
+    failed_count: int = 0
+
+
+class SkippedFiles(BaseModel):
+    unsupported: list[dict] = []
+    failed: list[dict] = []
 
 
 class IndexStatus(BaseModel):

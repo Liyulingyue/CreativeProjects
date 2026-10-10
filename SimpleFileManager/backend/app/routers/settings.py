@@ -29,6 +29,12 @@ def get_index_stats() -> IndexStats:
     return state.get_index_stats()
 
 
+@settings.get("/index_skipped")
+def get_index_skipped() -> dict:
+    """Per-file detail for what the indexer could not index, and why."""
+    return indexer.skipped_files()
+
+
 @settings.get("/index_status")
 def get_index_status() -> IndexStatus:
     return state.get_index_status()

@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
-import { fetchAutoIndexStatus, runAutoIndexNow, updateSettings } from '../api';
+import { fetchAutoIndexStatus, fetchIndexSkipped, runAutoIndexNow, updateSettings } from '../api';
 import { authFetch } from '../auth';
 import { useToast } from './ui/Toast';
 import { ConfirmDialog } from './ui/Dialog';
 import { Icon } from './ui/Icon';
 import type { AutoIndexStatus } from '../types';
+import type { IndexSkipped } from '../api';
 
 interface IndexedFile { id: string; file_path: string; content_preview: string; }
 interface IndexStats { indexed_count: number; vector_count: number; }
@@ -20,9 +21,17 @@ export function IndexPage() {
   const [isScanning, setIsScanning] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmDeleteFile, setConfirmDeleteFile] = useState<string | null>(null);
+  const [skipped, setSkipped] = useState<IndexSkipped | null>(null);
+  const [showSkipped, setShowSkipped] = useState(false);
 
   const loadAutoStatus = useCallback(async () => {
     try { setAutoStatus(await fetchAutoIndexStatus()); } catch (e) { console.error('Failed:', e); }
+  }, []);
+
+  // Skip counts are populated by a scan, so refresh them alongside the scan
+  // status rather than only on first mount.
+  const loadSkipped = useCallback(async () => {
+    try { setSkipped(await fetchIndexSkipped()); } catch { /* non-fatal */ }
   }, []);
 
   const loadIndex = async () => {
@@ -35,8 +44,8 @@ export function IndexPage() {
   };
 
   useEffect(() => {
-    loadIndex(); loadAutoStatus();
-    const timer = setInterval(loadAutoStatus, 10000);
+    loadIndex(); loadAutoStatus(); loadSkipped();
+    const timer = setInterval(() => { loadAutoStatus(); loadSkipped(); }, 10000);
     return () => clearInterval(timer);
   }, [loadAutoStatus]);
 
@@ -49,7 +58,7 @@ export function IndexPage() {
 
   const handleScanNow = async () => {
     setIsScanning(true);
-    try { await runAutoIndexNow(); await Promise.all([loadIndex(), loadAutoStatus()]); toast('扫描完成', 'success'); }
+    try { await runAutoIndexNow(); await Promise.all([loadIndex(), loadAutoStatus(), loadSkipped()]); toast('扫描完成', 'success'); }
     catch { toast('扫描失败', 'error'); } finally { setIsScanning(false); }
   };
 
@@ -87,6 +96,23 @@ export function IndexPage() {
               <div className="text-xs text-slate-500">自动清单</div>
             </div>
           )}
+          {skipped && (skipped.unsupported.length > 0 || skipped.failed.length > 0) && (
+            <button
+              onClick={() => setShowSkipped(v => !v)}
+              className={`bg-amber-50 rounded-lg px-4 py-2 text-center transition-colors hover:bg-amber-100 ${
+                showSkipped ? 'ring-1 ring-amber-300' : ''
+              }`}
+              title="查看未索引的文件"
+            >
+              <div className="text-xl font-bold text-amber-600">
+                {skipped.unsupported.length + skipped.failed.length}
+              </div>
+              <div className="text-xs text-amber-700 flex items-center gap-1">
+                未索引
+                <Icon name={showSkipped ? 'chevronDown' : 'chevronRight'} size={11} />
+              </div>
+            </button>
+          )}
         </div>
         <div className="flex gap-2 items-center">
           {autoStatus && (
@@ -119,6 +145,49 @@ export function IndexPage() {
       </div>
 
       <div className="flex-1 overflow-y-auto p-6">
+        {showSkipped && skipped && (
+          <div className="bg-white rounded-lg border border-amber-200 mb-4 overflow-hidden">
+            <div className="px-4 py-3 border-b border-amber-100 bg-amber-50/60">
+              <div className="text-sm font-medium text-slate-700">未索引的文件</div>
+              <div className="text-xs text-slate-500 mt-0.5">
+                这些文件已正常保存在存储中，但内容无法进入检索，因此搜索时不会命中。
+              </div>
+            </div>
+
+            {skipped.unsupported.length > 0 && (
+              <div className="border-b border-slate-100">
+                <div className="px-4 py-2 text-xs font-medium text-slate-500 bg-slate-50">
+                  格式不支持（{skipped.unsupported.length}）
+                </div>
+                <div className="max-h-48 overflow-y-auto divide-y divide-slate-50">
+                  {skipped.unsupported.map(f => (
+                    <div key={f.path} className="px-4 py-1.5 flex items-center gap-2 text-xs">
+                      <code className="text-slate-400 font-mono flex-shrink-0">{f.ext || '无扩展名'}</code>
+                      <span className="text-slate-600 truncate">{f.path}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {skipped.failed.length > 0 && (
+              <div>
+                <div className="px-4 py-2 text-xs font-medium text-slate-500 bg-slate-50">
+                  解析失败（{skipped.failed.length}）
+                </div>
+                <div className="max-h-48 overflow-y-auto divide-y divide-slate-50">
+                  {skipped.failed.map(f => (
+                    <div key={f.path} className="px-4 py-1.5 text-xs">
+                      <div className="text-slate-600 truncate">{f.path}</div>
+                      <div className="text-amber-600 mt-0.5">{f.reason}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {isLoading ? (
           <div className="flex items-center justify-center h-full text-slate-400">
             <div className="flex gap-1">

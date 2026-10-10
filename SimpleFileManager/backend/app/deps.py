@@ -674,6 +674,15 @@ class AppState:
 
     def get_index_stats(self) -> IndexStats:
         self._index_stats.storage_used = _calc_storage_used()
+        # Skip counters are per-scan and not persisted; read them live from the
+        # indexer so they reflect the most recent pass.
+        try:
+            from .indexer import indexer as _indexer
+            skipped = _indexer.skipped_files()
+            self._index_stats.unsupported_count = len(skipped["unsupported"])
+            self._index_stats.failed_count = len(skipped["failed"])
+        except Exception:
+            pass
         return self._index_stats
 
     def update_index_stats(self, updates: dict) -> IndexStats:

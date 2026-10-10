@@ -25,12 +25,16 @@ log = logging.getLogger(__name__)
 
 
 def _display_path(path: Path) -> str:
-    """Path relative to the storage root, for log lines that must not leak
-    absolute filesystem layout."""
+    """Path relative to the storage root, for log lines and API responses that
+    must not leak absolute filesystem layout."""
     try:
         return str(path.relative_to(get_storage_root()))
     except (ValueError, OSError):
         return path.name
+
+
+def _is_hidden(entry: Path) -> bool:
+    return ".simplefilemanager" in entry.parts or entry.name.startswith(".")
 
 TEXT_EXTENSIONS = {
     ".txt", ".md", ".markdown", ".rst", ".log",
@@ -57,6 +61,11 @@ class AutoIndexer:
         self._last_scan_time: Optional[str] = None
         self._last_scan_files = 0
         self._pending_changes = 0
+        # Files present in storage that never reach the index: unsupported
+        # extension vs. recognised but unparseable. Surfaced in the UI so a
+        # missing search hit is explainable.
+        self._unsupported: dict[str, str] = {}
+        self._failed: dict[str, str] = {}
         self._init_db()
 
     # ---- manifest db ----
@@ -135,11 +144,17 @@ class AutoIndexer:
 
     def _iter_text_files(self, root: Path) -> dict[str, tuple[float, int]]:
         found: dict[str, tuple[float, int]] = {}
+        unsupported: dict[str, str] = {}
         try:
             for entry in root.rglob("*"):
-                if ".simplefilemanager" in entry.parts or entry.name.startswith("."):
+                if _is_hidden(entry):
                     continue
-                if not entry.is_file() or entry.suffix.lower() not in INDEXABLE_EXTENSIONS:
+                if not entry.is_file():
+                    continue
+                if entry.suffix.lower() not in INDEXABLE_EXTENSIONS:
+                    # Files we simply cannot parse. Counted so the user can see
+                    # why a document they stored never turns up in search.
+                    unsupported[_display_path(entry)] = entry.suffix.lower()
                     continue
                 try:
                     stat = entry.stat()
@@ -153,6 +168,7 @@ class AutoIndexer:
                     continue
         except (PermissionError, OSError):
             pass
+        self._unsupported = unsupported
         return found
 
     def _read_content(self, path: str) -> Optional[str]:
@@ -161,12 +177,16 @@ class AutoIndexer:
             extracted = extract_text(target)
         except ExtractionError as e:
             # Recognised format but unreadable (scanned, encrypted, corrupt).
-            # Skipping it keeps the scanner alive; the reason is logged rather
-            # than raised because one bad file must not stall the whole pass.
-            log.info("skipping unextractable document %s: %s", _display_path(target), e)
+            # Tracked so the UI can report it; skipping keeps the scan alive
+            # because one bad file must not stall the whole pass.
+            rel = _display_path(target)
+            self._failed[rel] = str(e)
+            log.info("skipping unextractable document %s: %s", rel, e)
             return None
-        except Exception:
-            log.warning("unexpected extraction failure for %s", _display_path(target), exc_info=True)
+        except Exception as e:
+            rel = _display_path(target)
+            self._failed[rel] = f"解析异常：{e}"
+            log.warning("unexpected extraction failure for %s", rel, exc_info=True)
             return None
 
         if extracted is not None:
@@ -186,6 +206,7 @@ class AutoIndexer:
 
         state.set_indexing(True, 0.0, str(root))
         try:
+            self._failed = {}
             current = self._iter_text_files(root)
             known = self._known_files()
 
@@ -266,6 +287,21 @@ class AutoIndexer:
         row = conn.execute("SELECT COUNT(*) FROM file_index").fetchone()
         conn.close()
         return row[0] if row else 0
+
+    def skipped_files(self) -> dict:
+        """Files in storage that are absent from the index, split by cause.
+
+        `unsupported` maps path -> extension, `failed` maps path -> reason.
+        Paths are relative to the storage root.
+        """
+        return {
+            "unsupported": [
+                {"path": p, "ext": ext or ""} for p, ext in sorted(self._unsupported.items())
+            ],
+            "failed": [
+                {"path": p, "reason": reason} for p, reason in sorted(self._failed.items())
+            ],
+        }
 
     def status(self) -> AutoIndexStatus:
         settings = state.get_settings()

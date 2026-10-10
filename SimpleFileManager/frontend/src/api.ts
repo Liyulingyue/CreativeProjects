@@ -432,11 +432,25 @@ export interface IndexStats {
   indexed_dirs: number;
   last_index_time: string | null;
   storage_used: number;
+  unsupported_count: number;
+  failed_count: number;
+}
+
+/** Files present in storage but absent from the index, split by cause. */
+export interface IndexSkipped {
+  unsupported: { path: string; ext: string }[];
+  failed: { path: string; reason: string }[];
 }
 
 export async function fetchIndexStats(): Promise<IndexStats> {
   const res = await authFetch(`${API_BASE}/settings/index_stats`);
   if (!res.ok) throw new Error('Failed to fetch index stats');
+  return res.json();
+}
+
+export async function fetchIndexSkipped(): Promise<IndexSkipped> {
+  const res = await authFetch(`${API_BASE}/settings/index_skipped`);
+  if (!res.ok) throw new Error('Failed to fetch skipped files');
   return res.json();
 }
 
