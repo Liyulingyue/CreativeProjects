@@ -17,6 +17,15 @@ type ViewMode = 'grid' | 'list' | 'compact';
 
 const PAGE_SIZE = 200;
 
+// Internal moves tag the drag with `sourcePath`; an OS file drag only carries
+// `Files`. Checking types rather than dragSource state also lets the dragenter
+// handlers tell the two apart before any drop happens.
+function isExternalFileDrag(e: React.DragEvent): boolean {
+  const types = e.dataTransfer?.types;
+  if (!types) return false;
+  return Array.from(types).includes('Files') && !Array.from(types).includes('sourcePath');
+}
+
 function LoadMoreSentinel({ hasMore, shown, total, onLoadMore }: { hasMore: boolean; shown: number; total: number; onLoadMore: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
 
@@ -60,6 +69,11 @@ export function FileManagerPage() {
   const clipboardRef = useRef<string[]>([]);
 
   const [dragSource, setDragSource] = useState<FileNode | null>(null);
+  // True only while OS files hover the content area; drives the drop overlay.
+  const [externalDrag, setExternalDrag] = useState(false);
+  // dragleave fires for every child element, so track depth instead of
+  // toggling on each event or the overlay flickers while moving the cursor.
+  const dragDepthRef = useRef(0);
   const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
 
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
@@ -157,6 +171,17 @@ export function FileManagerPage() {
 
   const handleDrop = async (e: React.DragEvent, targetFolder: string) => {
     e.preventDefault();
+    e.stopPropagation();
+    setDragOverFolder(null);
+
+    // A folder card accepts two different drops: our own files move here, and
+    // files dragged in from the OS are uploaded here.
+    if (isExternalFileDrag(e)) {
+      setExternalDrag(false);
+      await uploadFileList(e.dataTransfer.files, targetFolder);
+      return;
+    }
+
     if (!dragSource || dragSource.path === targetFolder) {
       setDragSource(null);
       return;
@@ -164,7 +189,6 @@ export function FileManagerPage() {
     try {
       await movePath(dragSource.path, targetFolder + '/' + dragSource.name);
       setDragSource(null);
-      setDragOverFolder(null);
       toast('已移动到 ' + targetFolder.split(/[/\\]/).pop(), 'success');
       loadBrowse(currentPath);
       loadTree();
@@ -396,14 +420,17 @@ export function FileManagerPage() {
     fileInputRef.current?.click();
   };
 
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
+  // Shared by the file picker and OS drag-and-drop: both hand us a FileList,
+  // so progress, toasts and refresh stay identical.
+  const uploadFileList = useCallback(async (files: FileList | null | undefined, targetPath: string) => {
     if (!files || files.length === 0) return;
-    const totalBytes = Array.from(files).reduce((sum, f) => sum + f.size, 0);
+    const list = Array.from(files);
+    const totalBytes = list.reduce((sum, f) => sum + f.size, 0);
     setUploadProgress({ loaded: 0, total: totalBytes });
     try {
-      const result = await uploadFiles(currentPath, files, (loaded, total) => setUploadProgress({ loaded, total }));
-      toast(`已上传 ${result.count} 个文件`, 'success');
+      const result = await uploadFiles(targetPath, files, (loaded, total) => setUploadProgress({ loaded, total }));
+      const where = targetPath ? `到「${targetPath.split(/[/\\]/).pop() || '根目录'}」` : '到根目录';
+      toast(`已上传 ${result.count} 个文件${where}`, 'success');
       loadBrowse(currentPath);
       loadTree();
     } catch (err) {
@@ -411,6 +438,10 @@ export function FileManagerPage() {
     } finally {
       setUploadProgress(null);
     }
+  }, [currentPath]);
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    await uploadFileList(e.target.files, currentPath);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -552,7 +583,54 @@ export function FileManagerPage() {
           collapsed={treeCollapsed}
           onToggleCollapse={toggleTree}
         />
-        <div className="flex-1 overflow-auto flex flex-col min-w-0">
+        <div
+          className="flex-1 overflow-auto flex flex-col min-w-0 relative"
+          onDragEnter={(e) => {
+            if (!isExternalFileDrag(e)) return;
+            e.preventDefault();
+            dragDepthRef.current += 1;
+            setExternalDrag(true);
+          }}
+          onDragOver={(e) => {
+            if (!isExternalFileDrag(e)) return;
+            // Without preventDefault the browser navigates to the dropped file
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+          }}
+          onDragLeave={(e) => {
+            if (!isExternalFileDrag(e)) return;
+            dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+            if (dragDepthRef.current === 0) setExternalDrag(false);
+          }}
+          onDrop={(e) => {
+            // Folder cards handle their own drop and stop propagation; reaching
+            // here means the cursor was over empty space, so upload here.
+            if (!isExternalFileDrag(e)) return;
+            e.preventDefault();
+            dragDepthRef.current = 0;
+            setExternalDrag(false);
+            uploadFileList(e.dataTransfer.files, currentPath);
+          }}
+        >
+          {externalDrag && (() => {
+            // While hovering a folder card the drop lands there, not in the
+            // current directory, so the overlay has to name the real target.
+            const target = dragOverFolder ?? currentPath;
+            const targetName = target.split(/[/\\]/).pop() || '根目录';
+            return (
+              <div className="absolute inset-0 z-20 bg-indigo-50/80 border-2 border-dashed border-indigo-400 pointer-events-none flex items-center justify-center">
+                <div className="text-center">
+                  <Icon name="upload" size={32} className="text-indigo-500 mx-auto mb-2" />
+                  <div className="text-sm font-medium text-indigo-700">
+                    松开上传到「{targetName}」
+                  </div>
+                  {dragOverFolder && (
+                    <div className="text-xs text-indigo-500 mt-0.5">松开后进入该文件夹</div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
           <div className="flex items-center gap-2 flex-shrink-0">
             <button
               className="lg:hidden p-2 ml-1 rounded-lg text-slate-500 hover:bg-slate-100"
