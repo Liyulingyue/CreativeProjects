@@ -1,9 +1,12 @@
-from typing import Optional
+import json
+from typing import Iterator, Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..deps import state
+from ..llm_client import _friendly_error
 from ..search_engine import search_engine
 
 rag = APIRouter()
@@ -109,6 +112,54 @@ def query(req: QueryRequest) -> QueryResponse:
         return QueryResponse(**result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@rag.post("/query/stream")
+def query_stream(req: QueryRequest) -> StreamingResponse:
+    """Stream the grounded answer.
+
+    On this CPU-only setup the model generates ~30 tok/s, so a full answer took
+    well over a minute behind an unresponsive spinner. Streaming does not make
+    it faster but makes the wait legible.
+    """
+    def sse(event: str, data: dict) -> str:
+        return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    def generate() -> Iterator[str]:
+        try:
+            rag_svc = state.get_rag_service()
+            yield sse("meta", {"status": "searching"})
+            results, context = rag_svc._retrieve_for_answer(req.question, top_k=req.top_k)
+
+            if not results:
+                yield sse("done", {"answer": "没有找到相关文件来回答这个问题。", "sources": []})
+                return
+
+            yield sse("sources", {
+                "sources": [{"file_path": r.get("file_path", ""), "score": r.get("score", 0)} for r in results]
+            })
+
+            from ..llm_client import chat_completion_stream
+            answer = []
+            for piece in chat_completion_stream(rag_svc._answer_messages(req.question, context), temperature=0.7):
+                # The generator yields (kind, payload) pairs; only the text
+                # payload belongs in a token event.
+                kind, payload = piece
+                if kind != "token":
+                    continue
+                answer.append(payload)
+                yield sse("token", {"text": payload})
+            yield sse("done", {"answer": "".join(answer)})
+        except GeneratorExit:
+            raise
+        except Exception as e:
+            yield sse("error", {"message": _friendly_error(e)})
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+    )
 
 
 @rag.get("/status")

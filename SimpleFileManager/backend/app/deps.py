@@ -235,20 +235,23 @@ class RAGService:
             vectors = self.embedding_service.embed([r["content"] for r in batch])
             self.vector_store.add_many(vectors, batch)
 
-    def query(self, question: str, top_k: int = 3) -> dict:
+    def _retrieve_for_answer(self, question: str, top_k: int) -> tuple[list[dict], str]:
+        """Retrieve passages and build the grounding prompt.
+
+        Split out from query() so the streaming variant can emit tokens without
+        duplicating the retrieval and prompt assembly.
+        """
         # Embeds the question and calls the LLM: same interaction path as chat.
         interaction.mark_active()
         query_vector = self.embedding_service.embed([question])[0]
         results = self.vector_store.search(query_vector, top_k=top_k)
 
-        if not results:
-            return {"answer": "没有找到相关文件来回答这个问题。", "sources": []}
-
         context_parts = []
         for i, r in enumerate(results, 1):
             context_parts.append(f"【文档{i}】({r.get('file_path', 'unknown')}):\n{r.get('content', '')[:500]}")
-        context = "\n\n".join(context_parts)
+        return results, "\n\n".join(context_parts)
 
+    def _answer_messages(self, question: str, context: str) -> list[dict]:
         prompt = f"""基于以下文档内容回答问题。如果文档中没有相关信息，请说明无法回答。
 
 问题: {question}
@@ -257,15 +260,19 @@ class RAGService:
 {context}
 
 回答:"""
+        return [
+            {"role": "system", "content": "你是一个基于文档的问答助手。请根据提供的文档内容回答问题。"},
+            {"role": "user", "content": prompt},
+        ]
+
+    def query(self, question: str, top_k: int = 3) -> dict:
+        results, context = self._retrieve_for_answer(question, top_k)
+
+        if not results:
+            return {"answer": "没有找到相关文件来回答这个问题。", "sources": []}
 
         from .llm_client import chat_completion
-        result = chat_completion(
-            messages=[
-                {"role": "system", "content": "你是一个基于文档的问答助手。请根据提供的文档内容回答问题。"},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.7,
-        )
+        result = chat_completion(messages=self._answer_messages(question, context), temperature=0.7)
         answer = result.get("content", "")
 
         return {

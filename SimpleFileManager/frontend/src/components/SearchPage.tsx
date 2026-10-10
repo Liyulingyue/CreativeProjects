@@ -1,6 +1,5 @@
 import { useState } from 'react';
-import { hybridSearch } from '../api';
-import { authFetch } from '../auth';
+import { hybridSearch, streamRagQuery } from '../api';
 import type { HybridSearchResult } from '../api';
 import { Icon } from './ui/Icon';
 import { useToast } from './ui/Toast';
@@ -52,6 +51,7 @@ export function SearchPage() {
 
   const [aiAnswer, setAiAnswer] = useState<string | null>(null);
   const [isSummarizing, setIsSummarizing] = useState(false);
+  const [aiPhase, setAiPhase] = useState<'idle' | 'searching' | 'writing'>('idle');
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -67,18 +67,19 @@ export function SearchPage() {
 
   const handleAiSummarize = async () => {
     if (!query.trim() || isSummarizing) return;
-    setIsSummarizing(true); setAiAnswer(null);
+    setIsSummarizing(true); setAiAnswer(''); setAiPhase('searching');
     try {
-      const res = await authFetch('/api/rag/query', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: query, top_k: 5 }),
-      });
-      if (!res.ok) throw new Error('请求失败');
-      const data = await res.json();
-      setAiAnswer(data.answer || '未获得回答');
+      // Streamed: the model generates ~30 tok/s here, so the full answer takes
+      // over a minute. The text appears as it is produced instead of arriving
+      // all at once after an unresponsive spinner.
+      await streamRagQuery(query, {
+        onSearching: () => setAiPhase('searching'),
+        onSources: () => setAiPhase('writing'),
+        onToken: (t) => { setAiPhase('writing'); setAiAnswer(prev => (prev || '') + t); },
+      }, 5);
     } catch (err) {
       toast('AI 总结失败: ' + (err instanceof Error ? err.message : '未知错误'), 'error');
-    } finally { setIsSummarizing(false); }
+    } finally { setIsSummarizing(false); setAiPhase('idle'); }
   };
 
   return (
@@ -151,13 +152,34 @@ export function SearchPage() {
               </div>
 
               {/* AI Answer */}
-              {aiAnswer && (
+              {(isSummarizing || aiAnswer) && (
                 <div className="bg-white rounded-lg shadow-card border border-violet-200 p-5">
                   <div className="flex items-center gap-2 mb-2 text-sm text-violet-600 font-medium">
                     <Icon name="sparkles" size={16} />
                     AI 回答
+                    {isSummarizing && (
+                      <span className="text-xs font-normal text-slate-400">
+                        {aiPhase === 'searching' ? '正在检索相关片段...' : '正在逐字生成（本机约 30 字/秒）...'}
+                      </span>
+                    )}
                   </div>
-                  <div className="text-base leading-relaxed whitespace-pre-wrap text-slate-800">{aiAnswer}</div>
+                  {aiAnswer ? (
+                    <div className="text-base leading-relaxed whitespace-pre-wrap text-slate-800">
+                      {aiAnswer}
+                      {isSummarizing && (
+                        <span className="inline-block w-2 h-4 ml-0.5 bg-violet-400 animate-pulse align-text-bottom" />
+                      )}
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 text-slate-400 text-sm py-2">
+                      <div className="flex gap-1">
+                        <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                        <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                        <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                      </div>
+                      正在检索相关片段...
+                    </div>
+                  )}
                 </div>
               )}
 

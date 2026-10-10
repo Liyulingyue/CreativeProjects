@@ -474,6 +474,67 @@ export async function runAutoIndexNow(): Promise<Record<string, number>> {
   return res.json();
 }
 
+
+export interface RagStreamHandlers {
+  onSearching?: () => void;
+  onSources?: (sources: { file_path: string; score: number }[]) => void;
+  onToken?: (text: string) => void;
+}
+
+/**
+ * Stream the grounded answer from /rag/query/stream.
+ *
+ * Generation runs at roughly 30 tok/s on CPU, so the answer takes over a
+ * minute; streaming leaves the user reading it instead of watching a spinner.
+ */
+export async function streamRagQuery(
+  question: string,
+  handlers: RagStreamHandlers,
+  topK = 5,
+  signal?: AbortSignal
+): Promise<string> {
+  const res = await authFetch(`${API_BASE}/rag/query/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question, top_k: topK }),
+    signal,
+  });
+  if (!res.ok || !res.body) throw new Error(`请求失败 (${res.status})`);
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let answer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split('\n\n');
+    buffer = frames.pop() ?? '';
+    for (const frame of frames) {
+      let event = 'message';
+      const dataLines: string[] = [];
+      for (const line of frame.split('\n')) {
+        if (line.startsWith('event:')) event = line.slice(6).trim();
+        else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+      }
+      if (!dataLines.length) continue;
+      try {
+        const payload = JSON.parse(dataLines.join('\n'));
+        if (event === 'meta') handlers.onSearching?.();
+        else if (event === 'sources') handlers.onSources?.(payload.sources || []);
+        else if (event === 'token') { answer += payload.text || ''; handlers.onToken?.(payload.text || ''); }
+        else if (event === 'done') answer = payload.answer || answer;
+        else if (event === 'error') throw new Error(payload.message);
+      } catch (e) {
+        if (e instanceof Error && /模型|连接|请求/.test(e.message)) throw e;
+      }
+    }
+  }
+  return answer;
+}
+
 // ---- Hybrid Search ----
 
 export interface HybridSearchResult {
