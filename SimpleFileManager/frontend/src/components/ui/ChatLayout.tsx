@@ -149,8 +149,7 @@ function formatTime(timestamp: number): string {
  * slow generation looked identical to a hang. Naming the tool — and its
  * argument — makes it obvious the system is doing something specific.
  */
-function RunningIndicator({ step, tools }: { step?: number; tools?: ToolActivity[] }) {
-  const running = (tools || []).filter(t => t.status === 'running');
+function RunningIndicator({ step }: { step?: number }) {
   const dots = (
     <div className="flex gap-1 flex-shrink-0">
       <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
@@ -159,31 +158,57 @@ function RunningIndicator({ step, tools }: { step?: number; tools?: ToolActivity
     </div>
   );
 
-  if (running.length > 0) {
-    return (
-      <div className="flex items-start gap-2 text-slate-600 text-sm">
-        <div className="mt-1">{dots}</div>
-        <div className="min-w-0">
-          {running.map((t, i) => {
-            const arg = t.args && Object.entries(t.args).length
-              ? ` ${Object.entries(t.args).map(([k, v]) => `${k}=${typeof v === 'string' ? (v.length > 30 ? v.slice(0, 30) + '…' : v) : JSON.stringify(v)}`).join(' ')}`
-              : '';
-            return (
-              <div key={i} className="truncate">
-                正在调用 <span className="font-mono text-indigo-600">{t.tool}</span>
-                {arg && <span className="text-slate-400 font-mono">{arg}</span>}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="flex items-center gap-2 text-slate-500 text-sm">
       {dots}
       <span>{step ? `模型思考中... (第 ${step} 步)` : '模型思考中...'}</span>
+    </div>
+  );
+}
+
+/**
+ * One tool call inside the message flow.
+ *
+ * Deliberately a single line rather than the bordered card used by the dock:
+ * the trace should read as a transcript of what ran, not interrupt the answer.
+ */
+function ToolTraceLine({ activity }: { activity: ToolActivity }) {
+  const [open, setOpen] = useState(false);
+  const running = activity.status === 'running';
+  const args = activity.args ? Object.entries(activity.args) : [];
+
+  return (
+    <div className="text-xs">
+      <button
+        onClick={() => !running && setOpen(v => !v)}
+        disabled={running}
+        className="flex items-center gap-1.5 text-left disabled:cursor-default group"
+      >
+        {running ? (
+          <div className="w-2.5 h-2.5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+        ) : (
+          <Icon name="checkCircle" size={12} className="text-green-600 flex-shrink-0" />
+        )}
+        <span className="font-mono text-indigo-700">{activity.tool}</span>
+        {args.length > 0 && (
+          <span className="text-slate-500 font-mono truncate">
+            {args.map(([k, v]) => `${k}=${typeof v === 'string' ? (v.length > 24 ? v.slice(0, 24) + '…' : v) : JSON.stringify(v)}`).join(' ')}
+          </span>
+        )}
+        {!running && activity.result !== undefined && (
+          <Icon
+            name="chevronDown"
+            size={11}
+            className={`flex-shrink-0 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`}
+          />
+        )}
+      </button>
+      {open && !running && activity.result !== undefined && (
+        <pre className="mt-1 ml-5 p-2 bg-white/70 rounded text-[11px] leading-relaxed text-slate-600 whitespace-pre-wrap break-words max-h-40 overflow-y-auto">
+          {stringify(activity.result)}
+        </pre>
+      )}
     </div>
   );
 }
@@ -324,13 +349,21 @@ export function ChatLayout({
           {isLoading && (
             <div className="flex justify-start">
               <div className="max-w-[70%] bg-slate-100 rounded-xl px-4 py-2.5 space-y-2">
+                {/* Tool calls sit above the text they produced, so the trace
+                    reads in the order it happened instead of being parked in a
+                    panel below the conversation. */}
+                {toolActivity && toolActivity.length > 0 && (
+                  <div className="space-y-1">
+                    {toolActivity.map((t, i) => <ToolTraceLine key={`${t.tool}-${i}`} activity={t} />)}
+                  </div>
+                )}
                 {streamingText ? (
                   <div className="whitespace-pre-wrap text-sm leading-relaxed text-slate-800">
                     {streamingText}
                     <span className="inline-block w-2 h-4 ml-0.5 bg-slate-400 animate-pulse align-text-bottom" />
                   </div>
                 ) : (
-                  <RunningIndicator step={currentStep} tools={toolActivity} />
+                  <RunningIndicator step={currentStep} />
                 )}
               </div>
             </div>
@@ -338,7 +371,9 @@ export function ChatLayout({
           <div ref={messagesEndRef} />
         </div>
 
-        {toolActivity && toolActivity.length > 0 && (
+        {/* After the turn the inline trace is gone with the bubble, so keep the
+            summary dock for reviewing what the agent did. */}
+        {!isLoading && toolActivity && toolActivity.length > 0 && (
           <ToolPanel activities={toolActivity} />
         )}
 

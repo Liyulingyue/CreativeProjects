@@ -72,7 +72,7 @@ TOOLS = [
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Path relative to storage root."},
-                    "limit": {"type": "integer", "description": "Max characters to read (default 2000; raise it for long files)."},
+                    "limit": {"type": "integer", "description": "Max characters to read (default 12000; raise or lower as needed)."},
                     "offset": {"type": "integer", "description": "Character offset to start from, for reading a long file in parts (default 0)."},
                 },
                 "required": ["path"],
@@ -180,7 +180,7 @@ TOOL_DISPLAY: dict[str, dict] = {
     },
     "read_file": {
         "title": "读取文件",
-        "summary": "读取文本文件的内容，超长会截断，可分批续读。支持纯文本、Markdown、代码、PDF 与 DOCX。文件很大时优先用 semantic_search。",
+        "summary": "读取文本文件的内容，默认返回 12000 字，超长会截断，可用 offset 分批续读。支持纯文本、Markdown、代码、PDF 与 DOCX。文件很大、想了解整体内容时优先用 semantic_search。",
         "risk": "read",
         "params": {
             "path": "相对存储根目录的文件路径",
@@ -223,6 +223,7 @@ SYSTEM_PROMPT = """你是 NASMind 的文件治理 Agent，负责帮助用户分�
 - read_file: 读取文本文件内容
 - find_files: 按文件名正则搜索文件
 - search_content: 按内容正则搜索文件
+- semantic_search: 按含义检索已索引的段落，理解大文件时优先用它
 
 你唯一可以提交变更的方式是 submit_plan 工具：它会把一份操作计划提交给用户审批，
 在你提交计划后用户需要手动批准，计划才会被执行。你无法直接修改、移动或删除任何文件。
@@ -236,7 +237,19 @@ SYSTEM_PROMPT = """你是 NASMind 的文件治理 Agent，负责帮助用户分�
 - 路径都是相对于存储根目录的相对路径
 - delete 操作要极其谨慎，只在明确无价值（如临时文件、重复文件）时建议
 - 如果用户的请求不涉及文件变更，直接回答即可，无需提交计划
-- 用中文与用户交流"""
+- 用中文与用户交流
+
+【最重要的纪律：只根据取到的证据回答】
+用户问的是你的文件，你必须先取证据再作答。绝不允许根据文件名、大小、格式或
+训练记忆推测内容——那会编造出不存在的人物和情节。
+
+- read_file 返回 truncated: true 时，说明你只看到了文件的一小部分。此时
+  必须二选一：要么用 offset 继续读，要么改用 semantic_search 去找相关段落。
+  在这两种情况下直接给出结论，就是编造。
+- 想知道一份文件「讲了什么」，用 semantic_search，不要用 read_file 读开头。
+- 如果某个说法在工具返回的内容里找不到依据，就明确说「工具返回的内容中没有
+  依据」，而不是补一个像样的答案。
+- 不确定时坦白不确定，比给出一个听起来合理但错误的答案有用得多。"""
 
 
 # ---- tool implementations (return dicts, never raise) ----
@@ -273,7 +286,7 @@ def tool_list_directory(path: str) -> dict:
     return {"success": True, "path": _rel(target) if target != get_storage_root() else ".", "items": items, "count": len(items)}
 
 
-def tool_read_file(path: str, limit: int = 2000, offset: int = 0) -> dict:
+def tool_read_file(path: str, limit: int = 12000, offset: int = 0) -> dict:
     try:
         target = resolve_under_root(path)
     except PathOutsideRoot:
