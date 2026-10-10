@@ -47,7 +47,16 @@ def get_auto_index_status() -> AutoIndexStatus:
 
 @settings.post("/auto_index/run")
 def run_auto_index_now() -> dict:
-    return indexer.scan()
+    """Kick off a scan without waiting for it.
+
+    scan() is synchronous and a cold corpus can take minutes; running it inline
+    saturated the event loop and made the whole API unresponsive (requests
+    timing out) until it finished.
+    """
+    if indexer.is_scanning:
+        return {"started": False, "reason": "already scanning"}
+    indexer.scan_async()
+    return {"started": True}
 
 
 @settings.get("/service_health")

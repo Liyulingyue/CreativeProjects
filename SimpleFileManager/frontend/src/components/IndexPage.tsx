@@ -70,7 +70,14 @@ export function IndexPage() {
 
   const handleScanNow = async () => {
     setIsScanning(true);
-    try { await runAutoIndexNow(); await Promise.all([loadIndex(), loadAutoStatus(), loadSkipped()]); toast('扫描完成', 'success'); }
+    try {
+      // The scan runs in the background now, so this returns immediately:
+      // polling is what actually reports progress.
+      await runAutoIndexNow();
+      toast('扫描已开始，后台运行', 'success');
+      await loadAutoStatus();
+      await loadSkipped();
+    }
     catch { toast('扫描失败', 'error'); } finally { setIsScanning(false); }
   };
 

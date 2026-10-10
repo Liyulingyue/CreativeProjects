@@ -82,6 +82,7 @@ class AutoIndexer:
         self._pending_vector_files = 0
         # True when the last scan stood down because the user was interacting
         self._yielded_for_interaction = False
+        self._scan_thread: Optional[threading.Thread] = None
         self._failed: dict[str, str] = {}
         self._init_db()
 
@@ -160,6 +161,26 @@ class AutoIndexer:
 
     def stop(self):
         self._stop_event.set()
+
+    @property
+    def is_scanning(self) -> bool:
+        return bool(self._scan_thread and self._scan_thread.is_alive())
+
+    def scan_async(self):
+        """Start a scan in the background and return immediately."""
+        if self.is_scanning:
+            return False
+        self._scan_thread = threading.Thread(target=self._scan_guarded, name="indexer-scan", daemon=True)
+        self._scan_thread.start()
+        return True
+
+    def _scan_guarded(self):
+        try:
+            self.scan()
+        except Exception:
+            traceback.print_exc()
+        finally:
+            self._scan_thread = None
 
     def _run(self):
         while not self._stop_event.wait(TICK_SECONDS):

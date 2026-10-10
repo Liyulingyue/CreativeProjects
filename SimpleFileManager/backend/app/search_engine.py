@@ -4,11 +4,14 @@ The FTS side uses the trigram tokenizer so Chinese and substring queries work
 without a dedicated segmentation library.
 """
 
+import logging
 import sqlite3
 from pathlib import Path
 
 from .chunking import chunk_file
 from .deps import DATA_DIR, state
+
+log = logging.getLogger(__name__)
 
 # A long document matches in many passages; without a cap its chunks would
 # fill the whole result list. Applied after ranking, not before.
@@ -137,7 +140,11 @@ class HybridSearchEngine:
                 }
                 for r in results
             ]
-        except Exception:
+        except Exception as e:
+            # Logged, not swallowed: an exception here used to return [] and
+            # leave the semantic channel silently dead while search still
+            # returned keyword results that looked healthy.
+            log.warning("vector search failed (%s: %s); keyword results still returned", type(e).__name__, e)
             return []
 
     def hybrid_search(self, query: str, top_k: int = 10) -> dict:

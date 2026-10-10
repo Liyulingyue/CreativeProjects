@@ -102,15 +102,29 @@ class LanceDBVectorStore:
         import lancedb
         import pyarrow as pa
         if "file_embeddings" not in self.table_names():
+            # fixed_size_list, not list_: LanceDB's vector search rejects a
+            # variable-length list with "Data type is not a vector", which the
+            # caller used to swallow, leaving the semantic channel permanently
+            # empty while keyword search looked healthy.
+            dim = EMBEDDING_DIM_MAP.get(state.get_settings().embedding_model, 0)
+            if not dim:
+                try:
+                    dim = len(self._probe_dim())
+                except Exception:
+                    dim = 1024
             schema = pa.schema([
                 ("id", pa.string()),
                 ("file_path", pa.string()),
                 ("content", pa.string()),
                 ("chunk_idx", pa.int32()),
-                ("vector", pa.list_(pa.float32())),
+                ("vector", pa.list_(pa.float32(), dim)),
             ])
             self.db.create_table("file_embeddings", schema=schema, mode="create")
         self._table = self.db.open_table("file_embeddings")
+
+    def _probe_dim(self) -> list[float]:
+        from .llm_client import get_embedding
+        return get_embedding("dim probe")
 
     def table_names(self) -> list[str]:
         return self.db.table_names()
