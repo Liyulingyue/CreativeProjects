@@ -189,18 +189,24 @@ class HybridSearchEngine:
 
         ranked = sorted(rrf.values(), key=lambda x: x["score"], reverse=True)
 
-        # Per-file cap applied *after* chunk-level ranking: a 400-chunk novel
-        # matches everywhere, and without this it would crowd out everything
-        # else even though its individual chunks rank lower.
+        # The per-file cap stops a 400-chunk novel from taking every slot, but it
+        # must not shrink the result list: a query that only matches one file
+        # used to return exactly MAX_HITS_PER_FILE results no matter what the
+        # caller asked for. Ranked items beyond the cap stay available as
+        # filler, so a single-file query still fills top_k.
         merged: list[dict] = []
+        overflow: list[dict] = []
         per_file: dict[str, int] = {}
         for item in ranked:
             if per_file.get(item["path"], 0) >= MAX_HITS_PER_FILE:
+                overflow.append(item)
                 continue
             per_file[item["path"]] = per_file.get(item["path"], 0) + 1
             merged.append(item)
             if len(merged) >= top_k:
                 break
+        if len(merged) < top_k:
+            merged.extend(overflow[: top_k - len(merged)])
 
         return {
             "results": merged,
