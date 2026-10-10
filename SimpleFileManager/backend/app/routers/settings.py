@@ -78,6 +78,8 @@ def _probe_llm() -> tuple[bool, str]:
         result = chat_completion(
             messages=[{"role": "user", "content": "ping"}],
             temperature=0,
+            # only the first token is needed to prove the server answers
+            max_tokens=8,
         )
         content = (result.get("content") or "").strip()
         return True, content[:60] or "ok"

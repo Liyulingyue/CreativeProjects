@@ -98,6 +98,7 @@ class DigestService:
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.5,
+                max_tokens=state.get_settings().digest_max_tokens,
             )
             return result.get("content")
         except Exception:

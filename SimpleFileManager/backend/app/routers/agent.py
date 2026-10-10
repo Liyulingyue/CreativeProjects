@@ -388,6 +388,9 @@ def _compress_to_memory(msgs: list[dict]) -> str:
                 {"role": "user", "content": prompt},
             ],
             temperature=0.3,
+            # A summary that runs long has defeated the point of compacting;
+            # it must stay far smaller than the conversation it replaces.
+            max_tokens=1024,
         )
         return (result.get("content") or "").strip()
     except Exception:

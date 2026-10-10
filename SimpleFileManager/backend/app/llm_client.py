@@ -90,6 +90,7 @@ def chat_completion(
     messages: list[dict],
     tools: Optional[list[dict]] = None,
     temperature: float = 0.7,
+    max_tokens: Optional[int] = None,
 ) -> dict:
     """Send a chat completion request. Returns the raw choice message dict."""
     settings = state.get_settings()
@@ -98,6 +99,7 @@ def chat_completion(
         "model": settings.llm_model,
         "messages": messages,
         "temperature": temperature,
+        "max_tokens": max_tokens or settings.max_output_tokens,
     }
     if tools:
         kwargs["tools"] = tools
@@ -152,6 +154,7 @@ def chat_completion_stream(
     messages: list[dict],
     tools: Optional[list[dict]] = None,
     temperature: float = 0.7,
+    max_tokens: Optional[int] = None,
 ) -> Iterator[tuple[str, object]]:
     """Stream a chat completion.
 
@@ -169,6 +172,7 @@ def chat_completion_stream(
         "model": settings.llm_model,
         "messages": messages,
         "temperature": temperature,
+        "max_tokens": max_tokens or settings.max_output_tokens,
         "stream": True,
     }
     if tools:

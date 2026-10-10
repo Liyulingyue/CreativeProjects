@@ -49,6 +49,8 @@ export interface AppSettings {
   auto_digest_hour: number;
   auto_digest_interval_hours: number;
   max_context_tokens: number;
+  max_output_tokens: number;
+  digest_max_tokens: number;
 }
 
 export interface AutoIndexStatus {

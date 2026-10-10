@@ -73,6 +73,13 @@ class AppSettings(BaseModel):
     auto_digest_hour: int = 23
     auto_digest_interval_hours: int = 6
     max_context_tokens: int = 32768
+    # Ceiling on a single model reply. Left unset, llama-server generates until
+    # EOS or until it exhausts the slot's context, which in the agent loop
+    # silently eats the room the next turn needs. The budget covers the model's
+    # reasoning tokens too, so values below ~1024 starve the visible answer.
+    max_output_tokens: int = 4096
+    # Digests summarise a whole day of changes, so they get a larger budget.
+    digest_max_tokens: int = 8192
 
 
 class IndexStats(BaseModel):

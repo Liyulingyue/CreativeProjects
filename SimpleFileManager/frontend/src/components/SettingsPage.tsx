@@ -229,6 +229,25 @@ export function SettingsPage() {
             </div>
           </Card>
 
+          <Card icon="sparkles" tone="text-emerald-500" title="生成上限">
+            <div className="space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Field label="最大输出 tokens" hint="对话与 Agent 单次回复上限，默认 4096">
+                  <input type="number" min={512} step={128} className={inputClass} value={settings.max_output_tokens}
+                    onChange={e => set({ max_output_tokens: Math.max(512, Number(e.target.value)) })} />
+                </Field>
+                <Field label="日报输出 tokens" hint="日报可更长，默认 8192">
+                  <input type="number" min={512} step={128} className={inputClass} value={settings.digest_max_tokens}
+                    onChange={e => set({ digest_max_tokens: Math.max(512, Number(e.target.value)) })} />
+                </Field>
+              </div>
+              <p className="text-xs text-slate-400">
+                不限制时模型会一直生成到自然结束，容易挤掉后续对话的上下文空间。
+                注意该上限<strong className="text-slate-500">包含模型的思考过程</strong>，设得过小会导致回复空白，建议不低于 1024。
+              </p>
+            </div>
+          </Card>
+
           <Card icon="newspaper" tone="text-orange-500" title="自动日报">
             <div className="space-y-3">
               <Toggle
