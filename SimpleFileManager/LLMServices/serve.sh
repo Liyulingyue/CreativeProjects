@@ -65,7 +65,30 @@ EMBEDDING_PORT=9011
 EMBEDDING_PID_FILE="$PID_DIR/embedding.pid"
 EMBEDDING_LOG="$LOG_DIR/embedding.log"
 
-LLM_MODEL="$SCRIPT_DIR/models/llm/LFM2.5-8B-A1B-Q8_0.gguf"
+# Q4_K_M first: on this box it decodes ~39% faster than Q8_0 (30.1 vs 21.6 t/s
+# at 8 threads) because token generation is memory-bandwidth bound and Q4_K_M
+# halves the bytes streamed per token. Prompt processing is the opposite --
+# Q8_0 + KLEIDI reaches ~135 t/s vs ~80 t/s for Q4_K_M -- so long-context
+# callers should override with LLM_MODEL=.../LFM2.5-8B-A1B-Q8_0.gguf.
+pick_llm_model() {
+    local candidate
+    for candidate in \
+        "$SCRIPT_DIR/models/llm/LFM2.5-8B-A1B-UD-Q4_K_M.gguf" \
+        "$SCRIPT_DIR/models/llm/LFM2.5-8B-A1B-Q8_0.gguf"
+    do
+        if [ -f "$candidate" ]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    echo ""
+}
+
+LLM_MODEL="${LLM_MODEL:-$(pick_llm_model)}"
+if [ -z "$LLM_MODEL" ]; then
+    echo "error: no LFM2.5-8B-A1B gguf found under $SCRIPT_DIR/models/llm/." >&2
+    exit 1
+fi
 LLM_PID_FILE="$PID_DIR/llm.pid"
 LLM_LOG="$LOG_DIR/llm.log"
 LLM_PORT=9010
@@ -83,6 +106,21 @@ case "$CTX" in
         CTX=8192
         ;;
 esac
+
+# Number of concurrent request slots. llama-server with a single slot answers
+# every extra request with 429/503 once the slot is busy, which happens as soon
+# as chat overlaps with the indexer's digest run or a settings connection test.
+# CTX is the *per slot* budget here, so the total passed to --ctx-size is scaled
+# by this factor; otherwise raising PARALLEL would silently shrink every
+# conversation's context to CTX/PARALLEL.
+PARALLEL="${LLM_PARALLEL:-2}"
+case "$PARALLEL" in
+    ''|*[!0-9]*|0)
+        echo "warning: invalid LLM_PARALLEL '$PARALLEL', falling back to 2" >&2
+        PARALLEL=2
+        ;;
+esac
+TOTAL_CTX=$((CTX * PARALLEL))
 
 # ---------------------------------------------------------------------------
 # Backend resolution
@@ -196,8 +234,10 @@ service_argv() {
         else
             # --jinja is llama-server's default, and it is what makes the server
             # render the GGUF's own tokenizer.chat_template. Turning it off would
-            # fall back to a generic role\ncontent\n form.
-            echo "--model $model --host 0.0.0.0 --port $port --threads $THREADS -c $CTX"
+            # fall back to a generic role\ncontent\n form. --parallel gives us
+            # more than one in-flight request, and --ctx-size is the total shared
+            # across those slots (CTX * PARALLEL), keeping CTX per conversation.
+            echo "--model $model --host 0.0.0.0 --port $port --threads $THREADS -c $TOTAL_CTX --parallel $PARALLEL"
         fi
     else
         if [ "$mode" = embedding ]; then
@@ -325,6 +365,7 @@ show_backends() {
     echo "  llama-server:        ${llama:-<not found>}"
     echo "  rust-model-inference: ${rmi:-<not found>}"
     echo "  chat context:        $CTX (MAX_CONTEXT_TOKENS from .env, override with LLM_CTX)"
+    echo "  parallel slots:      $PARALLEL (total ctx $TOTAL_CTX, override with LLM_PARALLEL)"
     echo "  threads:             $THREADS"
 }
 
@@ -393,6 +434,7 @@ case "${1:-}" in
         echo ""
         echo "Tuning:"
         echo "  LLM_CTX=32768        chat context window (default: MAX_CONTEXT_TOKENS in .env)"
+        echo "  LLM_PARALLEL=2       concurrent request slots; ctx total is LLM_CTX*PARALLEL"
         echo "  LLM_THREADS=8        inference threads"
         echo ""
         echo "Logs: $LOG_DIR/"

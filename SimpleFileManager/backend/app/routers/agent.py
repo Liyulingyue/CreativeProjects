@@ -6,16 +6,20 @@ the user to review before execution.
 """
 
 import json
+import logging
 import re
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..deps import state, get_storage_root, resolve_under_root, PathOutsideRoot, validate_plan_action
-from ..llm_client import chat_completion
+from ..llm_client import chat_completion, chat_completion_stream, _friendly_error
+
+log = logging.getLogger(__name__)
 
 agent = APIRouter()
 
@@ -317,7 +321,7 @@ def chat_with_llm(messages: list[dict], tools: list[dict]) -> dict:
         choice = {"message": result}
         return {"choices": [choice]}
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": _friendly_error(e)}
 
 
 def _trim(result: dict) -> dict:
@@ -536,6 +540,124 @@ def agent_chat(req: AgentRequest):
         plans=plans,
         steps_used=steps_used,
         available_tools=AVAILABLE_TOOLS,
+    )
+
+
+@agent.post("/chat/stream")
+def agent_chat_stream(req: AgentRequest):
+    """Server-sent events variant of /chat.
+
+    Event types: meta, step, token, tool, done, error. Tool-call turns are
+    streamed too, so the model can emit a short "let me look" preamble before
+    calling a tool instead of the UI sitting blank through the whole turn.
+    """
+
+    def sse(event: str, data: dict) -> str:
+        return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    def generate() -> Iterator[str]:
+        session_id = req.session_id or "default"
+        session = _get_session(session_id)
+        session.history.append({"role": "user", "content": req.message})
+        session.compact()
+        all_messages = session.build_messages()
+
+        tool_results: list[dict] = []
+        plan_ids: list[str] = []
+        steps_used = 0
+        max_steps = state.get_settings().max_agent_steps
+        emitted: list[str] = []  # streamed text, kept for session history
+
+        yield sse("meta", {"steps_max": max_steps})
+
+        try:
+            for _ in range(max_steps):
+                steps_used += 1
+                yield sse("step", {"step": steps_used, "of": max_steps})
+
+                turn_text = ""
+                tool_calls: list[dict] = []
+                for kind, payload in chat_completion_stream(all_messages, tools=TOOLS):
+                    if kind == "token":
+                        turn_text += payload
+                        emitted.append(payload)
+                        yield sse("token", {"text": payload})
+                    elif kind == "tool_call":
+                        tool_calls.append(payload)
+
+                if tool_calls:
+                    all_messages.append({
+                        "role": "assistant",
+                        "content": turn_text,
+                        "tool_calls": [
+                            {
+                                "id": tc["id"],
+                                "type": "function",
+                                "function": {"name": tc["name"], "arguments": tc["arguments"]},
+                            }
+                            for tc in tool_calls
+                        ],
+                    })
+                    for tc in tool_calls:
+                        name = tc["name"]
+                        try:
+                            arguments = json.loads(tc["arguments"] or "{}")
+                        except json.JSONDecodeError as e:
+                            result = {"success": False, "error": f"Malformed tool call: {e}"}
+                        else:
+                            result = execute_tool(name, arguments)
+                            if name == "submit_plan" and result.get("success"):
+                                plan_ids.append(result.get("plan_id", ""))
+                        tool_results.append({"tool": name, "result": result})
+                        yield sse("tool", {"tool": name, "result": result})
+                        all_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": json.dumps(_trim(result), ensure_ascii=False),
+                        })
+                    continue
+
+                final_text = turn_text or "（模型未返回内容，请重试）"
+                yield sse("token", {"text": ""})
+                all_messages.append({"role": "assistant", "content": final_text})
+                break
+            else:
+                final_text = "已达到单次任务的最大步数限制，请查看已收集的信息或换个更简单的请求。"
+                yield sse("token", {"text": final_text})
+                all_messages.append({"role": "assistant", "content": final_text})
+
+            session.history = [
+                m for m in all_messages if m.get("role") in ("user", "assistant")
+            ][-MAX_SESSION_MESSAGES:]
+
+            plans = []
+            if plan_ids:
+                store = state.get_plan_store()
+                plans = [p.model_dump() for p in (store.get_plan(pid) for pid in plan_ids) if p]
+
+            yield sse("done", {
+                "response": final_text,
+                "tool_results": tool_results or None,
+                "plans": plans,
+                "steps_used": steps_used,
+                "available_tools": AVAILABLE_TOOLS,
+            })
+        except GeneratorExit:
+            # client hit stop / navigated away; keep what we already have
+            log.info("agent stream for session %s closed by client", session_id)
+            raise
+        except Exception as e:
+            log.exception("agent stream failed")
+            yield sse("error", {"message": _friendly_error(e)})
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

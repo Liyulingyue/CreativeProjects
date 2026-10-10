@@ -17,6 +17,11 @@ export interface ChatSession {
   session_type?: string;
 }
 
+interface ToolActivity {
+  tool: string;
+  status: 'running' | 'done';
+}
+
 interface ChatLayoutProps {
   sessions: ChatSession[];
   currentSessionId: string | null;
@@ -25,6 +30,13 @@ interface ChatLayoutProps {
   onDeleteSession: (id: string) => void;
   onSendMessage: (content: string) => Promise<void>;
   isLoading: boolean;
+  /** Text received so far for the in-flight assistant reply. */
+  streamingText?: string;
+  /** Tools the agent has invoked during the current turn. */
+  toolActivity?: ToolActivity[];
+  /** Current agent step, e.g. 2, for the progress hint. */
+  currentStep?: number;
+  onStop?: () => void;
   emptyState?: React.ReactNode;
   renderMessage?: (message: ChatMessage) => React.ReactNode;
 }
@@ -41,7 +53,8 @@ function formatTime(timestamp: number): string {
 
 export function ChatLayout({
   sessions, currentSessionId, onSelectSession, onNewSession,
-  onDeleteSession, onSendMessage, isLoading, emptyState, renderMessage,
+  onDeleteSession, onSendMessage, isLoading, streamingText, toolActivity,
+  currentStep, onStop, emptyState, renderMessage,
 }: ChatLayoutProps) {
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -49,6 +62,9 @@ export function ChatLayout({
   const currentSession = sessions.find(s => s.id === currentSessionId);
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [currentSession?.messages]);
+  // streamingText changes on every token and the message list is unchanged
+  // during a turn, so it needs its own scroll trigger to stay pinned
+  useEffect(() => { messagesEndRef.current?.scrollIntoView({ block: 'end' }); }, [streamingText]);
   useEffect(() => {
     if (inputRef.current) {
       inputRef.current.style.height = 'auto';
@@ -156,15 +172,39 @@ export function ChatLayout({
           )}
           {isLoading && (
             <div className="flex justify-start">
-              <div className="bg-slate-100 rounded-xl px-4 py-2.5">
-                <div className="flex items-center gap-2 text-slate-500 text-sm">
-                  <div className="flex gap-1">
-                    <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                    <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                    <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+              <div className="max-w-[70%] bg-slate-100 rounded-xl px-4 py-2.5 space-y-2">
+                {toolActivity && toolActivity.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {toolActivity.map((t, i) => (
+                      <span key={`${t.tool}-${i}`}
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs ${
+                          t.status === 'running'
+                            ? 'bg-indigo-50 text-indigo-600'
+                            : 'bg-slate-200 text-slate-500'
+                        }`}>
+                        {t.status === 'running'
+                          ? <div className="w-2.5 h-2.5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+                          : <Icon name="check" size={12} />}
+                        {t.tool}
+                      </span>
+                    ))}
                   </div>
-                  <span>思考中...</span>
-                </div>
+                )}
+                {streamingText ? (
+                  <div className="whitespace-pre-wrap text-sm leading-relaxed text-slate-800">
+                    {streamingText}
+                    <span className="inline-block w-2 h-4 ml-0.5 bg-slate-400 animate-pulse align-text-bottom" />
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 text-slate-500 text-sm">
+                    <div className="flex gap-1">
+                      <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                      <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                    </div>
+                    <span>{currentStep ? `思考中... (第 ${currentStep} 步)` : '思考中...'}</span>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -183,14 +223,25 @@ export function ChatLayout({
               className="flex-1 px-3 py-2 rounded-lg border border-slate-200 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 transition-all"
               style={{ maxHeight: '150px' }}
             />
-            <button
-              type="submit"
-              disabled={!input.trim() || isLoading}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            >
-              <Icon name="send" size={16} />
-              发送
-            </button>
+            {isLoading && onStop ? (
+              <button
+                type="button"
+                onClick={onStop}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg border border-slate-300 text-slate-700 text-sm font-medium hover:bg-slate-50 transition-colors"
+              >
+                <span className="w-2.5 h-2.5 rounded-sm bg-current" />
+                停止
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={!input.trim() || isLoading}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                <Icon name="send" size={16} />
+                发送
+              </button>
+            )}
           </form>
         </div>
       </div>

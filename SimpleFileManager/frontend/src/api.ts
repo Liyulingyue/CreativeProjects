@@ -239,6 +239,65 @@ export async function getAgentTools(): Promise<{ tools: string[] }> {
   return res.json();
 }
 
+// ---- Agent streaming (SSE) ----
+
+export type AgentStreamEvent =
+  | { type: 'meta'; steps_max: number }
+  | { type: 'step'; step: number; of: number }
+  | { type: 'token'; text: string }
+  | { type: 'tool'; tool: string; result: unknown }
+  | { type: 'done'; response: string; plans: AgentPlan[]; steps_used: number }
+  | { type: 'error'; message: string };
+
+/**
+ * Consume /agent/chat/stream. `signal` lets the caller abort mid-generation;
+ * the backend treats the disconnect as a normal stop and keeps the partial text.
+ */
+export async function streamAgentMessage(
+  message: string,
+  sessionId: string | undefined,
+  onEvent: (event: AgentStreamEvent) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  const res = await authFetch(`${API_BASE}/agent/chat/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, session_id: sessionId }),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    throw new Error(res.status === 401 ? '登录已过期' : `请求失败 (${res.status})`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    // SSE frames are separated by a blank line
+    const frames = buffer.split('\n\n');
+    buffer = frames.pop() ?? '';
+    for (const frame of frames) {
+      let event = 'message';
+      const dataLines: string[] = [];
+      for (const line of frame.split('\n')) {
+        if (line.startsWith('event:')) event = line.slice(6).trim();
+        else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+      }
+      if (!dataLines.length) continue;
+      try {
+        onEvent({ type: event, ...JSON.parse(dataLines.join('\n')) } as AgentStreamEvent);
+      } catch {
+        // ignore malformed frame rather than killing the stream
+      }
+    }
+  }
+}
+
 // ---- Plans & Approval ----
 
 export async function fetchPlans(status?: string): Promise<AgentPlan[]> {
