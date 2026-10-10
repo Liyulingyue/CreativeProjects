@@ -87,10 +87,18 @@ export function SimpleChat() {
   const { sessions, currentSessionId, createSession, selectSession, deleteSession, addMessage } = useChatSessions('agent');
   const [isLoading, setIsLoading] = useState(false);
   const [streamingText, setStreamingText] = useState('');
-  const [toolActivity, setToolActivity] = useState<ToolActivityItem[]>([]);
+  // kept per session so switching conversations does not erase the trace of
+  // what the agent already read on the user's behalf
+  const [traces, setTraces] = useState<Record<string, ToolActivityItem[]>>({});
   const [currentStep, setCurrentStep] = useState<number | undefined>(undefined);
   const abortRef = useRef<AbortController | null>(null);
   const sendRef = useRef<((content: string) => Promise<void>) | null>(null);
+
+  const toolActivity = currentSessionId ? traces[currentSessionId] : undefined;
+
+  const updateTrace = useCallback((sessionId: string, update: (prev: ToolActivityItem[]) => ToolActivityItem[]) => {
+    setTraces(prev => ({ ...prev, [sessionId]: update(prev[sessionId] || []) }));
+  }, []);
 
   const handleStop = useCallback(() => {
     abortRef.current?.abort();
@@ -104,8 +112,9 @@ export function SimpleChat() {
 
     setIsLoading(true);
     setStreamingText('');
-    setToolActivity([]);
     setCurrentStep(undefined);
+    // a fresh turn starts a fresh trace for that session
+    updateTrace(sessionId, () => []);
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -124,13 +133,9 @@ export function SimpleChat() {
             reply += event.text;
             setStreamingText(reply);
           } else if (event.type === 'tool_start') {
-            setToolActivity(prev => [
-              ...prev,
-              { tool: event.tool, status: 'running', args: event.args },
-            ]);
+            updateTrace(sessionId, prev => [...prev, { tool: event.tool, status: 'running', args: event.args }]);
           } else if (event.type === 'tool') {
-            // fill in the running entry started by tool_start, else append
-            setToolActivity(prev => {
+            updateTrace(sessionId, (prev) => {
               const running = prev.findIndex(t => t.status === 'running');
               if (running === -1) {
                 return [...prev, { tool: event.tool, status: 'done', args: event.args, result: event.result }];
@@ -162,7 +167,7 @@ export function SimpleChat() {
       }
     } finally {
       abortRef.current = null;
-      setToolActivity(prev => prev.map(t => ({ ...t, status: 'done' as const })));
+      updateTrace(sessionId, prev => prev.map(t => (t.status === 'running' ? { ...t, status: 'done' as const } : t)));
       setIsLoading(false);
       setCurrentStep(undefined);
     }

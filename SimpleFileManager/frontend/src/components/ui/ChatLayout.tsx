@@ -38,13 +38,13 @@ function stringify(value: unknown): string {
 }
 
 /** A tool invocation the user can open to see exactly what was asked and returned. */
-function ToolCallCard({ activity }: { activity: ToolActivity }) {
+function ToolCallRow({ activity }: { activity: ToolActivity }) {
   const [open, setOpen] = useState(false);
   const running = activity.status === 'running';
   const argEntries = activity.args ? Object.entries(activity.args) : [];
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
+    <div className="rounded-md border border-slate-200 bg-white overflow-hidden">
       <button
         onClick={() => !running && setOpen(v => !v)}
         disabled={running}
@@ -55,7 +55,7 @@ function ToolCallCard({ activity }: { activity: ToolActivity }) {
         ) : (
           <Icon name="checkCircle" size={13} className="text-green-600 flex-shrink-0" />
         )}
-        <span className="font-medium text-slate-700">{activity.tool}</span>
+        <span className="font-medium text-slate-700 font-mono">{activity.tool}</span>
         {argEntries.length > 0 && (
           <span className="text-slate-400 truncate">
             {argEntries.map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`).join('  ')}
@@ -70,9 +70,44 @@ function ToolCallCard({ activity }: { activity: ToolActivity }) {
         )}
       </button>
       {open && !running && activity.result !== undefined && (
-        <pre className="px-2.5 pb-2.5 text-[11px] leading-relaxed text-slate-600 whitespace-pre-wrap break-all border-t border-slate-200 pt-2 max-h-64 overflow-y-auto font-mono">
+        <pre className="px-2.5 pb-2.5 text-[11px] leading-relaxed text-slate-600 whitespace-pre-wrap break-all border-t border-slate-200 pt-2 max-h-56 overflow-y-auto font-mono">
           {stringify(activity.result)}
         </pre>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Tool activity lives in its own dock above the composer rather than inside the
+ * message bubble: it keeps the conversation readable, and the trace stays
+ * available after the turn ends instead of vanishing with the next send.
+ */
+function ToolPanel({ activities }: { activities: ToolActivity[] }) {
+  const [open, setOpen] = useState(false);
+  const running = activities.some(a => a.status === 'running');
+
+  return (
+    <div className="border-t border-slate-100 bg-slate-50 flex-shrink-0">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center gap-2 px-4 py-1.5 text-xs text-slate-500 hover:text-slate-700 transition-colors"
+      >
+        <Icon name="code" size={13} />
+        <span>{running ? '正在调用工具...' : `本次对话使用了 ${activities.length} 个工具`}</span>
+        <Icon
+          name="chevronDown"
+          size={13}
+          className={`ml-auto transition-transform ${open ? 'rotate-180' : ''}`}
+        />
+      </button>
+      {open && (
+        <div className="max-h-64 overflow-y-auto px-3 pb-3 space-y-1.5">
+          {activities.map((t, i) => <ToolCallRow key={`${t.tool}-${i}`} activity={t} />)}
+          <div className="text-[11px] text-slate-400 pt-0.5">
+            写入操作只会生成待审批的计划，需在「整理」页确认后执行。
+          </div>
+        </div>
       )}
     </div>
   );
@@ -243,11 +278,6 @@ export function ChatLayout({
           {isLoading && (
             <div className="flex justify-start">
               <div className="max-w-[70%] bg-slate-100 rounded-xl px-4 py-2.5 space-y-2">
-                {toolActivity && toolActivity.length > 0 && (
-                  <div className="space-y-1.5">
-                    {toolActivity.map((t, i) => <ToolCallCard key={`${t.tool}-${i}`} activity={t} />)}
-                  </div>
-                )}
                 {streamingText ? (
                   <div className="whitespace-pre-wrap text-sm leading-relaxed text-slate-800">
                     {streamingText}
@@ -268,6 +298,10 @@ export function ChatLayout({
           )}
           <div ref={messagesEndRef} />
         </div>
+
+        {toolActivity && toolActivity.length > 0 && (
+          <ToolPanel activities={toolActivity} />
+        )}
 
         <div className="border-t border-slate-100 p-3 flex-shrink-0">
           <form onSubmit={handleSubmit} className="flex items-end gap-2">
