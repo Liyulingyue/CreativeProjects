@@ -92,7 +92,10 @@ export function AgentToolsPage() {
         <span className="text-base font-semibold text-slate-800">Agent 能力</span>
       </div>
 
-      <div className="max-w-3xl mx-auto p-4 sm:p-6 space-y-5">
+      {/* Full width with a responsive grid: the cards are prose plus a short
+          parameter list, so one very wide column would leave long unreadable
+          lines while a narrow one would squeeze the descriptions. */}
+      <div className="p-4 sm:p-6 space-y-5">
         {/* The single most important fact on this page, so it leads. */}
         <div className="flex items-start gap-2.5 p-3 rounded-lg bg-emerald-50 border border-emerald-100">
           <Icon name="shield" size={16} className="text-emerald-600 mt-0.5 flex-shrink-0" />
@@ -112,26 +115,30 @@ export function AgentToolsPage() {
         )}
 
         {readOnly.length > 0 && (
-          <div className="space-y-2">
+          <div className="space-y-3">
             <div className="flex items-center gap-2">
               <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
                 只读工具（{readOnly.length}）
               </h2>
               <div className="flex-1 h-px bg-slate-200" />
             </div>
-            {readOnly.map(t => <ToolCard key={t.name} tool={t} def={byName.get(t.name)} />)}
+            <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-3 items-start">
+              {readOnly.map(t => <ToolCard key={t.name} tool={t} def={byName.get(t.name)} />)}
+            </div>
           </div>
         )}
 
         {approval.length > 0 && (
-          <div className="space-y-2">
+          <div className="space-y-3">
             <div className="flex items-center gap-2">
               <h2 className="text-xs font-semibold text-amber-600 uppercase tracking-wider">
                 需要审批（{approval.length}）
               </h2>
               <div className="flex-1 h-px bg-amber-200" />
             </div>
-            {approval.map(t => <ToolCard key={t.name} tool={t} def={byName.get(t.name)} />)}
+            <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-3 items-start">
+              {approval.map(t => <ToolCard key={t.name} tool={t} def={byName.get(t.name)} />)}
+            </div>
           </div>
         )}
 
