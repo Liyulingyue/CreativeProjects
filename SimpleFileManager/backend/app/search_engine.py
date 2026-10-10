@@ -63,6 +63,17 @@ class HybridSearchEngine:
         conn.commit()
         conn.close()
 
+    def indexed_file_names(self) -> list[str]:
+        """Distinct file names present in the keyword index."""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute("SELECT DISTINCT name FROM fts_files").fetchall()
+        except sqlite3.OperationalError:
+            rows = []
+        finally:
+            conn.close()
+        return [r[0] for r in rows]
+
     def file_chunk_count(self, path: str) -> int:
         conn = self._get_conn()
         row = conn.execute("SELECT COUNT(*) FROM fts_files WHERE path = ?", (path,)).fetchone()

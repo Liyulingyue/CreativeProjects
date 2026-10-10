@@ -112,7 +112,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "semantic_search",
-            "description": "Search by meaning rather than keywords. Use this to understand what a large document is about, or to find passages that discuss a topic whose exact wording you do not know. Returns matching passages with their file and location. Much better than read_file for large files, which can only return a small excerpt.",
+            "description": "Search by meaning rather than keywords. Use this to understand what a large document is about, or to find passages that discuss a topic whose exact wording you do not know. Returns matching passages with their file and location. Much better than read_file for large files, which can only return a small excerpt. IMPORTANT: if the question is about one specific file, pass that file's name as 'path' — otherwise passages from other files come back too and you may attribute them to the wrong document.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -435,6 +435,24 @@ def tool_semantic_search(query: str, path: str = "", top_k: int = 5) -> dict:
 
     top_k = max(1, min(top_k, 20))
     needle = (path or "").strip()
+
+    # A smaller model does not reliably pass `path` even when told to, and an
+    # unfiltered search mixes books: "林黛玉" also appears in other works and
+    # vector neighbours ignore book boundaries. When the question names exactly
+    # one indexed file, honour that intent automatically instead of relying on
+    # the model to cooperate.
+    inferred = ""
+    if not needle:
+        # Match on the stem: the question says "红楼梦" but the indexed name
+        # is "红楼梦.txt", so a plain substring test never fires.
+        candidates = [
+            name for name in search_engine.indexed_file_names()
+            if name and (name in query or Path(name).stem in query)
+        ]
+        if len(candidates) == 1:
+            inferred = candidates[0]
+            needle = inferred
+
     try:
         # The filter is applied inside hybrid_search, before the per-file cap;
         # filtering afterwards returned whatever other books happened to rank.
@@ -448,23 +466,40 @@ def tool_semantic_search(query: str, path: str = "", top_k: int = 5) -> dict:
         return {
             "success": True,
             "matches": [],
-            "hint": "Nothing indexed matched. The corpus may not be indexed yet, or the path filter matched nothing — try search_content or read_file instead. Note: passages come from whichever files matched, so check each match's file before relying on it.",
+            "hint": "Nothing indexed matched. The corpus may not be indexed yet, or the path filter matched nothing — try search_content or read_file instead.",
         }
 
-    return {
-        "success": True,
-        "query": query,
-        "matches": [
-            {
-                "file": r["name"],
-                "location": r["path"].split("/")[-1],
-                "chunk": r.get("chunk_idx"),
-                "matched_by": r.get("sources", []),
-                "text": (r.get("preview") or "")[:600],
-            }
-            for r in items
-        ],
-    }
+    matches = [
+        {
+            "file": r["name"],
+            "location": r["path"].split("/")[-1],
+            "chunk": r.get("chunk_idx"),
+            "matched_by": r.get("sources", []),
+            "text": (r.get("preview") or "")[:600],
+        }
+        for r in items
+    ]
+
+    out: dict = {"success": True, "query": query, "matches": matches}
+    if inferred:
+        out["auto_filtered_to"] = inferred
+
+    # Semantic neighbours are not book-aware, and a keyword like a character
+    # name appears in several files, so an unfiltered search can hand back
+    # passages from works the caller never asked about. Say so explicitly
+    # rather than letting the model quietly attribute them.
+    if not needle:
+        others = sorted({m["file"] for m in matches} - {needle})
+        distinct = sorted({m["file"] for m in matches})
+        if len(distinct) > 1:
+            out["files_matched"] = distinct
+            out["warning"] = (
+                f"No path filter was given and passages came from "
+                f"{len(distinct)} different files ({', '.join(distinct)}). "
+                f"Only use passages from the file the question is about; "
+                f"re-run with path=<file name> to restrict the search."
+            )
+    return out
 
 
 def execute_tool(name: str, arguments: dict) -> dict:
