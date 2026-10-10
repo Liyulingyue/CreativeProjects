@@ -155,56 +155,6 @@ def get_indexed_files():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@rag.get("/chunks")
-def get_chunks(file_path: str, offset: int = 0, limit: int = 50):
-    """The chunks a file was split into, with the text actually indexed.
-
-    Raw embedding vectors are unreadable implementation detail; the chunk text
-    is the unit both channels index, so this is what makes the index inspectable
-    — whether the cuts landed on sentence boundaries, whether the right text was
-    embedded.
-    """
-    try:
-        from ..chunking import chunk_file
-        from ..deps import resolve_under_root
-
-        target = resolve_under_root(file_path)
-        if not target.exists() or not target.is_file():
-            raise HTTPException(status_code=404, detail="File not found")
-        try:
-            text = target.read_text(encoding="utf-8", errors="ignore")
-        except (PermissionError, OSError, ValueError) as e:
-            raise HTTPException(status_code=500, detail=str(e))
-
-        # Local import: routers/rag is imported by app.routers, and indexer
-        # imports deps, so a module-level import would close the cycle.
-        from ..indexer import indexer as _indexer
-        pieces = chunk_file(text)
-        limit = max(1, min(limit, 200))
-        offset = max(0, offset)
-        window = pieces[offset: offset + limit]
-        done, _total = _indexer._vector_progress().get(str(target), (0, 0))
-        return {
-            "path": str(target),
-            "total": len(pieces),
-            "offset": offset,
-            "next_offset": offset + len(window) if offset + len(window) < len(pieces) else None,
-            "chunks": [
-                {
-                    "idx": offset + i,
-                    "offset": char_offset,
-                    "vectorized": (offset + i) < done,
-                    "text": chunk,
-                }
-                for i, (char_offset, chunk) in enumerate(window)
-            ],
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @rag.delete("/files/{file_path:path}")
 def delete_indexed_file(file_path: str) -> dict:
     try:
