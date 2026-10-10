@@ -1,5 +1,6 @@
 import os
 import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -224,7 +225,19 @@ def get_tree(path: Optional[str] = None, depth: int = 2) -> dict:
         if current_depth > depth:
             return {"name": p.name, "path": str(p), "is_dir": True, "children": []}
         if not p.is_dir():
-            return {"name": p.name, "path": str(p), "is_dir": False}
+            # Leaves carry the metadata a preview needs; the UI opens tree files
+            # directly instead of browsing into them.
+            try:
+                st = p.stat()
+                return {
+                    "name": p.name,
+                    "path": str(p),
+                    "is_dir": False,
+                    "size": st.st_size,
+                    "modified": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                }
+            except (PermissionError, OSError):
+                return {"name": p.name, "path": str(p), "is_dir": False}
         children = []
         try:
             for child in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):

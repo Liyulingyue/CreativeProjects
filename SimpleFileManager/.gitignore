@@ -33,7 +33,9 @@ Thumbs.db
 .env
 *.db
 
-./data/
+# Storage root — user files live here and must never be committed.
+# (a leading ./ does not work here: git treats it as part of the pattern)
+data/
 
 # LLMServices - local model inference
 LLMServices/bin/

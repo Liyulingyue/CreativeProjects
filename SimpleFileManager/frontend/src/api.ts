@@ -116,6 +116,9 @@ export interface TreeNode {
   name: string;
   path: string;
   is_dir: boolean;
+  /** Present on leaves, so a tree click can open the preview directly. */
+  size?: number;
+  modified?: string;
   children?: TreeNode[];
 }
 

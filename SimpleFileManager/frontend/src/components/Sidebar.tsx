@@ -9,6 +9,8 @@ interface SidebarProps {
   mobileOpen?: boolean;
   collapsed?: boolean;
   onToggleCollapse?: () => void;
+  /** Tree leaves are files; opening them means previewing, not browsing. */
+  onOpenFile?: (node: TreeNode) => void;
 }
 
 interface TreeItemProps {
@@ -16,9 +18,10 @@ interface TreeItemProps {
   level: number;
   currentPath: string;
   onNavigate: (path: string) => void;
+  onOpenFile?: (node: TreeNode) => void;
 }
 
-function TreeItem({ node, level, currentPath, onNavigate }: TreeItemProps) {
+function TreeItem({ node, level, currentPath, onNavigate, onOpenFile }: TreeItemProps) {
   const [expanded, setExpanded] = useState(level < 2);
   const isActive = currentPath === node.path;
   const hasChildren = node.children && node.children.length > 0;
@@ -27,8 +30,8 @@ function TreeItem({ node, level, currentPath, onNavigate }: TreeItemProps) {
     if (node.is_dir) {
       if (hasChildren) setExpanded(!expanded);
       onNavigate(node.path);
-    } else {
-      onNavigate(node.path);
+    } else if (onOpenFile) {
+      onOpenFile(node);
     }
   };
 
@@ -57,7 +60,7 @@ function TreeItem({ node, level, currentPath, onNavigate }: TreeItemProps) {
       {hasChildren && expanded && (
         <div>
           {node.children!.map((child) => (
-            <TreeItem key={child.path} node={child} level={level + 1} currentPath={currentPath} onNavigate={onNavigate} />
+            <TreeItem key={child.path} node={child} level={level + 1} currentPath={currentPath} onNavigate={onNavigate} onOpenFile={onOpenFile} />
           ))}
         </div>
       )}
@@ -65,7 +68,7 @@ function TreeItem({ node, level, currentPath, onNavigate }: TreeItemProps) {
   );
 }
 
-export function Sidebar({ tree, onNavigate, currentPath, mobileOpen = false, collapsed = false, onToggleCollapse }: SidebarProps) {
+export function Sidebar({ tree, onNavigate, currentPath, mobileOpen = false, collapsed = false, onToggleCollapse, onOpenFile }: SidebarProps) {
   return (
     <>
       {/* Desktop: collapses to a narrow handle so the folder tree does not
@@ -86,6 +89,7 @@ export function Sidebar({ tree, onNavigate, currentPath, mobileOpen = false, col
             onNavigate={onNavigate}
             currentPath={currentPath}
             onToggleCollapse={onToggleCollapse}
+            onOpenFile={onOpenFile}
           />
         </div>
       )}
@@ -93,14 +97,14 @@ export function Sidebar({ tree, onNavigate, currentPath, mobileOpen = false, col
       {/* Mobile drawer */}
       {mobileOpen && (
         <div className="fixed left-0 top-0 bottom-0 z-40 w-64 bg-white border-r border-slate-200 flex flex-col lg:hidden shadow-popover">
-          <SidebarContent tree={tree} onNavigate={onNavigate} currentPath={currentPath} />
+          <SidebarContent tree={tree} onNavigate={onNavigate} currentPath={currentPath} onOpenFile={onOpenFile} />
         </div>
       )}
     </>
   );
 }
 
-function SidebarContent({ tree, onNavigate, currentPath, onToggleCollapse }: { tree: TreeNode | null; onNavigate: (p: string) => void; currentPath: string; onToggleCollapse?: () => void }) {
+function SidebarContent({ tree, onNavigate, currentPath, onToggleCollapse, onOpenFile }: { tree: TreeNode | null; onNavigate: (p: string) => void; currentPath: string; onToggleCollapse?: () => void; onOpenFile?: (node: TreeNode) => void }) {
   return (
     <>
       <div className="px-4 py-2.5 text-xs font-semibold text-slate-400 uppercase tracking-wider border-b border-slate-100 flex items-center gap-2">
@@ -121,7 +125,7 @@ function SidebarContent({ tree, onNavigate, currentPath, onToggleCollapse }: { t
         {!tree ? (
           <div className="flex items-center justify-center py-8 text-slate-400 text-sm">加载中...</div>
         ) : (
-          <TreeItem node={tree} level={0} currentPath={currentPath} onNavigate={onNavigate} />
+          <TreeItem node={tree} level={0} currentPath={currentPath} onNavigate={onNavigate} onOpenFile={onOpenFile} />
         )}
       </div>
     </>

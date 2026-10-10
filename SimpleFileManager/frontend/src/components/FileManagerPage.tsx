@@ -163,6 +163,32 @@ export function FileManagerPage() {
     }
   };
 
+  // Tree leaves carry only {name, path, is_dir}; the preview needs an
+  // extension, and files carry no size in the tree payload.
+  const handleTreeOpenFile = (node: TreeNode) => {
+    const name = node.name;
+    const dot = name.lastIndexOf('.');
+    const extension = dot > 0 ? name.slice(dot).toLowerCase() : '';
+    const asFile: FileNode = {
+      name,
+      path: node.path,
+      is_dir: false,
+      extension,
+      size: node.size ?? 0,
+      modified: node.modified || '',
+      created: '',
+      mime_type: '',
+    };
+    if (isPreviewable(asFile)) {
+      setPreviewNode(asFile);
+    } else {
+      // Not previewable (binary, archive, …): go to its folder instead of
+      // asking the backend to browse a file path, which it rejects.
+      const parent = node.path.slice(0, node.path.lastIndexOf('/'));
+      handleNavigate(parent);
+    }
+  };
+
   const handleDragStart = (e: React.DragEvent, node: FileNode) => {
     setDragSource(node);
     e.dataTransfer.setData('sourcePath', node.path);
@@ -582,6 +608,7 @@ export function FileManagerPage() {
           mobileOpen={sidebarOpen}
           collapsed={treeCollapsed}
           onToggleCollapse={toggleTree}
+          onOpenFile={handleTreeOpenFile}
         />
         <div
           className="flex-1 overflow-auto flex flex-col min-w-0 relative"
