@@ -5,6 +5,7 @@ import { FileManagerPage } from './components/FileManagerPage';
 import { SearchPage } from './components/SearchPage';
 import { IndexPage } from './components/IndexPage';
 import { SimpleChat } from './components/SimpleChat';
+import { AgentToolsPage } from './components/AgentToolsPage';
 import { OrganizerPage } from './components/OrganizerPage';
 import { DigestPage } from './components/DigestPage';
 import { SettingsPage } from './components/SettingsPage';
@@ -18,6 +19,7 @@ const NAV_ITEMS = [
   { to: '/search', label: '搜索', icon: 'search' as const },
   { to: '/index', label: '索引管理', icon: 'database' as const },
   { to: '/chat', label: 'Agent 对话', icon: 'chat' as const },
+  { to: '/agent-tools', label: 'Agent 能力', icon: 'code' as const },
   { to: '/organizer', label: '整理', icon: 'clipboard' as const },
   { to: '/digest', label: '日报', icon: 'newspaper' as const },
   { to: '/settings', label: '设置', icon: 'settings' as const },
@@ -170,6 +172,7 @@ function App() {
               <Route path="/search" element={<SearchPage />} />
               <Route path="/index" element={<IndexPage />} />
               <Route path="/chat" element={<SimpleChat />} />
+              <Route path="/agent-tools" element={<AgentToolsPage />} />
               <Route path="/organizer" element={<OrganizerPage />} />
               <Route path="/digest" element={<DigestPage />} />
               <Route path="/settings" element={<SettingsPage />} />

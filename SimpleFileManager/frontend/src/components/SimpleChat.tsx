@@ -1,6 +1,6 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
-import { streamAgentMessage, getAgentTools } from '../api';
-import type { AgentToolDefinition } from '../api';
+import { useState, useRef, useCallback } from 'react';
+import { Link } from 'react-router-dom';
+import { streamAgentMessage } from '../api';
 import type { AgentPlan } from '../types';
 import { useChatSessions } from '../hooks/useChatSessions';
 import { ChatLayout } from './ui/ChatLayout';
@@ -21,50 +21,20 @@ interface ToolActivityItem {
 }
 
 /**
- * What the agent is actually allowed to do. The definitions come from
- * /agent/tools, so this stays truthful when the backend gains or drops a tool
- * instead of duplicating the list here.
+ * Empty state stays light: greeting plus example prompts. The tool reference
+ * lives on its own page — dumping five tool schemas here buried the
+ * conversation behind a wall of English.
  */
-function AgentCapabilities({ onPick }: { onPick: (prompt: string) => void }) {
-  const [tools, setTools] = useState<AgentToolDefinition[] | null>(null);
-
-  useEffect(() => {
-    getAgentTools()
-      .then(d => setTools(d.definitions || []))
-      .catch(() => setTools([]));
-  }, []);
-
+function ChatWelcome({ onPick }: { onPick: (prompt: string) => void }) {
   return (
-    <div className="w-full max-w-2xl px-4 py-6">
-      <div className="text-center mb-6">
-        <div className="text-base font-medium text-slate-700 mb-1">Agent 对话</div>
-        <div className="text-sm text-slate-400">我可以读取和分析你的文件，生成待你审批的整理计划</div>
+    <div className="h-full flex flex-col items-center justify-center text-slate-400 space-y-4 px-4">
+      <Icon name="chat" size={40} className="text-slate-300" />
+      <div className="text-center">
+        <div className="font-medium text-slate-600 mb-1">Agent 对话</div>
+        <div className="text-sm">我可以分析文件、搜索内容，并生成待你审批的整理计划</div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-5">
-        {(tools || []).map(t => (
-          <div key={t.function.name} className="flex items-start gap-2 p-2.5 bg-white rounded-lg border border-slate-200">
-            <Icon name="code" size={14} className="text-slate-400 mt-0.5 flex-shrink-0" />
-            <div className="min-w-0">
-              <div className="text-xs font-medium text-slate-700 font-mono">{t.function.name}</div>
-              <div className="text-xs text-slate-400 leading-relaxed">{t.function.description}</div>
-              {t.function.parameters?.properties && (
-                <div className="mt-1 flex flex-wrap gap-1">
-                  {Object.entries(t.function.parameters.properties).map(([name, spec]) => (
-                    <span key={name} className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 font-mono">
-                      {name}: {spec.type}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        ))}
-        {tools === null && <div className="col-span-full text-center text-sm text-slate-400">加载能力清单...</div>}
-      </div>
-
-      <div className="text-xs text-slate-400 mb-2">试试这样问：</div>
-      <div className="flex flex-wrap gap-1.5">
+      <div className="flex flex-wrap justify-center gap-1.5 max-w-lg">
         {EXAMPLE_PROMPTS.map(p => (
           <button
             key={p}
@@ -76,8 +46,9 @@ function AgentCapabilities({ onPick }: { onPick: (prompt: string) => void }) {
         ))}
       </div>
 
-      <div className="mt-5 text-xs text-slate-400 leading-relaxed">
-        所有写入操作都只生成待审批的计划，需要你在「整理」页确认后才会执行。
+      <div className="text-xs text-slate-400">
+        我只能读取文件，任何改动都会先生成待你审批的计划。
+        <Link to="/agent-tools" className="text-indigo-500 hover:underline ml-1">查看 Agent 能力</Link>
       </div>
     </div>
   );
@@ -207,7 +178,7 @@ export function SimpleChat() {
         toolActivity={toolActivity}
         currentStep={currentStep}
         onStop={handleStop}
-        emptyState={<AgentCapabilities onPick={(p) => sendRef.current?.(p)} />}
+        emptyState={<ChatWelcome onPick={(p) => sendRef.current?.(p)} />}
       />
     </div>
   );
