@@ -26,7 +26,7 @@ function ToolCard({ tool, def }: { tool: AgentToolDisplay; def?: AgentToolDefini
 
   return (
     <section
-      className={`bg-white rounded-lg border overflow-hidden ${
+      className={`bg-white rounded-lg border overflow-hidden flex flex-col h-full ${
         approval ? 'border-amber-200' : 'border-slate-200'
       }`}
     >
@@ -44,7 +44,10 @@ function ToolCard({ tool, def }: { tool: AgentToolDisplay; def?: AgentToolDefini
       </div>
 
       {paramNames.length > 0 && (
-        <div className="border-t border-slate-100 px-4 py-3 bg-slate-50/60">
+        /* flex-1 so a card with fewer parameters fills the extra row height
+           inside the shaded block, instead of leaving a white gap at the
+           bottom that reads as a rendering mistake. */
+        <div className="border-t border-slate-100 px-4 py-3 bg-slate-50/60 flex-1">
           <div className="text-[11px] font-medium text-slate-400 uppercase tracking-wider mb-2">参数</div>
           <div className="space-y-1.5">
             {paramNames.map(name => {
@@ -122,7 +125,7 @@ export function AgentToolsPage() {
               </h2>
               <div className="flex-1 h-px bg-slate-200" />
             </div>
-            <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-3 items-start">
+            <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-3">
               {readOnly.map(t => <ToolCard key={t.name} tool={t} def={byName.get(t.name)} />)}
             </div>
           </div>
@@ -136,7 +139,7 @@ export function AgentToolsPage() {
               </h2>
               <div className="flex-1 h-px bg-amber-200" />
             </div>
-            <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-3 items-start">
+            <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-3">
               {approval.map(t => <ToolCard key={t.name} tool={t} def={byName.get(t.name)} />)}
             </div>
           </div>
