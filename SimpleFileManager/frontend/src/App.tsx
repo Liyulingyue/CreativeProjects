@@ -76,23 +76,19 @@ function App() {
           }`}
         >
           {navCollapsed ? (
-            /* Collapsed: an explicit chevron under the logo, kept inside the
-               rail. A floating handle on the boundary used to cross into the
-               secondary sidebar, and folding the expander into the logo alone
-               was too implicit to spot. */
-            <div className="border-b border-slate-100 flex flex-col items-center h-16 flex-shrink-0">
+            /* Collapsed: the logo alone is the expander. A chevron on the
+               boundary used to cross into the secondary sidebar, and stacking
+               one under the logo only added clutter to a 56px rail. */
+            <button
+              onClick={toggleNav}
+              title="展开导航"
+              aria-label="展开导航"
+              className="h-16 w-full flex items-center justify-center border-b border-slate-100 hover:bg-slate-50 transition-colors"
+            >
               <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white">
                 <Icon name="folder" size={18} />
               </div>
-              <button
-                onClick={toggleNav}
-                title="展开导航"
-                aria-label="展开导航"
-                className="mt-0.5 p-0.5 rounded text-slate-400 hover:text-indigo-600 transition-colors"
-              >
-                <Icon name="chevronRight" size={16} />
-              </button>
-            </div>
+            </button>
           ) : (
             <div className="border-b border-slate-100 flex items-center gap-2.5 px-3 h-16">
               <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white flex-shrink-0">
