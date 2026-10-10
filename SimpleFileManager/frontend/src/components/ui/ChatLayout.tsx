@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Icon } from './Icon';
+import { useCollapse } from '../../hooks/useCollapse';
 
 export interface ChatMessage {
   id: string;
@@ -92,6 +93,7 @@ export function ChatLayout({
   };
 
   const [sessionsOpen, setSessionsOpen] = useState(false);
+  const { collapsed: sessionsCollapsed, toggle: toggleSessions } = useCollapse('sfm.chatSessionsCollapsed');
 
   return (
     <div className="flex h-full relative">
@@ -100,18 +102,31 @@ export function ChatLayout({
         <div className="fixed inset-0 z-30 bg-black/30 lg:hidden" onClick={() => setSessionsOpen(false)} />
       )}
 
-      {/* Sessions sidebar — desktop */}
-      <div className="hidden lg:flex w-64 bg-white border-r border-slate-200 flex-col flex-shrink-0">
-        <SessionList
-          sessions={sessions}
-          currentSessionId={currentSessionId}
-          onNewSession={onNewSession}
-          onSelectSession={onSelectSession}
-          onDeleteSession={onDeleteSession}
-          getTitle={getTitle}
-          formatTime={formatTime}
-        />
-      </div>
+      {/* Sessions sidebar — desktop. Collapses so it does not stack with the
+          app nav rail and squeeze the conversation into a narrow column. */}
+      {sessionsCollapsed ? (
+        <button
+          onClick={toggleSessions}
+          title="展开对话列表"
+          aria-label="展开对话列表"
+          className="hidden lg:flex flex-shrink-0 w-7 items-start justify-center pt-3 text-slate-400 hover:text-indigo-600 transition-colors"
+        >
+          <Icon name="chevronRight" size={16} />
+        </button>
+      ) : (
+        <div className="hidden lg:flex w-64 bg-white border-r border-slate-200 flex-col flex-shrink-0">
+          <SessionList
+            sessions={sessions}
+            currentSessionId={currentSessionId}
+            onNewSession={onNewSession}
+            onSelectSession={onSelectSession}
+            onDeleteSession={onDeleteSession}
+            getTitle={getTitle}
+            formatTime={formatTime}
+            onToggleCollapse={toggleSessions}
+          />
+        </div>
+      )}
 
       {/* Sessions sidebar — mobile drawer */}
       {sessionsOpen && (
@@ -250,7 +265,7 @@ export function ChatLayout({
 }
 
 function SessionList({
-  sessions, currentSessionId, onNewSession, onSelectSession, onDeleteSession, getTitle, formatTime,
+  sessions, currentSessionId, onNewSession, onSelectSession, onDeleteSession, getTitle, formatTime, onToggleCollapse,
 }: {
   sessions: ChatSession[];
   currentSessionId: string | null;
@@ -259,17 +274,28 @@ function SessionList({
   onDeleteSession: (id: string) => void;
   getTitle: (s: ChatSession) => string;
   formatTime: (t: number) => string;
+  onToggleCollapse?: () => void;
 }) {
   return (
     <>
-      <div className="p-3 border-b border-slate-100">
+      <div className="p-3 border-b border-slate-100 flex items-center gap-2">
         <button
           onClick={() => onNewSession()}
-          className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 transition-colors"
+          className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 transition-colors"
         >
           <Icon name="plus" size={16} />
           新建对话
         </button>
+        {onToggleCollapse && (
+          <button
+            onClick={onToggleCollapse}
+            title="收起对话列表"
+            aria-label="收起对话列表"
+            className="hidden lg:flex p-2 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-indigo-600 transition-colors"
+          >
+            <Icon name="chevronRight" size={16} className="rotate-180" />
+          </button>
+        )}
       </div>
       <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
         {sessions.length === 0 ? (

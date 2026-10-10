@@ -10,7 +10,7 @@ function formatBytes(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
-export function ServiceStatus() {
+export function ServiceStatus({ collapsed = false }: { collapsed?: boolean }) {
   const [health, setHealth] = useState<{ llm: boolean; embedding: boolean } | null>(null);
   const [storage, setStorage] = useState<number | null>(null);
 
@@ -38,6 +38,21 @@ export function ServiceStatus() {
   const dot = (ok: boolean) => (
     <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${ok ? 'bg-green-500' : 'bg-red-500'}`} />
   );
+
+  // In the icon rail there is no room for labels, so each indicator becomes a
+  // bare dot and the meaning moves into its tooltip.
+  if (collapsed) {
+    return (
+      <div className="flex items-center justify-center gap-1.5 pt-2">
+        <span title={health ? (health.llm ? 'LLM 服务正常' : 'LLM 服务异常') : '服务状态未知'}>
+          {dot(health?.llm ?? false)}
+        </span>
+        <span title={health ? (health.embedding ? 'Embedding 服务正常' : 'Embedding 服务异常') : '服务状态未知'}>
+          {dot(health?.embedding ?? false)}
+        </span>
+      </div>
+    );
+  }
 
   return (
     <div className="px-3 pt-2 space-y-1.5">

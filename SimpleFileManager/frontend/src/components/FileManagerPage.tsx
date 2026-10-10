@@ -11,6 +11,7 @@ import ContextMenu from './ui/ContextMenu';
 import { ConfirmDialog, PromptDialog } from './ui/Dialog';
 import { useToast } from './ui/Toast';
 import { Icon } from './ui/Icon';
+import { useCollapse } from '../hooks/useCollapse';
 
 type ViewMode = 'grid' | 'list' | 'compact';
 
@@ -51,6 +52,7 @@ export function FileManagerPage() {
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const { collapsed: treeCollapsed, toggle: toggleTree } = useCollapse('sfm.treeCollapsed');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [uploadProgress, setUploadProgress] = useState<{ loaded: number; total: number } | null>(null);
   const [clipboard, setClipboard] = useState<string[]>([]);
@@ -548,6 +550,8 @@ export function FileManagerPage() {
           onNavigate={(p) => { handleNavigate(p); setSidebarOpen(false); }}
           currentPath={currentPath}
           mobileOpen={sidebarOpen}
+          collapsed={treeCollapsed}
+          onToggleCollapse={toggleTree}
         />
         <div className="flex-1 overflow-auto flex flex-col min-w-0">
           <div className="flex items-center gap-2 flex-shrink-0">

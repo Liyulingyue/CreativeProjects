@@ -10,6 +10,7 @@ import { DigestPage } from './components/DigestPage';
 import { SettingsPage } from './components/SettingsPage';
 import { LoginPage } from './components/LoginPage';
 import { ServiceStatus } from './components/ServiceStatus';
+import { useCollapse } from './hooks/useCollapse';
 import { checkAuthStatus, getToken, getAuthEnabled, logout } from './auth';
 
 const NAV_ITEMS = [
@@ -24,6 +25,7 @@ const NAV_ITEMS = [
 
 function App() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const { collapsed: navCollapsed, toggle: toggleNav } = useCollapse('sfm.navCollapsed');
   const [authed, setAuthed] = useState(false);
   const [authChecking, setAuthChecking] = useState(true);
 
@@ -67,48 +69,69 @@ function App() {
 
         {/* App Sidebar */}
         <aside
-          className={`fixed lg:static z-40 h-full w-56 bg-white border-r border-slate-200 flex flex-col transition-transform duration-200 ${
+          className={`fixed lg:static z-40 h-full bg-white border-r relative border-slate-200 flex flex-col transition-all duration-200 ${
+            navCollapsed ? 'w-14' : 'w-56'
+          } ${
             mobileNavOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
           }`}
         >
-          <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white">
+          <div className={`border-b border-slate-100 flex items-center h-16 ${navCollapsed ? 'justify-center px-2' : 'gap-2.5 px-5'}`}>
+            <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white flex-shrink-0">
               <Icon name="folder" size={18} />
             </div>
-            <div className="text-sm font-semibold text-slate-800 tracking-tight">SimpleFileManager</div>
+            {!navCollapsed && <div className="text-sm font-semibold text-slate-800 tracking-tight truncate">SimpleFileManager</div>}
           </div>
 
-          <nav className="flex-1 overflow-y-auto px-3 py-3 space-y-0.5">
+          <nav className={`flex-1 overflow-y-auto py-3 ${navCollapsed ? 'px-2' : 'px-3'} space-y-0.5`}>
             {NAV_ITEMS.map(item => (
               <NavLink
                 key={item.to}
                 to={item.to}
                 onClick={() => setMobileNavOpen(false)}
+                title={navCollapsed ? item.label : undefined}
                 className={({ isActive }) =>
-                  `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  `flex items-center rounded-lg text-sm font-medium transition-colors ${
+                    navCollapsed ? 'justify-center px-2 py-2.5' : 'gap-3 px-3 py-2'
+                  } ${
                     isActive ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                   }`
                 }
               >
                 <Icon name={item.icon} size={18} />
-                {item.label}
+                {!navCollapsed && item.label}
               </NavLink>
             ))}
           </nav>
 
-          <div className="px-3 py-3 border-t border-slate-100">
+          <div className={`border-t border-slate-100 ${navCollapsed ? 'px-2 py-3' : 'px-3 py-3'}`}>
             {getAuthEnabled() && (
               <button
                 onClick={handleLogout}
-                className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 transition-colors"
+                title={navCollapsed ? '退出登录' : undefined}
+                className={`w-full flex items-center rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 transition-colors ${
+                  navCollapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-2'
+                }`}
               >
                 <Icon name="arrowLeft" size={18} />
-                退出登录
+                {!navCollapsed && '退出登录'}
               </button>
             )}
-            <div className="px-3 pt-2 text-xs text-slate-400">v0.4.0 · Local AI</div>
-            <ServiceStatus />
+            {!navCollapsed && (
+              <div className="px-3 pt-2 text-xs text-slate-400">v0.4.0 · Local AI</div>
+            )}
+            <div className={navCollapsed ? '' : 'mt-2'}>
+              <ServiceStatus collapsed={navCollapsed} />
+            </div>
           </div>
+
+          <button
+            onClick={toggleNav}
+            title={navCollapsed ? '展开导航' : '收起导航'}
+            aria-label={navCollapsed ? '展开导航' : '收起导航'}
+            className="absolute -right-3 bottom-6 hidden lg:flex items-center justify-center w-6 h-6 rounded-full border border-slate-200 bg-white text-slate-500 hover:text-indigo-600 hover:border-indigo-300 shadow-sm transition-colors"
+          >
+            <Icon name="chevronRight" size={14} className={navCollapsed ? '' : 'rotate-180'} />
+          </button>
         </aside>
 
         {/* Main */}
