@@ -69,27 +69,30 @@ function App() {
 
         {/* App Sidebar */}
         <aside
-          className={`fixed lg:relative z-40 h-full bg-white border-r border-slate-200 flex flex-col transition-all duration-200 ${
+          className={`fixed lg:static z-40 h-full bg-white border-r border-slate-200 flex flex-col transition-all duration-200 ${
             navCollapsed ? 'w-14' : 'w-56'
           } ${
             mobileNavOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
           }`}
         >
           {navCollapsed ? (
-            /* Collapsed: the logo itself is the expander. A separate floating
-               chevron would cross the panel boundary and land on top of the
-               secondary sidebar's own handle. Clicking the activity icon to
-            expand matches how VS Code's activity bar behaves. */
-            <button
-              onClick={toggleNav}
-              title="展开导航"
-              aria-label="展开导航"
-              className="h-16 w-full flex items-center justify-center border-b border-slate-100 hover:bg-slate-50 transition-colors"
-            >
+            /* Collapsed: an explicit chevron under the logo, kept inside the
+               rail. A floating handle on the boundary used to cross into the
+               secondary sidebar, and folding the expander into the logo alone
+               was too implicit to spot. */
+            <div className="border-b border-slate-100 flex flex-col items-center h-16 flex-shrink-0">
               <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white">
                 <Icon name="folder" size={18} />
               </div>
-            </button>
+              <button
+                onClick={toggleNav}
+                title="展开导航"
+                aria-label="展开导航"
+                className="mt-0.5 p-0.5 rounded text-slate-400 hover:text-indigo-600 transition-colors"
+              >
+                <Icon name="chevronRight" size={16} />
+              </button>
+            </div>
           ) : (
             <div className="border-b border-slate-100 flex items-center gap-2.5 px-3 h-16">
               <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white flex-shrink-0">
