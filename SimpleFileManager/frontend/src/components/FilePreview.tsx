@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { fetchFileContent, downloadFile, type FileNode } from '../api';
+import { useEffect, useState, useRef, useCallback } from 'react';
+import { fetchFileContent, downloadFile, type FileNode, type FileContent } from '../api';
 import { isImageFile, isTextFile, formatSize } from './FileExplorer/utils';
 import { authFetch } from '../auth';
 import { Icon } from './ui/Icon';
@@ -9,24 +9,58 @@ interface FilePreviewProps {
   onClose: () => void;
 }
 
+const SEGMENT_CHARS = 50000;
+
+function formatChars(n: number): string {
+  if (n >= 10000) return `${(n / 10000).toFixed(1)} 万字`;
+  return `${n} 字`;
+}
+
 export function FilePreview({ node, onClose }: FilePreviewProps) {
   const [content, setContent] = useState<string | null>(null);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [nextOffset, setNextOffset] = useState<number | null>(null);
+  const [totalChars, setTotalChars] = useState(0);
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const nextOffsetRef = useRef<number | null>(null);
+  const loadingMoreRef = useRef(false);
+  const pathRef = useRef(node.path);
+
+  nextOffsetRef.current = nextOffset;
+
+  // Appends a segment. `append` is false for the first load so a file switch
+  // never leaves the previous file's text on screen.
+  const loadSegment = useCallback(async (offset: number, append: boolean) => {
+    const path = pathRef.current;
+    const data: FileContent = await fetchFileContent(path, offset, SEGMENT_CHARS);
+    // A late response for a file the user already navigated away from.
+    if (pathRef.current !== path) return data;
+    setContent(prev => (append && prev !== null ? prev + data.content : data.content));
+    setNextOffset(data.next_offset);
+    setTotalChars(data.total_chars);
+    return data;
+  }, []);
 
   useEffect(() => {
+    pathRef.current = node.path;
     setBlobUrl(null);
     setContent(null);
+    setError(null);
+    setNextOffset(null);
+    setTotalChars(0);
+    loadingMoreRef.current = false;
 
     if (isTextFile(node)) {
-      setLoading(true); setError(null);
-      fetchFileContent(node.path)
-        .then(data => setContent(data.content))
+      setLoading(true);
+      loadSegment(0, false)
         .catch(e => setError(e instanceof Error ? e.message : 'Failed to load'))
         .finally(() => setLoading(false));
     } else if (isImageFile(node) || node.extension.toLowerCase() === '.pdf') {
-      setLoading(true); setError(null);
+      setLoading(true);
       authFetch(`/api/fs/download?path=${encodeURIComponent(node.path)}`)
         .then(res => res.blob())
         .then(blob => { setBlobUrl(URL.createObjectURL(blob)); })
@@ -35,11 +69,36 @@ export function FilePreview({ node, onClose }: FilePreviewProps) {
     }
 
     return () => { if (blobUrl) URL.revokeObjectURL(blobUrl); };
-  }, [node.path]);
+  }, [node.path, node, loadSegment]);
+
+  const loadMore = useCallback(async () => {
+    const offset = nextOffsetRef.current;
+    if (offset === null || loadingMoreRef.current) return;
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    try {
+      await loadSegment(offset, true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '加载更多失败');
+    } finally {
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
+    }
+  }, [loadSegment]);
+
+  // Reading a novel should not require clicking "more" every screenful.
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el || nextOffsetRef.current === null || loadingMoreRef.current) return;
+    const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (remaining < 600) loadMore();
+  };
 
   const isImg = isImageFile(node);
   const isPdf = node.extension.toLowerCase() === '.pdf';
   const isText = isTextFile(node);
+  const loaded = content?.length ?? 0;
+  const percent = totalChars > 0 ? Math.min(100, Math.round((loaded / totalChars) * 100)) : 100;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onClose}>
@@ -48,7 +107,12 @@ export function FilePreview({ node, onClose }: FilePreviewProps) {
           <div className="flex items-center gap-3 min-w-0">
             <div className="min-w-0">
               <div className="text-sm font-semibold text-slate-800 truncate">{node.name}</div>
-              <div className="text-xs text-slate-400">{formatSize(node.size)}</div>
+              <div className="text-xs text-slate-400">
+                {formatSize(node.size)}
+                {isText && totalChars > loaded && (
+                  <span className="ml-1">· 已读 {percent}%（{formatChars(loaded)} / {formatChars(totalChars)}）</span>
+                )}
+              </div>
             </div>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
@@ -62,7 +126,7 @@ export function FilePreview({ node, onClose }: FilePreviewProps) {
           </div>
         </div>
 
-        <div className="flex-1 overflow-auto bg-slate-50">
+        <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-auto bg-slate-50">
           {loading && (
             <div className="flex items-center justify-center py-12 text-slate-400">
               <div className="loading-spinner mr-3" /><span>加载中...</span>
@@ -82,7 +146,29 @@ export function FilePreview({ node, onClose }: FilePreviewProps) {
           )}
 
           {!loading && !error && isText && (
-            <pre className="p-4 text-sm text-slate-700 font-mono whitespace-pre-wrap break-words">{content}</pre>
+            <>
+              <pre className="p-4 text-sm text-slate-700 font-mono whitespace-pre-wrap break-words">{content}</pre>
+              {nextOffset !== null && (
+                <div className="px-4 pb-6 flex flex-col items-center gap-2">
+                  <button
+                    onClick={loadMore}
+                    disabled={loadingMore}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                  >
+                    {loadingMore ? <div className="loading-spinner" /> : <Icon name="chevronDown" size={15} />}
+                    {loadingMore ? '加载中...' : '加载更多'}
+                  </button>
+                  <div className="text-xs text-slate-400">
+                    已显示 {percent}%（{formatChars(loaded)} / {formatChars(totalChars)}），向下滚动会自动续载
+                  </div>
+                </div>
+              )}
+              {nextOffset === null && loaded > 0 && (
+                <div className="px-4 pb-6 text-center text-xs text-slate-400">
+                  已读完，共 {formatChars(totalChars)}
+                </div>
+              )}
+            </>
           )}
 
           {!loading && !error && !isImg && !isPdf && !isText && (

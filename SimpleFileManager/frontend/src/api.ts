@@ -576,14 +576,26 @@ export interface FileContent {
   path: string;
   name: string;
   content: string;
-  truncated: boolean;
+  offset: number;
+  /** null once the whole file has been served. */
+  next_offset: number | null;
+  total_chars: number;
   size: number;
   mime_type: string;
 }
 
-export async function fetchFileContent(path: string): Promise<FileContent> {
-  const res = await authFetch(`${API_BASE}/fs/content?path=${encodeURIComponent(path)}`);
-  if (!res.ok) throw new Error('Failed to fetch file content');
+export async function fetchFileContent(path: string, offset = 0, limit = 50000): Promise<FileContent> {
+  const params = new URLSearchParams({ path, offset: String(offset), limit: String(limit) });
+  const res = await authFetch(`${API_BASE}/fs/content?${params}`);
+  if (!res.ok) {
+    // Surface the server's reason (e.g. too large) instead of a generic line.
+    let detail = 'Failed to fetch file content';
+    try {
+      const body = await res.json();
+      if (typeof body?.detail === 'string') detail = body.detail;
+    } catch { /* keep default */ }
+    throw new Error(detail);
+  }
   return res.json();
 }
 

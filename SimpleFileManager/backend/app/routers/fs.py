@@ -18,6 +18,10 @@ from ..models import (
 
 fs = APIRouter()
 
+# Preview reads the whole file to slice it by character offset, so this bounds
+# how large a file may be before preview refuses it outright.
+MAX_PREVIEW_BYTES = 10 * 1024 * 1024
+
 
 def _get_mime_type(path: Path) -> str:
     ext = path.suffix.lower()
@@ -289,25 +293,47 @@ async def upload_files(path: str = "", files: list[UploadFile] = File(...)):
 
 
 @fs.get("/content")
-def get_content(path: str, limit: int = 50000):
+def get_content(path: str, limit: int = 50000, offset: int = 0):
+    """Return one slice of a text file.
+
+    Long documents (a novel is 1.7MB) are served in `limit`-sized character
+    segments via `offset`, because reading the whole thing into a modal at once
+    both stalls the browser and shows only a fraction of the text. Offsets count
+    characters, not bytes, so multi-byte CJK text stays aligned between calls.
+    """
     try:
         target = resolve_under_root(path)
     except PathOutsideRoot:
         raise HTTPException(status_code=400, detail="Path outside storage root")
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="File not found")
-    if target.stat().st_size > 5 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File too large to preview (max 5MB)")
+
+    size = target.stat().st_size
+    if size > MAX_PREVIEW_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large to preview (max {MAX_PREVIEW_BYTES // 1024 // 1024}MB)",
+        )
+
+    limit = max(1000, min(limit, 500_000))
+    offset = max(0, offset)
     try:
-        with open(target, "r", encoding="utf-8", errors="ignore") as f:
-            content = f.read(limit)
-        return {
-            "path": str(target),
-            "name": target.name,
-            "content": content,
-            "truncated": target.stat().st_size > limit,
-            "size": target.stat().st_size,
-            "mime_type": _get_mime_type(target),
-        }
-    except Exception as e:
+        # Decoding errors are dropped rather than raised, so the character count
+        # matches what the client actually receives.
+        text = target.read_text(encoding="utf-8", errors="ignore")
+    except (PermissionError, OSError, ValueError) as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+    total_chars = len(text)
+    segment = text[offset: offset + limit]
+    end = offset + len(segment)
+    return {
+        "path": str(target),
+        "name": target.name,
+        "content": segment,
+        "offset": offset,
+        "next_offset": end if end < total_chars else None,
+        "total_chars": total_chars,
+        "size": size,
+        "mime_type": _get_mime_type(target),
+    }
