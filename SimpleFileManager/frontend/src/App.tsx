@@ -75,24 +75,37 @@ function App() {
             mobileNavOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
           }`}
         >
-          <div className={`border-b border-slate-100 flex items-center h-16 ${navCollapsed ? 'justify-center px-2' : 'gap-2.5 px-3'}`}>
-            <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white flex-shrink-0">
-              <Icon name="folder" size={18} />
+          {navCollapsed ? (
+            /* Collapsed: the logo itself is the expander. A separate floating
+               chevron would cross the panel boundary and land on top of the
+               secondary sidebar's own handle. Clicking the activity icon to
+            expand matches how VS Code's activity bar behaves. */
+            <button
+              onClick={toggleNav}
+              title="展开导航"
+              aria-label="展开导航"
+              className="h-16 w-full flex items-center justify-center border-b border-slate-100 hover:bg-slate-50 transition-colors"
+            >
+              <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white">
+                <Icon name="folder" size={18} />
+              </div>
+            </button>
+          ) : (
+            <div className="border-b border-slate-100 flex items-center gap-2.5 px-3 h-16">
+              <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white flex-shrink-0">
+                <Icon name="folder" size={18} />
+              </div>
+              <div className="text-sm font-semibold text-slate-800 tracking-tight truncate">SimpleFileManager</div>
+              <button
+                onClick={toggleNav}
+                title="收起导航"
+                aria-label="收起导航"
+                className="ml-auto flex-shrink-0 p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-indigo-600 transition-colors"
+              >
+                <Icon name="chevronRight" size={16} className="rotate-180" />
+              </button>
             </div>
-            {!navCollapsed && (
-              <>
-                <div className="text-sm font-semibold text-slate-800 tracking-tight truncate">SimpleFileManager</div>
-                <button
-                  onClick={toggleNav}
-                  title="收起导航"
-                  aria-label="收起导航"
-                  className="ml-auto flex-shrink-0 p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-indigo-600 transition-colors"
-                >
-                  <Icon name="chevronRight" size={16} className="rotate-180" />
-                </button>
-              </>
-            )}
-          </div>
+          )}
 
           <nav className={`flex-1 overflow-y-auto py-3 ${navCollapsed ? 'px-2' : 'px-3'} space-y-0.5`}>
             {NAV_ITEMS.map(item => (
@@ -136,20 +149,7 @@ function App() {
             </div>
           </div>
 
-          {/* Rendered only when collapsed: a conditional `hidden` class loses to
-                `lg:flex` in Tailwind's cascade, which showed this handle
-                alongside the header toggle. */}
-          {navCollapsed && (
-            <button
-              onClick={toggleNav}
-              title="展开导航"
-              aria-label="展开导航"
-              className="absolute -right-2.5 top-3.5 hidden lg:flex items-center justify-center text-slate-400 hover:text-indigo-600 transition-colors"
-            >
-              <Icon name="chevronRight" size={16} />
-            </button>
-          )}
-        </aside>
+          </aside>
 
         {/* Main */}
         <div className="flex-1 flex flex-col overflow-hidden">
