@@ -26,7 +26,11 @@ log = logging.getLogger(__name__)
 agent = APIRouter()
 
 MAX_TOOL_RESULT_CHARS = 4000
-MAX_SESSION_MESSAGES = 40
+# Backstop only. Conversation length is normally bounded by the token budget in
+# compact(); this exists so a runaway session (millions of tiny messages) cannot
+# grow without limit. Kept high deliberately: the window is applied as a slice,
+# so whenever it does engage it invalidates the prompt cache prefix.
+MAX_SESSION_MESSAGES = 400
 
 
 class AgentRequest(BaseModel):
@@ -477,16 +481,25 @@ class Session:
         msgs = [{"role": "system", "content": SYSTEM_PROMPT}]
         if self.memory:
             msgs.append({"role": "system", "content": f"【历史工作记忆（早期对话摘要）】\n{self.memory}"})
+        # No sliding window here. A window that drops the oldest message each
+        # turn shifts the whole prefix, which throws away the server's prompt
+        # cache on every request. Size is bounded by compact() against the
+        # token budget; MAX_SESSION_MESSAGES is only a pathological backstop.
         msgs.extend(self.history[-MAX_SESSION_MESSAGES:])
         return msgs
 
     def compact(self) -> bool:
-        """Compress history if over context budget. Returns True if anything changed."""
+        """Compress history until it fits the context budget.
+
+        Returns True if anything changed. The final trim is a safety net: a
+        single oversized message (a pasted document, say) cannot be split, and
+        sending an over-budget prompt would be rejected by the server.
+        """
         budget = context_budget()
         changed = False
         for _ in range(3):
             if estimate_messages_tokens(self.build_messages()) <= budget:
-                break
+                return changed
             user_idx = [i for i, m in enumerate(self.history) if m.get("role") == "user"]
             if len(user_idx) < 2:
                 # can't split safely — hard trim the oldest message
@@ -502,6 +515,13 @@ class Session:
             changed = True
             if summary:
                 self.memory = (self.memory + "\n" + summary).strip()[-MAX_MEMORY_CHARS:]
+
+        # Still over budget: drop from the front until it fits. Without this a
+        # session whose single message exceeds the budget would send an
+        # over-length prompt and fail at the model.
+        while self.history and estimate_messages_tokens(self.build_messages()) > budget:
+            self.history.pop(0)
+            changed = True
         return changed
 
 
