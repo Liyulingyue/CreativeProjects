@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import { fetchAutoIndexStatus, fetchIndexSkipped, runAutoIndexNow, updateSettings } from '../api';
+import { fetchAutoIndexStatus, fetchIndexSkipped, fetchFileChunks, runAutoIndexNow, updateSettings } from '../api';
+import type { FileChunk } from '../api';
 import { authFetch } from '../auth';
 import { useToast } from './ui/Toast';
 import { ConfirmDialog } from './ui/Dialog';
@@ -22,6 +23,68 @@ interface IndexStats {
   semantic_percent: number;
 }
 
+/**
+ * The chunks a file was split into. Vectors themselves are unreadable, but the
+ * chunk text is exactly what both channels index — so this is where a bad cut
+ * or a mis-embedded passage becomes visible.
+ */
+function ChunkViewer({ filePath }: { filePath: string }) {
+  const [chunks, setChunks] = useState<FileChunk[]>([]);
+  const [total, setTotal] = useState(0);
+  const [nextOffset, setNextOffset] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async (offset: number, append: boolean) => {
+    setLoading(true);
+    try {
+      const d = await fetchFileChunks(filePath, offset, 20);
+      setChunks(prev => (append ? [...prev, ...d.chunks] : d.chunks));
+      setTotal(d.total);
+      setNextOffset(d.next_offset);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  }, [filePath]);
+
+  return (
+    <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
+      {chunks.length === 0 && !loading && (
+        <div className="text-xs text-slate-400 py-1">展开以查看分块</div>
+      )}
+      {chunks.map(c => (
+        <details key={c.idx} className="group">
+          <summary className="flex items-center gap-2 cursor-pointer text-[11px] text-slate-500 hover:text-slate-700 list-none">
+            <span className="font-mono text-slate-400 flex-shrink-0">#{c.idx}</span>
+            <span className="tabular-nums">@{c.offset}</span>
+            {c.vectorized
+              ? <span className="text-green-600">已向量化</span>
+              : <span className="text-amber-600">待向量化</span>}
+            <span className="ml-auto text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity">展开</span>
+          </summary>
+          <pre className="mt-1.5 p-2 bg-slate-50 rounded text-[11px] leading-relaxed text-slate-600 whitespace-pre-wrap break-words max-h-40 overflow-y-auto">
+            {c.text}
+          </pre>
+        </details>
+      ))}
+      {loading && <div className="text-xs text-slate-400">加载中...</div>}
+      {nextOffset !== null && (
+        <button
+          onClick={() => load(nextOffset, true)}
+          disabled={loading}
+          className="text-xs text-indigo-600 hover:underline disabled:opacity-50"
+        >
+          加载更多（共 {total} 块）
+        </button>
+      )}
+      {chunks.length > 0 && nextOffset === null && (
+        <div className="text-[11px] text-slate-400">已显示全部 {total} 块</div>
+      )}
+    </div>
+  );
+}
+
 export function IndexPage() {
   const { toast } = useToast();
   const [stats, setStats] = useState<IndexStats | null>(null);
@@ -35,6 +98,7 @@ export function IndexPage() {
   const [confirmDeleteFile, setConfirmDeleteFile] = useState<string | null>(null);
   const [skipped, setSkipped] = useState<IndexSkipped | null>(null);
   const [showSkipped, setShowSkipped] = useState(false);
+  const [expandedFile, setExpandedFile] = useState<string | null>(null);
 
   const loadAutoStatus = useCallback(async () => {
     try { setAutoStatus(await fetchAutoIndexStatus()); } catch (e) { console.error('Failed:', e); }
@@ -254,10 +318,19 @@ export function IndexPage() {
                       <Icon name="file" size={18} className="text-slate-400" />
                       <div className="text-sm font-medium text-slate-700 truncate">{file.file_path.split(/[/\\]/).pop()}</div>
                     </div>
-                    <button onClick={() => setConfirmDeleteFile(file.file_path)}
-                      className="p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors flex-shrink-0">
-                      <Icon name="trash" size={15} />
-                    </button>
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      <button
+                        onClick={() => setExpandedFile(v => v === file.file_path ? null : file.file_path)}
+                        className="p-1.5 rounded-md text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
+                        title="查看分块"
+                      >
+                        <Icon name={expandedFile === file.file_path ? 'chevronDown' : 'chevronRight'} size={15} />
+                      </button>
+                      <button onClick={() => setConfirmDeleteFile(file.file_path)}
+                        className="p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors">
+                        <Icon name="trash" size={15} />
+                      </button>
+                    </div>
                   </div>
                   {/* Vectorisation is incremental, so say plainly which part of
                       this file is embedded and which is still queued. */}
@@ -278,6 +351,7 @@ export function IndexPage() {
                     </span>
                   </div>
                   <div className="text-xs text-slate-500 bg-slate-50 rounded-md p-2 line-clamp-2">{file.content_preview}</div>
+                  {expandedFile === file.file_path && <ChunkViewer filePath={file.file_path} />}
                 </div>
               ))}
             </div>

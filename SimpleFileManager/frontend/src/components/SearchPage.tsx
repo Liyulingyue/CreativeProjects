@@ -144,11 +144,12 @@ export function SearchPage() {
                   <div className="text-sm mt-2">先在「索引管理」页运行自动索引</div>
                 </div>
               ) : results.results.map((r, idx) => (
-                <div key={r.path} className="bg-white rounded-lg shadow-card border border-slate-200 p-4">
+                <div key={`${r.path}#${r.chunk_idx}`} className="bg-white rounded-lg shadow-card border border-slate-200 p-4">
                   <div className="flex items-center justify-between gap-3 mb-2">
                     <div className="flex items-center gap-3 min-w-0">
                       <div className="w-7 h-7 shrink-0 rounded-md bg-indigo-50 text-indigo-600 flex items-center justify-center text-xs font-semibold">{idx + 1}</div>
                       <div className="text-sm font-medium text-slate-700 truncate">{r.name}</div>
+                      <span className="text-[10px] text-slate-400 font-mono flex-shrink-0">第 {r.chunk_idx} 块</span>
                       <SourceBadges sources={r.sources} />
                     </div>
                     <div className="text-xs text-slate-400 whitespace-nowrap">融合分 {r.score.toFixed(4)}</div>

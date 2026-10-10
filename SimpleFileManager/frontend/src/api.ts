@@ -474,6 +474,26 @@ export async function runAutoIndexNow(): Promise<Record<string, number>> {
   return res.json();
 }
 
+export interface FileChunk {
+  idx: number;
+  offset: number;
+  vectorized: boolean;
+  text: string;
+}
+
+export async function fetchFileChunks(path: string, offset = 0, limit = 20): Promise<{
+  path: string;
+  total: number;
+  offset: number;
+  next_offset: number | null;
+  chunks: FileChunk[];
+}> {
+  const params = new URLSearchParams({ file_path: path, offset: String(offset), limit: String(limit) });
+  const res = await authFetch(`${API_BASE}/rag/chunks?${params}`);
+  if (!res.ok) throw new Error('Failed to fetch chunks');
+  return res.json();
+}
+
 // ---- Hybrid Search ----
 
 export interface HybridSearchResult {
@@ -482,6 +502,8 @@ export interface HybridSearchResult {
   preview: string;
   score: number;
   sources: string[];
+  /** Which chunk matched — the unit both channels index. */
+  chunk_idx: number;
 }
 
 export interface HybridSearchResponse {
