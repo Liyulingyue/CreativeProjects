@@ -233,7 +233,7 @@ export async function sendAgentMessage(
   return res.json();
 }
 
-export async function getAgentTools(): Promise<{ tools: string[] }> {
+export async function getAgentTools(): Promise<{ tools: string[]; definitions: AgentToolDefinition[] }> {
   const res = await authFetch(`${API_BASE}/agent/tools`);
   if (!res.ok) throw new Error('Failed to get agent tools');
   return res.json();
@@ -245,9 +245,23 @@ export type AgentStreamEvent =
   | { type: 'meta'; steps_max: number }
   | { type: 'step'; step: number; of: number }
   | { type: 'token'; text: string }
-  | { type: 'tool'; tool: string; result: unknown }
+  | { type: 'tool_start'; tool: string; args?: Record<string, unknown> }
+  | { type: 'tool'; tool: string; args?: Record<string, unknown>; result: unknown }
   | { type: 'done'; response: string; plans: AgentPlan[]; steps_used: number }
   | { type: 'error'; message: string };
+
+export interface AgentToolParam {
+  type: string;
+  description?: string;
+}
+
+export interface AgentToolDefinition {
+  function: {
+    name: string;
+    description: string;
+    parameters?: { properties?: Record<string, AgentToolParam> };
+  };
+}
 
 /**
  * Consume /agent/chat/stream. `signal` lets the caller abort mid-generation;

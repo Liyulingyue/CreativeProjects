@@ -21,6 +21,61 @@ export interface ChatSession {
 interface ToolActivity {
   tool: string;
   status: 'running' | 'done';
+  args?: Record<string, unknown>;
+  result?: unknown;
+}
+
+const MAX_RESULT_CHARS = 800;
+
+function stringify(value: unknown): string {
+  try {
+    const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+    if (text === undefined) return '';
+    return text.length > MAX_RESULT_CHARS ? text.slice(0, MAX_RESULT_CHARS) + '\n… 已截断' : text;
+  } catch {
+    return String(value);
+  }
+}
+
+/** A tool invocation the user can open to see exactly what was asked and returned. */
+function ToolCallCard({ activity }: { activity: ToolActivity }) {
+  const [open, setOpen] = useState(false);
+  const running = activity.status === 'running';
+  const argEntries = activity.args ? Object.entries(activity.args) : [];
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
+      <button
+        onClick={() => !running && setOpen(v => !v)}
+        disabled={running}
+        className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left text-xs disabled:cursor-default"
+      >
+        {running ? (
+          <div className="w-2.5 h-2.5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+        ) : (
+          <Icon name="checkCircle" size={13} className="text-green-600 flex-shrink-0" />
+        )}
+        <span className="font-medium text-slate-700">{activity.tool}</span>
+        {argEntries.length > 0 && (
+          <span className="text-slate-400 truncate">
+            {argEntries.map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`).join('  ')}
+          </span>
+        )}
+        {!running && (
+          <Icon
+            name="chevronDown"
+            size={13}
+            className={`ml-auto flex-shrink-0 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`}
+          />
+        )}
+      </button>
+      {open && !running && activity.result !== undefined && (
+        <pre className="px-2.5 pb-2.5 text-[11px] leading-relaxed text-slate-600 whitespace-pre-wrap break-all border-t border-slate-200 pt-2 max-h-64 overflow-y-auto font-mono">
+          {stringify(activity.result)}
+        </pre>
+      )}
+    </div>
+  );
 }
 
 interface ChatLayoutProps {
@@ -189,20 +244,8 @@ export function ChatLayout({
             <div className="flex justify-start">
               <div className="max-w-[70%] bg-slate-100 rounded-xl px-4 py-2.5 space-y-2">
                 {toolActivity && toolActivity.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {toolActivity.map((t, i) => (
-                      <span key={`${t.tool}-${i}`}
-                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs ${
-                          t.status === 'running'
-                            ? 'bg-indigo-50 text-indigo-600'
-                            : 'bg-slate-200 text-slate-500'
-                        }`}>
-                        {t.status === 'running'
-                          ? <div className="w-2.5 h-2.5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
-                          : <Icon name="check" size={12} />}
-                        {t.tool}
-                      </span>
-                    ))}
+                  <div className="space-y-1.5">
+                    {toolActivity.map((t, i) => <ToolCallCard key={`${t.tool}-${i}`} activity={t} />)}
                   </div>
                 )}
                 {streamingText ? (

@@ -603,16 +603,21 @@ def agent_chat_stream(req: AgentRequest):
                     })
                     for tc in tool_calls:
                         name = tc["name"]
+                        args_for_display: dict = {}
                         try:
                             arguments = json.loads(tc["arguments"] or "{}")
+                            args_for_display = arguments
                         except json.JSONDecodeError as e:
                             result = {"success": False, "error": f"Malformed tool call: {e}"}
                         else:
+                            # announce before running so the UI can show real
+                            # progress instead of guessing when work finishes
+                            yield sse("tool_start", {"tool": name, "args": args_for_display})
                             result = execute_tool(name, arguments)
                             if name == "submit_plan" and result.get("success"):
                                 plan_ids.append(result.get("plan_id", ""))
                         tool_results.append({"tool": name, "result": result})
-                        yield sse("tool", {"tool": name, "result": result})
+                        yield sse("tool", {"tool": name, "args": args_for_display, "result": result})
                         all_messages.append({
                             "role": "tool",
                             "tool_call_id": tc["id"],
