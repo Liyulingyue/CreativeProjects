@@ -58,6 +58,9 @@ EMBED_BATCH_SIZE = 16
 EMBED_CHUNKS_PER_PASS = 16
 TICK_SECONDS = 5
 MIN_INTERVAL_SECONDS = 30
+# After standing down for the user, retry this soon once they go idle. A full
+# index_interval wait would make the resume feel broken.
+YIELD_RETRY_SECONDS = 45
 
 
 class AutoIndexer:
@@ -173,7 +176,13 @@ class AutoIndexer:
         if state.get_index_status().is_indexing:
             return
         interval = max(MIN_INTERVAL_SECONDS, settings.index_interval)
-        if time.time() - self._last_scan_ts < interval:
+        # A scan that stood down for the user is not really done. Waiting out
+        # the full interval would leave "resumes when idle" feeling broken, so
+        # retry as soon as the idle window has passed instead.
+        if self._yielded_for_interaction:
+            if interaction.is_busy() or time.time() - self._last_scan_ts < YIELD_RETRY_SECONDS:
+                return
+        elif time.time() - self._last_scan_ts < interval:
             return
         self._last_scan_ts = time.time()
         self.scan()
