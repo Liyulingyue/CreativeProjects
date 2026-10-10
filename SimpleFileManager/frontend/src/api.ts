@@ -484,6 +484,8 @@ export interface HybridSearchResult {
   sources: string[];
   /** Which chunk matched — the unit both channels index. */
   chunk_idx: number;
+  /** Length of the matched chunk, so the snippet can say how much is behind it. */
+  text_len?: number;
 }
 
 export interface HybridSearchResponse {

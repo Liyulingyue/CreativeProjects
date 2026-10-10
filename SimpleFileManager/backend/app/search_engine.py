@@ -112,6 +112,7 @@ class HybridSearchEngine:
             rows = conn.execute(
                 """SELECT path, name, chunk_idx,
                           snippet(fts_files, 2, '<<', '>>', '…', 24) AS preview,
+                          length(CAST(content AS TEXT)) AS text_len,
                           bm25(fts_files) AS rank
                    FROM fts_files
                    WHERE fts_files MATCH ?
@@ -129,10 +130,11 @@ class HybridSearchEngine:
                 "name": name,
                 "chunk_idx": chunk_idx,
                 "preview": preview,
+                "text_len": text_len,
                 "score": 1.0 - rank,  # bm25 rank is negative; lower = better
                 "source": "keyword",
             }
-            for path, name, chunk_idx, preview, rank in rows
+            for path, name, chunk_idx, preview, text_len, rank in rows
         ]
         if path_filter:
             out = [r for r in out if path_filter in r["path"] or path_filter in r["name"]]
@@ -153,6 +155,7 @@ class HybridSearchEngine:
                     "name": Path(r.get("file_path", "")).name,
                     "chunk_idx": int(r.get("chunk_idx", 0) or 0),
                     "preview": str(r.get("content", ""))[:200],
+                    "text_len": len(str(r.get("content", ""))),
                     "score": r.get("score", 0),
                     "source": "semantic",
                 }
@@ -178,7 +181,8 @@ class HybridSearchEngine:
                 key = (r["path"], r["chunk_idx"])
                 entry = rrf.setdefault(key, {
                     "path": r["path"], "name": r["name"], "chunk_idx": r["chunk_idx"],
-                    "preview": r["preview"], "score": 0.0, "sources": [],
+                    "preview": r["preview"], "text_len": r.get("text_len"),
+                    "score": 0.0, "sources": [],
                 })
                 entry["score"] += 1.0 / (60 + rank)
                 if r["source"] not in entry["sources"]:
@@ -186,6 +190,7 @@ class HybridSearchEngine:
                 # Prefer the keyword snippet, which is built around the match.
                 if r["source"] == "keyword":
                     entry["preview"] = r["preview"]
+                    entry["text_len"] = r.get("text_len")
 
         ranked = sorted(rrf.values(), key=lambda x: x["score"], reverse=True)
 

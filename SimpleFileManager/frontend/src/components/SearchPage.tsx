@@ -17,6 +17,31 @@ function SourceBadges({ sources }: { sources: string[] }) {
   );
 }
 
+
+/**
+ * Renders the snippet with the backend's <<hit>> markers as real highlights.
+ *
+ * SQLite's snippet() returns the matched terms wrapped in << >>, which were
+ * being drawn as literal text. Only the keyword channel produces them; semantic
+ * hits come back as plain text and pass through unchanged.
+ */
+function HighlightedSnippet({ text }: { text: string }) {
+  const parts = text.split(/(<<[^>]*>>)/g);
+  return (
+    <>
+      {parts.map((part, i) =>
+        part.startsWith('<<') && part.endsWith('>>') ? (
+          <mark key={i} className="bg-amber-200 text-slate-900 rounded-sm px-0.5">
+            {part.slice(2, -2)}
+          </mark>
+        ) : (
+          <span key={i}>{part}</span>
+        )
+      )}
+    </>
+  );
+}
+
 export function SearchPage() {
   const { toast } = useToast();
   const [query, setQuery] = useState('');
@@ -155,7 +180,14 @@ export function SearchPage() {
                     <div className="text-xs text-slate-400 whitespace-nowrap">融合分 {r.score.toFixed(4)}</div>
                   </div>
                   <div className="text-xs text-slate-400 truncate mb-2">{r.path}</div>
-                  <div className="text-xs text-slate-500 bg-slate-50 rounded-md p-2 line-clamp-2 whitespace-pre-wrap">{r.preview}</div>
+                  <div className="text-xs text-slate-600 bg-slate-50 rounded-md p-2.5 whitespace-pre-wrap leading-relaxed">
+                    <HighlightedSnippet text={r.preview} />
+                    {typeof r.text_len === 'number' && r.text_len > 0 && (
+                      <div className="mt-1.5 pt-1.5 border-t border-slate-200 text-[10px] text-slate-400">
+                        本块约 {r.text_len} 字
+                      </div>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
