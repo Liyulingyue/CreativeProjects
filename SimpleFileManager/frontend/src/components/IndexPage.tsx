@@ -98,17 +98,13 @@ export function IndexPage() {
             <div className="text-xl font-bold text-indigo-600">{stats?.indexed_count ?? '-'}</div>
             <div className="text-xs text-slate-500">已索引</div>
           </div>
-          <div className="bg-indigo-50 rounded-lg px-4 py-2 text-center min-w-[132px]">
+          <div
+            className="bg-indigo-50 rounded-lg px-4 py-2 text-center"
+            title={`已向量化 ${stats?.vector_count ?? 0} 块，共 ${stats?.total_chunks ?? 0} 块`}
+          >
             <div className="text-xl font-bold text-indigo-600">{stats?.semantic_percent ?? 0}%</div>
-            <div className="text-xs text-slate-500">语义覆盖</div>
-            <div className="mt-1 h-1 w-full rounded-full bg-indigo-100 overflow-hidden">
-              <div
-                className="h-full bg-indigo-500 rounded-full transition-all"
-                style={{ width: `${stats?.semantic_percent ?? 0}%` }}
-              />
-            </div>
-            <div className="text-[10px] text-slate-400 mt-0.5 tabular-nums">
-              {stats?.vector_count ?? 0} / {stats?.total_chunks ?? 0} 块
+            <div className="text-xs text-slate-500">
+              语义覆盖 {stats?.vector_count ?? 0}/{stats?.total_chunks ?? 0}
             </div>
           </div>
           {autoStatus && (
