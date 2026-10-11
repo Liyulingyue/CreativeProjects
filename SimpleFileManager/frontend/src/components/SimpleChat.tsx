@@ -59,6 +59,7 @@ export function SimpleChat() {
   const [isLoading, setIsLoading] = useState(false);
   const [streamingText, setStreamingText] = useState('');
   const [reasoningText, setReasoningText] = useState('');
+  const reasoningRef = useRef('');
   // kept per session so switching conversations does not erase the trace of
   // what the agent already read on the user's behalf
   const [traces, setTraces] = useState<Record<string, ToolActivityItem[]>>({});
@@ -95,6 +96,7 @@ export function SimpleChat() {
     let plans: AgentPlan[] = [];
     let streamError: string | null = null;
     setReasoningText('');
+    reasoningRef.current = '';
 
     try {
       await streamAgentMessage(
@@ -105,7 +107,8 @@ export function SimpleChat() {
             // Shown live, collapsed by default -- it is diagnostic, not the
             // answer, and it arrives first so it would otherwise push the real
             // reply below the fold.
-            setReasoningText((prev) => prev + (event.text ?? ''));
+            reasoningRef.current += event.text ?? '';
+            setReasoningText(reasoningRef.current);
           } else if (event.type === 'token') {
             if (!event.text) return;
             reply += event.text;
@@ -132,6 +135,11 @@ export function SimpleChat() {
           } else if (event.type === 'done') {
             plans = event.plans || [];
             reply = event.response || reply;
+            // Covers the case where the stream ends without the client having
+            // seen every reasoning delta.
+            if (event.reasoning && event.reasoning.length > reasoningRef.current.length) {
+              reasoningRef.current = event.reasoning;
+            }
           } else if (event.type === 'error') {
             streamError = event.message;
           }
@@ -164,8 +172,11 @@ export function SimpleChat() {
       finalText += `\n\n已生成 ${plans.length} 份整理计划（共 ${actionCount} 个操作），请到「整理」页的审批中心批准后执行。`;
     }
 
-    await addMessage(sessionId, { role: 'assistant', content: finalText });
+    // Persist the scratchpad with the reply. It lives only in the streaming
+    // bubble otherwise, and vanishes the moment the turn is saved.
+    await addMessage(sessionId, { role: 'assistant', content: finalText, reasoning: reasoningRef.current });
     setStreamingText('');
+    setReasoningText('');
   };
 
   // keeps the ref pointing at the latest closure without re-rendering

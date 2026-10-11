@@ -6,6 +6,8 @@ export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  /** Model scratchpad for this turn, persisted so it survives the stream. */
+  reasoning?: string;
   sources?: { file_path: string; score: number }[];
   timestamp: number;
 }
@@ -330,6 +332,18 @@ export function ChatLayout({
                     ? 'bg-indigo-600 text-white'
                     : 'bg-slate-100 text-slate-800'
                 }`}>
+                  {msg.reasoning && (
+                    <details className="mb-2 text-xs text-slate-500 group">
+                      <summary className="cursor-pointer select-none flex items-center gap-1.5 py-1 hover:text-slate-700 transition-colors">
+                        <Icon name="chevronRight" size={12} className="transition-transform group-open:rotate-90" />
+                        思考过程
+                        <span className="text-slate-400">({msg.reasoning.length} 字)</span>
+                      </summary>
+                      <div className="mt-1.5 pl-3 border-l-2 border-slate-300 whitespace-pre-wrap break-words leading-relaxed max-h-72 overflow-y-auto">
+                        {msg.reasoning}
+                      </div>
+                    </details>
+                  )}
                   {renderMessage ? renderMessage(msg) : (
                     <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">{msg.content}</div>
                   )}

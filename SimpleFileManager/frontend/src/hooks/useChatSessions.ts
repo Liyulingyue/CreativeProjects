@@ -77,7 +77,8 @@ export function useChatSessions(sessionType: string = 'chat') {
       sessionId,
       message.role,
       message.content,
-      message.sources
+      message.sources,
+      message.reasoning
     );
     setSessions(prev => prev.map(s => {
       if (s.id !== sessionId) return s;

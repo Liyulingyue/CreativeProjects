@@ -113,6 +113,10 @@ class ChatMessage(BaseModel):
     id: str
     role: str
     content: str
+    # The model's scratchpad for this turn. Stored per message so it stays
+    # visible after the turn ends -- rendering it only inside the live
+    # streaming bubble made it disappear the moment the reply was saved.
+    reasoning: str = ""
     sources: Optional[list[dict]] = None
     timestamp: int
 
@@ -138,6 +142,7 @@ class AddMessageRequest(BaseModel):
     session_id: str
     role: str
     content: str
+    reasoning: str = ""
     sources: Optional[list[dict]] = None
 
 

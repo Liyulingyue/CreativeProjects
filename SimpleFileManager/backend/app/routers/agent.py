@@ -811,6 +811,9 @@ def agent_chat_stream(req: AgentRequest):
         steps_used = 0
         max_steps = state.get_settings().max_agent_steps
         emitted: list[str] = []  # streamed text, kept for session history
+        # Accumulated across steps: the model reasons again after each tool
+        # call. Lives in the generator, not the enclosing function.
+        all_reasoning = ""
 
         yield sse("meta", {"steps_max": max_steps})
 
@@ -823,10 +826,7 @@ def agent_chat_stream(req: AgentRequest):
                 tool_calls: list[dict] = []
                 for kind, payload in chat_completion_stream(all_messages, tools=TOOLS):
                     if kind == "reasoning":
-                        # Kept out of turn_text on purpose: reasoning is the
-                        # model's scratchpad, not part of the answer, so it must
-                        # not be saved into history or fed back as an assistant
-                        # message on the next turn.
+                        all_reasoning += payload
                         yield sse("reasoning", {"text": payload})
                     elif kind == "token":
                         turn_text += payload
@@ -892,6 +892,7 @@ def agent_chat_stream(req: AgentRequest):
 
             yield sse("done", {
                 "response": final_text,
+                "reasoning": all_reasoning,
                 "tool_results": tool_results or None,
                 "plans": plans,
                 "steps_used": steps_used,

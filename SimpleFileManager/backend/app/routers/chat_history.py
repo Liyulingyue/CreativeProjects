@@ -53,7 +53,8 @@ def add_message(req: AddMessageRequest):
         session_id=req.session_id,
         role=req.role,
         content=req.content,
-        sources=req.sources
+        sources=req.sources,
+        reasoning=getattr(req, "reasoning", "") or "",
     )
 
 

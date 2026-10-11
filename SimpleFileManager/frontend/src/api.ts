@@ -128,6 +128,8 @@ export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  /** Model scratchpad for this turn, persisted so it survives the stream. */
+  reasoning?: string;
   sources?: { file_path: string; score: number }[];
   timestamp: number;
 }
@@ -179,12 +181,13 @@ export async function addChatMessage(
   sessionId: string,
   role: 'user' | 'assistant',
   content: string,
-  sources?: { file_path: string; score: number }[]
+  sources?: { file_path: string; score: number }[],
+  reasoning?: string
 ): Promise<ChatMessage> {
   const res = await authFetch(`${API_BASE}/chat_history/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id: sessionId, role, content, sources }),
+    body: JSON.stringify({ session_id: sessionId, role, content, sources, reasoning: reasoning ?? '' }),
   });
   if (!res.ok) throw new Error('Failed to add chat message');
   return res.json();
@@ -266,7 +269,7 @@ export type AgentStreamEvent =
   | { type: 'token'; text: string }
   | { type: 'tool_start'; tool: string; args?: Record<string, unknown> }
   | { type: 'tool'; tool: string; args?: Record<string, unknown>; result: unknown }
-  | { type: 'done'; response: string; plans: AgentPlan[]; steps_used: number }
+  | { type: 'done'; response: string; reasoning?: string; plans: AgentPlan[]; steps_used: number }
   | { type: 'error'; message: string };
 
 export interface AgentToolParam {

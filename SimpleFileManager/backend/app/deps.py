@@ -315,11 +315,15 @@ class ChatHistoryService:
                     session_id TEXT,
                     role TEXT,
                     content TEXT,
+                    reasoning TEXT DEFAULT '',
                     sources TEXT,
                     timestamp INTEGER,
                     FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
                 )
             """)
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(chat_messages)")]
+            if "reasoning" not in cols:
+                conn.execute("ALTER TABLE chat_messages ADD COLUMN reasoning TEXT DEFAULT ''")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session ON chat_messages(session_id)")
             conn.commit()
             conn.close()
@@ -366,16 +370,17 @@ class ChatHistoryService:
 
     def _get_messages(self, conn: sqlite3.Connection, session_id: str) -> list[ChatMessage]:
         rows = conn.execute(
-            "SELECT id, role, content, sources, timestamp FROM chat_messages WHERE session_id = ? ORDER BY timestamp ASC",
+            "SELECT id, role, content, reasoning, sources, timestamp FROM chat_messages WHERE session_id = ? ORDER BY timestamp ASC",
             (session_id,)
         ).fetchall()
         messages = []
         for row in rows:
-            msg_id, role, content, sources, timestamp = row
+            msg_id, role, content, reasoning, sources, timestamp = row
             sources_list = json.loads(sources) if sources else None
             messages.append(ChatMessage(
                 id=msg_id,
                 role=role,
+                reasoning=reasoning or "",
                 content=content,
                 sources=sources_list,
                 timestamp=timestamp
@@ -403,15 +408,17 @@ class ChatHistoryService:
             session_type=sess_type
         )
 
-    def add_message(self, session_id: str, role: str, content: str, sources: Optional[list] = None) -> ChatMessage:
+    def add_message(self, session_id: str, role: str, content: str, sources: Optional[list] = None,
+                    reasoning: str = "") -> ChatMessage:
         msg_id = uuid.uuid4().hex
         now = int(time.time() * 1000)
         sources_json = json.dumps(sources) if sources else None
         with self._lock:
             conn = self._get_conn()
             conn.execute(
-                "INSERT INTO chat_messages (id, session_id, role, content, sources, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
-                (msg_id, session_id, role, content, sources_json, now)
+                "INSERT INTO chat_messages (id, session_id, role, content, reasoning, sources, timestamp)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (msg_id, session_id, role, content, reasoning, sources_json, now)
             )
             conn.execute(
                 "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
@@ -419,7 +426,8 @@ class ChatHistoryService:
             )
             conn.commit()
             conn.close()
-        return ChatMessage(id=msg_id, role=role, content=content, sources=sources, timestamp=now)
+        return ChatMessage(id=msg_id, role=role, content=content, reasoning=reasoning,
+                          sources=sources, timestamp=now)
 
     def delete_session(self, session_id: str):
         with self._lock:
