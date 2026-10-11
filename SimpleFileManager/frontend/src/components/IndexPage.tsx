@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
-import { fetchAutoIndexStatus, fetchIndexSkipped, runAutoIndexNow, updateSettings } from '../api';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { fetchAutoIndexStatus, fetchIndexSkipped, pauseAutoIndex, resumeAutoIndex, runAutoIndexNow, updateSettings } from '../api';
 import { authFetch } from '../auth';
 import { useToast } from './ui/Toast';
 import { ConfirmDialog } from './ui/Dialog';
@@ -22,6 +22,118 @@ interface IndexStats {
   semantic_percent: number;
 }
 
+
+
+/**
+ * Background-work schedule, modelled on Windows Update's active hours: pick a
+ * window during which indexing may run, or pause it for a while. Indexing is
+ * deferrable, so keeping it out of the hours you are actually using the machine
+ * is the cheapest way to reclaim the cores.
+ */
+function ScheduleControl({ status, onPause, onResume, onChangeHours }: {
+  status: AutoIndexStatus;
+  onPause: (seconds: number) => void;
+  onResume: () => void;
+  onChangeHours: (window: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const [start, setStart] = useState('23:00');
+  const [end, setEnd] = useState('07:00');
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [open]);
+
+  const paused = status.paused_remaining !== 0 || status.paused_indefinitely;
+  const scheduled = status.active_hours && status.active_hours !== 'all';
+
+  const label = paused
+    ? status.paused_indefinitely ? '已暂停' : `${Math.ceil(status.paused_remaining / 60)} 分钟后恢复`
+    : scheduled
+      ? (status.in_active_hours ? '时段内运行' : '等待时段')
+      : '全天运行';
+
+  const tone = paused ? 'bg-amber-50 text-amber-700 hover:bg-amber-100'
+    : scheduled && !status.in_active_hours ? 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+    : 'bg-slate-100 text-slate-600 hover:bg-slate-200';
+
+  return (
+    <div className="relative" ref={ref}>
+      <button onClick={() => setOpen(v => !v)}
+        className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${tone}`}>
+        <Icon name={paused ? 'clock' : scheduled ? 'clock' : 'zap'} size={15} />
+        {label}
+        <Icon name="chevronDown" size={12} />
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-full mt-1 z-30 bg-white border border-slate-200 rounded-lg shadow-popover p-3 w-[268px] space-y-3">
+          <div>
+            <div className="text-xs font-medium text-slate-500 mb-1.5">稍后恢复</div>
+            <div className="flex flex-wrap gap-1.5">
+              {paused ? (
+                <button onClick={() => { onResume(); setOpen(false); }}
+                  className="px-2.5 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-700">
+                  立即恢复
+                </button>
+              ) : (
+                <>
+                  {[300, 1800].map(sec => (
+                    <button key={sec} onClick={() => { onPause(sec); setOpen(false); }}
+                      className="px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs text-slate-600 hover:border-indigo-300 hover:text-indigo-600">
+                      {sec / 60} 分钟后
+                    </button>
+                  ))}
+                  <button onClick={() => { onPause(0); setOpen(false); }}
+                    className="px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs text-slate-600 hover:border-indigo-300 hover:text-indigo-600">
+                    一直暂停
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="border-t border-slate-100 pt-3">
+            <div className="text-xs font-medium text-slate-500 mb-1.5">运行时段</div>
+            <div className="space-y-1.5">
+              <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+                <input type="radio" checked={status.active_hours === 'all'}
+                  onChange={() => onChangeHours('all')} className="accent-indigo-600" />
+                全天运行
+              </label>
+              <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+                <input type="radio" checked={status.active_hours !== 'all'}
+                  onChange={() => onChangeHours(`${start}-${end}`)} className="accent-indigo-600" />
+                仅在指定时段
+              </label>
+              {status.active_hours !== 'all' && (
+                <div className="flex items-center gap-1.5 pl-5">
+                  <input type="time" value={start}
+                    onChange={(e) => { setStart(e.target.value); onChangeHours(`${e.target.value}-${end}`); }}
+                    className="px-2 py-1 rounded border border-slate-200 text-xs" />
+                  <span className="text-slate-400 text-xs">至</span>
+                  <input type="time" value={end}
+                    onChange={(e) => { setEnd(e.target.value); onChangeHours(`${start}-${e.target.value}`); }}
+                    className="px-2 py-1 rounded border border-slate-200 text-xs" />
+                </div>
+              )}
+              {status.active_hours !== 'all' && !status.in_active_hours && (
+                <div className="pl-5 text-[11px] text-slate-400">当前不在时段内，索引会等到时段开始</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function IndexPage() {
   const { toast } = useToast();
   const [stats, setStats] = useState<IndexStats | null>(null);
@@ -35,6 +147,15 @@ export function IndexPage() {
   const [confirmDeleteFile, setConfirmDeleteFile] = useState<string | null>(null);
   const [skipped, setSkipped] = useState<IndexSkipped | null>(null);
   const [showSkipped, setShowSkipped] = useState(false);
+
+  const handlePause = async (seconds: number) => {
+    try { await pauseAutoIndex(seconds); await loadAutoStatus(); }
+    catch (e) { toast('暂停失败: ' + (e instanceof Error ? e.message : '未知错误'), 'error'); }
+  };
+  const handleResume = async () => {
+    try { await resumeAutoIndex(); await loadAutoStatus(); }
+    catch (e) { toast('恢复失败: ' + (e instanceof Error ? e.message : '未知错误'), 'error'); }
+  };
 
   const loadAutoStatus = useCallback(async () => {
     try { setAutoStatus(await fetchAutoIndexStatus()); } catch (e) { console.error('Failed:', e); }
@@ -157,6 +278,17 @@ export function IndexPage() {
                   style={{ transform: autoStatus.enabled ? 'translateX(18px)' : 'translateX(0)'}} />
               </button>
             </div>
+          )}
+                    {autoStatus && (
+            <ScheduleControl
+              status={autoStatus}
+              onPause={handlePause}
+              onResume={handleResume}
+              onChangeHours={(w) => {
+                updateSettings({ index_active_hours: w }).then(() => loadAutoStatus()).catch(
+                  (e) => toast('保存失败: ' + (e instanceof Error ? e.message : '未知错误'), 'error'));
+              }}
+            />
           )}
           <button onClick={handleScanNow} disabled={isScanning}
             className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 transition-colors">

@@ -1,5 +1,6 @@
 import time
 from fastapi import APIRouter
+from pydantic import BaseModel
 from ..deps import state
 from ..indexer import indexer
 from ..models import AppSettings, IndexStats, IndexStatus, AutoIndexStatus
@@ -43,6 +44,23 @@ def get_index_status() -> IndexStatus:
 @settings.get("/auto_index_status")
 def get_auto_index_status() -> AutoIndexStatus:
     return indexer.status()
+
+
+class PauseRequest(BaseModel):
+    seconds: int = 0
+
+
+@settings.post("/auto_index/pause")
+def pause_auto_index(req: PauseRequest) -> dict:
+    """Pause indexing. seconds=0 pauses until resumed manually."""
+    remaining = indexer.pause(req.seconds)
+    return {"paused": True, "seconds": remaining, "indefinite": remaining < 0}
+
+
+@settings.post("/auto_index/resume")
+def resume_auto_index() -> dict:
+    indexer.resume()
+    return {"paused": False, "seconds": 0, "indefinite": False}
 
 
 @settings.post("/auto_index/run")

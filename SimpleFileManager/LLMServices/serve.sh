@@ -60,7 +60,7 @@ env_value() {
     echo "$default"
 }
 
-EMBEDDING_MODEL="$SCRIPT_DIR/models/embedding/Qwen3-Embedding-0.6B-Q8_0.gguf"
+EMBEDDING_MODEL="$SCRIPT_DIR/models/embedding/LFM2.5-Embedding-350M-Q8_0.gguf"
 EMBEDDING_PORT=9011
 EMBEDDING_PID_FILE="$PID_DIR/embedding.pid"
 EMBEDDING_LOG="$LOG_DIR/embedding.log"

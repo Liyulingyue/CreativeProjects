@@ -31,7 +31,12 @@ INDEX_STATS_FILE = DATA_DIR / "index_stats.json"
 # Chunks per embedding call. Deliberately small: a batch is uninterruptible,
 # so a large one keeps the embedding server busy long after the indexer has
 # noticed the user started a conversation. At 16 the batch ran ~60s.
-EMBED_CHUNK_BATCH = 4
+# Embedding one 4-chunk batch costs ~26s of prompt processing on this box, and
+# most of that is fixed per-call overhead: 12 chunks in one call took 0.44x the
+# time of 4, so throughput scales well past 4. Kept interruptible -- the indexer
+# checks for interaction/pause between batches, so a large batch only delays
+# yielding, it does not block it.
+EMBED_CHUNK_BATCH = 12
 
 EMBEDDING_DIM_MAP = {
     "text-embedding-3-small": 1536,

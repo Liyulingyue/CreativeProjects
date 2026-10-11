@@ -35,6 +35,36 @@ def _display_path(path: Path) -> str:
         return path.name
 
 
+# Windows-Update style scheduling: an active-hours window during which
+# background indexing may run. "all" means no restriction. The window may wrap
+# past midnight (e.g. 23:00-07:00), which is the common case for a NAS that
+# should stay quiet during the day.
+ACTIVE_HOURS_ALL = "all"
+
+
+def _in_active_hours(window: str, now: Optional[datetime] = None) -> bool:
+    if not window or window == ACTIVE_HOURS_ALL:
+        return True
+    try:
+        start_s, end_s = window.split("-")
+        sh, sm = (int(x) for x in start_s.strip().split(":"))
+        eh, em = (int(x) for x in end_s.strip().split(":"))
+    except (ValueError, AttributeError):
+        log.warning("invalid index active hours %r, treating as all-day", window)
+        return True
+
+    t = (now or datetime.now())
+    cur = t.hour * 60 + t.minute
+    start = sh * 60 + sm
+    end = eh * 60 + em
+    if start == end:
+        return True
+    if start < end:
+        return start <= cur < end
+    # wraps past midnight
+    return cur >= start or cur < end
+
+
 def _is_hidden(entry: Path) -> bool:
     return ".simplefilemanager" in entry.parts or entry.name.startswith(".")
 
@@ -55,7 +85,10 @@ EMBED_BATCH_SIZE = 16
 # Chunks embedded per file per scan. The semantic pass resumes from the stored
 # position every scan, so this only bounds how long one scan takes — it is not
 # a cap on total coverage.
-EMBED_CHUNKS_PER_PASS = 16
+# Chunks embedded per scan before yielding to the tick. The pass size is not a
+# throughput knob (batching already amortizes the per-call cost), it only sets
+# how much work happens between re-checks of the pause/interaction state.
+EMBED_CHUNKS_PER_PASS = 48
 TICK_SECONDS = 5
 MIN_INTERVAL_SECONDS = 30
 # After standing down for the user, retry this soon once they go idle. A full
@@ -71,6 +104,9 @@ class AutoIndexer:
         self._last_scan_ts = 0.0
         self._last_scan_time: Optional[str] = None
         self._last_scan_files = 0
+        # Set when a pass ended with chunks still to embed, so the next tick
+        # picks straight back up instead of waiting out index_interval.
+        self._continue_pending = False
         self._pending_changes = 0
         # Files present in storage that never reach the index: unsupported
         # extension vs. recognised but unparseable. Surfaced in the UI so a
@@ -83,6 +119,10 @@ class AutoIndexer:
         # True when the last scan stood down because the user was interacting
         self._yielded_for_interaction = False
         self._scan_thread: Optional[threading.Thread] = None
+        # Manual pause, set by the API. `None` means not paused, an int is a
+        # unix timestamp after which indexing resumes on its own, and -1 is a
+        # pause with no automatic expiry.
+        self._paused_until: Optional[float] = None
         self._failed: dict[str, str] = {}
         self._init_db()
 
@@ -189,23 +229,74 @@ class AutoIndexer:
             except Exception:
                 traceback.print_exc()
 
+    def pause(self, seconds: int = 0):
+        """Pause indexing.
+
+        seconds=0 pauses until resumed manually; a positive value resumes on
+        its own once the countdown elapses. Kept separate from
+        auto_index_enabled, which is the master switch.
+        """
+        self._paused_until = -1.0 if seconds <= 0 else time.time() + seconds
+        log.info("indexing paused (%s)", "manual" if seconds <= 0 else f"{seconds}s")
+        return self.pause_remaining()
+
+    def resume(self):
+        self._paused_until = None
+        # Reset the interval clock so a resume does not wait out the previous
+        # tick's elapsed time before doing anything.
+        self._last_scan_ts = 0.0
+        log.info("indexing resumed")
+        return self.pause_remaining()
+
+    def pause_remaining(self) -> int:
+        if self._paused_until is None:
+            return 0
+        if self._paused_until < 0:
+            return -1  # indefinite
+        return max(0, int(self._paused_until - time.time()))
+
+    def is_paused(self) -> bool:
+        if self._paused_until is None:
+            return False
+        if self._paused_until < 0:
+            return True
+        if time.time() >= self._paused_until:
+            self._paused_until = None  # elapsed; resume on its own
+            # Reset the clock so the countdown actually delivers: without this
+            # the next scan waits out whatever is left of index_interval, which
+            # is up to five minutes after a five-minute pause.
+            self._last_scan_ts = 0.0
+            log.info("indexing pause elapsed; resuming")
+            return False
+        return True
+
     def _tick(self):
         settings = state.get_settings()
         if not settings.auto_index_enabled:
             self._pending_changes = 0
             return
+        if self.is_paused():
+            return
+        if not _in_active_hours(settings.index_active_hours):
+            return
         if state.get_index_status().is_indexing:
             return
         interval = max(MIN_INTERVAL_SECONDS, settings.index_interval)
-        # A scan that stood down for the user is not really done. Waiting out
-        # the full interval would leave "resumes when idle" feeling broken, so
-        # retry as soon as the idle window has passed instead.
-        if self._yielded_for_interaction:
+        # Work left over from the previous pass continues straight away. The
+        # interval exists to throttle empty scans, not to pace real work: with
+        # only EMBED_CHUNKS_PER_PASS chunks per pass, gating on it capped
+        # indexing at 16 chunks / 5 min, which put a full-text corpus weeks out.
+        # Interaction yielding is handled separately and still applies.
+        if self._continue_pending:
+            if interaction.is_busy():
+                return
+        elif self._yielded_for_interaction:
             if interaction.is_busy() or time.time() - self._last_scan_ts < YIELD_RETRY_SECONDS:
                 return
         elif time.time() - self._last_scan_ts < interval:
             return
         self._last_scan_ts = time.time()
+        self._continue_pending = False
         self.scan()
 
     # ---- scanning ----
@@ -355,16 +446,25 @@ class AutoIndexer:
                 batch = pieces[done: done + EMBED_CHUNKS_PER_PASS]
                 if not batch:
                     continue
+                stop_outer = False
                 try:
                     chunk_records = [(path, idx, text) for idx, (_off, text) in enumerate(batch)]
                     for j in range(0, len(chunk_records), EMBED_CHUNK_BATCH):
                         # Checked per batch, not just per file: one file is
                         # ~16 chunks, so a file-level check could sit on the
                         # cores for a minute after the user started talking.
-                        if interaction.is_busy():
+                        # A manual pause also has to take effect mid-scan.
+                        if interaction.is_busy() or self.is_paused() or not _in_active_hours(
+                                state.get_settings().index_active_hours):
                             self._set_vector_progress(path, done + j)
                             self._vector_partial[path] = done + j
-                            self._yielded_for_interaction = True
+                            if self.is_paused():
+                                # Paused is not the same as deferring to the
+                                # user: flagging it as an interaction yield
+                                # would schedule a fast retry we do not want.
+                                stop_outer = True
+                            else:
+                                self._yielded_for_interaction = True
                             break
                         part = chunk_records[j: j + EMBED_CHUNK_BATCH]
                         vectors = rag_svc.embedding_service.embed([c for _, _, c in part])
@@ -372,11 +472,14 @@ class AutoIndexer:
                             vectors,
                             [{"file_path": p, "content": c, "chunk_idx": i} for p, i, c in part],
                         )
-                    new_done = min(done + len(batch), total)
-                    self._set_vector_progress(path, new_done)
-                    self._vector_partial[path] = new_done
+                    if not stop_outer:
+                        new_done = min(done + len(batch), total)
+                        self._set_vector_progress(path, new_done)
+                        self._vector_partial[path] = new_done
                 except Exception:
                     traceback.print_exc()
+                if stop_outer:
+                    break
 
             if removed:
                 for p in removed:
@@ -392,6 +495,9 @@ class AutoIndexer:
 
             self._last_scan_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
             self._last_scan_files = len(current)
+            # Anything left over means this pass stopped on a budget, not on
+            # completion, so the next tick should continue without waiting.
+            self._continue_pending = bool(pending_vectors) and not self._yielded_for_interaction
 
             state.update_index_stats({
                 "indexed_files": self._known_count(),
@@ -457,6 +563,10 @@ class AutoIndexer:
             pending_changes=self._pending_changes,
             pending_vector_files=self._pending_vector_files,
             yielded_for_interaction=self._yielded_for_interaction,
+            paused_remaining=self.pause_remaining(),
+            paused_indefinitely=self._paused_until == -1.0,
+            active_hours=settings.index_active_hours,
+            in_active_hours=_in_active_hours(settings.index_active_hours),
         )
 
 

@@ -41,6 +41,7 @@ export interface AppSettings {
   index_interval: number;
   auto_index_enabled: boolean;
   index_debounce_seconds: number;
+  index_active_hours: string;
   max_agent_steps: number;
   storage_path: string;
   theme: string;
@@ -64,6 +65,10 @@ export interface AutoIndexStatus {
   pending_changes: number;
   pending_vector_files: number;
   yielded_for_interaction: boolean;
+  paused_remaining: number;
+  paused_indefinitely: boolean;
+  active_hours: string;
+  in_active_hours: boolean;
 }
 
 export type PlanActionType = 'move' | 'rename' | 'create_folder' | 'delete';

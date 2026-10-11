@@ -468,6 +468,22 @@ export async function fetchIndexSkipped(): Promise<IndexSkipped> {
   };
 }
 
+export async function pauseAutoIndex(seconds: number): Promise<{ paused: boolean; seconds: number }> {
+  const res = await authFetch(`${API_BASE}/settings/auto_index/pause`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ seconds }),
+  });
+  if (!res.ok) throw new Error('Failed to pause indexing');
+  return res.json();
+}
+
+export async function resumeAutoIndex(): Promise<{ paused: boolean }> {
+  const res = await authFetch(`${API_BASE}/settings/auto_index/resume`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to resume indexing');
+  return res.json();
+}
+
 export async function runAutoIndexNow(): Promise<Record<string, number>> {
   const res = await authFetch(`${API_BASE}/settings/auto_index/run`, { method: 'POST' });
   if (!res.ok) throw new Error('Failed to run auto index');

@@ -65,6 +65,9 @@ class AppSettings(BaseModel):
     index_interval: int = 300
     auto_index_enabled: bool = True
     index_debounce_seconds: int = 10
+    # "all", or an "HH:MM-HH:MM" window during which background indexing may
+    # run. May wrap past midnight (23:00-07:00).
+    index_active_hours: str = "all"
     max_agent_steps: int = 8
     storage_path: str = "./data"
     theme: str = "light"
@@ -242,6 +245,11 @@ class AutoIndexStatus(BaseModel):
     pending_vector_files: int = 0
     # The last scan stood down because the user was chatting or searching
     yielded_for_interaction: bool = False
+    # Manual pause. Seconds remaining until indexing resumes; 0 when not paused.
+    paused_remaining: int = 0
+    paused_indefinitely: bool = False
+    active_hours: str = "all"
+    in_active_hours: bool = True
 
 
 # ---- Auth ----
