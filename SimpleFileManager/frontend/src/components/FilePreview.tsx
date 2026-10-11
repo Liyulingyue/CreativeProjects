@@ -102,7 +102,7 @@ export function FilePreview({ node, onClose }: FilePreviewProps) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onClose}>
-      <div className="relative bg-white rounded-xl shadow-popover w-full max-w-4xl mx-2 sm:mx-4 max-h-[90vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+      <div className="relative bg-white rounded-xl shadow-popover w-full max-w-4xl mx-2 sm:mx-4 mt-14 sm:mt-0 max-h-[85vh] sm:max-h-[90vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 flex-shrink-0">
           <div className="flex items-center gap-3 min-w-0">
             <div className="min-w-0">

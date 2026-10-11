@@ -24,7 +24,7 @@ export function Breadcrumb({ path, onNavigate }: BreadcrumbProps) {
             ) : (
               <button
                 onClick={() => onNavigate(partPath)}
-                className="text-slate-500 hover:text-indigo-600 whitespace-nowrap transition-colors"
+                className="text-slate-500 hover:text-indigo-600 whitespace-nowrap py-1.5 transition-colors"
               >
                 {part}
               </button>

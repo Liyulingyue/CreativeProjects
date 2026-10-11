@@ -73,25 +73,25 @@ function ScheduleControl({ status, onPause, onResume, onChangeHours }: {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-1 z-30 bg-white border border-slate-200 rounded-lg shadow-popover p-3 w-[268px] space-y-3">
+        <div className="absolute right-0 top-full mt-1 z-30 bg-white border border-slate-200 rounded-lg shadow-popover p-3 w-[calc(100vw-2rem)] max-w-[268px] space-y-3">
           <div>
             <div className="text-xs font-medium text-slate-500 mb-1.5">稍后恢复</div>
             <div className="flex flex-wrap gap-1.5">
               {paused ? (
                 <button onClick={() => { onResume(); setOpen(false); }}
-                  className="px-2.5 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-700">
+                  className="px-2.5 py-2.5 rounded-lg bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-700">
                   立即恢复
                 </button>
               ) : (
                 <>
                   {[300, 1800].map(sec => (
                     <button key={sec} onClick={() => { onPause(sec); setOpen(false); }}
-                      className="px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs text-slate-600 hover:border-indigo-300 hover:text-indigo-600">
+                      className="px-2.5 py-2.5 rounded-lg border border-slate-200 text-xs text-slate-600 hover:border-indigo-300 hover:text-indigo-600">
                       {sec / 60} 分钟后
                     </button>
                   ))}
                   <button onClick={() => { onPause(0); setOpen(false); }}
-                    className="px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs text-slate-600 hover:border-indigo-300 hover:text-indigo-600">
+                    className="px-2.5 py-2.5 rounded-lg border border-slate-200 text-xs text-slate-600 hover:border-indigo-300 hover:text-indigo-600">
                     一直暂停
                   </button>
                 </>
@@ -102,25 +102,25 @@ function ScheduleControl({ status, onPause, onResume, onChangeHours }: {
           <div className="border-t border-slate-100 pt-3">
             <div className="text-xs font-medium text-slate-500 mb-1.5">运行时段</div>
             <div className="space-y-1.5">
-              <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+              <label className="flex items-center gap-2 py-2 text-xs text-slate-600 cursor-pointer">
                 <input type="radio" checked={status.active_hours === 'all'}
                   onChange={() => onChangeHours('all')} className="accent-indigo-600" />
                 全天运行
               </label>
-              <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+              <label className="flex items-center gap-2 py-2 text-xs text-slate-600 cursor-pointer">
                 <input type="radio" checked={status.active_hours !== 'all'}
                   onChange={() => onChangeHours(`${start}-${end}`)} className="accent-indigo-600" />
                 仅在指定时段
               </label>
               {status.active_hours !== 'all' && (
-                <div className="flex items-center gap-1.5 pl-5">
+                <div className="flex flex-wrap items-center gap-1.5 pl-5">
                   <input type="time" value={start}
                     onChange={(e) => { setStart(e.target.value); onChangeHours(`${e.target.value}-${end}`); }}
-                    className="px-2 py-1 rounded border border-slate-200 text-xs" />
+                    className="px-2 py-2 rounded border border-slate-200 text-base sm:text-xs" />
                   <span className="text-slate-400 text-xs">至</span>
                   <input type="time" value={end}
                     onChange={(e) => { setEnd(e.target.value); onChangeHours(`${start}-${e.target.value}`); }}
-                    className="px-2 py-1 rounded border border-slate-200 text-xs" />
+                    className="px-2 py-2 rounded border border-slate-200 text-base sm:text-xs" />
                 </div>
               )}
               {status.active_hours !== 'all' && !status.in_active_hours && (
@@ -271,10 +271,11 @@ export function IndexPage() {
                 )}
               </span>
               <button onClick={handleToggleAuto} disabled={isToggling}
-                className={`relative w-10 h-5.5 rounded-full transition-colors disabled:opacity-50 ${autoStatus.enabled ? 'bg-indigo-600' : 'bg-slate-300'}`}
+                className={`relative w-10 h-[22px] rounded-full transition-colors disabled:opacity-50
+                  after:content-[''] after:absolute after:-inset-y-2.5 after:-inset-x-2.5 ${autoStatus.enabled ? 'bg-indigo-600' : 'bg-slate-300'}`}
                 style={{ width: '40px', height: '22px' }}
                 title={autoStatus.enabled ? '关闭' : '开启'}>
-                <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${autoStatus.enabled ? 'translate-x-4.5' : ''}`}
+                <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${autoStatus.enabled ? 'translate-x-[18px]' : 'translate-x-0'}`}
                   style={{ transform: autoStatus.enabled ? 'translateX(18px)' : 'translateX(0)'}} />
               </button>
             </div>

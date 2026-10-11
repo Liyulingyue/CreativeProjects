@@ -7,6 +7,8 @@ interface SidebarProps {
   onNavigate: (path: string) => void;
   currentPath: string;
   mobileOpen?: boolean;
+  /** Mobile drawer only: the scrim is not an obvious dismiss target. */
+  onClose?: () => void;
   collapsed?: boolean;
   onToggleCollapse?: () => void;
   /** Tree leaves are files; opening them means previewing, not browsing. */
@@ -68,7 +70,7 @@ function TreeItem({ node, level, currentPath, onNavigate, onOpenFile }: TreeItem
   );
 }
 
-export function Sidebar({ tree, onNavigate, currentPath, mobileOpen = false, collapsed = false, onToggleCollapse, onOpenFile }: SidebarProps) {
+export function Sidebar({ tree, onNavigate, currentPath, mobileOpen = false, onClose, collapsed = false, onToggleCollapse, onOpenFile }: SidebarProps) {
   return (
     <>
       {/* Desktop: collapses to a narrow handle so the folder tree does not
@@ -96,7 +98,18 @@ export function Sidebar({ tree, onNavigate, currentPath, mobileOpen = false, col
 
       {/* Mobile drawer */}
       {mobileOpen && (
-        <div className="fixed left-0 top-0 bottom-0 z-40 w-64 bg-white border-r border-slate-200 flex flex-col lg:hidden shadow-popover">
+        <div className="fixed left-0 top-0 bottom-0 z-40 w-72 max-w-[85vw] bg-white border-r border-slate-200 flex flex-col lg:hidden shadow-popover">
+          {/* Tapping the scrim is not an obvious way to dismiss a drawer, so
+              give it a real close button. */}
+          <div className="flex items-center justify-end px-2 pt-2 lg:hidden">
+            <button
+              onClick={onClose}
+              aria-label="关闭文件夹栏"
+              className="p-2.5 -mr-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+            >
+              <Icon name="x" size={18} />
+            </button>
+          </div>
           <SidebarContent tree={tree} onNavigate={onNavigate} currentPath={currentPath} onOpenFile={onOpenFile} />
         </div>
       )}

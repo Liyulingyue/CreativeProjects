@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Icon } from './Icon';
 
 interface MenuItem {
@@ -18,6 +18,23 @@ interface ContextMenuProps {
 
 export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
+  // Measured after mount instead of estimated from the item count. The old
+  // `items.length * 36 + 8` guess drifted from the real item height, which
+  // clipped the bottom of the menu when a long press landed near the bottom of
+  // a phone screen -- and the menu is the only way to reach rename/delete on
+  // touch. Rendered unpositioned first, then placed once the real box is known.
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const el = menuRef.current;
+    if (!el) return;
+    const { width, height } = el.getBoundingClientRect();
+    const margin = 8;
+    setPos({
+      left: Math.max(margin, Math.min(x, window.innerWidth - width - margin)),
+      top: Math.max(margin, Math.min(y, window.innerHeight - height - margin)),
+    });
+  }, [x, y, items]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -32,14 +49,11 @@ export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps) 
     };
   }, [onClose]);
 
-  const adjustedX = Math.min(x, window.innerWidth - 200);
-  const adjustedY = Math.min(y, window.innerHeight - (items.length * 36 + 8));
-
   return (
     <div
       ref={menuRef}
       className="fixed z-50 bg-white rounded-lg shadow-popover border border-slate-200 py-1 min-w-[160px]"
-      style={{ left: adjustedX, top: adjustedY }}
+      style={{ left: pos?.left ?? x, top: pos?.top ?? y, visibility: pos ? 'visible' : 'hidden' }}
     >
       {items.map((item, index) => (
         <button

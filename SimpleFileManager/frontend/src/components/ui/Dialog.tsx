@@ -84,7 +84,7 @@ export function PromptDialog({ open, title, message, defaultValue = '', onConfir
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={(e) => { if (e.key === 'Enter' && value.trim()) onConfirm(value); }}
         autoFocus
-        className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 transition-all"
+        className="w-full px-3 py-2.5 rounded-lg border border-slate-200 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 transition-all"
       />
       <div className="flex justify-end gap-2 mt-5">
         <button onClick={onCancel} className="px-4 py-2 rounded-lg text-sm text-slate-600 hover:bg-slate-100 transition-colors font-medium">取消</button>

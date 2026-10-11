@@ -85,7 +85,7 @@ export function SearchPage() {
   return (
     <div className="flex flex-col h-full bg-slate-50">
       {/* Search bar */}
-      <div className="bg-white border-b border-slate-200 px-4 sm:px-6 py-3 sm:py-4 flex-shrink-0">
+      <div className="bg-white border-b border-slate-200 px-4 sm:px-4 sm:px-6 py-3 sm:py-4 flex-shrink-0">
         <form onSubmit={handleSearch} className="flex items-center gap-2 sm:gap-3">
           <div className="relative flex-1 min-w-0">
             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"><Icon name="search" size={18} /></span>
@@ -102,7 +102,7 @@ export function SearchPage() {
 
       {/* Results */}
       <div className="flex-1 overflow-y-auto">
-        <div className="px-6 py-6">
+        <div className="px-4 sm:px-6 py-6">
           {!hasSearched && (
             <div className="text-center py-16 text-slate-400">
               <Icon name="search" size={40} className="mx-auto text-slate-300 mb-4" />

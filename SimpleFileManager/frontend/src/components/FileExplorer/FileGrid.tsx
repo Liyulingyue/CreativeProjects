@@ -34,8 +34,8 @@ export default function FileGrid({
   const folders = items.filter(i => i.is_dir);
   const files = items.filter(i => !i.is_dir);
 
-  const hoverBtn = 'p-1.5 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors';
-  const hoverBtnDanger = 'p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors';
+  const hoverBtn = 'p-2.5 sm:p-1.5 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors';
+  const hoverBtnDanger = 'p-2.5 sm:p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors';
 
   return (
     <div className="grid grid-cols-2 xs:grid-cols-3 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-2 sm:gap-3 p-3 sm:p-4">
@@ -65,7 +65,7 @@ export default function FileGrid({
               if (e.key === 'Escape') onCancelCreateFolder();
             }}
             placeholder="文件夹名称"
-            className="w-full bg-transparent text-center text-xs text-slate-700 outline-none border-b border-indigo-300 pb-0.5"
+            className="w-full bg-transparent text-center text-base sm:text-xs text-slate-700 outline-none border-b border-indigo-300 pb-0.5"
           />
           <button
             onClick={onCancelCreateFolder}

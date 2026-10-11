@@ -606,6 +606,7 @@ export function FileManagerPage() {
           onNavigate={(p) => { handleNavigate(p); setSidebarOpen(false); }}
           currentPath={currentPath}
           mobileOpen={sidebarOpen}
+          onClose={() => setSidebarOpen(false)}
           collapsed={treeCollapsed}
           onToggleCollapse={toggleTree}
           onOpenFile={handleTreeOpenFile}
