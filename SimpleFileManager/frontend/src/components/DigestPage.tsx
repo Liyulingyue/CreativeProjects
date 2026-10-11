@@ -82,7 +82,7 @@ export function DigestPage() {
                   </div>
                   {latest?.date === current.date && <span className="px-2 py-0.5 rounded-full bg-green-50 text-green-600 text-xs font-medium">最新</span>}
                 </div>
-                <div className="text-sm leading-relaxed text-slate-700 whitespace-pre-wrap">{current.content}</div>
+                <div className="text-sm leading-relaxed text-slate-700 whitespace-pre-wrap break-words">{current.content}</div>
               </div>
             </div>
           </div>

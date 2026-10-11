@@ -14,7 +14,7 @@ services:
       - LLM_MODEL=${LLM_MODEL:-LFM2.5-8B-A1B-Q8_0}
       - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
       - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL:-http://host.docker.internal:9011/v1/embeddings}
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-Qwen3-Embedding-0.6B-Q8_0}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-LFM2.5-Embedding-350M-Q8_0}
       - EMBEDDING_DIM=${EMBEDDING_DIM:-1024}
       - INDEX_INTERVAL=${INDEX_INTERVAL:-300}
       - AUTO_INDEX_ENABLED=${AUTO_INDEX_ENABLED:-true}
@@ -34,6 +34,11 @@ services:
     container_name: sfm-frontend
     ports:
       - "80:80"
+      - "443:443"
+    volumes:
+      # TLS material for the PWA path. A service worker needs a trusted cert,
+      # so ca.crt has to be installed on any device that should get the PWA.
+      - ./certs:/etc/nginx/certs:ro
     depends_on:
       - backend
     restart: unless-stopped

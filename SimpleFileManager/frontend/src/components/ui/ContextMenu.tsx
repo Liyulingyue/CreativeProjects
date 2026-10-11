@@ -46,7 +46,7 @@ export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps) 
           key={index}
           disabled={item.disabled}
           onClick={() => { if (!item.disabled) { item.onClick(); onClose(); } }}
-          className={`w-full flex items-center gap-2.5 px-3 py-2 text-left text-sm transition-colors ${
+          className={`w-full flex items-center gap-2.5 px-3 py-2.5 sm:py-2 text-left text-sm transition-colors ${
             item.disabled
               ? 'text-slate-300 cursor-not-allowed'
               : item.danger

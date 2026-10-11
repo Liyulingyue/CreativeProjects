@@ -120,7 +120,7 @@ export function FilePreview({ node, onClose }: FilePreviewProps) {
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 text-slate-700 text-xs font-medium hover:bg-slate-200 transition-colors">
               <Icon name="download" size={14} />下载
             </button>
-            <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors">
+            <button onClick={onClose} className="w-10 h-10 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors">
               <Icon name="x" size={18} />
             </button>
           </div>

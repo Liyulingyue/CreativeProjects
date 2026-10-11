@@ -41,7 +41,7 @@ export function Toolbar({
           onChange={(e) => onSearchChange(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && onSearch()}
           placeholder="搜索..."
-          className="w-full pl-9 pr-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 transition-all"
+          className="w-full pl-9 pr-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-base sm:text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 transition-all"
         />
       </div>
 
@@ -65,7 +65,7 @@ export function Toolbar({
 
       {/* Actions */}
       <button onClick={onRefresh} className={btnGhost} title="刷新"><Icon name="refresh" size={18} /></button>
-      <button onClick={onUpload} className={`${btnGhost} hidden sm:flex`} title="上传"><Icon name="upload" size={18} /></button>
+      <button onClick={onUpload} className={btnGhost} title="上传"><Icon name="upload" size={18} /></button>
       <button
         onClick={onNewFolder}
         className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 transition-colors"

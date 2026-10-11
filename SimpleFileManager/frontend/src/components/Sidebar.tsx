@@ -41,13 +41,13 @@ function TreeItem({ node, level, currentPath, onNavigate, onOpenFile }: TreeItem
         className={`flex items-center gap-1 py-1.5 pr-2 rounded-md cursor-pointer text-sm transition-colors ${
           isActive ? 'bg-indigo-50 text-indigo-700 font-medium' : 'text-slate-600 hover:bg-slate-100'
         }`}
-        style={{ paddingLeft: `${level * 12 + 8}px` }}
+        style={{ paddingLeft: `${level * 10 + 8}px` }}
         onClick={handleClick}
       >
         {hasChildren ? (
           <button
             onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
-            className="w-4 flex items-center justify-center text-slate-400 flex-shrink-0 hover:text-slate-600"
+            className="w-4 -my-2 py-2 flex items-center justify-center text-slate-400 flex-shrink-0 hover:text-slate-600"
           >
             <Icon name={expanded ? 'chevronDown' : 'chevronRight'} size={14} />
           </button>

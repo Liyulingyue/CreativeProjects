@@ -81,7 +81,7 @@ export default function FileCompactList({
             <div className="flex-1 text-xs text-slate-700 truncate min-w-0">{folder.name}</div>
             <div className="w-14 text-[10px] text-slate-400 text-right hidden sm:block">—</div>
             <div className="w-20 text-[10px] text-slate-400 text-right hidden md:block">{formatDate(folder.modified)}</div>
-            <div className="w-16 flex justify-end gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity hidden sm:flex">
+            <div className="w-16 flex justify-end gap-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity hidden sm:flex">
               <button onClick={(e) => { e.stopPropagation(); onRename(folder); }} className={hoverBtn}><Icon name="edit" size={12} /></button>
               <button onClick={(e) => { e.stopPropagation(); onDelete(folder); }} className={hoverBtnDanger}><Icon name="trash" size={12} /></button>
             </div>
@@ -111,7 +111,7 @@ export default function FileCompactList({
             <div className="flex-1 text-xs text-slate-800 truncate min-w-0">{file.name}</div>
             <div className="w-14 text-[10px] text-slate-500 text-right hidden sm:block">{formatSize(file.size)}</div>
             <div className="w-20 text-[10px] text-slate-400 text-right hidden md:block">{formatDate(file.modified)}</div>
-            <div className="w-16 flex justify-end gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity hidden sm:flex">
+            <div className="w-16 flex justify-end gap-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity hidden sm:flex">
               <button onClick={(e) => { e.stopPropagation(); onDownload(file); }} className={hoverBtn}><Icon name="download" size={12} /></button>
               <button onClick={(e) => { e.stopPropagation(); onRename(file); }} className={hoverBtn}><Icon name="edit" size={12} /></button>
               <button onClick={(e) => { e.stopPropagation(); onDelete(file); }} className={hoverBtnDanger}><Icon name="trash" size={12} /></button>

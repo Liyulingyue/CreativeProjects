@@ -164,7 +164,7 @@ export function SearchPage() {
                     )}
                   </div>
                   {aiAnswer ? (
-                    <div className="text-base leading-relaxed whitespace-pre-wrap text-slate-800">
+                    <div className="text-base leading-relaxed whitespace-pre-wrap break-words text-slate-800">
                       {aiAnswer}
                       {isSummarizing && (
                         <span className="inline-block w-2 h-4 ml-0.5 bg-violet-400 animate-pulse align-text-bottom" />
@@ -202,7 +202,7 @@ export function SearchPage() {
                     <div className="text-xs text-slate-400 whitespace-nowrap">融合分 {r.score.toFixed(4)}</div>
                   </div>
                   <div className="text-xs text-slate-400 truncate mb-2">{r.path}</div>
-                  <div className="text-xs text-slate-600 bg-slate-50 rounded-md p-2.5 whitespace-pre-wrap leading-relaxed">
+                  <div className="text-xs text-slate-600 bg-slate-50 rounded-md p-2.5 whitespace-pre-wrap break-words leading-relaxed">
                     <HighlightedSnippet text={r.preview} />
                     {typeof r.text_len === 'number' && r.text_len > 0 && (
                       <div className="mt-1.5 pt-1.5 border-t border-slate-200 text-[10px] text-slate-400">

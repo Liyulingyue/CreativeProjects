@@ -38,7 +38,7 @@ export default function FileGrid({
   const hoverBtnDanger = 'p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors';
 
   return (
-    <div className="grid grid-cols-3 xs:grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-2 sm:gap-3 p-3 sm:p-4">
+    <div className="grid grid-cols-2 xs:grid-cols-3 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-2 sm:gap-3 p-3 sm:p-4">
       {/* Back */}
       {hasParent && (
         <div
@@ -107,7 +107,7 @@ export default function FileGrid({
               {folder.name}
             </span>
 
-            <div className="absolute -top-2 right-1 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 bg-white rounded-lg shadow-popover border border-slate-100 px-1 py-0.5 z-10">
+            <div className="absolute -top-2 right-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity flex items-center gap-0.5 bg-white rounded-lg shadow-popover border border-slate-100 px-1 py-0.5 z-10">
               <button onClick={(e) => { e.stopPropagation(); onRename(folder); }} className={hoverBtn}><Icon name="edit" size={14} /></button>
               <button onClick={(e) => { e.stopPropagation(); onDelete(folder); }} className={hoverBtnDanger}><Icon name="trash" size={14} /></button>
             </div>
@@ -141,7 +141,7 @@ export default function FileGrid({
             </span>
             <span className="text-[10px] text-slate-400 mt-0.5">{formatSize(file.size)}</span>
 
-            <div className="absolute -top-2 right-1 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 bg-white rounded-lg shadow-popover border border-slate-100 px-1 py-0.5 z-10">
+            <div className="absolute -top-2 right-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity flex items-center gap-0.5 bg-white rounded-lg shadow-popover border border-slate-100 px-1 py-0.5 z-10">
               <button onClick={(e) => { e.stopPropagation(); onDownload(file); }} className={hoverBtn}><Icon name="download" size={14} /></button>
               <button onClick={(e) => { e.stopPropagation(); onRename(file); }} className={hoverBtn}><Icon name="edit" size={14} /></button>
               <button onClick={(e) => { e.stopPropagation(); onDelete(file); }} className={hoverBtnDanger}><Icon name="trash" size={14} /></button>

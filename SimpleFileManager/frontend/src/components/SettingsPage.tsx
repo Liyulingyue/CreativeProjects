@@ -225,7 +225,7 @@ export function SettingsPage() {
                 label="自动索引"
                 hint="后台轮询扫描并自动向量化新文件"
               />
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="grid grid-cols-1 xs:grid-cols-2 sm:grid-cols-4 gap-3">
                 <Field label="扫描间隔" hint="秒，最低 30">
                   <input type="number" min={30} className={inputClass} value={settings.index_interval}
                     onChange={e => set({ index_interval: Number(e.target.value) })} />

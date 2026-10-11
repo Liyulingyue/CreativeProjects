@@ -221,7 +221,7 @@ export function IndexPage() {
     <div className="flex flex-col h-full bg-slate-50">
       {/* Header */}
       <div className="bg-white border-b border-slate-200 px-4 sm:px-6 py-3 flex items-center justify-between flex-wrap gap-2 flex-shrink-0">
-        <div className="flex gap-3">
+        <div className="grid grid-cols-2 gap-2 sm:flex sm:gap-3">
           <div className="bg-indigo-50 rounded-lg px-4 py-2 text-center">
             <div className="text-xl font-bold text-indigo-600">{stats?.indexed_count ?? '-'}</div>
             <div className="text-xs text-slate-500">已索引</div>
@@ -259,10 +259,10 @@ export function IndexPage() {
             </button>
           )}
         </div>
-        <div className="flex gap-2 items-center">
+        <div className="flex gap-2 items-center flex-wrap">
           {autoStatus && (
-            <div className="flex items-center gap-2 mr-1">
-              <span className="text-xs text-slate-500">
+            <div className="flex items-center gap-2 mr-1 min-w-0 flex-1 sm:flex-none">
+              <span className="text-xs text-slate-500 truncate">
                 自动索引{autoStatus.enabled ? ` · 每 ${autoStatus.interval}s${autoStatus.last_scan_time ? ` · 上次 ${autoStatus.last_scan_time}` : ''}${autoStatus.pending_changes > 0 ? ` · ${autoStatus.pending_changes} 待处理` : ''}` : '（已关闭）'}
                 {autoStatus.yielded_for_interaction && (
                   <span className="ml-1 text-indigo-500" title="检测到你正在使用对话或搜索，索引已暂停让出算力，闲置后自动继续">
