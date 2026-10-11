@@ -502,6 +502,8 @@ export interface RagStreamHandlers {
   onSearching?: () => void;
   onSources?: (sources: { file_path: string; score: number }[]) => void;
   onToken?: (text: string) => void;
+  /** The model's scratchpad for the summary, kept separate from the answer. */
+  onReasoning?: (text: string) => void;
 }
 
 /**
@@ -547,6 +549,7 @@ export async function streamRagQuery(
         const payload = JSON.parse(dataLines.join('\n'));
         if (event === 'meta') handlers.onSearching?.();
         else if (event === 'sources') handlers.onSources?.(payload.sources || []);
+        else if (event === 'reasoning') handlers.onReasoning?.(payload.text || '');
         else if (event === 'token') { answer += payload.text || ''; handlers.onToken?.(payload.text || ''); }
         else if (event === 'done') answer = payload.answer || answer;
         else if (event === 'error') throw new Error(payload.message);

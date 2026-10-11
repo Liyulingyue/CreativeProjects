@@ -142,13 +142,16 @@ def query_stream(req: QueryRequest) -> StreamingResponse:
             from ..llm_client import chat_completion_stream
             answer = []
             for piece in chat_completion_stream(rag_svc._answer_messages(req.question, context), temperature=0.7):
-                # The generator yields (kind, payload) pairs; only the text
-                # payload belongs in a token event.
+                # The generator yields (kind, payload) pairs. Forwarding only
+                # "token" silently discarded the model's reasoning channel; it
+                # now gets its own event so the UI can show how the summary was
+                # built from the retrieved passages.
                 kind, payload = piece
-                if kind != "token":
-                    continue
-                answer.append(payload)
-                yield sse("token", {"text": payload})
+                if kind == "reasoning":
+                    yield sse("reasoning", {"text": payload})
+                elif kind == "token":
+                    answer.append(payload)
+                    yield sse("token", {"text": payload})
             yield sse("done", {"answer": "".join(answer)})
         except GeneratorExit:
             raise

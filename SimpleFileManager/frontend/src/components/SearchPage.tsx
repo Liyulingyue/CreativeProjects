@@ -50,6 +50,7 @@ export function SearchPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [aiAnswer, setAiAnswer] = useState<string | null>(null);
+  const [aiReasoning, setAiReasoning] = useState('');
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [aiPhase, setAiPhase] = useState<'idle' | 'searching' | 'writing'>('idle');
 
@@ -67,7 +68,7 @@ export function SearchPage() {
 
   const handleAiSummarize = async () => {
     if (!query.trim() || isSummarizing) return;
-    setIsSummarizing(true); setAiAnswer(''); setAiPhase('searching');
+    setIsSummarizing(true); setAiAnswer(''); setAiReasoning(''); setAiPhase('searching');
     try {
       // Streamed: the model generates ~30 tok/s here, so the full answer takes
       // over a minute. The text appears as it is produced instead of arriving
@@ -76,6 +77,7 @@ export function SearchPage() {
         onSearching: () => setAiPhase('searching'),
         onSources: () => setAiPhase('writing'),
         onToken: (t) => { setAiPhase('writing'); setAiAnswer(prev => (prev || '') + t); },
+        onReasoning: (t) => setAiReasoning(prev => prev + t),
       }, 5);
     } catch (err) {
       toast('AI 总结失败: ' + (err instanceof Error ? err.message : '未知错误'), 'error');
@@ -163,6 +165,18 @@ export function SearchPage() {
                       </span>
                     )}
                   </div>
+                  {aiReasoning && (
+                    <details open className="mb-3 text-xs text-slate-500 group">
+                      <summary className="cursor-pointer select-none flex items-center gap-1.5 py-1 hover:text-slate-700 transition-colors">
+                        <Icon name="chevronRight" size={12} className="transition-transform group-open:rotate-90" />
+                        思考过程
+                        <span className="text-slate-400">({aiReasoning.length} 字)</span>
+                      </summary>
+                      <div className="mt-1.5 pl-3 border-l-2 border-slate-200 whitespace-pre-wrap break-words leading-relaxed max-h-72 overflow-y-auto">
+                        {aiReasoning}
+                      </div>
+                    </details>
+                  )}
                   {aiAnswer ? (
                     <div className="text-base leading-relaxed whitespace-pre-wrap break-words text-slate-800">
                       {aiAnswer}

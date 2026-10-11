@@ -60,6 +60,10 @@ env_value() {
     echo "$default"
 }
 
+# LFM2.5-Embedding-350M. ~3x faster than Qwen3-0.6B, but its Chinese vectors
+# are weakly discriminative: "诸葛亮" scores closer to "孙悟空" (0.33) than to
+# its own alias "孔明" (0.47). Known limitation -- semantic ranking is coarse on
+# Chinese, so keyword/FTS has to carry most of the precision on this corpus.
 EMBEDDING_MODEL="$SCRIPT_DIR/models/embedding/LFM2.5-Embedding-350M-Q8_0.gguf"
 EMBEDDING_PORT=9011
 EMBEDDING_PID_FILE="$PID_DIR/embedding.pid"
