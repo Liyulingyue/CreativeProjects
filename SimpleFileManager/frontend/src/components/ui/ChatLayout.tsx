@@ -333,7 +333,7 @@ export function ChatLayout({
                     : 'bg-slate-100 text-slate-800'
                 }`}>
                   {msg.reasoning && (
-                    <details className="mb-2 text-xs text-slate-500 group">
+                    <details open className="mb-2 text-xs text-slate-500 group">
                       <summary className="cursor-pointer select-none flex items-center gap-1.5 py-1 hover:text-slate-700 transition-colors">
                         <Icon name="chevronRight" size={12} className="transition-transform group-open:rotate-90" />
                         思考过程
@@ -374,7 +374,7 @@ export function ChatLayout({
                   </div>
                 )}
                 {reasoningText && (
-                  <details className="text-xs text-slate-500 group">
+                  <details open className="text-xs text-slate-500 group">
                     <summary className="cursor-pointer select-none flex items-center gap-1.5 py-1 hover:text-slate-700 transition-colors">
                       <Icon name="chevronRight" size={12} className="transition-transform group-open:rotate-90" />
                       思考过程
