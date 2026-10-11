@@ -19,7 +19,7 @@ interface ToolbarProps {
   onViewModeChange: (mode: 'grid' | 'list' | 'compact') => void;
 }
 
-const btnBase = 'p-2 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const btnBase = 'p-3 sm:p-2 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
 const btnGhost = `${btnBase} text-slate-500 hover:bg-slate-100 hover:text-slate-700`;
 const btnDanger = `${btnBase} text-slate-500 hover:bg-red-50 hover:text-red-600`;
 
@@ -53,7 +53,7 @@ export function Toolbar({
           <button
             key={mode}
             onClick={() => onViewModeChange(mode)}
-            className={`p-1.5 rounded-md transition-all ${viewMode === mode ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}
+            className={`p-3 sm:p-1.5 rounded-md transition-all ${viewMode === mode ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}
             title={`${mode}视图`}
           >
             <Icon name={icon} size={16} />
@@ -68,7 +68,7 @@ export function Toolbar({
       <button onClick={onUpload} className={btnGhost} title="上传"><Icon name="upload" size={18} /></button>
       <button
         onClick={onNewFolder}
-        className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 transition-colors"
+        className="flex items-center gap-1.5 px-2.5 sm:px-3 py-2.5 sm:py-1.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 transition-colors"
       >
         <Icon name="plus" size={16} />
         <span className="hidden sm:inline">新建</span>

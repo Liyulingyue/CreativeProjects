@@ -16,15 +16,20 @@ export function Breadcrumb({ path, onNavigate }: BreadcrumbProps) {
       {parts.map((part, index) => {
         const partPath = '/' + parts.slice(0, index + 1).join('/');
         const isLast = index === parts.length - 1;
+        // On a phone a deep path squeezes every crumb down to a few pixels.
+        // Middle segments collapse first -- the current directory is the one
+        // worth keeping legible.
+        const depth = index - parts.length + 1;
+        const hideOnMobile = !isLast && depth < -1;
         return (
           <Fragment key={partPath}>
             {index > 0 && <Icon name="chevronRight" size={14} className="text-slate-300 mx-0.5 flex-shrink-0" />}
             {isLast ? (
-              <span className="font-medium text-slate-700 whitespace-nowrap">{part}</span>
+              <span className="font-medium text-slate-700 whitespace-nowrap truncate min-w-0">{part}</span>
             ) : (
               <button
                 onClick={() => onNavigate(partPath)}
-                className="text-slate-500 hover:text-indigo-600 whitespace-nowrap py-1.5 transition-colors"
+                className={`text-slate-500 hover:text-indigo-600 whitespace-nowrap py-2 sm:py-1.5 transition-colors flex-shrink-0 ${hideOnMobile ? 'hidden sm:inline' : ''}`}
               >
                 {part}
               </button>

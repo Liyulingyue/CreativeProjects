@@ -101,7 +101,7 @@ function App() {
                 onClick={toggleNav}
                 title="收起导航"
                 aria-label="收起导航"
-                className="ml-auto flex-shrink-0 p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-indigo-600 transition-colors"
+                className="ml-auto flex-shrink-0 p-2.5 sm:p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-indigo-600 transition-colors"
               >
                 <Icon name="chevronRight" size={16} className="rotate-180" />
               </button>
