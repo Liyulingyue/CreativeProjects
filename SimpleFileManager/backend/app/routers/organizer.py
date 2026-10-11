@@ -48,7 +48,10 @@ class OrganizerService:
                 try:
                     stat = entry.stat()
                     files.append({
-                        "path": str(entry),
+                        # Relative to the storage root, like every other path in
+                        # the API. Absolute paths leaked the host layout into the
+                        # UI and made snapshots non-portable.
+                        "path": str(entry.relative_to(root_path)),
                         "name": entry.name,
                         "is_dir": entry.is_dir(),
                         "size": stat.st_size if entry.is_file() else 0,
@@ -217,6 +220,24 @@ class OrganizerService:
 
     def _generate_suggestions(self, added_files: list[FileChange], added_dirs: list[FileChange]) -> list[Suggestion]:
         suggestions = []
+
+        # added_dirs was accepted but never iterated, so a brand-new folder
+        # produced no suggestion at all -- yet an empty or stale folder is
+        # exactly the kind of thing this feature should flag.
+        for d in added_dirs:
+            suggestions.append(Suggestion(
+                id=uuid.uuid4().hex,
+                # Deliberately not "move"/"create_folder": the UI turns any
+                # non-move type into a create_folder plan action, which would
+                # actually create the directory when approved. A new folder
+                # needs review, not action.
+                type="review",
+                priority="medium",
+                message=f"新增目录 {d.path}/ 待确认",
+                source_path=d.path,
+                target_path=None,
+                reason="新增目录需要确认用途是否合适",
+            ))
 
         for f in added_files:
             ext = Path(f.path).suffix.lower()

@@ -44,6 +44,10 @@ export function OrganizerPage() {
 
   const handleSuggestionToPlan = async (sug: Suggestion) => {
     try {
+      // "review" suggestions are informational (e.g. a new folder needs a
+      // decision, not an action). Turning them into a create_folder action
+      // would actually create the directory on approval.
+      if (sug.type === 'review') { toast('该建议仅供参考，无需生成计划', 'info'); return; }
       await createPlan({ title: sug.message, summary: sug.reason, source: 'suggestions',
         actions: [{ action_type: (sug.type === 'move' ? 'move' : 'create_folder') as PlanActionType, source_path: sug.source_path, target_path: sug.target_path, reason: sug.reason }] });
       toast('已生成整理计划，请在审批中心批准', 'success');
