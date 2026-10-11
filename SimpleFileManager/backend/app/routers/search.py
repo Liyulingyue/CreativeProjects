@@ -17,16 +17,32 @@ class HybridSearchResponse(BaseModel):
     keyword_count: int
     semantic_count: int
     query: str
+    # Echoed back so the UI can label the active mode without tracking its own
+    # optimistic state.
+    mode: str = "hybrid"
 
 
 @search.post("/hybrid", response_model=HybridSearchResponse)
-def hybrid_search(query: str, top_k: int = 10) -> HybridSearchResponse:
+def hybrid_search(
+    query: str,
+    top_k: int = 10,
+    mode: str = "hybrid",
+    path_filter: str = "",
+) -> HybridSearchResponse:
     # A search embeds its query, so it competes with indexing for the same
-    # server; let indexing stand down for the duration.
-    interaction.mark_active()
+    # server; let indexing stand down for the duration. Keyword-only mode does
+    # not need the embedding server at all.
+    if mode != "keyword":
+        interaction.mark_active()
     if not query.strip():
         raise HTTPException(status_code=400, detail="Query is empty")
-    return HybridSearchResponse(**search_engine.hybrid_search(query, top_k))
+    if mode not in ("hybrid", "keyword", "semantic"):
+        raise HTTPException(status_code=400, detail=f"Unknown search mode: {mode}")
+    payload = search_engine.hybrid_search(query, top_k, path_filter, mode)
+    # The engine returns counts, not the mode; echo the requested one so the UI
+    # does not have to trust its own local state to label the active channel.
+    payload["mode"] = mode
+    return HybridSearchResponse(**payload)
 
 
 def _get_mime_type(path: Path) -> str:

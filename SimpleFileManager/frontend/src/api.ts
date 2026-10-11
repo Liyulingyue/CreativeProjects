@@ -582,8 +582,14 @@ export interface HybridSearchResponse {
   query: string;
 }
 
-export async function hybridSearch(query: string, topK: number = 10): Promise<HybridSearchResponse> {
-  const params = new URLSearchParams({ query, top_k: String(topK) });
+export type SearchMode = 'hybrid' | 'keyword' | 'semantic';
+
+export async function hybridSearch(
+  query: string,
+  topK: number = 10,
+  mode: SearchMode = 'hybrid'
+): Promise<HybridSearchResponse> {
+  const params = new URLSearchParams({ query, top_k: String(topK), mode });
   const res = await authFetch(`${API_BASE}/search/hybrid?${params}`, { method: 'POST' });
   if (!res.ok) throw new Error('Failed to search');
   return res.json();

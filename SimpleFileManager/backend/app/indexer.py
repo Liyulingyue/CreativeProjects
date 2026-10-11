@@ -414,6 +414,16 @@ class AutoIndexer:
                     pending += 1
                     continue
                 to_index.append(path)
+
+            # Phase 1 is driven purely by file mtime/size, so anything that
+            # empties the FTS index without touching the files -- clearing the
+            # search index, restoring a backup, a wiped search.db -- leaves the
+            # keyword channel permanently empty while every file still looks
+            # "unchanged". Vector progress is tracked separately, which is why
+            # this went unnoticed: the semantic side looked complete.
+            if search_engine.count() == 0 and current:
+                log.info("keyword index is empty but %d files are known; rebuilding FTS", len(current))
+                to_index = list(current)
             self._pending_changes = pending
 
             removed = [p for p in known if p not in current]

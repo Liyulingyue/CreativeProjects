@@ -168,7 +168,37 @@ class HybridSearchEngine:
             log.warning("vector search failed (%s: %s); keyword results still returned", type(e).__name__, e)
             return []
 
-    def hybrid_search(self, query: str, top_k: int = 10, path_filter: str = "") -> dict:
+    def hybrid_search(self, query: str, top_k: int = 10, path_filter: str = "",
+                      mode: str = "hybrid") -> dict:
+        """Search with the requested channel.
+
+        `mode` is one of:
+          hybrid   -- both channels fused by RRF (default)
+          keyword  -- BM25 only
+          semantic -- vectors only
+
+        The single-channel modes exist because they are not merely debugging
+        tools: the embedding model is weak on Chinese, so a user who wants
+        precision ("诸葛亮") is better served by BM25 than by being forced to
+        accept semantic noise they cannot filter out.
+        """
+        if mode == "keyword":
+            hits = self.bm25_search(query, top_k, path_filter)
+            return {
+                "results": hits,
+                "keyword_count": len(hits),
+                "semantic_count": 0,
+                "query": query,
+            }
+        if mode == "semantic":
+            hits = self.vector_search(query, top_k, path_filter)
+            return {
+                "results": hits,
+                "keyword_count": 0,
+                "semantic_count": len(hits),
+                "query": query,
+            }
+
         fts_results = self.bm25_search(query, top_k, path_filter)
         vec_results = self.vector_search(query, top_k, path_filter)
 

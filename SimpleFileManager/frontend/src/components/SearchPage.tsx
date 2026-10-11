@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { hybridSearch, streamRagQuery } from '../api';
+import type { SearchMode } from '../api';
 import type { HybridSearchResult } from '../api';
 import { Icon } from './ui/Icon';
 import { useToast } from './ui/Toast';
@@ -47,6 +48,7 @@ export function SearchPage() {
   const [results, setResults] = useState<HybridSearchResponseLike | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
+  const [mode, setMode] = useState<SearchMode>('hybrid');
   const [error, setError] = useState<string | null>(null);
 
   const [aiAnswer, setAiAnswer] = useState<string | null>(null);
@@ -60,7 +62,7 @@ export function SearchPage() {
     setIsSearching(true); setHasSearched(true); setError(null);
     setResults(null); setAiAnswer(null);
     try {
-      setResults(await hybridSearch(query, 10));
+      setResults(await hybridSearch(query, 10, mode));
     } catch (err) {
       setError(err instanceof Error ? err.message : '未知错误');
     } finally { setIsSearching(false); }
@@ -87,8 +89,39 @@ export function SearchPage() {
   return (
     <div className="flex flex-col h-full bg-slate-50">
       {/* Search bar */}
-      <div className="bg-white border-b border-slate-200 px-4 sm:px-4 sm:px-6 py-3 sm:py-4 flex-shrink-0">
-        <form onSubmit={handleSearch} className="flex items-center gap-2 sm:gap-3">
+      <div className="bg-white border-b border-slate-200 px-4 sm:px-6 py-3 sm:py-4 flex-shrink-0">
+        <form onSubmit={handleSearch} className="flex flex-wrap items-center gap-2 sm:gap-3">
+          {/* Channel picker. Keyword-only is a real escape hatch rather than a
+              curiosity: the embedding model is weak on Chinese, so a user who
+              needs precision cannot filter semantic noise out of a fused list. */}
+          {/* Full-width row on phones: three buttons plus the input box do not
+              fit on one 375px line. */}
+          <div className="order-2 w-full flex-shrink-0 rounded-lg border border-slate-200 overflow-hidden sm:order-none sm:w-auto">
+            {([
+              ['hybrid', '混合'],
+              ['keyword', '仅关键词'],
+              ['semantic', '仅语义'],
+            ] as [SearchMode, string][]).map(([m, label]) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => { setMode(m); }}
+                aria-pressed={mode === m}
+                title={
+                  m === 'keyword' ? 'BM25 精确匹配，不经过向量'
+                  : m === 'semantic' ? '向量语义召回，可理解同义表述'
+                  : '关键词 + 语义双路，用 RRF 融合排序'
+                }
+                className={`flex-1 sm:flex-none px-2.5 sm:px-3 py-2.5 sm:py-2.5 text-xs sm:text-sm font-medium transition-colors ${
+                  mode === m
+                    ? 'bg-indigo-600 text-white'
+                    : 'bg-white text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <div className="relative flex-1 min-w-0">
             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"><Icon name="search" size={18} /></span>
             <input type="text" value={query} onChange={e => setQuery(e.target.value)}
