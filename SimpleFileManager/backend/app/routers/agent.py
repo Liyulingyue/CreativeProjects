@@ -7,6 +7,7 @@ the user to review before execution.
 
 import json
 import logging
+import math
 import re
 import uuid
 from pathlib import Path
@@ -247,6 +248,8 @@ SYSTEM_PROMPT = """你是 NASMind 的文件治理 Agent，负责帮助用户分�
   必须二选一：要么用 offset 继续读，要么改用 semantic_search 去找相关段落。
   在这两种情况下直接给出结论，就是编造。
 - 想知道一份文件「讲了什么」，用 semantic_search，不要用 read_file 读开头。
+- 报文件大小时直接引用 size_human（如「2.5 MB」），不要自己拿 size_bytes
+  换算——手算中文单位极易出错，把 2.5 MB 写成「2.5 亿」这类错误很常见。
 - 如果某个说法在工具返回的内容里找不到依据，就明确说「工具返回的内容中没有
   依据」，而不是补一个像样的答案。
 - 不确定时坦白不确定，比给出一个听起来合理但错误的答案有用得多。"""
@@ -256,6 +259,31 @@ SYSTEM_PROMPT = """你是 NASMind 的文件治理 Agent，负责帮助用户分�
 
 def _rel(path: Path) -> str:
     return str(path.relative_to(get_storage_root()))
+
+def _human_size(num_bytes: int) -> str:
+    """Render a byte count the same way the file browser does.
+
+    The tool used to hand the model a raw byte count, which it then converted
+    into Chinese units by hand -- and got it wrong, reporting a 2.5 MB file as
+    "2.5亿字节". Formatting here leaves no arithmetic for it to fumble.
+    """
+    if num_bytes <= 0:
+        return "0 B"
+    k = 1024
+    units = ("B", "KB", "MB", "GB", "TB")
+    i = min(int(num_bytes.bit_length() ** 0.3333) if num_bytes < 1024 else
+            min(int(math.log(num_bytes, k)), len(units) - 1), len(units) - 1)
+    # Re-derive exactly rather than trusting the log for values just under a
+    # boundary (e.g. 1048575 must read as 1024.0 KB, not 1.0 MB).
+    value = num_bytes / (k ** i)
+    while i < len(units) - 1 and value >= k:
+        value /= k
+        i += 1
+    while i > 0 and value < 1:
+        value *= k
+        i -= 1
+    return f"{value:.1f} {units[i]}"
+
 
 def tool_list_directory(path: str) -> dict:
     try:
@@ -273,11 +301,15 @@ def tool_list_directory(path: str) -> dict:
                 continue
             try:
                 stat = entry.stat()
+                size = stat.st_size if entry.is_file() else 0
                 items.append({
                     "name": entry.name,
                     "path": _rel(entry),
                     "is_dir": entry.is_dir(),
-                    "size": stat.st_size if entry.is_file() else 0,
+                    # size_bytes stays for anything that needs the exact value;
+                    # size_human is what a reply should quote.
+                    "size_human": _human_size(size),
+                    "size_bytes": size,
                 })
             except (PermissionError, OSError):
                 continue
