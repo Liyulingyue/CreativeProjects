@@ -138,8 +138,14 @@ class LanceDBVectorStore:
         self.add_many([vector], [metadata])
 
     def add_many(self, vectors: list[list[float]], records: list[dict]):
+        # The id is derived from (file, chunk) instead of a fresh uuid4 so that
+        # re-embedding a passage replaces its row rather than appending a
+        # duplicate. With random ids every re-run accumulated another copy of
+        # the corpus, and duplicated chunk_idx values broke the RRF merge --
+        # the two channels could never land on the same (path, chunk_idx), so
+        # dual-channel agreement silently never fired.
         rows = [{
-            "id": uuid.uuid4().hex,
+            "id": f"{r.get('file_path', '')}#{int(r.get('chunk_idx', 0))}",
             "file_path": r.get("file_path", ""),
             "content": r.get("content", ""),
             "chunk_idx": int(r.get("chunk_idx", 0)),

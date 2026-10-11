@@ -132,6 +132,9 @@ class HybridSearchEngine:
                 "preview": preview,
                 "text_len": text_len,
                 "score": 1.0 - rank,  # bm25 rank is negative; lower = better
+                # "sources" (plural) matches what the RRF path emits, so a
+                # single-channel response has the same shape as a fused one.
+                "sources": ["keyword"],
                 "source": "keyword",
             }
             for path, name, chunk_idx, preview, text_len, rank in rows
@@ -157,6 +160,7 @@ class HybridSearchEngine:
                     "preview": str(r.get("content", ""))[:200],
                     "text_len": len(str(r.get("content", ""))),
                     "score": r.get("score", 0),
+                    "sources": ["semantic"],
                     "source": "semantic",
                 }
                 for r in results

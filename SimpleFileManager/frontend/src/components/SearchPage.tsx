@@ -7,12 +7,15 @@ import { useToast } from './ui/Toast';
 
 type HybridSearchResponseLike = { results: HybridSearchResult[]; keyword_count: number; semantic_count: number; };
 
-function SourceBadges({ sources }: { sources: string[] }) {
+function SourceBadges({ sources }: { sources?: string[] }) {
+  // Defensive: a single-channel response only ever had `source` (singular)
+  // before, and one malformed row must not blank the whole results page.
+  const tags = sources ?? [];
   return (
     <div className="flex gap-1">
-      {sources.includes('keyword') && <span className="px-1.5 py-0.5 rounded bg-green-50 text-green-600 text-[10px] font-medium">关键词</span>}
-      {sources.includes('semantic') && <span className="px-1.5 py-0.5 rounded bg-violet-50 text-violet-600 text-[10px] font-medium">语义</span>}
-      {sources.length === 2 && <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 text-[10px] font-medium">双路命中</span>}
+      {tags.includes('keyword') && <span className="px-1.5 py-0.5 rounded bg-green-50 text-green-600 text-[10px] font-medium">关键词</span>}
+      {tags.includes('semantic') && <span className="px-1.5 py-0.5 rounded bg-violet-50 text-violet-600 text-[10px] font-medium">语义</span>}
+      {tags.length === 2 && <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 text-[10px] font-medium">双路命中</span>}
     </div>
   );
 }
