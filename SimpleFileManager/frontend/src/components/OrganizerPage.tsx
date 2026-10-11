@@ -50,7 +50,15 @@ export function OrganizerPage() {
     } catch (e) { toast(e instanceof Error ? e.message : '生成失败', 'error'); }
   };
 
-  const formatDate = (d: string) => new Date(d).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', year: 'numeric' });
+  // Snapshots are keyed to the second, so showing only the date would render
+  // same-day entries identically and make them impossible to tell apart.
+  const formatDate = (d: string) => {
+    const dt = new Date(d);
+    if (Number.isNaN(dt.getTime())) return d;
+    const day = dt.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', year: 'numeric' });
+    const time = dt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    return `${day} ${time}`;
+  };
 
   return (
     <div className="flex flex-col h-full bg-slate-50">

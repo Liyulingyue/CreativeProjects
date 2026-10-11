@@ -61,11 +61,18 @@ class OrganizerService:
         return files
 
     def take_snapshot(self, root_path: str) -> SnapshotRecord:
-        date = datetime.now().strftime("%Y-%m-%d")
+        # Seconds matter: the whole point of a snapshot is to diff two moments,
+        # and keying on the day meant a second shot the same day silently
+        # overwrote the first, so "snapshot -> add files -> snapshot again" was
+        # impossible within one day.
+        date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         files = self._scan_directory(root_path)
 
         conn = self._get_conn()
-        conn.execute("DELETE FROM file_snapshots WHERE date = ?", (date,))
+        # Guard against a collision in the same second rather than deleting the
+        # previous snapshot outright.
+        if conn.execute("SELECT 1 FROM file_snapshots WHERE date = ?", (date,)).fetchone():
+            date = f"{date}:{uuid.uuid4().hex[:4]}"
 
         snapshots = []
         for f in files:
@@ -269,7 +276,10 @@ class OrganizerService:
 
     def delete_old_snapshots(self, keep_days: int = 30):
         conn = self._get_conn()
-        cutoff = (datetime.now() - timedelta(days=keep_days)).strftime("%Y-%m-%d")
+        # Snapshots are keyed "YYYY-MM-DD HH:MM:SS" now, so the cutoff has to
+        # carry a time too or every snapshot from the cutoff day would be kept
+        # (its date string is lexicographically greater than a bare day).
+        cutoff = (datetime.now() - timedelta(days=keep_days)).strftime("%Y-%m-%d 23:59:59")
         conn.execute("DELETE FROM file_snapshots WHERE date < ?", (cutoff,))
         conn.commit()
         conn.close()
