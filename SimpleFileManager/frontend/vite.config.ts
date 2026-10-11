@@ -3,12 +3,12 @@ import react from '@vitejs/plugin-react'
 import { readFileSync, existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-// TLS for the dev server. Service workers only register on a secure context,
-// and "secure context" means a *trusted* certificate -- a bare self-signed cert
-// that the phone has not been taught to trust still gets blocked, so the CA in
-// ../certs must be installed on the device. The certs are gitignored.
-const certDir = resolve(__dirname, '../certs')
-const hasCerts = existsSync(resolve(certDir, 'server.crt')) && existsSync(resolve(certDir, 'server.key'))
+// Local self-signed pair for the dev server, so the PWA shell can be exercised
+// over https on a LAN address. Generated per-machine by scripts/dev-cert.sh and
+// gitignored; it is not trusted by any browser, it only makes the origin
+// secure enough to register a service worker locally.
+const certDir = resolve(__dirname)
+const hasCerts = existsSync(resolve(certDir, 'dev-cert.pem')) && existsSync(resolve(certDir, 'dev-key.pem'))
 
 export default defineConfig({
   plugins: [react()],
@@ -17,8 +17,8 @@ export default defineConfig({
     port: 15173,
     https: hasCerts
       ? {
-          key: readFileSync(resolve(certDir, 'server.key')),
-          cert: readFileSync(resolve(certDir, 'server.crt')),
+          key: readFileSync(resolve(certDir, 'dev-key.pem')),
+          cert: readFileSync(resolve(certDir, 'dev-cert.pem')),
         }
       : undefined,
     proxy: {

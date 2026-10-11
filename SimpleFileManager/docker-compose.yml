@@ -34,11 +34,6 @@ services:
     container_name: sfm-frontend
     ports:
       - "80:80"
-      - "443:443"
-    volumes:
-      # TLS material for the PWA path. A service worker needs a trusted cert,
-      # so ca.crt has to be installed on any device that should get the PWA.
-      - ./certs:/etc/nginx/certs:ro
     depends_on:
       - backend
     restart: unless-stopped
