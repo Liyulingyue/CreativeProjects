@@ -113,9 +113,11 @@ class ChatMessage(BaseModel):
     id: str
     role: str
     content: str
-    # The model's scratchpad for this turn. Stored per message so it stays
-    # visible after the turn ends -- rendering it only inside the live
-    # streaming bubble made it disappear the moment the reply was saved.
+    # Ordered reasoning/tool transcript. Persisting it keeps the interleaving
+    # ("think, tool, think, tool, answer") that a flat reasoning blob cannot
+    # express, so a reopened conversation still shows what ran in what order.
+    activity: list[dict] = []
+    # Flat scratchpad, kept so messages saved before `activity` still render.
     reasoning: str = ""
     sources: Optional[list[dict]] = None
     timestamp: int
@@ -142,6 +144,7 @@ class AddMessageRequest(BaseModel):
     session_id: str
     role: str
     content: str
+    activity: list[dict] = []
     reasoning: str = ""
     sources: Optional[list[dict]] = None
 

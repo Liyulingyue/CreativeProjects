@@ -55,6 +55,7 @@ def add_message(req: AddMessageRequest):
         content=req.content,
         sources=req.sources,
         reasoning=getattr(req, "reasoning", "") or "",
+        activity=getattr(req, "activity", None) or [],
     )
 
 

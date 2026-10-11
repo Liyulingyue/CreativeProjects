@@ -128,7 +128,9 @@ export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
-  /** Model scratchpad for this turn, persisted so it survives the stream. */
+  /** Ordered reasoning/tool transcript, persisted so history keeps its shape. */
+  activity?: { kind: 'reasoning' | 'tool'; tool?: string; status?: 'running' | 'done'; args?: Record<string, unknown>; result?: unknown; text?: string }[];
+  /** Flat scratchpad, kept for older messages saved before `activity`. */
   reasoning?: string;
   sources?: { file_path: string; score: number }[];
   timestamp: number;
@@ -182,12 +184,13 @@ export async function addChatMessage(
   role: 'user' | 'assistant',
   content: string,
   sources?: { file_path: string; score: number }[],
-  reasoning?: string
+  reasoning?: string,
+  activity?: unknown[]
 ): Promise<ChatMessage> {
   const res = await authFetch(`${API_BASE}/chat_history/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id: sessionId, role, content, sources, reasoning: reasoning ?? '' }),
+    body: JSON.stringify({ session_id: sessionId, role, content, sources, reasoning: reasoning ?? '', activity: activity ?? [] }),
   });
   if (!res.ok) throw new Error('Failed to add chat message');
   return res.json();

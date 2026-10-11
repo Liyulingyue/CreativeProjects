@@ -14,10 +14,12 @@ const EXAMPLE_PROMPTS = [
 ];
 
 interface ToolActivityItem {
-  tool: string;
-  status: 'running' | 'done';
+  kind: 'reasoning' | 'tool';
+  tool?: string;
+  status?: 'running' | 'done';
   args?: Record<string, unknown>;
   result?: unknown;
+  text?: string;
 }
 
 /**
@@ -58,11 +60,11 @@ export function SimpleChat() {
   const { sessions, currentSessionId, createSession, selectSession, deleteSession, addMessage } = useChatSessions('agent');
   const [isLoading, setIsLoading] = useState(false);
   const [streamingText, setStreamingText] = useState('');
-  const [reasoningText, setReasoningText] = useState('');
   const reasoningRef = useRef('');
   // kept per session so switching conversations does not erase the trace of
   // what the agent already read on the user's behalf
   const [traces, setTraces] = useState<Record<string, ToolActivityItem[]>>({});
+  const tracesRef = useRef<Record<string, ToolActivityItem[]>>({});
   const [currentStep, setCurrentStep] = useState<number | undefined>(undefined);
   const abortRef = useRef<AbortController | null>(null);
   const sendRef = useRef<((content: string) => Promise<void>) | null>(null);
@@ -70,7 +72,12 @@ export function SimpleChat() {
   const toolActivity = currentSessionId ? traces[currentSessionId] : undefined;
 
   const updateTrace = useCallback((sessionId: string, update: (prev: ToolActivityItem[]) => ToolActivityItem[]) => {
-    setTraces(prev => ({ ...prev, [sessionId]: update(prev[sessionId] || []) }));
+    // Keep a ref alongside the state: the transcript has to be readable
+    // synchronously when the turn is saved, and state would still be stale
+    // inside the same tick the stream finished.
+    const next = update(tracesRef.current[sessionId] || []);
+    tracesRef.current = { ...tracesRef.current, [sessionId]: next };
+    setTraces(prev => ({ ...prev, [sessionId]: next }));
   }, []);
 
   const handleStop = useCallback(() => {
@@ -95,7 +102,6 @@ export function SimpleChat() {
     let reply = '';
     let plans: AgentPlan[] = [];
     let streamError: string | null = null;
-    setReasoningText('');
     reasoningRef.current = '';
 
     try {
@@ -104,22 +110,37 @@ export function SimpleChat() {
         sessionId,
         (event) => {
           if (event.type === 'reasoning') {
-            // Shown live, collapsed by default -- it is diagnostic, not the
-            // answer, and it arrives first so it would otherwise push the real
-            // reply below the fold.
+            // One ordered stream, not two: the model reasons, calls a tool,
+            // reasons again, calls another tool. Merging them per-arrival is
+            // what makes the transcript read like what actually happened
+            // instead of "all thinking, then all tool calls, then the answer".
+            // Consecutive reasoning deltas fold into the previous block so a
+            // step does not fragment into dozens of one-word entries.
             reasoningRef.current += event.text ?? '';
-            setReasoningText(reasoningRef.current);
+            updateTrace(sessionId, (prev) => {
+              const last = prev[prev.length - 1];
+              if (last?.kind === 'reasoning') {
+                return [...prev.slice(0, -1), { ...last, text: last.text + (event.text ?? '') }];
+              }
+              return [...prev, { kind: 'reasoning', text: event.text ?? '' }];
+            });
           } else if (event.type === 'token') {
             if (!event.text) return;
             reply += event.text;
             setStreamingText(reply);
           } else if (event.type === 'tool_start') {
-            updateTrace(sessionId, prev => [...prev, { tool: event.tool, status: 'running', args: event.args }]);
+            updateTrace(sessionId, prev => [...prev, { kind: 'tool', tool: event.tool, status: 'running', args: event.args }]);
           } else if (event.type === 'tool') {
             updateTrace(sessionId, (prev) => {
-              const running = prev.findIndex(t => t.status === 'running');
+              // findLastIndex needs ES2023; reverse scan keeps the compiler
+              // target unchanged. Matching the *last* running entry matters now
+              // that reasoning entries are interleaved with tool calls.
+              let running = -1;
+              for (let i = prev.length - 1; i >= 0; i--) {
+                if (prev[i].status === 'running') { running = i; break; }
+              }
               if (running === -1) {
-                return [...prev, { tool: event.tool, status: 'done', args: event.args, result: event.result }];
+                return [...prev, { kind: 'tool', tool: event.tool, status: 'done', args: event.args, result: event.result }];
               }
               const next = prev.slice();
               next[running] = {
@@ -174,9 +195,14 @@ export function SimpleChat() {
 
     // Persist the scratchpad with the reply. It lives only in the streaming
     // bubble otherwise, and vanishes the moment the turn is saved.
-    await addMessage(sessionId, { role: 'assistant', content: finalText, reasoning: reasoningRef.current });
+    const activity = tracesRef.current[sessionId] ?? [];
+    await addMessage(sessionId, {
+      role: 'assistant',
+      content: finalText,
+      reasoning: reasoningRef.current,
+      activity,
+    });
     setStreamingText('');
-    setReasoningText('');
   };
 
   // keeps the ref pointing at the latest closure without re-rendering
@@ -193,7 +219,6 @@ export function SimpleChat() {
         onSendMessage={handleSendMessage}
         isLoading={isLoading}
         streamingText={streamingText}
-        reasoningText={reasoningText}
         toolActivity={toolActivity}
         currentStep={currentStep}
         onStop={handleStop}

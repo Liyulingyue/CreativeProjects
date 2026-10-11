@@ -1,30 +1,25 @@
 import { useState, useEffect, useRef } from 'react';
 import { Icon } from './Icon';
 import { useCollapse } from '../../hooks/useCollapse';
+// Reuse the api layer's types. They were duplicated here, which let the two
+// definitions drift apart silently until the session prop stopped type-checking.
+import type { ChatMessage, ChatSession } from '../../api';
 
-export interface ChatMessage {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  /** Model scratchpad for this turn, persisted so it survives the stream. */
-  reasoning?: string;
-  sources?: { file_path: string; score: number }[];
-  timestamp: number;
-}
+export type { ChatMessage, ChatSession };
 
-export interface ChatSession {
-  id: string;
-  title: string;
-  messages: ChatMessage[];
-  updated_at: number;
-  session_type?: string;
-}
-
-interface ToolActivity {
-  tool: string;
-  status: 'running' | 'done';
+/**
+ * One turn's transcript as it actually happened: reasoning blocks and tool
+ * calls interleaved in arrival order. Kept as a single ordered list because
+ * splitting them into "thinking" and "tools" loses the interleaving, which is
+ * the part that explains *why* each tool call happened.
+ */
+export interface ToolActivity {
+  kind: 'reasoning' | 'tool';
+  tool?: string;
+  status?: 'running' | 'done';
   args?: Record<string, unknown>;
   result?: unknown;
+  text?: string;
 }
 
 const MAX_RESULT_CHARS = 800;
@@ -126,7 +121,6 @@ interface ChatLayoutProps {
   /** Text received so far for the in-flight assistant reply. */
   streamingText?: string;
   /** Live scratchpad from the model's reasoning channel, shown collapsed. */
-  reasoningText?: string;
   /** Tools the agent has invoked during the current turn. */
   toolActivity?: ToolActivity[];
   /** Current agent step, e.g. 2, for the progress hint. */
@@ -177,6 +171,27 @@ function RunningIndicator({ step }: { step?: number }) {
  * Deliberately a single line rather than the bordered card used by the dock:
  * the trace should read as a transcript of what ran, not interrupt the answer.
  */
+/**
+ * One reasoning block inside the transcript. Expanded by default: it arrives
+ * interleaved with tool calls, so a collapsed block would leave a bare "思考"
+ * row with no indication of what it concluded.
+ */
+function ReasoningBlock({ text }: { text: string }) {
+  if (!text.trim()) return null;
+  return (
+    <details open className="text-xs text-slate-500 group">
+      <summary className="cursor-pointer select-none flex items-center gap-1.5 py-1 hover:text-slate-700 transition-colors">
+        <Icon name="chevronRight" size={12} className="transition-transform group-open:rotate-90" />
+        思考
+        <span className="text-slate-400">({text.length} 字)</span>
+      </summary>
+      <div className="mt-1.5 pl-3 border-l-2 border-slate-300 whitespace-pre-wrap break-words leading-relaxed max-h-72 overflow-y-auto">
+        {text}
+      </div>
+    </details>
+  );
+}
+
 function ToolTraceLine({ activity }: { activity: ToolActivity }) {
   const [open, setOpen] = useState(false);
   const running = activity.status === 'running';
@@ -219,7 +234,7 @@ function ToolTraceLine({ activity }: { activity: ToolActivity }) {
 
 export function ChatLayout({
   sessions, currentSessionId, onSelectSession, onNewSession,
-  onDeleteSession, onSendMessage, isLoading, streamingText, reasoningText, toolActivity,
+  onDeleteSession, onSendMessage, isLoading, streamingText, toolActivity,
   currentStep, onStop, emptyState, renderMessage,
 }: ChatLayoutProps) {
   const [input, setInput] = useState('');
@@ -332,17 +347,14 @@ export function ChatLayout({
                     ? 'bg-indigo-600 text-white'
                     : 'bg-slate-100 text-slate-800'
                 }`}>
-                  {msg.reasoning && (
-                    <details open className="mb-2 text-xs text-slate-500 group">
-                      <summary className="cursor-pointer select-none flex items-center gap-1.5 py-1 hover:text-slate-700 transition-colors">
-                        <Icon name="chevronRight" size={12} className="transition-transform group-open:rotate-90" />
-                        思考过程
-                        <span className="text-slate-400">({msg.reasoning.length} 字)</span>
-                      </summary>
-                      <div className="mt-1.5 pl-3 border-l-2 border-slate-300 whitespace-pre-wrap break-words leading-relaxed max-h-72 overflow-y-auto">
-                        {msg.reasoning}
-                      </div>
-                    </details>
+                  {msg.activity && msg.activity.length > 0 && (
+                    <div className="mb-2 space-y-1.5">
+                      {msg.activity.map((a, i) =>
+                        a.kind === 'reasoning'
+                          ? <ReasoningBlock key={`r${i}`} text={a.text ?? ''} />
+                          : <ToolTraceLine key={`t${i}`} activity={a} />
+                      )}
+                    </div>
                   )}
                   {renderMessage ? renderMessage(msg) : (
                     <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">{msg.content}</div>
@@ -369,21 +381,13 @@ export function ChatLayout({
                     reads in the order it happened instead of being parked in a
                     panel below the conversation. */}
                 {toolActivity && toolActivity.length > 0 && (
-                  <div className="space-y-1">
-                    {toolActivity.map((t, i) => <ToolTraceLine key={`${t.tool}-${i}`} activity={t} />)}
+                  <div className="space-y-1.5">
+                    {toolActivity.map((a, i) =>
+                      a.kind === 'reasoning'
+                        ? <ReasoningBlock key={`r${i}`} text={a.text ?? ''} />
+                        : <ToolTraceLine key={`t${i}`} activity={a} />
+                    )}
                   </div>
-                )}
-                {reasoningText && (
-                  <details open className="text-xs text-slate-500 group">
-                    <summary className="cursor-pointer select-none flex items-center gap-1.5 py-1 hover:text-slate-700 transition-colors">
-                      <Icon name="chevronRight" size={12} className="transition-transform group-open:rotate-90" />
-                      思考过程
-                      <span className="text-slate-400">({reasoningText.length} 字)</span>
-                    </summary>
-                    <div className="mt-1.5 pl-4 border-l-2 border-slate-200 whitespace-pre-wrap break-words leading-relaxed max-h-64 overflow-y-auto">
-                      {reasoningText}
-                    </div>
-                  </details>
                 )}
                 {streamingText ? (
                   <div className="whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-800">
