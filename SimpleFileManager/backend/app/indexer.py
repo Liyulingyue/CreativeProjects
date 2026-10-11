@@ -8,6 +8,7 @@ as text.
 """
 
 import logging
+import os
 import sqlite3
 import threading
 import time
@@ -16,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from .chunking import chunk_file
+from .chunking import DEFAULT_CHUNK_SIZE, DEFAULT_OVERLAP, chunk_file
 from .interaction import interaction
 from .deps import DATA_DIR, EMBED_CHUNK_BATCH, get_storage_root, state
 from .doc_extract import DOCUMENT_EXTENSIONS, MAX_DOCUMENT_BYTES, ExtractionError, extract_text
@@ -89,6 +90,10 @@ EMBED_BATCH_SIZE = 16
 # throughput knob (batching already amortizes the per-call cost), it only sets
 # how much work happens between re-checks of the pause/interaction state.
 EMBED_CHUNKS_PER_PASS = 48
+
+# Stored alongside each file so a change to the chunking parameters invalidates
+# prior progress instead of silently disagreeing with it.
+CHUNK_SIG = f"{DEFAULT_CHUNK_SIZE}-{DEFAULT_OVERLAP}"
 TICK_SECONDS = 5
 MIN_INTERVAL_SECONDS = 30
 # After standing down for the user, retry this soon once they go idle. A full
@@ -149,6 +154,8 @@ class AutoIndexer:
             conn.execute("ALTER TABLE file_index ADD COLUMN vec_done INTEGER NOT NULL DEFAULT 0")
         if "chunk_count" not in cols:
             conn.execute("ALTER TABLE file_index ADD COLUMN chunk_count INTEGER NOT NULL DEFAULT 0")
+        if "chunk_sig" not in cols:
+            conn.execute("ALTER TABLE file_index ADD COLUMN chunk_sig TEXT NOT NULL DEFAULT ''")
         conn.commit()
         conn.close()
 
@@ -161,19 +168,29 @@ class AutoIndexer:
     def _vector_progress(self) -> dict[str, tuple[int, int]]:
         """path -> (chunks already embedded, total chunks)."""
         conn = self._get_conn()
-        rows = conn.execute("SELECT path, vec_done, chunk_count FROM file_index").fetchall()
+        rows = conn.execute("SELECT path, vec_done, chunk_count, chunk_sig FROM file_index").fetchall()
         conn.close()
-        return {r[0]: (r[1], r[2]) for r in rows}
+        return {r[0]: (r[1], r[2], r[3]) for r in rows}
+
+    def _stale_chunking(self, sig: str | None) -> bool:
+        """True when the file was chunked with different parameters.
+
+        vec_done is only meaningful relative to the chunk list it was counted
+        against. After a parameter change the stored total describes a chunking
+        that no longer exists, and clamping progress against it both hides
+        unembedded chunks and lets coverage exceed 100%.
+        """
+        return sig != CHUNK_SIG
 
     def _record_files(self, records: list[tuple[str, float, int, int]]):
         conn = self._get_conn()
         now = int(time.time())
         conn.executemany(
-            "INSERT OR REPLACE INTO file_index (path, mtime, size, indexed_at, chunk_count) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO file_index (path, mtime, size, indexed_at, chunk_count, chunk_sig) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             # vec_done is not carried on a re-index: a changed file restarts its
             # vector pass from zero.
-            [(p, m, s, now, n) for p, m, s, n in records]
+            [(p, m, s, now, n, CHUNK_SIG) for p, m, s, n in records]
         )
         conn.commit()
         conn.close()
@@ -181,6 +198,15 @@ class AutoIndexer:
     def _set_vector_progress(self, path: str, done: int):
         conn = self._get_conn()
         conn.execute("UPDATE file_index SET vec_done = ? WHERE path = ?", (done, path))
+        conn.commit()
+        conn.close()
+
+    def _reset_vector_progress(self, path: str, chunk_count: int):
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE file_index SET vec_done = 0, chunk_count = ?, chunk_sig = ? WHERE path = ?",
+            (chunk_count, CHUNK_SIG, path),
+        )
         conn.commit()
         conn.close()
 
@@ -425,8 +451,9 @@ class AutoIndexer:
             progress = self._vector_progress()
             pending_vectors = [
                 p for p in current
-                if progress.get(p, (0, 1))[0] < progress.get(p, (0, 1))[1]
-                and progress.get(p, (0, 0))[1] > 0
+                if self._stale_chunking(progress.get(p, (0, 0, None))[2])
+                or (progress.get(p, (0, 1, None))[0] < progress.get(p, (0, 1, None))[1]
+                    and progress.get(p, (0, 0, None))[1] > 0)
             ]
             self._pending_vector_files = len(pending_vectors)
 
@@ -438,11 +465,30 @@ class AutoIndexer:
                 if interaction.is_busy():
                     self._yielded_for_interaction = True
                     break
-                done, total = progress[path]
+                done, stored_total, sig = progress.get(path, (0, 0, None))
                 content = self._read_content(path)
                 if not content:
                     continue
                 pieces = chunk_file(content)
+                # The chunk list is the only trustworthy count. chunk_count was
+                # written when the keyword pass ran, so a change to the chunking
+                # parameters since then leaves it stale -- and vec_done is
+                # clamped against it, which makes progress over-report and hides
+                # unembedded chunks behind a false "complete". Wipe and
+                # re-embed when the two disagree.
+                total = len(pieces)
+                if total != stored_total or self._stale_chunking(sig):
+                    log.info(
+                        "chunk count drift on %s: manifest %d, actual %d; re-embedding",
+                        os.path.basename(path), stored_total, total,
+                    )
+                    try:
+                        rag_svc.vector_store.delete_by_file(path)
+                    except Exception:
+                        traceback.print_exc()
+                    self._reset_vector_progress(path, total)
+                    progress[path] = (0, total)
+                    done = 0
                 batch = pieces[done: done + EMBED_CHUNKS_PER_PASS]
                 if not batch:
                     continue
@@ -529,7 +575,7 @@ class AutoIndexer:
         """
         progress = self._vector_progress()
         partial = []
-        for path, (done, total) in sorted(progress.items()):
+        for path, (done, total, _sig) in sorted(progress.items()):
             if total > 0 and done < total:
                 partial.append({
                     "path": _display_path(Path(path)),

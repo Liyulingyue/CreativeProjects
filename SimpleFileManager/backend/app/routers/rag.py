@@ -171,8 +171,10 @@ def get_status() -> IndexStatusResponse:
         # what makes slow embedding visible instead of looking finished.
         from ..indexer import indexer as _indexer
         progress = _indexer._vector_progress()
-        total_chunks = sum(t for _d, t in progress.values() if t > 0)
-        percent = round(embedded * 100 / total_chunks) if total_chunks else 0
+        total_chunks = sum(t for _d, t, _sig in progress.values() if t > 0)
+        # Clamped: coverage above 100% means the manifest has drifted from the
+        # vector store, and a number like 101% reads as a bug rather than a hint.
+        percent = min(100, round(embedded * 100 / total_chunks)) if total_chunks else 0
         return IndexStatusResponse(
             indexed_count=embedded,
             vector_count=embedded,
@@ -191,12 +193,15 @@ def get_indexed_files():
 
         # Join in the indexer's progress so the UI can show how much of each
         # document has actually been embedded, not just how many chunks exist.
-        from ..indexer import indexer as _indexer
+        from ..indexer import CHUNK_SIG, indexer as _indexer
         progress = _indexer._vector_progress()
         for f in files:
-            done, total = progress.get(f["file_path"], (f.get("chunk_count", 0), f.get("chunk_count", 0)))
+            done, total, _sig = progress.get(
+                f["file_path"],
+                (f.get("chunk_count", 0), f.get("chunk_count", 0), CHUNK_SIG),
+            )
             f["total_chunks"] = total
-            f["percent"] = round(done * 100 / total) if total else 100
+            f["percent"] = min(100, round(done * 100 / total)) if total else 100
 
         return IndexedFilesResponse(
             files=[IndexedFile(**f) for f in files],

@@ -43,3 +43,10 @@ LLMServices/logs/
 LLMServices/models/
 # dev stack logs and pid files
 logs/
+
+# 局域网 TLS 证书（含私钥，绝不入库）
+certs/
+*.key
+*.crt
+*.csr
+*.srl
