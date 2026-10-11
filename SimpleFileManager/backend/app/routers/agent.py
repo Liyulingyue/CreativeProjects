@@ -822,7 +822,13 @@ def agent_chat_stream(req: AgentRequest):
                 turn_text = ""
                 tool_calls: list[dict] = []
                 for kind, payload in chat_completion_stream(all_messages, tools=TOOLS):
-                    if kind == "token":
+                    if kind == "reasoning":
+                        # Kept out of turn_text on purpose: reasoning is the
+                        # model's scratchpad, not part of the answer, so it must
+                        # not be saved into history or fed back as an assistant
+                        # message on the next turn.
+                        yield sse("reasoning", {"text": payload})
+                    elif kind == "token":
                         turn_text += payload
                         emitted.append(payload)
                         yield sse("token", {"text": payload})

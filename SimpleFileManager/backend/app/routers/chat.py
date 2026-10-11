@@ -13,6 +13,10 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     response: str
+    # The model emits a separate reasoning channel before its answer. Dropping
+    # it made the model look like it answered without thinking, which is exactly
+    # the case where seeing the reasoning matters most.
+    reasoning: str = ""
 
 
 @chat.post("/query")
@@ -25,6 +29,9 @@ def chat_query(req: ChatRequest) -> ChatResponse:
             ],
             temperature=0.7,
         )
-        return ChatResponse(response=result.get("content", ""))
+        return ChatResponse(
+            response=result.get("content", ""),
+            reasoning=result.get("reasoning_content") or "",
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

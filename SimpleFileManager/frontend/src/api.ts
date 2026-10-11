@@ -262,6 +262,7 @@ export async function getAgentTools(): Promise<{
 export type AgentStreamEvent =
   | { type: 'meta'; steps_max: number }
   | { type: 'step'; step: number; of: number }
+  | { type: 'reasoning'; text: string }
   | { type: 'token'; text: string }
   | { type: 'tool_start'; tool: string; args?: Record<string, unknown> }
   | { type: 'tool'; tool: string; args?: Record<string, unknown>; result: unknown }

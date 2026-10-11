@@ -186,6 +186,12 @@ def chat_completion_stream(
         if not chunk.choices:
             continue
         delta = chunk.choices[0].delta
+        # Reasoning arrives on its own channel ahead of the answer. Without a
+        # separate event type it would either be lost or interleaved into the
+        # reply text, which reads as the model thinking out loud mid-sentence.
+        reasoning = getattr(delta, "reasoning_content", None)
+        if reasoning:
+            yield ("reasoning", reasoning)
         content = getattr(delta, "content", None)
         if content:
             yield ("token", content)

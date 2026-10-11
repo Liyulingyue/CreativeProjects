@@ -58,6 +58,7 @@ export function SimpleChat() {
   const { sessions, currentSessionId, createSession, selectSession, deleteSession, addMessage } = useChatSessions('agent');
   const [isLoading, setIsLoading] = useState(false);
   const [streamingText, setStreamingText] = useState('');
+  const [reasoningText, setReasoningText] = useState('');
   // kept per session so switching conversations does not erase the trace of
   // what the agent already read on the user's behalf
   const [traces, setTraces] = useState<Record<string, ToolActivityItem[]>>({});
@@ -93,13 +94,19 @@ export function SimpleChat() {
     let reply = '';
     let plans: AgentPlan[] = [];
     let streamError: string | null = null;
+    setReasoningText('');
 
     try {
       await streamAgentMessage(
         content,
         sessionId,
         (event) => {
-          if (event.type === 'token') {
+          if (event.type === 'reasoning') {
+            // Shown live, collapsed by default -- it is diagnostic, not the
+            // answer, and it arrives first so it would otherwise push the real
+            // reply below the fold.
+            setReasoningText((prev) => prev + (event.text ?? ''));
+          } else if (event.type === 'token') {
             if (!event.text) return;
             reply += event.text;
             setStreamingText(reply);
@@ -175,6 +182,7 @@ export function SimpleChat() {
         onSendMessage={handleSendMessage}
         isLoading={isLoading}
         streamingText={streamingText}
+        reasoningText={reasoningText}
         toolActivity={toolActivity}
         currentStep={currentStep}
         onStop={handleStop}

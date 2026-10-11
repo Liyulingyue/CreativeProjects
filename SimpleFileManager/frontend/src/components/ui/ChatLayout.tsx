@@ -123,6 +123,8 @@ interface ChatLayoutProps {
   isLoading: boolean;
   /** Text received so far for the in-flight assistant reply. */
   streamingText?: string;
+  /** Live scratchpad from the model's reasoning channel, shown collapsed. */
+  reasoningText?: string;
   /** Tools the agent has invoked during the current turn. */
   toolActivity?: ToolActivity[];
   /** Current agent step, e.g. 2, for the progress hint. */
@@ -215,7 +217,7 @@ function ToolTraceLine({ activity }: { activity: ToolActivity }) {
 
 export function ChatLayout({
   sessions, currentSessionId, onSelectSession, onNewSession,
-  onDeleteSession, onSendMessage, isLoading, streamingText, toolActivity,
+  onDeleteSession, onSendMessage, isLoading, streamingText, reasoningText, toolActivity,
   currentStep, onStop, emptyState, renderMessage,
 }: ChatLayoutProps) {
   const [input, setInput] = useState('');
@@ -348,7 +350,7 @@ export function ChatLayout({
           )}
           {isLoading && (
             <div className="flex justify-start">
-              <div className="max-w-[70%] bg-slate-100 rounded-xl px-4 py-2.5 space-y-2">
+              <div className="max-w-[90%] sm:max-w-[70%] bg-slate-100 rounded-xl px-4 py-2.5 space-y-2">
                 {/* Tool calls sit above the text they produced, so the trace
                     reads in the order it happened instead of being parked in a
                     panel below the conversation. */}
@@ -356,6 +358,18 @@ export function ChatLayout({
                   <div className="space-y-1">
                     {toolActivity.map((t, i) => <ToolTraceLine key={`${t.tool}-${i}`} activity={t} />)}
                   </div>
+                )}
+                {reasoningText && (
+                  <details className="text-xs text-slate-500 group">
+                    <summary className="cursor-pointer select-none flex items-center gap-1.5 py-1 hover:text-slate-700 transition-colors">
+                      <Icon name="chevronRight" size={12} className="transition-transform group-open:rotate-90" />
+                      思考过程
+                      <span className="text-slate-400">({reasoningText.length} 字)</span>
+                    </summary>
+                    <div className="mt-1.5 pl-4 border-l-2 border-slate-200 whitespace-pre-wrap break-words leading-relaxed max-h-64 overflow-y-auto">
+                      {reasoningText}
+                    </div>
+                  </details>
                 )}
                 {streamingText ? (
                   <div className="whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-800">
