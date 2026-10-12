@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Icon } from './Icon';
 import { useCollapse } from '../../hooks/useCollapse';
+import { MarkdownText } from './MarkdownText';
 // Reuse the api layer's types. They were duplicated here, which let the two
 // definitions drift apart silently until the session prop stopped type-checking.
 import type { ChatMessage, ChatSession } from '../../api';
@@ -185,8 +186,8 @@ function ReasoningBlock({ text }: { text: string }) {
         思考
         <span className="text-slate-400">({text.length} 字)</span>
       </summary>
-      <div className="mt-1.5 pl-3 border-l-2 border-slate-300 whitespace-pre-wrap break-words leading-relaxed max-h-72 overflow-y-auto">
-        {text}
+      <div className="mt-1.5 pl-3 border-l-2 border-slate-300 leading-relaxed max-h-72 overflow-y-auto">
+        <MarkdownText source="model" className="text-xs">{text}</MarkdownText>
       </div>
     </details>
   );
@@ -357,7 +358,12 @@ export function ChatLayout({
                     </div>
                   )}
                   {renderMessage ? renderMessage(msg) : (
-                    <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">{msg.content}</div>
+                    <MarkdownText
+                      source={msg.role === 'user' ? 'plain' : 'model'}
+                      className="text-sm leading-relaxed"
+                    >
+                      {msg.content}
+                    </MarkdownText>
                   )}
                   {msg.sources && msg.sources.length > 0 && (
                     <div className={`mt-2 pt-2 border-t text-xs space-y-0.5 ${msg.role === 'user' ? 'border-indigo-500' : 'border-slate-200'}`}>
@@ -390,8 +396,8 @@ export function ChatLayout({
                   </div>
                 )}
                 {streamingText ? (
-                  <div className="whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-800">
-                    {streamingText}
+                  <div className="text-sm leading-relaxed text-slate-800">
+                    <MarkdownText source="model">{streamingText}</MarkdownText>
                     <span className="inline-block w-2 h-4 ml-0.5 bg-slate-400 animate-pulse align-text-bottom" />
                   </div>
                 ) : (

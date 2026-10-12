@@ -3,6 +3,7 @@ import { hybridSearch, streamRagQuery } from '../api';
 import type { SearchMode } from '../api';
 import type { HybridSearchResult } from '../api';
 import { Icon } from './ui/Icon';
+import { MarkdownText } from './ui/MarkdownText';
 import { useToast } from './ui/Toast';
 
 type HybridSearchResponseLike = { results: HybridSearchResult[]; keyword_count: number; semantic_count: number; };
@@ -214,8 +215,8 @@ export function SearchPage() {
                     </details>
                   )}
                   {aiAnswer ? (
-                    <div className="text-base leading-relaxed whitespace-pre-wrap break-words text-slate-800">
-                      {aiAnswer}
+                    <div className="text-base leading-relaxed text-slate-800">
+                      <MarkdownText source="model">{aiAnswer}</MarkdownText>
                       {isSummarizing && (
                         <span className="inline-block w-2 h-4 ml-0.5 bg-violet-400 animate-pulse align-text-bottom" />
                       )}

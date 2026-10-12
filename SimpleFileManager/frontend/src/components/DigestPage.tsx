@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { fetchDigest, fetchDigestList, fetchLatestDigest, generateDigest } from '../api';
 import type { Digest, DigestMeta } from '../api';
 import { Icon } from './ui/Icon';
+import { MarkdownText } from './ui/MarkdownText';
 
 export function DigestPage() {
   const [latest, setLatest] = useState<Digest | null>(null);
@@ -82,7 +83,7 @@ export function DigestPage() {
                   </div>
                   {latest?.date === current.date && <span className="px-2 py-0.5 rounded-full bg-green-50 text-green-600 text-xs font-medium">最新</span>}
                 </div>
-                <div className="text-sm leading-relaxed text-slate-700 whitespace-pre-wrap break-words">{current.content}</div>
+                <MarkdownText source="model" className="text-sm leading-relaxed text-slate-700">{current.content ?? ''}</MarkdownText>
               </div>
             </div>
           </div>
