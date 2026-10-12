@@ -316,7 +316,6 @@ class ChatHistoryService:
                     id TEXT PRIMARY KEY,
                     title TEXT DEFAULT '',
                     session_type TEXT DEFAULT 'chat',
-                    owner_id TEXT DEFAULT 'local',
                     updated_at INTEGER
                 )
             """)
@@ -334,9 +333,6 @@ class ChatHistoryService:
                 )
             """)
             cols = [r[1] for r in conn.execute("PRAGMA table_info(chat_messages)")]
-            session_cols = [r[1] for r in conn.execute("PRAGMA table_info(chat_sessions)")]
-            if "owner_id" not in session_cols:
-                conn.execute("ALTER TABLE chat_sessions ADD COLUMN owner_id TEXT DEFAULT 'local'")
             if "reasoning" not in cols:
                 conn.execute("ALTER TABLE chat_messages ADD COLUMN reasoning TEXT DEFAULT ''")
             if "activity" not in cols:
@@ -345,31 +341,30 @@ class ChatHistoryService:
             conn.commit()
             conn.close()
 
-    def create_session(self, session_type: str = "chat", owner_id: str = "local") -> ChatSession:
+    def create_session(self, session_type: str = "chat") -> ChatSession:
         with self._lock:
             session_id = uuid.uuid4().hex
             now = int(time.time() * 1000)
             conn = self._get_conn()
             conn.execute(
-                "INSERT INTO chat_sessions (id, title, session_type, owner_id, updated_at) VALUES (?, ?, ?, ?, ?)",
-                (session_id, "", session_type, owner_id, now)
+                "INSERT INTO chat_sessions (id, title, session_type, updated_at) VALUES (?, ?, ?, ?)",
+                (session_id, "", session_type, now)
             )
             conn.commit()
             conn.close()
         return ChatSession(id=session_id, title="", messages=[], updated_at=now, session_type=session_type)
 
-    def get_sessions(self, session_type: Optional[str] = None, owner_id: str = "local") -> list[ChatSession]:
+    def get_sessions(self, session_type: Optional[str] = None) -> list[ChatSession]:
         with self._lock:
             conn = self._get_conn()
             if session_type:
                 rows = conn.execute(
-                    "SELECT id, title, session_type, updated_at FROM chat_sessions WHERE session_type = ? AND owner_id = ? ORDER BY updated_at DESC",
-                    (session_type, owner_id)
+                    "SELECT id, title, session_type, updated_at FROM chat_sessions WHERE session_type = ? ORDER BY updated_at DESC",
+                    (session_type,)
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT id, title, session_type, updated_at FROM chat_sessions WHERE owner_id = ? ORDER BY updated_at DESC",
-                    (owner_id,)
+                    "SELECT id, title, session_type, updated_at FROM chat_sessions ORDER BY updated_at DESC"
                 ).fetchall()
 
             sessions = []
@@ -410,12 +405,12 @@ class ChatHistoryService:
             ))
         return messages
 
-    def get_session(self, session_id: str, owner_id: str = "local") -> Optional[ChatSession]:
+    def get_session(self, session_id: str) -> Optional[ChatSession]:
         with self._lock:
             conn = self._get_conn()
             row = conn.execute(
-                "SELECT id, title, session_type, updated_at FROM chat_sessions WHERE id = ? AND owner_id = ?",
-                (session_id, owner_id)
+                "SELECT id, title, session_type, updated_at FROM chat_sessions WHERE id = ?",
+                (session_id,)
             ).fetchone()
             if not row:
                 conn.close()

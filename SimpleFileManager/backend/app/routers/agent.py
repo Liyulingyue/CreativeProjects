@@ -13,14 +13,13 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..deps import state, get_storage_root, resolve_under_root, PathOutsideRoot, validate_plan_action
 from ..doc_extract import ExtractionError, extract_text
 from ..interaction import interaction
-from .auth import get_current_auth
 from ..llm_client import chat_completion, chat_completion_stream, _friendly_error
 
 log = logging.getLogger(__name__)
@@ -732,9 +731,9 @@ def _restore_session(session_id: str) -> Session:
     return session
 
 
-def _require_agent_session(session_id: str, owner_id: str = "local") -> None:
+def _require_agent_session(session_id: str) -> None:
     """Reject arbitrary ids instead of silently creating shared contexts."""
-    if session_id == "default" or not state.get_chat_history().get_session(session_id, owner_id):
+    if session_id == "default" or not state.get_chat_history().get_session(session_id):
         raise HTTPException(status_code=404, detail="Agent session not found")
 
 
@@ -743,11 +742,10 @@ def _get_session(session_id: str) -> Session:
 
 
 @agent.post("/chat", response_model=AgentResponse)
-def agent_chat(req: AgentRequest, auth=Depends(get_current_auth)):
+def agent_chat(req: AgentRequest):
     interaction.mark_active()
     session_id = req.session_id or "default"
-    owner_id = "local"  # one shared-password identity; stable across token renewal
-    _require_agent_session(session_id, owner_id)
+    _require_agent_session(session_id)
     session = _get_session(session_id)
     session.history.append({"role": "user", "content": req.message})
 
@@ -826,7 +824,7 @@ def agent_chat(req: AgentRequest, auth=Depends(get_current_auth)):
 
 
 @agent.post("/chat/stream")
-def agent_chat_stream(req: AgentRequest, auth=Depends(get_current_auth)):
+def agent_chat_stream(req: AgentRequest):
     """Server-sent events variant of /chat.
 
     Event types: meta, step, token, tool, done, error. Tool-call turns are
@@ -835,8 +833,7 @@ def agent_chat_stream(req: AgentRequest, auth=Depends(get_current_auth)):
     """
 
     session_id = req.session_id or "default"
-    owner_id = "local"  # one shared-password identity; stable across token renewal
-    _require_agent_session(session_id, owner_id)
+    _require_agent_session(session_id)
 
     def sse(event: str, data: dict) -> str:
         return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"

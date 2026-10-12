@@ -39,13 +39,17 @@ class TestListDirectory:
         with pytest.raises(Exception):
             _require_agent_session("does-not-exist")
 
-    def test_chat_session_is_not_visible_under_different_owner(self):
+    def test_agent_rejects_missing_chat_session(self):
         from app.deps import state
+        import pytest
+        from fastapi import HTTPException
 
         history = state.get_chat_history()
-        session = history.create_session("chat", owner_id="owner-a")
-        assert history.get_session(session.id, owner_id="owner-a") is not None
-        assert history.get_session(session.id, owner_id="owner-b") is None
+        session = history.create_session("agent")
+        assert history.get_session(session.id) is not None
+        with pytest.raises(HTTPException) as exc:
+            _require_agent_session("unknown-session")
+        assert exc.value.status_code == 404
 
 
 class TestReadFile:
