@@ -9,10 +9,15 @@ from .auto_digest import auto_digest
 
 
 def _init_auth():
-    """If INIT_PASSWORD env var is set and no password exists yet, set it on startup."""
+    """Initialize auth from an out-of-band secret, never from a public request."""
     init_pwd = os.getenv("INIT_PASSWORD", "").strip()
     if init_pwd and not is_auth_enabled():
         set_password(init_pwd)
+    if not is_auth_enabled() and os.getenv("ALLOW_INSECURE_NO_AUTH", "").lower() != "true":
+        raise RuntimeError(
+            "Authentication is not configured. Set INIT_PASSWORD before startup. "
+            "For isolated local development only, ALLOW_INSECURE_NO_AUTH=true disables this guard."
+        )
 
 
 @asynccontextmanager

@@ -75,7 +75,7 @@ def _get_mime_type(path: Path) -> str:
 def _safe_path(base: str, target: str) -> Path:
     base_path = Path(base).resolve()
     target_path = Path(target).resolve()
-    if not str(target_path).startswith(str(base_path)):
+    if not target_path.is_relative_to(base_path):
         raise HTTPException(status_code=400, detail="Path outside storage root")
     return target_path
 
@@ -284,11 +284,18 @@ async def upload_files(path: str = "", files: list[UploadFile] = File(...)):
 
     uploaded = []
     for f in files:
-        dest = target_dir / f.filename
+        raw_filename = f.filename or ""
+        filename = Path(raw_filename.replace("\\", "/")).name
+        if (not filename or filename in (".", "..")
+                or "/" in raw_filename or "\\" in raw_filename):
+            raise HTTPException(status_code=400, detail="Invalid upload filename")
+        dest = (target_dir / filename).resolve()
+        if not dest.is_relative_to(target_dir.resolve()):
+            raise HTTPException(status_code=400, detail="Upload destination outside storage root")
         with open(dest, "wb") as out:
             while chunk := await f.read(1024 * 1024):
                 out.write(chunk)
-        uploaded.append(f.filename)
+        uploaded.append(filename)
     return {"success": True, "uploaded": uploaded, "count": len(uploaded)}
 
 

@@ -143,12 +143,9 @@ def logout(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
 @auth.post("/password")
 def change_password(req: ChangePasswordRequest, credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
     if not is_auth_enabled():
-        if req.old_password:
-            if not verify_password(req.old_password):
-                raise HTTPException(status_code=401, detail="旧密码错误")
-        set_password(req.new_password)
-        token = issue_token()
-        return {"success": True, "token": token, "message": "密码已设置"}
+        # Password initialization is a deployment bootstrap operation, not a
+        # first-visitor-wins public API. Set INIT_PASSWORD before startup.
+        raise HTTPException(status_code=503, detail="Authentication is not initialized; configure INIT_PASSWORD")
     if not credentials or not is_valid_token(credentials.credentials):
         raise HTTPException(status_code=401, detail="Not authenticated")
     if not verify_password(req.old_password):

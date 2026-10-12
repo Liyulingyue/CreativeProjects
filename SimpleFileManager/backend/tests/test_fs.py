@@ -15,6 +15,16 @@ class TestBrowse:
         res = client.get("/api/fs/browse", params={"path": "/nonexistent/path"})
         assert res.status_code in (400, 404)
 
+    def test_browse_rejects_sibling_with_root_prefix(self):
+        root = get_storage_root()
+        sibling = root.parent / f"{root.name}-outside"
+        sibling.mkdir(exist_ok=True)
+        try:
+            res = client.get("/api/fs/browse", params={"path": str(sibling)})
+            assert res.status_code == 400
+        finally:
+            sibling.rmdir()
+
     def test_browse_returns_dirs_first(self):
         create_test_file("z_file.txt")
         root = get_storage_root()
@@ -123,6 +133,20 @@ class TestUpload:
         assert data["count"] == 1
         assert (root / "uploaded.txt").exists()
         assert (root / "uploaded.txt").read_text() == "upload content"
+
+    def test_upload_filename_cannot_escape_destination(self):
+        root = get_storage_root()
+        outside = root.parent / "escaped.txt"
+        if outside.exists():
+            outside.unlink()
+        res = client.post(
+            "/api/fs/upload",
+            params={"path": str(root)},
+            files=[("files", ("../escaped.txt", b"must not escape", "text/plain"))],
+        )
+        assert res.status_code == 400
+        assert not outside.exists()
+        assert not (root / "escaped.txt").exists()
 
 
 class TestTree:

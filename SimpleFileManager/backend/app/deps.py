@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import time
 import sqlite3
@@ -107,10 +108,9 @@ class LanceDBVectorStore:
         import lancedb
         import pyarrow as pa
         if "file_embeddings" not in self.table_names():
-            # fixed_size_list, not list_: LanceDB's vector search rejects a
-            # variable-length list with "Data type is not a vector", which the
-            # caller used to swallow, leaving the semantic channel permanently
-            # empty while keyword search looked healthy.
+            # LanceDB's vector search accepts a fixed-size list. Keep the
+            # configured dimension in the schema so a service restart cannot
+            # silently create a table with a different shape.
             dim = EMBEDDING_DIM_MAP.get(state.get_settings().embedding_model, 0)
             if not dim:
                 try:
@@ -138,21 +138,21 @@ class LanceDBVectorStore:
         self.add_many([vector], [metadata])
 
     def add_many(self, vectors: list[list[float]], records: list[dict]):
-        # The id is derived from (file, chunk) instead of a fresh uuid4 so that
-        # re-embedding a passage replaces its row rather than appending a
-        # duplicate. With random ids every re-run accumulated another copy of
-        # the corpus, and duplicated chunk_idx values broke the RRF merge --
-        # the two channels could never land on the same (path, chunk_idx), so
-        # dual-channel agreement silently never fired.
+        # LanceDB Table.add is append-only, even for a duplicate id. Use a
+        # deterministic id AND merge_insert: the id makes the key stable while
+        # merge_insert is what actually replaces an existing row.
         rows = [{
-            "id": f"{r.get('file_path', '')}#{int(r.get('chunk_idx', 0))}",
+            "id": f"{hashlib.sha256(r.get('file_path', '').encode()).hexdigest()}#{int(r.get('chunk_idx', 0))}",
             "file_path": r.get("file_path", ""),
             "content": r.get("content", ""),
             "chunk_idx": int(r.get("chunk_idx", 0)),
             "vector": vec,
         } for vec, r in zip(vectors, records)]
         if rows:
-            self._table.add(rows)
+            (self._table.merge_insert("id")
+             .when_matched_update_all()
+             .when_not_matched_insert_all()
+             .execute(rows))
 
     def search(self, query_vector: list[float], top_k: int = 5) -> list[dict]:
         if self.count() == 0:
@@ -230,6 +230,10 @@ class RAGService:
         """
         records: list[dict] = []
         for f in files:
+            # Delete old tails if a document was shortened or rechunked. The
+            # deterministic merge updates matching ids, but cannot infer that
+            # now-nonexistent chunk ids should be deleted.
+            self.vector_store.delete_by_file(f["file_path"])
             for idx, (_offset, piece) in enumerate(chunk_file(f["content"])):
                 records.append({
                     "file_path": f["file_path"],
@@ -476,7 +480,7 @@ def resolve_under_root(path: str) -> Path:
     if clean in ("", "."):
         return root
     target = (root / clean).resolve()
-    if target != root and not str(target).startswith(str(root) + "/"):
+    if not target.is_relative_to(root):
         raise PathOutsideRoot(path)
     return target
 

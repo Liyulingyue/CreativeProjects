@@ -16,6 +16,10 @@ os.environ["EMBEDDING_BASE_URL"] = "http://localhost:9999/v1"
 os.environ["EMBEDDING_MODEL"] = "test-embed"
 os.environ["EMBEDDING_DIM"] = "128"
 os.environ["INDEX_INTERVAL"] = "9999"
+# Tests intentionally exercise the unauthenticated local-development mode;
+# production startup now requires INIT_PASSWORD unless this explicit escape
+# hatch is set.
+os.environ["ALLOW_INSECURE_NO_AUTH"] = "true"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 

@@ -406,10 +406,12 @@ class AutoIndexer:
             known = self._known_files()
 
             to_index = []
+            changed_files = set()
             pending = 0
             for path, (mtime, size) in current.items():
                 if path in known and known[path][0] == mtime and known[path][1] == size:
                     continue
+                changed_files.add(path)
                 if now - mtime < debounce:
                     pending += 1
                     continue
@@ -444,6 +446,11 @@ class AutoIndexer:
                     try:
                         pieces = chunk_file(content)
                         search_engine.upsert_file(path, content)
+                        if path in changed_files:
+                            # Only discard old vectors after the keyword update
+                            # succeeded. If FTS fails, leave the prior semantic
+                            # index intact and retry the whole changed file.
+                            rag_svc.vector_store.delete_by_file(path)
                         stat = Path(path).stat()
                         records.append((path, stat.st_mtime, stat.st_size, len(pieces)))
                         indexed += 1
@@ -504,7 +511,10 @@ class AutoIndexer:
                     continue
                 stop_outer = False
                 try:
-                    chunk_records = [(path, idx, text) for idx, (_off, text) in enumerate(batch)]
+                    chunk_records = [
+                        (path, done + offset, text)
+                        for offset, (_off, text) in enumerate(batch)
+                    ]
                     for j in range(0, len(chunk_records), EMBED_CHUNK_BATCH):
                         # Checked per batch, not just per file: one file is
                         # ~16 chunks, so a file-level check could sit on the
