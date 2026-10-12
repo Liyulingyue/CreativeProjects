@@ -112,6 +112,9 @@ class AutoIndexer:
         # Set when a pass ended with chunks still to embed, so the next tick
         # picks straight back up instead of waiting out index_interval.
         self._continue_pending = False
+        self._scan_lock = threading.Lock()
+        self._last_enumeration_complete = True
+        self._present_paths: set[str] = set()
         self._pending_changes = 0
         # Files present in storage that never reach the index: unsupported
         # extension vs. recognised but unparseable. Surfaced in the UI so a
@@ -241,11 +244,15 @@ class AutoIndexer:
         return True
 
     def _scan_guarded(self):
+        if not self._scan_lock.acquire(blocking=False):
+            self._scan_thread = None
+            return
         try:
             self.scan()
         except Exception:
             traceback.print_exc()
         finally:
+            self._scan_lock.release()
             self._scan_thread = None
 
     def _run(self):
@@ -323,27 +330,36 @@ class AutoIndexer:
             return
         self._last_scan_ts = time.time()
         self._continue_pending = False
-        self.scan()
+        if self._scan_lock.acquire(blocking=False):
+            try:
+                self.scan()
+            finally:
+                self._scan_lock.release()
 
     # ---- scanning ----
 
     def _iter_text_files(self, root: Path) -> dict[str, tuple[float, int]]:
         found: dict[str, tuple[float, int]] = {}
+        present: set[str] = set()
         unsupported: dict[str, str] = {}
         oversized: dict[str, str] = {}
+        scan_complete = True
         try:
             for entry in root.rglob("*"):
                 if _is_hidden(entry):
                     continue
                 if not entry.is_file():
                     continue
-                if entry.suffix.lower() not in INDEXABLE_EXTENSIONS:
-                    # Files we simply cannot parse. Counted so the user can see
-                    # why a document they stored never turns up in search.
-                    unsupported[_display_path(entry)] = entry.suffix.lower()
-                    continue
                 try:
                     stat = entry.stat()
+                    present.add(str(entry))
+                    if entry.suffix.lower() not in INDEXABLE_EXTENSIONS:
+                        # Files we simply cannot parse. Counted so the user can
+                        # see why they are absent from search. They still count
+                        # as present: a file becoming unsupported must not be
+                        # mistaken for deletion of its previous index.
+                        unsupported[_display_path(entry)] = entry.suffix.lower()
+                        continue
                     # PDFs are mostly images, so the plain-text byte ceiling
                     # would reject a small file full of readable content.
                     limit = MAX_DOCUMENT_BYTES if entry.suffix.lower() in DOCUMENT_EXTENSIONS else MAX_FILE_BYTES
@@ -356,9 +372,12 @@ class AutoIndexer:
                         continue
                     found[str(entry)] = (stat.st_mtime, stat.st_size)
                 except (PermissionError, OSError):
+                    scan_complete = False
                     continue
         except (PermissionError, OSError):
-            pass
+            scan_complete = False
+        self._last_enumeration_complete = scan_complete
+        self._present_paths = present
         self._unsupported = unsupported
         self._oversized = oversized
         return found
@@ -403,6 +422,11 @@ class AutoIndexer:
             self._vector_partial = {}
             self._yielded_for_interaction = False
             current = self._iter_text_files(root)
+            if not self._last_enumeration_complete:
+                # A partial directory walk cannot distinguish deleted files
+                # from temporarily inaccessible ones. Indexing what we did see
+                # is safe, but removals are suppressed for this scan.
+                log.warning("directory scan was incomplete; suppressing index deletions")
             known = self._known_files()
 
             to_index = []
@@ -428,7 +452,10 @@ class AutoIndexer:
                 to_index = list(current)
             self._pending_changes = pending
 
-            removed = [p for p in known if p not in current]
+            removed = (
+                [p for p in known if p not in self._present_paths]
+                if self._last_enumeration_complete else []
+            )
 
             rag_svc = state.get_rag_service()
             indexed, failed = 0, 0

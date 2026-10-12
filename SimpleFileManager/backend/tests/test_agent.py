@@ -6,6 +6,7 @@ from app.routers.agent import (
     tool_find_files,
     tool_search_content,
 )
+from app.routers.agent import _require_agent_session
 
 
 class TestListDirectory:
@@ -32,6 +33,19 @@ class TestListDirectory:
         create_test_file(".secret", "hidden")
         result = tool_list_directory(".")
         assert not any(i["name"] == ".secret" for i in result["items"])
+
+    def test_agent_rejects_unknown_session(self):
+        import pytest
+        with pytest.raises(Exception):
+            _require_agent_session("does-not-exist")
+
+    def test_chat_session_is_not_visible_under_different_owner(self):
+        from app.deps import state
+
+        history = state.get_chat_history()
+        session = history.create_session("chat", owner_id="owner-a")
+        assert history.get_session(session.id, owner_id="owner-a") is not None
+        assert history.get_session(session.id, owner_id="owner-b") is None
 
 
 class TestReadFile:

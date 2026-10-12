@@ -13,13 +13,14 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..deps import state, get_storage_root, resolve_under_root, PathOutsideRoot, validate_plan_action
 from ..doc_extract import ExtractionError, extract_text
 from ..interaction import interaction
+from .auth import get_current_auth
 from ..llm_client import chat_completion, chat_completion_stream, _friendly_error
 
 log = logging.getLogger(__name__)
@@ -731,14 +732,22 @@ def _restore_session(session_id: str) -> Session:
     return session
 
 
+def _require_agent_session(session_id: str, owner_id: str = "local") -> None:
+    """Reject arbitrary ids instead of silently creating shared contexts."""
+    if session_id == "default" or not state.get_chat_history().get_session(session_id, owner_id):
+        raise HTTPException(status_code=404, detail="Agent session not found")
+
+
 def _get_session(session_id: str) -> Session:
     return _restore_session(session_id)
 
 
 @agent.post("/chat", response_model=AgentResponse)
-def agent_chat(req: AgentRequest):
+def agent_chat(req: AgentRequest, auth=Depends(get_current_auth)):
     interaction.mark_active()
     session_id = req.session_id or "default"
+    owner_id = "local"  # one shared-password identity; stable across token renewal
+    _require_agent_session(session_id, owner_id)
     session = _get_session(session_id)
     session.history.append({"role": "user", "content": req.message})
 
@@ -817,13 +826,17 @@ def agent_chat(req: AgentRequest):
 
 
 @agent.post("/chat/stream")
-def agent_chat_stream(req: AgentRequest):
+def agent_chat_stream(req: AgentRequest, auth=Depends(get_current_auth)):
     """Server-sent events variant of /chat.
 
     Event types: meta, step, token, tool, done, error. Tool-call turns are
     streamed too, so the model can emit a short "let me look" preamble before
     calling a tool instead of the UI sitting blank through the whole turn.
     """
+
+    session_id = req.session_id or "default"
+    owner_id = "local"  # one shared-password identity; stable across token renewal
+    _require_agent_session(session_id, owner_id)
 
     def sse(event: str, data: dict) -> str:
         return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
@@ -832,7 +845,6 @@ def agent_chat_stream(req: AgentRequest):
         # Tell the indexer to stand down: chat and embedding share the fast
         # cores, and a conversation measurably slows while indexing runs.
         interaction.mark_active()
-        session_id = req.session_id or "default"
         session = _get_session(session_id)
         session.history.append({"role": "user", "content": req.message})
         session.compact()
@@ -843,6 +855,7 @@ def agent_chat_stream(req: AgentRequest):
         steps_used = 0
         max_steps = state.get_settings().max_agent_steps
         emitted: list[str] = []  # streamed text, kept for session history
+        turn_complete = False
         # Accumulated across steps: the model reasons again after each tool
         # call. Lives in the generator, not the enclosing function.
         all_reasoning = ""
@@ -916,6 +929,7 @@ def agent_chat_stream(req: AgentRequest):
             session.history = [
                 m for m in all_messages if m.get("role") in ("user", "assistant")
             ][-MAX_SESSION_MESSAGES:]
+            turn_complete = True
 
             plans = []
             if plan_ids:
@@ -931,11 +945,27 @@ def agent_chat_stream(req: AgentRequest):
                 "available_tools": AVAILABLE_TOOLS,
             })
         except GeneratorExit:
-            # client hit stop / navigated away; keep what we already have
+            # The client already displayed these deltas. Keep the server-side
+            # context and permanent transcript aligned with what it saw; do not
+            # yield from a GeneratorExit handler (the connection is gone).
+            partial = "".join(emitted).strip()
+            if not turn_complete:
+                if partial:
+                    all_messages.append({"role": "assistant", "content": partial})
+                session.history = [
+                    m for m in all_messages if m.get("role") in ("user", "assistant")
+                ][-MAX_SESSION_MESSAGES:]
             log.info("agent stream for session %s closed by client", session_id)
             raise
         except Exception as e:
             log.exception("agent stream failed")
+            if not turn_complete:
+                partial = "".join(emitted).strip()
+                if partial:
+                    all_messages.append({"role": "assistant", "content": partial})
+                session.history = [
+                    m for m in all_messages if m.get("role") in ("user", "assistant")
+                ][-MAX_SESSION_MESSAGES:]
             yield sse("error", {"message": _friendly_error(e)})
 
     return StreamingResponse(
