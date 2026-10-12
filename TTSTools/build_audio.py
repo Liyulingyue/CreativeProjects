@@ -25,6 +25,22 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import edge_tts
+from edge_tts.constants import TRUSTED_CLIENT_TOKEN
+from edge_tts import communicate as _et_comm
+
+# Microsoft migrated the Edge Read Aloud WebSocket from
+#   wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1
+# to
+#   wss://api.msedgeservices.com/tts/cognitiveservices/websocket/v1
+# as of late 2026. The legacy v1 endpoint now returns 403 on synthesis for
+# many regions. Per upstream reports (rany2/edge-tts#490), the new endpoint
+# still accepts the legacy Sec-MS-GEC token format, so we just point
+# edge_tts at the new host.
+_V2_WSS_URL = (
+    f"wss://api.msedgeservices.com/tts/cognitiveservices/websocket/v1"
+    f"?Ocp-Apim-Subscription-Key={TRUSTED_CLIENT_TOKEN}"
+)
+_et_comm.WSS_URL = _V2_WSS_URL
 
 # ---------------------------------------------------------------------------
 # Config
@@ -38,8 +54,11 @@ VOICE = "en-US-AriaNeural"      # female, clear, great for English practice
 RATE = "+0%"                    # default speaking rate
 PITCH = "+0Hz"
 MAX_CHARS = 4500                # safe chunk size for edge-tts
-RETRY = 3
-RETRY_DELAY = 4
+RETRY = 6                       # edge-tts occasionally 403s/429s; be patient
+RETRY_DELAY = 6                 # seconds; backoff multiplies by attempt #
+INTER_CHUNK_SLEEP = 2.0         # gentle pacing between chunks to avoid 429
+INTER_CHAPTER_SLEEP = 3.0       # gentle pacing between chapters
+SKIP_EXISTING = True            # resume-friendly: skip MP3s already on disk
 
 # ---------------------------------------------------------------------------
 # Markdown cleaning
@@ -322,8 +341,15 @@ def _clean_prose(text: str) -> str:
     text = _ESCAPE.sub(r"\1", text)
     # Drop blockquote markers but keep text.
     text = re.sub(r"^\s*>\s?", "", text, flags=re.MULTILINE)
-    # Collapse blank lines / whitespace.
+    # Collapse runs of blank lines to a single paragraph break.
     text = _MULTI_NL.sub("\n\n", text)
+    # Soft-wrap newlines (single \n between text) must become a space so
+    # TTS doesn't break the sentence at every line wrap. Only \n\n stays
+    # as a paragraph boundary.
+    paragraphs = text.split("\n\n")
+    paragraphs = [re.sub(r"\s*\n\s*", " ", p) for p in paragraphs]
+    text = "\n\n".join(paragraphs)
+    # Collapse runs of spaces/tabs (a soft wrap leaves a trailing space).
     text = re.sub(r"[ \t]+", " ", text)
     return text.strip()
 
@@ -377,7 +403,12 @@ def chunk_text(text: str, limit: int = MAX_CHARS) -> list[str]:
 # TTS
 # ---------------------------------------------------------------------------
 async def synthesize_one(text: str, voice: str, out_path: Path) -> None:
-    """Synthesize a single chunk to out_path with retries."""
+    """Synthesize a single chunk to out_path with retries.
+
+    Edge-TTS hits a 403 (region blocked) or 429 (rate limited) from the
+    Bing websocket fairly often. We back off exponentially and retry up
+    to RETRY times before giving up.
+    """
     last_err: Exception | None = None
     for attempt in range(1, RETRY + 1):
         try:
@@ -389,7 +420,17 @@ async def synthesize_one(text: str, voice: str, out_path: Path) -> None:
         except Exception as e:  # noqa: BLE001
             last_err = e
             if attempt < RETRY:
-                await asyncio.sleep(RETRY_DELAY * attempt)
+                # exponential-ish backoff, biased toward longer waits.
+                # For 429 (rate limit) use a much longer cool-off.
+                status = getattr(e, "status", None) or 0
+                base = RETRY_DELAY * attempt
+                wait = base * 5 if status == 429 else base
+                print(
+                    f"    retry {attempt}/{RETRY} after {wait}s "
+                    f"({type(e).__name__} {status}: {str(e)[:80]})",
+                    file=sys.stderr,
+                )
+                await asyncio.sleep(wait)
     raise RuntimeError(f"edge-tts failed after {RETRY} tries: {last_err}")
 
 
@@ -405,6 +446,9 @@ async def synth_chapter(
     try:
         for i, (chunk, tf) in enumerate(zip(chunks, tmp_files)):
             await synthesize_one(chunk, voice, tf)
+            # breathe between chunks inside a chapter
+            if i + 1 < len(chunks):
+                await asyncio.sleep(INTER_CHUNK_SLEEP)
         # Concat mp3 files byte-wise is safe (mp3 frames are independent).
         with open(out_path, "wb") as out:
             for tf in tmp_files:
@@ -449,7 +493,8 @@ def title_from_md(path: Path) -> str:
 
 
 async def process_one(
-    md_path: Path, out_dir: Path, voice: str, dry: bool
+    md_path: Path, out_dir: Path, voice: str, dry: bool,
+    skip_existing: bool = SKIP_EXISTING,
 ) -> dict | None:
     md = md_path.read_text(encoding="utf-8")
     title = title_from_md(md_path)
@@ -468,12 +513,25 @@ async def process_one(
             "chunks": len(chunks),
             "first_chunk": chunks[0][:120] if chunks else "",
         }
+    if skip_existing and out_path.exists() and out_path.stat().st_size > 0:
+        size = out_path.stat().st_size / 16_000
+        return {
+            "file": md_path.name,
+            "title": title,
+            "out": out_path.name,
+            "chars": len(text),
+            "chunks": len(chunks),
+            "wall_seconds": 0.0,
+            "mp3_seconds_est": round(size, 1),
+            "mp3_bytes": out_path.stat().st_size,
+            "skipped": True,
+        }
     t0 = time.time()
     size = await synth_chapter(chunks, voice, out_path)
     dt = time.time() - t0
     return {
         "file": md_path.name,
-        "title": title_from_md(md_path),
+        "title": title,
         "out": out_path.name,
         "chars": len(text),
         "chunks": len(chunks),
@@ -489,7 +547,10 @@ async def main_async(args: argparse.Namespace) -> None:
 
     files = sorted(SRC_DIR.glob("*.md"), key=sort_key)
     if args.prefix:
-        files = [p for p in files if p.stem.startswith(args.prefix)]
+        files = [
+            p for p in files
+            if any(p.stem.startswith(pre) for pre in args.prefix)
+        ]
     if not files:
         print("No matching files.", file=sys.stderr)
         return
@@ -505,7 +566,6 @@ async def main_async(args: argparse.Namespace) -> None:
     manifest: list[dict] = []
     total = len(files)
     for i, f in enumerate(files, 1):
-        t0 = time.time()
         r = await process_one(f, OUT_DIR, VOICE, dry=False)
         if r is None:
             print(f"[{i}/{total}] {f.name}: empty, skipped")
@@ -516,14 +576,15 @@ async def main_async(args: argparse.Namespace) -> None:
             encoding="utf-8",
         )
         manifest.append(r)
+        skipped = " (cached)" if r.get("skipped") else ""
         print(
             f"[{i}/{total}] {f.name:<40} "
             f"{r['chars']:>6}c / {r['chunks']:>3}ch / "
             f"~{r['mp3_seconds_est']:>5.0f}s  "
-            f"({r['wall_seconds']:.1f}s wall)"
+            f"({r['wall_seconds']:.1f}s wall){skipped}"
         )
         # gentle pacing to avoid hammering edge-tts
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(INTER_CHAPTER_SLEEP)
 
     (META_DIR / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2),
@@ -544,8 +605,8 @@ async def main_async(args: argparse.Namespace) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
-        "prefix", nargs="?",
-        help="Only process files whose stem starts with this (e.g. ch01)",
+        "prefix", nargs="*",
+        help="Only process files whose stem starts with one of these prefixes",
     )
     ap.add_argument(
         "--dry-run", action="store_true",
