@@ -178,7 +178,12 @@ export function IndexPage() {
 
   useEffect(() => {
     loadIndex(); loadAutoStatus(); loadSkipped();
-    const timer = setInterval(() => { loadAutoStatus(); loadSkipped(); }, 10000);
+    // The 10s tick refreshes the dashboard counts and the per-file progress
+    // list as well, so the user sees vectorisation progress update in place
+    // rather than waiting for the next mount or manual scan. Without this the
+    // "已向量化 X/Y" widget stays frozen at whatever value it had on first
+    // load, even though the indexer is actively producing vectors.
+    const timer = setInterval(() => { loadIndex(); loadAutoStatus(); loadSkipped(); }, 10000);
     return () => clearInterval(timer);
   }, [loadAutoStatus]);
 
@@ -270,6 +275,11 @@ export function IndexPage() {
                   </span>
                 )}
               </span>
+              {skipped && skipped.partial_vector && skipped.partial_vector.length > 0 && (
+                <span className="text-xs text-indigo-600 truncate" title={skipped.partial_vector.map(p => `${p.path} ${p.done}/${p.total}`).join('\n')}>
+                  · 正在嵌入 {skipped.partial_vector.length} 个文件
+                </span>
+              )}
               <button onClick={handleToggleAuto} disabled={isToggling}
                 className={`relative w-10 h-[22px] rounded-full transition-colors disabled:opacity-50
                   after:content-[''] after:absolute after:-inset-y-2.5 after:-inset-x-2.5 ${autoStatus.enabled ? 'bg-indigo-600' : 'bg-slate-300'}`}

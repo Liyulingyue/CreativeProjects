@@ -92,8 +92,15 @@ class EmbeddingService:
         self.model = model
 
     def embed(self, texts: list[str]) -> list[list[float]]:
+        # Pass our own URL/model through. llm_client.get_embeddings falls
+        # back to state.get_settings() when these are None, so the indexer
+        # (which constructs EmbeddingService from the indexer URL) keeps its
+        # old behaviour, while the search embedder constructed from
+        # EMBEDDING_SEARCH_* actually hits the dedicated endpoint.
         from .llm_client import get_embeddings
-        return get_embeddings(texts)
+        return get_embeddings(
+            texts, base_url=self.base_url, api_key=self.api_key, model=self.model,
+        )
 
 
 class LanceDBVectorStore:
@@ -707,6 +714,15 @@ def _get_default_settings() -> AppSettings:
     embedding_base_url = os.getenv("EMBEDDING_BASE_URL", "https://api.minimaxi.com/v1")
     embedding_model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 
+    # Separate embedding endpoint for the search path. Defaults to the same
+    # endpoint as the indexer, so deployments without a dedicated search
+    # embedder (e.g. cloud-only) keep working unchanged. On this box we point
+    # EMBEDDING_SEARCH_URL at the GPU-backed llama-server so user queries get
+    # a low-latency single-chunk slot independent of the indexer's batches.
+    search_api_key = os.getenv("EMBEDDING_SEARCH_API_KEY", embedding_api_key)
+    search_base_url = os.getenv("EMBEDDING_SEARCH_URL", embedding_base_url)
+    search_model = os.getenv("EMBEDDING_SEARCH_MODEL", embedding_model)
+
     if embedding_dim_str == "AUTO":
         embedding_dim_str = str(_detect_embedding_dim(embedding_model, embedding_api_key, embedding_base_url))
 
@@ -718,6 +734,9 @@ def _get_default_settings() -> AppSettings:
         embedding_base_url=embedding_base_url,
         embedding_model=embedding_model,
         embedding_dim=embedding_dim_str,
+        search_api_key=search_api_key,
+        search_base_url=search_base_url,
+        search_model=search_model,
         index_interval=int(os.getenv("INDEX_INTERVAL", "300")),
         auto_index_enabled=os.getenv("AUTO_INDEX_ENABLED", "true").lower() in ("true", "1", "yes"),
         index_debounce_seconds=int(os.getenv("INDEX_DEBOUNCE_SECONDS", "10")),
@@ -771,6 +790,9 @@ class AppState:
                 setattr(self._settings, k, v)
         self._persist_settings()
         self._rag_service = None
+        # Drop the cached search embedder too; the next search picks up
+        # whatever EMBEDDING_SEARCH_URL now points at.
+        self._search_embedding_service = None
         return self._settings
 
     def get_index_stats(self) -> IndexStats:
@@ -819,6 +841,26 @@ class AppState:
                 db_path=db_path,
             )
         return self._rag_service
+
+    def get_search_embedding_service(self) -> EmbeddingService:
+        """Embedding client for the user-facing search/chat path.
+
+        Reads EMBEDDING_SEARCH_* (or falls back to EMBEDDING_* when unset),
+        so the same settings that drive the indexer also work on machines
+        without a separate GPU embedder. The search embedder is created
+        lazily and cached on the AppState so per-query HTTP connections are
+        reused; the cache is invalidated by update_settings().
+        """
+        if getattr(self, "_search_embedding_service", None) is None:
+            s = self._settings
+            # Empty string means "not configured" -> fall back to indexer URL.
+            base_url = s.search_base_url or s.embedding_base_url
+            api_key = s.search_api_key or s.embedding_api_key
+            model = s.search_model or s.embedding_model
+            self._search_embedding_service = EmbeddingService(
+                api_key=api_key, base_url=base_url, model=model,
+            )
+        return self._search_embedding_service
 
     def get_chat_history(self) -> ChatHistoryService:
         if self._chat_history is None:

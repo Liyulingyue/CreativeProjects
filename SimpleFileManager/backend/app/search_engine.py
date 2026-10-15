@@ -146,7 +146,10 @@ class HybridSearchEngine:
     def vector_search(self, query: str, top_k: int = 10, path_filter: str = "") -> list[dict]:
         try:
             rag_svc = state.get_rag_service()
-            query_vector = rag_svc.embedding_service.embed([query])[0]
+            # Search uses the dedicated GPU-backed embedder (EMBEDDING_SEARCH_URL)
+            # so user queries don't queue behind the indexer's batched work on
+            # the A520 LITTLE cores. Same logic as /api/rag/search.
+            query_vector = state.get_search_embedding_service().embed([query])[0]
             # Filtering here rather than at the call site: a post-filter would
             # only see whatever survived the per-file cap, so asking about one
             # document could return a different document entirely.

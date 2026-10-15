@@ -43,3 +43,6 @@ LLMServices/logs/
 LLMServices/models/
 # dev stack logs and pid files
 logs/
+
+# Project-root models dir (BGE Q4_0 GGUF and friends; large binary)
+models/

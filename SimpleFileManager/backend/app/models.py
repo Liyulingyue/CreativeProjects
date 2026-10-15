@@ -62,6 +62,14 @@ class AppSettings(BaseModel):
     embedding_base_url: str = "https://api.minimaxi.com/v1"
     embedding_model: str = "text-embedding-3-small"
     embedding_dim: str = "AUTO"
+    # Dedicated embedding endpoint for the search/chat path. Falls back to
+    # the indexer endpoint when unset, so cloud-only deployments keep
+    # working. On this box we point it at a GPU-backed llama-server so user
+    # queries have a dedicated low-latency path independent of the indexer's
+    # batched work on the A520 LITTLE cores.
+    search_api_key: str = ""
+    search_base_url: str = ""
+    search_model: str = ""
     index_interval: int = 300
     auto_index_enabled: bool = True
     index_debounce_seconds: int = 10

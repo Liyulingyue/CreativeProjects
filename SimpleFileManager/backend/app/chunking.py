@@ -6,10 +6,14 @@ whole book diluted equally. Chunking fixes both, and gives retrieval something
 to point at.
 """
 
-# 1500 characters keeps a chunk well inside the embedding model's context while
-# holding enough surrounding text for a passage to be self-describing.
-DEFAULT_CHUNK_SIZE = 1500
-DEFAULT_OVERLAP = 200
+# 400 characters keeps a Chinese chunk around 250 tokens, well inside the
+# 512-token training context of BGE-family encoders (bge-base-zh, bge-small-zh,
+# bge-large-zh). Larger embeddings (text-embedding-3-*, Qwen3-0.6B at 32K ctx)
+# tolerate the 1500-char default, but BGE rejects 500+ token inputs outright.
+# Override via env when the embedding model changes.
+import os as _os
+DEFAULT_CHUNK_SIZE = int(_os.getenv("INDEX_CHUNK_SIZE", "400"))
+DEFAULT_OVERLAP = int(_os.getenv("INDEX_CHUNK_OVERLAP", "60"))
 
 MIN_CHUNK_SIZE = 200
 

@@ -91,9 +91,19 @@ def index_files(req: IndexBatchRequest) -> dict:
 
 @rag.post("/search")
 def semantic_search(req: SearchRequest) -> SearchResult:
+    # Embedding a query hits the same BGE server the indexer is using, so
+    # mark the user active and let indexing stand down for ~45s. Without this
+    # the search has to wait for the indexer's in-flight 12-chunk batch to
+    # finish (15-20s on a busy server). Same idea as /api/search/hybrid.
+    # The query embedding itself goes through the dedicated *search* embedder
+    # (EMBEDDING_SEARCH_URL) so it has its own low-latency path even while
+    # the indexer is hammering the indexer embedder.
+    from ..interaction import interaction
+    interaction.mark_active()
     try:
+        search_embedder = state.get_search_embedding_service()
         rag_svc = state.get_rag_service()
-        query_vector = rag_svc.embedding_service.embed([req.query])[0]
+        query_vector = search_embedder.embed([req.query])[0]
         results = rag_svc.vector_store.search(query_vector, top_k=req.top_k)
         return SearchResult(
             items=results,
@@ -106,8 +116,16 @@ def semantic_search(req: SearchRequest) -> SearchResult:
 
 @rag.post("/query")
 def query(req: QueryRequest) -> QueryResponse:
+    # RAG query embeds a question and then runs chat completion -- both compete
+    # for the embedding server and the LLM. Mark active so the indexer
+    # stands down for the duration of the answer.
+    from ..interaction import interaction
+    interaction.mark_active()
     try:
         rag_svc = state.get_rag_service()
+        # Patch the question embedding to use the search embedder so the
+        # RAG-service's own embed call does not queue behind the indexer.
+        rag_svc.embedding_service = state.get_search_embedding_service()
         result = rag_svc.query(req.question, top_k=req.top_k)
         return QueryResponse(**result)
     except Exception as e:
@@ -122,6 +140,10 @@ def query_stream(req: QueryRequest) -> StreamingResponse:
     well over a minute behind an unresponsive spinner. Streaming does not make
     it faster but makes the wait legible.
     """
+    from ..interaction import interaction
+    # Mark before yielding the SSE stream starts so the indexer yields before
+    # the next batch boundary even on a long-running streamed answer.
+    interaction.mark_active()
     def sse(event: str, data: dict) -> str:
         return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 

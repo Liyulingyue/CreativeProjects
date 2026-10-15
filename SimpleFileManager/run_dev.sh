@@ -16,6 +16,18 @@
 #   FRONTEND_PORT   Vite dev server      (default: read from vite.config.ts)
 #   BACKEND_PORT    FastAPI              (default 8000)
 #
+# LLM services (LLMServices/serve.sh) on this box pair LFM2.5-24B-A2B Q4_K_M
+# on the LLM side with bge-base-zh-v1.5 Q8_0 (105 MB, 768-dim) on the
+# embedding side. Both stay on CPU; llama-server is CPU-pinned to the A720
+# big cores for chat and to the A520 little cores for the embedding slice so
+# the two workloads don't fight for shared cache lines. We deliberately do
+# not move embedding to the big cores even though it would shave hours off
+# the indexing ETA: the chat workload's tail latency is the product
+# constraint, and big.LITTLE lets both keep their respective SLO.
+# Override per service with LLM_THREADS, EMB_THREADS, LLM_CPUSET,
+# EMB_CPUSET environment variables before --start llm. Embedding model
+# choice and dim are picked up from .env (EMBEDDING_MODEL / EMBEDDING_DIM).
+#
 # Logs: logs/{backend,frontend}.log   Pids: logs/{backend,frontend,llm}.pid
 #
 set -u
@@ -147,6 +159,25 @@ start_backend() {
     if [ ! -d "$BACKEND_DIR/.venv" ]; then
         c_red "  backend/.venv missing. Create it:"
         c_red "    cd backend && python -m venv .venv && .venv/bin/pip install -r requirements.txt"
+        return 1
+    fi
+    # Boot needs INIT_PASSWORD or ALLOW_INSECURE_NO_AUTH in $ROOT/.env, or it
+    # will refuse to start in the lifespan handler. A pristine checkout only
+    # ships .env.example, so seed .env once and warn loudly when neither auth
+    # switch is set.
+    if [ ! -f "$ROOT/.env" ]; then
+        if [ -f "$ROOT/.env.example" ]; then
+            cp "$ROOT/.env.example" "$ROOT/.env"
+            c_dim "  seeded $ROOT/.env from .env.example -- edit INIT_PASSWORD before any real use"
+        else
+            c_red "  no $ROOT/.env and no .env.example to copy from"
+            return 1
+        fi
+    fi
+    if ! grep -qE '^[[:space:]]*INIT_PASSWORD=' "$ROOT/.env" \
+       && ! grep -qE '^[[:space:]]*ALLOW_INSECURE_NO_AUTH=' "$ROOT/.env"; then
+        c_red "  $ROOT/.env is missing both INIT_PASSWORD and ALLOW_INSECURE_NO_AUTH."
+        c_red "  Backend will refuse to start. Edit .env and add one of them."
         return 1
     fi
     (

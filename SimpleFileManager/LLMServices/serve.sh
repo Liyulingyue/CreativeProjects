@@ -7,10 +7,18 @@
 #   2. llama-server found on PATH or in ./bin
 #   3. ./bin/rust-model-inference           fallback
 #
-# llama-server is preferred because it is 3-4x faster on this box for
-# LFM2.5-8B-A1B (measured: 14.9 vs 4.5 tok/s generation, 39.4 vs 10.2 tok/s
-# prompt on 12 threads, Q8_0). rust-model-inference stays as the fallback so the
-# stack still starts when llama.cpp is not built.
+# llama-server is preferred because it is ~2-3x faster on this box than
+# rust-model-inference for the chat workload (LFM2.5-24B-A2B Q4_K_M on the
+# CIX CD8180: pp=63 t/s, tg=21 t/s at 8 threads on the A720 big cores via
+# KleidiAI). rust-model-inference stays as the fallback so the stack still
+# starts when llama.cpp is not built.
+#
+# Per-service threading & CPU pinning: LLM_THREADS/EMB_THREADS govern how many
+# threads each service opens, and LLM_CPUSET/EMB_CPUSET pin them to specific
+# logical CPUs (hex bitmask). When unset, both masks are auto-detected from
+# /sys/devices/system/cpu/cpuN/cpu_capacity: highest-capacity tier -> LLM,
+# everything else -> embedding. On a homogeneous CPU both stay empty and
+# taskset is skipped.
 #
 # Force a backend per service with the environment:
 #   LLM_BACKEND=llama|rmi        ./serve.sh start
@@ -60,25 +68,36 @@ env_value() {
     echo "$default"
 }
 
-# LFM2.5-Embedding-350M. ~3x faster than Qwen3-0.6B, but its Chinese vectors
-# are weakly discriminative: "诸葛亮" scores closer to "孙悟空" (0.33) than to
-# its own alias "孔明" (0.47). Known limitation -- semantic ranking is coarse on
-# Chinese, so keyword/FTS has to carry most of the precision on this corpus.
-EMBEDDING_MODEL="$SCRIPT_DIR/models/embedding/LFM2.5-Embedding-350M-Q8_0.gguf"
+# BGE-base-zh-v1.5 Q4_0 (102M params, 768-dim, ~61 MB). Chosen over
+# Qwen3-Embedding-0.6B: BGE is Chinese-only and trained for retrieval, so for
+# the four 古典小说 in ./backend/data it scores competitively on CMTEB while
+# being ~6x smaller. Q4_0 chosen over Q8_0 on a measured 102M-pair semantic
+# test (max Δ < 0.025 across synonyms, aliases, unrelated pairs) -- the
+# KleidiAI SDOT path on A520 LITTLE picks up the int4 matmul for ~1.2x faster
+# batches and the smaller weight table cuts memory bandwidth by 40% during
+# 9500-chunk indexer sweeps. The Q8_0 file is kept alongside as a fallback.
+EMBEDDING_MODEL="$SCRIPT_DIR/models/bge-base-zh-v1.5/bge-base-zh-v1.5.Q4_0.gguf"
 EMBEDDING_PORT=9011
 EMBEDDING_PID_FILE="$PID_DIR/embedding.pid"
 EMBEDDING_LOG="$LOG_DIR/embedding.log"
+# BGE uses CLS-token pooling. Override with `last` / `mean` for other
+# embedding backends (e.g. Qwen3 wants `last`).
+EMBEDDING_POOLING="${EMBEDDING_POOLING:-cls}"
+# Parallel slots for the embedding server. More slots mean simultaneous
+# requests (e.g. search while indexer is running) don't queue behind each
+# other. BGE-base-zh is 102M params and 768-dim: per-slot KV cache is ~30 KiB,
+# so 8 slots cost essentially zero memory. Set lower if you want to throttle.
+EMBEDDING_PARALLEL="${EMBEDDING_PARALLEL:-8}"
 
-# Q4_K_M first: on this box it decodes ~39% faster than Q8_0 (30.1 vs 21.6 t/s
-# at 8 threads) because token generation is memory-bandwidth bound and Q4_K_M
-# halves the bytes streamed per token. Prompt processing is the opposite --
-# Q8_0 + KLEIDI reaches ~135 t/s vs ~80 t/s for Q4_K_M -- so long-context
-# callers should override with LLM_MODEL=.../LFM2.5-8B-A1B-Q8_0.gguf.
+# LFM2.5-24B-A2B Q4_K_M. 24B with 2.45B active per token -- MoE routing keeps
+# the per-token compute at the small-model tier while the 13.5 GiB weights
+# give the slow CPU more than enough room to read from RAM. Measured on
+# CIX CD8180 (12-core ARMv9, -march=armv9-a, KleidiAI): pp512=63 t/s,
+# tg64=21 t/s at LLM_THREADS=8 on the A720 big cores.
 pick_llm_model() {
     local candidate
     for candidate in \
-        "$SCRIPT_DIR/models/llm/LFM2.5-8B-A1B-UD-Q4_K_M.gguf" \
-        "$SCRIPT_DIR/models/llm/LFM2.5-8B-A1B-Q8_0.gguf"
+        "$SCRIPT_DIR/models/lfm25-24b-a2b-q4km/LFM2.5-24B-A2B-Q4_K_M.gguf"
     do
         if [ -f "$candidate" ]; then
             echo "$candidate"
@@ -90,14 +109,111 @@ pick_llm_model() {
 
 LLM_MODEL="${LLM_MODEL:-$(pick_llm_model)}"
 if [ -z "$LLM_MODEL" ]; then
-    echo "error: no LFM2.5-8B-A1B gguf found under $SCRIPT_DIR/models/llm/." >&2
+    echo "error: no LFM2.5-24B-A2B gguf found under $SCRIPT_DIR/models/lfm25-24b-a2b-q4km/." >&2
     exit 1
 fi
 LLM_PID_FILE="$PID_DIR/llm.pid"
 LLM_LOG="$LOG_DIR/llm.log"
 LLM_PORT=9010
 
-THREADS="${LLM_THREADS:-8}"
+# KV cache quantisation. f16 (default) is exact; q8_0 halves the bytes/token
+# in the K and V caches (from 80 KiB/tok to 40 KiB/tok on LFM2.5-24B), which
+# for our 32K*2-slot config drops KV memory from 5.0 GiB to 2.5 GiB. Quality
+# regression is small enough that llama-bench can't see it; the saved memory
+# is what kept the previous 30 GiB config from sliding into OOM under bursty
+# load. Override with KV_CACHE_TYPE=q4_0 if you also want the V half quantised.
+KV_CACHE_TYPE="${KV_CACHE_TYPE:-q8_0}"
+
+# Per-service thread count. The two services share one CPU, so we give the LLM
+# most of it and leave the embedding a small slice -- the 0.6B/350M embedding is
+# decode-bound on a handful of cores, while a 24B/8B LLM scales into 8 threads
+# before saturating memory bandwidth. Override either via the corresponding env
+# var.
+LLM_THREADS="${LLM_THREADS:-8}"
+EMB_THREADS="${EMB_THREADS:-3}"
+
+# CPU pinning masks, hex bitmask of allowed cores (one bit per logical CPU).
+# Auto-detected below from /sys/.../cpu_capacity, where the kernel reports a
+# "performance tier" -- identical on homogeneous CPUs, distinct on big.LITTLE.
+# On a 12-core CD8180 this resolves to big=0xFC3 (CPU 0,1,6-11 = 8x A720) and
+# little=0x3C (CPU 2-5 = 4x A520). On a homogeneous i7/x86 box both stay empty
+# and we let the kernel EAS decide.
+LLM_CPUSET="${LLM_CPUSET:-}"
+EMB_CPUSET="${EMB_CPUSET:-}"
+
+# detect_cpu_topology populates LLM_CPUSET / EMB_CPUSET from /sys when they
+# weren't set by the caller. Falls back to empty strings (= no pinning) on:
+#   - homogeneous CPUs (one capacity tier); pinning would do nothing useful
+#   - environments without /sys/cpu_capacity (macOS, BSD, etc.)
+#   - CPUs smaller than a 2-tier split (e.g. single-core dev board)
+#
+# big vs little is decided by ratio, not by absolute max. The kernel reports
+# every uarch binning tier its own capacity (A720 prime=1024, mid=905/866,
+# A720 lower=984, A520=279 on the CD8180), but for pinning we only care
+# whether a tier is meaningfully slower than the others. A threshold of 60% of
+# the max capacity captures the A720/A520 split (A520 ~0.27 of max) without
+# needlessly splitting the A720 sub-tiers -- an A720 mid-bin core is still
+# 3x faster than the A520 little core, which is what matters here.
+detect_cpu_topology() {
+    [ -d /sys/devices/system/cpu ] || return 0
+    [ -z "$LLM_CPUSET" ] || [ -z "$EMB_CPUSET" ] || return 0
+
+    local ncpu=0
+    for _f in /sys/devices/system/cpu/cpu*/cpu_capacity; do
+        [ -r "$_f" ] || continue
+        ncpu=$((ncpu + 1))
+    done
+    [ "$ncpu" -ge 4 ] || return 0
+
+    local caps=""
+    local i=0
+    local cap
+    # `sort -V` orders cpu0, cpu1, ..., cpu10, cpu11 the way the kernel numbers
+    # them; the alternative of reading /proc/cpuinfo is slower and breaks on
+    # some embedded kernels.
+    for cap in $(ls /sys/devices/system/cpu/cpu*/cpu_capacity 2>/dev/null \
+                 | sort -V | xargs -I{} cat {} 2>/dev/null); do
+        caps="$caps $cap"
+        i=$((i + 1))
+    done
+    [ "$i" -eq "$ncpu" ] || return 0
+
+    local max_cap min_cap
+    max_cap=$(echo "$caps" | tr ' ' '\n' | grep -v '^$' | sort -n | tail -1)
+    min_cap=$(echo "$caps" | tr ' ' '\n' | grep -v '^$' | sort -n | head -1)
+    # Compute the cutoff as 60% of max -- this is the A520 boundary on
+    # CD8180 (279 / 1024 = 0.27) and stays well clear of any A720 sub-tier.
+    local cutoff=$(( (max_cap * 60) / 100 ))
+    [ "$cutoff" -gt 0 ] || return 0
+
+    local n_big=0 n_little=0
+    local big_mask=0 little_mask=0
+    local idx=0
+    for cap in $caps; do
+        if [ "$cap" -ge "$cutoff" ]; then
+            big_mask=$((big_mask | (1 << idx)))
+            n_big=$((n_big + 1))
+        else
+            little_mask=$((little_mask | (1 << idx)))
+            n_little=$((n_little + 1))
+        fi
+        idx=$((idx + 1))
+    done
+    # Require *both* tiers, with at least one core each, to bother pinning.
+    # otherwise this is a homogeneous box, where pinning would only reduce
+    # the scheduler's flexibility.
+    if [ "$n_little" -lt 1 ] || [ "$n_big" -lt 1 ] \
+       || [ $((n_big + n_little)) -ne "$ncpu" ]; then
+        return 0
+    fi
+
+    [ -z "$LLM_CPUSET" ]  && LLM_CPUSET=$(printf '%X' "$big_mask")
+    [ -z "$EMB_CPUSET" ]  && EMB_CPUSET=$(printf '%X' "$little_mask")
+}
+
+# Run the detector so the rest of the script can treat the variables as
+# already populated; cheaper than calling it in every branch.
+detect_cpu_topology
 
 # Context window for the chat service. Kept in lockstep with the backend's
 # MAX_CONTEXT_TOKENS so the server never rejects a request the backend already
@@ -224,29 +340,39 @@ resolve_backend() {
 #   $4 = "embedding" | "chat"
 service_argv() {
     local kind="$1" model="$2" port="$3" mode="$4"
+    local svc_threads
+    if [ "$mode" = embedding ]; then
+        svc_threads="$EMB_THREADS"
+    else
+        svc_threads="$LLM_THREADS"
+    fi
     if [ "$kind" = llama ]; then
         if [ "$mode" = embedding ]; then
-            # Qwen3-Embedding is a decoder with last-token pooling. Without
-            # --pooling last llama-server pools by mean over a causal model and
-            # returns a wrong-length, wrong-norm vector; --embeddings is what
-            # switches the server into embedding mode.
-            # --parallel 2 so a search's query embedding is not stuck behind an
-            # in-flight indexing batch: with a single slot the query waits for
-            # the whole batch to finish.
-            echo "--model $model --host 0.0.0.0 --port $port --threads $THREADS --pooling last --embeddings --parallel 2"
+            # BGE-family models use CLS pooling; Qwen3-Embedding uses last.
+            # Override via EMBEDDING_POOLING. --embeddings switches the
+            # server into embedding mode; without it /v1/embeddings returns
+            # 404. EMBEDDING_PARALLEL slots (default 8) lets a search query
+            # run alongside an in-flight indexing batch: with --parallel 2
+            # the query queues ~30s waiting for a slot; with 8 slots it slips
+            # in immediately. Per-slot cost is ~30 KiB KV cache for BGE-base-zh
+            # so 8 slots is essentially free.
+            echo "--model $model --host 0.0.0.0 --port $port --threads $svc_threads --pooling $EMBEDDING_POOLING --embeddings --parallel $EMBEDDING_PARALLEL"
         else
             # --jinja is llama-server's default, and it is what makes the server
             # render the GGUF's own tokenizer.chat_template. Turning it off would
             # fall back to a generic role\ncontent\n form. --parallel gives us
             # more than one in-flight request, and --ctx-size is the total shared
             # across those slots (CTX * PARALLEL), keeping CTX per conversation.
-            echo "--model $model --host 0.0.0.0 --port $port --threads $THREADS -c $TOTAL_CTX --parallel $PARALLEL"
+            # -ctk/-ctv quantise the K/V caches (q8_0 halves the per-slot memory
+            # for negligible quality loss; raising the type to f16 trades 2.5 GiB
+            # back for a hair more accuracy).
+            echo "--model $model --host 0.0.0.0 --port $port --threads $svc_threads -c $TOTAL_CTX --parallel $PARALLEL -ctk $KV_CACHE_TYPE -ctv $KV_CACHE_TYPE"
         fi
     else
         if [ "$mode" = embedding ]; then
-            echo "--serve --model $model --embedding --host 0.0.0.0 --port $port --threads $THREADS"
+            echo "--serve --model $model --embedding --host 0.0.0.0 --port $port --threads $svc_threads"
         else
-            echo "--serve --model $model --host 0.0.0.0 --port $port --threads $THREADS --max-context $CTX"
+            echo "--serve --model $model --host 0.0.0.0 --port $port --threads $svc_threads --max-context $CTX"
         fi
     fi
 }
@@ -272,11 +398,30 @@ start_service() {
     local argv
     argv="$(service_argv "$BACKEND_KIND" "$model" "$port" "$mode")"
 
-    echo "[$name] Starting ($BACKEND_KIND)..."
+    # Pick the cpuset for this service. Pinning keeps the LLM out of the
+    # embedding server's hot path and keeps chat latency from jittering when
+    # the embedding's burst wakes idle worker threads on a different tier.
+    # Homogeneous machines leave one of these empty, which the guarded taskset
+    # below translates to "no pinning".
+    local cpuset=""
+    if [ "$mode" = embedding ]; then
+        cpuset="$EMB_CPUSET"
+    else
+        cpuset="$LLM_CPUSET"
+    fi
+
+    echo "[$name] Starting ($BACKEND_KIND, cpuset=$([ -n "$cpuset" ] && echo "0x$cpuset" || echo "<unset>"))..."
     # Word splitting is intended here: argv is a command line, and every
     # element is either a path this script built or a literal flag.
     # shellcheck disable=SC2086
-    setsid nohup "$BACKEND_BIN" $argv > "$log_file" 2>&1 < /dev/null &
+    if [ -n "$cpuset" ]; then
+        # taskset -a sets affinity on every thread of the calling process; the
+        # llama-server worker threads inherit it after exec, so pinning
+        # happens before any worker materialises.
+        setsid nohup taskset -a "$cpuset" "$BACKEND_BIN" $argv > "$log_file" 2>&1 < /dev/null &
+    else
+        setsid nohup "$BACKEND_BIN" $argv > "$log_file" 2>&1 < /dev/null &
+    fi
     local pid=$!
     echo "$pid" > "$pid_file"
 
@@ -369,7 +514,102 @@ show_backends() {
     echo "  rust-model-inference: ${rmi:-<not found>}"
     echo "  chat context:        $CTX (MAX_CONTEXT_TOKENS from .env, override with LLM_CTX)"
     echo "  parallel slots:      $PARALLEL (total ctx $TOTAL_CTX, override with LLM_PARALLEL)"
-    echo "  threads:             $THREADS"
+    echo "  KV cache type:       $KV_CACHE_TYPE  (per-slot: 2.5 GiB at q8_0, 5.0 GiB at f16 for 32K ctx)"
+    if [ -n "$LLM_CPUSET" ] && [ -n "$EMB_CPUSET" ]; then
+        echo "  cpu pinning:         big.LITTLE detected -- LLM=0x$LLM_CPUSET, embed=0x$EMB_CPUSET"
+    else
+        echo "  cpu pinning:         none (homogeneous CPU or /sys/cpu_capacity absent)"
+    fi
+    echo "  LLM threads:         $LLM_THREADS   | embedding threads: $EMB_THREADS"
+}
+
+# ---------------------------------------------------------------------------
+# GPU embedding server (search-dedicated)
+# ---------------------------------------------------------------------------
+# Optional second llama-server on the Mali-G720 Vulkan device, used by the
+# backend for low-latency user queries. CPU LITTLE (port 9011) stays as
+# the indexer's batched workhorse; this one serves the search path
+# exclusively. The backend's EMBEDDING_SEARCH_URL is expected to point at
+# $GPU_EMBEDDING_PORT.
+
+GPU_EMBEDDING_PORT="${GPU_EMBEDDING_PORT:-9012}"
+GPU_EMBEDDING_PID_FILE="$PID_DIR/embedding-gpu.pid"
+GPU_EMBEDDING_LOG="$LOG_DIR/embedding-gpu.log"
+# Build path that has GGML_VULKAN=ON; the CPU-only build under $LOCAL_BIN
+# does not include libggml-vulkan.so.
+GPU_BUILD="${GPU_BUILD:-$SCRIPT_DIR/../references/llama.cpp/build-release/bin}"
+
+start_gpu_embedding() {
+    if [ -f "$GPU_EMBEDDING_PID_FILE" ] && kill -0 "$(cat "$GPU_EMBEDDING_PID_FILE")" 2>/dev/null; then
+        echo "[Embedding-GPU] Already running (PID $(cat "$GPU_EMBEDDING_PID_FILE"))"
+        return 0
+    fi
+    if [ ! -x "$GPU_BUILD/llama-server" ] || [ ! -f "$GPU_BUILD/libggml-vulkan.so.0.26.0" ]; then
+        echo "[Embedding-GPU] skip: Vulkan-enabled build not at $GPU_BUILD" >&2
+        echo "                run: cmake -B $SCRIPT_DIR/../references/llama.cpp/build-release \\" >&2
+        echo "                         -DGGML_VULKAN=ON ..." >&2
+        return 1
+    fi
+    if [ ! -f "$EMBEDDING_MODEL" ]; then
+        echo "[Embedding-GPU] Model not found: $EMBEDDING_MODEL" >&2
+        return 1
+    fi
+    echo "[Embedding-GPU] Starting (vulkan, port $GPU_EMBEDDING_PORT)..."
+    # No CPU affinity on purpose: this server's compute runs on the GPU, the
+    # CPU threads only orchestrate. 2 threads is plenty for a 1-chunk-at-a-
+    # time search workload.
+    LD_LIBRARY_PATH="$GPU_BUILD" \
+        nohup "$GPU_BUILD/llama-server" \
+            -m "$EMBEDDING_MODEL" \
+            --host 0.0.0.0 --port "$GPU_EMBEDDING_PORT" \
+            --threads 2 -c 1024 --parallel 4 \
+            --pooling "$EMBEDDING_POOLING" --embeddings \
+            -ngl 99 \
+            > "$GPU_EMBEDDING_LOG" 2>&1 < /dev/null &
+    local pid=$!
+    echo "$pid" > "$GPU_EMBEDDING_PID_FILE"
+    local waited=0
+    while [ "$waited" -lt 60 ]; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "[Embedding-GPU] Failed to start (exited during load). Check $GPU_EMBEDDING_LOG"
+            rm -f "$GPU_EMBEDDING_PID_FILE"
+            return 1
+        fi
+        if curl -sf -m 2 -o /dev/null "http://127.0.0.1:$GPU_EMBEDDING_PORT/health" 2>/dev/null; then
+            echo "[Embedding-GPU] Started (PID $pid, port $GPU_EMBEDDING_PORT)"
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    echo "[Embedding-GPU] Timed out after ${waited}s. Check $GPU_EMBEDDING_LOG"
+    rm -f "$GPU_EMBEDDING_PID_FILE"
+    return 1
+}
+
+stop_gpu_embedding() {
+    if [ ! -f "$GPU_EMBEDDING_PID_FILE" ]; then
+        echo "[Embedding-GPU] Not running"
+        return 0
+    fi
+    local pid
+    pid=$(cat "$GPU_EMBEDDING_PID_FILE")
+    if kill -0 "$pid" 2>/dev/null; then
+        echo "[Embedding-GPU] Stopping (PID $pid)..."
+        kill -TERM "-$pid" 2> /dev/null || kill "$pid" 2> /dev/null || true
+        local waited=0
+        while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 15 ]; do
+            sleep 1
+            waited=$((waited + 1))
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            kill -9 "-$pid" 2> /dev/null || kill -9 "$pid" 2> /dev/null || true
+        fi
+        echo "[Embedding-GPU] Stopped"
+    else
+        echo "[Embedding-GPU] Process not found, cleaning pid file"
+    fi
+    rm -f "$GPU_EMBEDDING_PID_FILE"
 }
 
 case "${1:-}" in
@@ -402,19 +642,36 @@ case "${1:-}" in
             "$LLM_BACKEND" "$LLM_MODEL" "$LLM_PORT" chat || true
         start_service "Embedding" "$EMBEDDING_PID_FILE" "$EMBEDDING_LOG" \
             "$EMBEDDING_BACKEND" "$EMBEDDING_MODEL" "$EMBEDDING_PORT" embedding || true
+        # Optional second embedding server on the GPU, used by the backend's
+        # search path. Starts only if the Vulkan-enabled build is present; on
+        # cloud-only or CPU-only boxes this is a no-op.
+        start_gpu_embedding || true
 
         echo ""
         echo "=== Services ==="
-        echo "  Embedding API: http://127.0.0.1:$EMBEDDING_PORT/v1/embeddings"
-        echo "  Chat API:      http://127.0.0.1:$LLM_PORT/v1/chat/completions"
-        echo "  Models API:    http://127.0.0.1:$LLM_PORT/v1/models"
+        echo "  Embedding (indexer): http://127.0.0.1:$EMBEDDING_PORT/v1/embeddings"
+        echo "  Embedding (search):  http://127.0.0.1:$GPU_EMBEDDING_PORT/v1/embeddings"
+        echo "  Chat API:            http://127.0.0.1:$LLM_PORT/v1/chat/completions"
+        echo "  Models API:          http://127.0.0.1:$LLM_PORT/v1/models"
         echo ""
         echo "Logs: $LOG_DIR/"
+        ;;
+    start-gpu-embed)
+        # Bring up just the GPU embedding server without touching the rest.
+        # Useful when the LITE embedding is already running and you only
+        # want to add the search-dedicated path.
+        show_backends
+        echo ""
+        start_gpu_embedding
         ;;
     stop)
         echo "=== Stopping LLM Services ==="
         stop_service "LLM" "$LLM_PID_FILE"
         stop_service "Embedding" "$EMBEDDING_PID_FILE"
+        stop_gpu_embedding
+        ;;
+    stop-gpu-embed)
+        stop_gpu_embedding
         ;;
     status)
         echo "=== LLM Services Status ==="
@@ -457,7 +714,10 @@ case "${1:-}" in
         echo "Tuning:"
         echo "  LLM_CTX=32768        chat context window (default: MAX_CONTEXT_TOKENS in .env)"
         echo "  LLM_PARALLEL=2       concurrent request slots; ctx total is LLM_CTX*PARALLEL"
-        echo "  LLM_THREADS=8        inference threads"
+        echo "  LLM_THREADS=8        LLM inference threads         (override)"
+        echo "  EMB_THREADS=3        embedding inference threads   (override)"
+        echo "  LLM_CPUSET=0xFC3     pin LLM to these CPUs (hex)   (auto-detected on big.LITTLE)"
+        echo "  EMB_CPUSET=0x3C      pin embedding to these CPUs   (auto-detected on big.LITTLE)"
         echo ""
         echo "Logs: $LOG_DIR/"
         ;;

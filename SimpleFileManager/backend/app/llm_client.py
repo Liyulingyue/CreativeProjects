@@ -121,13 +121,11 @@ def chat_completion(
     return result
 
 
-def _get_embedding_client() -> OpenAI:
-    settings = state.get_settings()
-    base_url = settings.embedding_base_url
+def _get_embedding_client(base_url: str, api_key: str) -> OpenAI:
     if base_url.endswith("/embeddings"):
         base_url = base_url.rsplit("/embeddings", 1)[0]
     return OpenAI(
-        api_key=settings.embedding_api_key or "not-needed",
+        api_key=api_key or "not-needed",
         base_url=base_url,
         # Measured ~15s per 1500-character chunk on the local CPU embedding
         # server, so a 16-chunk batch needs several minutes.
@@ -136,20 +134,39 @@ def _get_embedding_client() -> OpenAI:
     )
 
 
-def get_embeddings(texts: list[str]) -> list[list[float]]:
-    """Batch embed — one API call for all texts. Falls back to per-item on failure."""
+def get_embeddings(
+    texts: list[str],
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+) -> list[list[float]]:
+    """Batch embed — one API call for all texts. Falls back to per-item on failure.
+
+    base_url / api_key / model override the indexer defaults from
+    EMBEDDING_SEARCH_*; the search path passes these so it hits the dedicated
+    GPU-backed endpoint without going through the indexer. Callers that omit
+    them keep the legacy behaviour of reading state.get_settings().
+    """
     if not texts:
         return []
     settings = state.get_settings()
-    client = _get_embedding_client()
-    resp = _with_retry(client.embeddings.create, input=texts, model=settings.embedding_model)
+    base_url = base_url or settings.embedding_base_url
+    api_key = api_key or settings.embedding_api_key
+    model = model or settings.embedding_model
+    client = _get_embedding_client(base_url, api_key)
+    resp = _with_retry(client.embeddings.create, input=texts, model=model)
     by_index = {item.index: item.embedding for item in resp.data}
     return [by_index.get(i, []) for i in range(len(texts))]
 
 
-def get_embedding(text: str) -> list[float]:
+def get_embedding(
+    text: str,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+) -> list[float]:
     """Single-text embed (used for queries and dim detection)."""
-    return get_embeddings([text])[0]
+    return get_embeddings([text], base_url=base_url, api_key=api_key, model=model)[0]
 
 
 def chat_completion_stream(

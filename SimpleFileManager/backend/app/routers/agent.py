@@ -784,11 +784,23 @@ def agent_chat(req: AgentRequest):
 
         if tool_calls:
             # preserve the full assistant tool_calls message so the API
-            # can link the following tool results to their call ids
+            # can link the following tool results to their call ids. The
+            # `type: "function"` field is required by the OpenAI tool-call
+            # schema; llama-server returns it as None on the wire and rejects
+            # it on the way back in ("Missing tool call type"), so inject
+            # it here before the assistant message is sent back.
+            tool_calls_for_history = [
+                {
+                    "id": tc.get("id", ""),
+                    "type": "function",
+                    "function": tc.get("function", {}),
+                }
+                for tc in tool_calls
+            ]
             all_messages.append({
                 "role": "assistant",
                 "content": message.get("content") or "",
-                "tool_calls": tool_calls,
+                "tool_calls": tool_calls_for_history,
             })
             for tc in tool_calls:
                 fn_name = None
