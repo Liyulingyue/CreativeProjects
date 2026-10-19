@@ -214,9 +214,14 @@ export function SimpleChat() {
             reply = event.response || reply;
             // Server echoes the resolved provider. Capture for the
             // persisted bubble and for the session-row update below.
+            // The live badge wants the model name (not the operator-
+            // given handle), so look it up in the providers list —
+            // if the providers are still loading the user just sees
+            // the model field on the next turn.
             if (event.provider_id) servedProviderId = event.provider_id;
             if (event.provider_name) {
-              setLiveProviderName(event.provider_name);
+              const match = providersApi.providers.find(p => p.id === event.provider_id);
+              setLiveProviderName(match?.model || event.provider_name);
             }
             // The server emits the authoritative perf numbers in the
             // "done" event. Mirror them into both turnPerf (used when

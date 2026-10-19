@@ -321,13 +321,13 @@ export function ChatLayout({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const currentSession = sessions.find(s => s.id === currentSessionId);
 
-  // Look up a provider name by id. Used by the persisted bubble to
-  // render "via <name>". Unknown id (legacy rows, deleted providers)
-  // falls back to null so the badge is hidden rather than showing a
-  // stale name.
-  const providerNameFor = (id: string | null | undefined): string | undefined => {
+  // Look up the model name for a provider id. Used by the persisted
+  // bubble to render "via <model>". Unknown id (legacy rows,
+  // deleted providers) falls back to null so the badge is hidden
+  // rather than showing a stale name.
+  const modelNameFor = (id: string | null | undefined): string | undefined => {
     if (!id || !providers) return undefined;
-    return providers.find(p => p.id === id)?.name;
+    return providers.find(p => p.id === id)?.model;
   };
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [currentSession?.messages]);
@@ -445,14 +445,14 @@ export function ChatLayout({
                         tps: msg.tps,
                       }}
                       // Persisted rows store the resolved provider id;
-                      // look the name up in the dropdown list. Legacy
+                      // look the model up in the dropdown list. Legacy
                       // rows from before the providers refactor only
-                      // have use_fast=true — show the old "⚡快" badge
-                      // for those so the visual continuity is preserved
-                      // until the user scrolls them out of view.
+                      // have use_fast=true — show "350M" so the visual
+                      // continuity is preserved until the user scrolls
+                      // them out of view.
                       providerName={
                         msg.provider_id
-                          ? providerNameFor(msg.provider_id)
+                          ? modelNameFor(msg.provider_id)
                           : (msg.use_fast ? '350M' : undefined)
                       }
                     />
@@ -553,23 +553,32 @@ export function ChatLayout({
               className="flex-1 min-w-0 px-3 py-2 rounded-lg border border-slate-200 text-base sm:text-sm resize-none focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 transition-all"
               style={{ maxHeight: '150px' }}
             />
-            {/* Provider dropdown. Lists every configured LLM and
-                sends the chosen one with the next request. Hidden
-                entirely when the parent doesn't expose it (other
-                callers of ChatLayout that don't want provider
-                selection). The first option "main" resolves server-
-                side to the singleton is_main=1 row. */}
+            {/* Provider dropdown. Lists every configured LLM by
+                model name (with the operator-given handle in parens
+                for the case where two providers share a model).
+                Sends the chosen provider's id with the next request;
+                the first option "main (默认)" resolves server-side
+                to the singleton is_main=1 row. */}
             {onProviderChange && providers !== undefined && (
               <select
                 value={providerId ?? '__main__'}
                 onChange={e => onProviderChange(e.target.value === '__main__' ? null : e.target.value)}
                 disabled={isLoading}
                 title="下一条消息使用的 LLM；选 main 跟随系统默认"
-                className="px-2 py-2 rounded-lg border border-slate-200 bg-white text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 disabled:opacity-40 max-w-[140px] truncate"
+                className="px-2 py-2 rounded-lg border border-slate-200 bg-white text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 disabled:opacity-40 max-w-[220px] truncate"
               >
-                <option value="__main__">main (默认)</option>
+                {(() => {
+                  const main = providers.find(p => p.is_main);
+                  return (
+                    <option value="__main__">
+                      {main ? main.model : 'main (默认)'}
+                    </option>
+                  );
+                })()}
                 {providers.filter(p => !p.is_main).map(p => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
+                  <option key={p.id} value={p.id}>
+                    {p.name === p.model ? p.model : `${p.model} (${p.name})`}
+                  </option>
                 ))}
               </select>
             )}
