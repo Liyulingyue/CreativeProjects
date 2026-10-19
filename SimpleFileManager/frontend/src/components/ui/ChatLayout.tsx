@@ -554,11 +554,10 @@ export function ChatLayout({
               style={{ maxHeight: '150px' }}
             />
             {/* Provider dropdown. Lists every configured LLM by
-                model name (with the operator-given handle in parens
-                for the case where two providers share a model).
-                Sends the chosen provider's id with the next request;
-                the first option "main (默认)" resolves server-side
-                to the singleton is_main=1 row. */}
+                model name. The first option resolves server-side to
+                the singleton is_main=1 row. If two providers share
+                a model the operator picked from /settings will see
+                duplicate options — out of scope for the chat UI. */}
             {onProviderChange && providers !== undefined && (
               <select
                 value={providerId ?? '__main__'}
@@ -576,9 +575,7 @@ export function ChatLayout({
                   );
                 })()}
                 {providers.filter(p => !p.is_main).map(p => (
-                  <option key={p.id} value={p.id}>
-                    {p.name === p.model ? p.model : `${p.model} (${p.name})`}
-                  </option>
+                  <option key={p.id} value={p.id}>{p.model}</option>
                 ))}
               </select>
             )}
