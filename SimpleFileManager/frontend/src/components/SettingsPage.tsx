@@ -82,21 +82,16 @@ const inputClass = 'w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate
  * user can always reach them, even while editing.
  */
 function ProviderRow({
-  provider, isFirst, onSave, onDelete, onSetMain, canDelete,
+  provider, onSave, onDelete, onSetMain, canDelete,
 }: {
   provider: LLMProvider;
-  isFirst: boolean;
   onSave: (patch: LLMProviderUpdate) => Promise<void>;
   onDelete: () => Promise<void>;
   onSetMain: () => Promise<void>;
   canDelete: boolean;
 }) {
   const { toast } = useToast();
-  // `isFirst` is a hint that the row should auto-enter edit mode
-  // (used when the user lands on a fresh "add provider" flow that
-  // would otherwise leave an empty row idle). TS can't narrow
-  // `isFirst && false` to a usable state type, so widen explicitly.
-  const [editing, setEditing] = useState<boolean>(!!isFirst);
+  const [editing, setEditing] = useState<boolean>(false);
   const [draft, setDraft] = useState({
     name: provider.name,
     base_url: provider.base_url,
@@ -347,7 +342,6 @@ export function SettingsPage() {
                     <ProviderRow
                       key={p.id}
                       provider={p}
-                      isFirst={p === providersApi.providers[0]}
                       onSave={(patch) => providersApi.update(p.id, patch).then(() => undefined)}
                       onDelete={() => providersApi.remove(p.id).then(() => undefined)}
                       onSetMain={() => providersApi.setMain(p.id).then(() => undefined)}
