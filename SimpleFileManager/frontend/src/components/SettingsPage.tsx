@@ -219,7 +219,7 @@ export function SettingsPage() {
             action={probes?.embedding ? <ProbeBadge result={probes.embedding} /> : undefined}
           >
             <div className="space-y-3">
-              <Field label="Base URL" hint="本地推理可填 http://127.0.0.1:9011/v1">
+              <Field label="Base URL" hint="本地推理可填 http://127.0.0.1:9011/v1（索引器用）">
                 <input className={inputClass} value={settings.embedding_base_url} onChange={e => set({ embedding_base_url: e.target.value })} />
               </Field>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -232,6 +232,23 @@ export function SettingsPage() {
                 <Field label="API Key" hint="可留空">
                   <input type="password" className={inputClass} value={settings.embedding_api_key} onChange={e => set({ embedding_api_key: e.target.value })} />
                 </Field>
+              </div>
+              <div className="pt-2 border-t border-slate-100">
+                <div className="text-sm font-medium text-slate-700 mb-1">搜索专用 Embedding（可选）</div>
+                <p className="text-xs text-slate-400 mb-2">
+                  用户搜查询问走另一条路径（本地默认 9012 GPU 端点）。留空则跟上面索引器共用一个。
+                </p>
+                <Field label="Search Base URL" hint="默认 9012（GPU Vulkan），留空回退 9011">
+                  <input className={inputClass} value={settings.search_base_url} onChange={e => set({ search_base_url: e.target.value })} placeholder="http://127.0.0.1:9012/v1" />
+                </Field>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
+                  <Field label="Search 模型名称" hint="留空则跟主 embedding 同名">
+                    <input className={inputClass} value={settings.search_model} onChange={e => set({ search_model: e.target.value })} placeholder="bge-base-zh-v1.5" />
+                  </Field>
+                  <Field label="Search API Key" hint="本地服务可留空">
+                    <input type="password" className={inputClass} value={settings.search_api_key} onChange={e => set({ search_api_key: e.target.value })} />
+                  </Field>
+                </div>
               </div>
             </div>
           </Card>

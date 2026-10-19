@@ -91,7 +91,7 @@ def test_connection() -> dict:
     ok=False with a clear "not configured" message rather than 500-ing
     the whole request."""
     result = {}
-    for key, probe in (("llm", _probe_llm), ("embedding", _probe_embedding), ("llm_fast", _probe_llm_fast)):
+    for key, probe in (("llm", _probe_llm), ("embedding", _probe_embedding), ("embedding_search", _probe_search_embedding), ("llm_fast", _probe_llm_fast)):
         t0 = time.time()
         ok, detail = probe()
         result[key] = {
@@ -157,6 +157,30 @@ def _probe_embedding() -> tuple[bool, str]:
         actual = _dim_matches(dim, settings_data.embedding_dim)
         if not actual:
             return False, f"维度不匹配：服务返回 {dim}，设置为 {settings_data.embedding_dim}，请修改 EMBEDDING_DIM"
+        return True, f"维度 {dim}"
+    except Exception as e:
+        return False, str(e)[:200]
+
+
+def _probe_search_embedding() -> tuple[bool, str]:
+    """Probe the search-time embedding path. Skips the network call
+    when no search endpoint is configured (falls back to the main
+    indexer endpoint, which is fine for cloud-only deployments that
+    don't have a dedicated low-latency slot). When configured but
+    unreachable, returns ok=False with the upstream error so the
+    operator can tell "not configured" from "service down"."""
+    settings_data = state.get_settings()
+    if not settings_data.search_base_url:
+        return True, "未配置（共用主 embedding）"
+    try:
+        from ..llm_client import get_embedding
+        vec = get_embedding(
+            "ping",
+            base_url=settings_data.search_base_url,
+            api_key=settings_data.search_api_key,
+            model=settings_data.search_model,
+        )
+        dim = len(vec)
         return True, f"维度 {dim}"
     except Exception as e:
         return False, str(e)[:200]

@@ -38,6 +38,16 @@ export interface AppSettings {
   embedding_base_url: string;
   embedding_model: string;
   embedding_dim: string;
+  /**
+   * Dedicated embedding endpoint for the search/chat path. By default
+   * unset, so a cloud-only deployment keeps working. On this box we
+   * point it at the GPU-backed llama-server (port 9012) so user queries
+   * have a low-latency path that does not queue behind the indexer's
+   * batched work on the A520 LITTLE cores.
+   */
+  search_api_key: string;
+  search_base_url: string;
+  search_model: string;
   index_interval: number;
   auto_index_enabled: boolean;
   index_debounce_seconds: number;
