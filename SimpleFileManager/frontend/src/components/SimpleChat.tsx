@@ -66,6 +66,11 @@ export function SimpleChat() {
   const [traces, setTraces] = useState<Record<string, ToolActivityItem[]>>({});
   const tracesRef = useRef<Record<string, ToolActivityItem[]>>({});
   const [currentStep, setCurrentStep] = useState<number | undefined>(undefined);
+  // Live per-turn header. clockMs is captured the moment the user submits
+  // (so ⏱ renders before the first token); ttft_ms / total_ms / tokens / tps
+  // get filled in as the SSE events arrive. Cleared on turn end so the
+  // streaming bubble re-uses the same renderer without flicker.
+  const [livePerf, setLivePerf] = useState<{ clockMs: number; ttft_ms?: number; total_ms?: number; tokens?: number; tps?: number } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const sendRef = useRef<((content: string) => Promise<void>) | null>(null);
 
@@ -96,12 +101,31 @@ export function SimpleChat() {
     // a fresh turn starts a fresh trace for that session
     updateTrace(sessionId, () => []);
 
+    // Anchor the live perf header to the moment the user pressed send. The
+    // clock is rendered from this immediately, before any token arrives,
+    // so the user sees the request start time without waiting on the
+    // model. Subsequent fields fill in as events come in.
+    const clockMs = Date.now();
+    setLivePerf({ clockMs });
+
     const controller = new AbortController();
     abortRef.current = controller;
 
     let reply = '';
     let plans: AgentPlan[] = [];
     let streamError: string | null = null;
+    let turnPerf: { ttft_ms: number; total_ms: number; tokens: number; tps: number } = {
+      ttft_ms: 0, total_ms: 0, tokens: 0, tps: 0,
+    };
+    // Client-side anchors for the live header. Used only when the server
+    // doesn't emit the perf fields (e.g. legacy build) — and to measure
+    // TTFT for the streaming bubble the moment the first text delta
+    // lands (reasoning chunk or answer chunk — whichever arrives first),
+    // before the server's "done" event arrives. Mirrors the backend's
+    // "first LLM text byte" semantics so the streaming bubble's TTFT
+    // agrees with the persisted message's TTFT.
+    const clientT0 = performance.now();
+    let clientFirstTokenAt: number | null = null;
     reasoningRef.current = '';
 
     try {
@@ -128,6 +152,16 @@ export function SimpleChat() {
             if (!event.text) return;
             reply += event.text;
             setStreamingText(reply);
+            // First token: stamp TTFT and reveal it in the live header.
+            // The server's measurement is more accurate and overwrites
+            // this on the "done" event, but the client value lets the
+            // streaming bubble show TTFT the moment the first character
+            // lands, without waiting for the whole turn to finish.
+            if (clientFirstTokenAt === null) {
+              clientFirstTokenAt = performance.now();
+              const ttft = Math.round(clientFirstTokenAt - clientT0);
+              setLivePerf(prev => prev ? { ...prev, ttft_ms: ttft } : prev);
+            }
           } else if (event.type === 'tool_start') {
             updateTrace(sessionId, prev => [...prev, { kind: 'tool', tool: event.tool, status: 'running', args: event.args }]);
           } else if (event.type === 'tool') {
@@ -156,6 +190,26 @@ export function SimpleChat() {
           } else if (event.type === 'done') {
             plans = event.plans || [];
             reply = event.response || reply;
+            // The server emits the authoritative perf numbers in the
+            // "done" event. Mirror them into both turnPerf (used when
+            // persisting the assistant message) and livePerf (kept
+            // visible until the persisted bubble takes its place).
+            const ev = event as unknown as Partial<typeof turnPerf> & { ttft_ms?: number; total_ms?: number; tokens?: number; tps?: number };
+            if (typeof ev.ttft_ms === 'number') {
+              turnPerf = {
+                ttft_ms: ev.ttft_ms,
+                total_ms: ev.total_ms ?? 0,
+                tokens: ev.tokens ?? 0,
+                tps: ev.tps ?? 0,
+              };
+              setLivePerf(prev => prev ? {
+                ...prev,
+                ttft_ms: turnPerf.ttft_ms,
+                total_ms: turnPerf.total_ms,
+                tokens: turnPerf.tokens,
+                tps: turnPerf.tps,
+              } : prev);
+            }
             // Covers the case where the stream ends without the client having
             // seen every reasoning delta.
             if (event.reasoning && event.reasoning.length > reasoningRef.current.length) {
@@ -201,8 +255,15 @@ export function SimpleChat() {
       content: finalText,
       reasoning: reasoningRef.current,
       activity,
+      ttft_ms: turnPerf.ttft_ms,
+      total_ms: turnPerf.total_ms,
+      tokens: turnPerf.tokens,
+      tps: turnPerf.tps,
     });
     setStreamingText('');
+    // Drop the live header once the persisted bubble (which carries the
+    // same numbers via the message's perf fields) takes its place.
+    setLivePerf(null);
   };
 
   // keeps the ref pointing at the latest closure without re-rendering
@@ -221,6 +282,7 @@ export function SimpleChat() {
         streamingText={streamingText}
         toolActivity={toolActivity}
         currentStep={currentStep}
+        livePerf={livePerf ?? undefined}
         onStop={handleStop}
         emptyState={<ChatWelcome onPick={(p) => sendRef.current?.(p)} />}
       />

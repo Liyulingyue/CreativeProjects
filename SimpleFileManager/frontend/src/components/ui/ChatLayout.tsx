@@ -119,6 +119,11 @@ interface ChatLayoutProps {
   onDeleteSession: (id: string) => void;
   onSendMessage: (content: string) => Promise<void>;
   isLoading: boolean;
+  /** Live per-turn header for the streaming bubble. clockMs is set the
+   *  moment the user submits so ⏱ renders immediately; ttft_ms / total_ms
+   *  / tokens / tps fill in as SSE events arrive. The persisted bubble
+   *  reads the same numbers from the message's perf fields. */
+  livePerf?: { clockMs: number; ttft_ms?: number; total_ms?: number; tokens?: number; tps?: number };
   /** Text received so far for the in-flight assistant reply. */
   streamingText?: string;
   /** Live scratchpad from the model's reasoning channel, shown collapsed. */
@@ -139,6 +144,52 @@ function formatTime(timestamp: number): string {
   if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`;
   if (diff < 604800000) return `${Math.floor(diff / 86400000)} 天前`;
   return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
+}
+
+/**
+ * Wall-clock for the chat footer. formatTime is a relative label that
+ * collapses to "刚刚" for anything under a minute, but for a per-turn
+ * footer we want the actual clock time so the user can match it against
+ * the build logs / the file-mtime of saved sessions.
+ */
+function formatClock(timestamp: number): string {
+  return new Date(timestamp).toLocaleTimeString('zh-CN', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  });
+}
+
+/**
+ * Compact, monospaced stat line for assistant messages. Used both in the
+ * streaming bubble (live values, missing fields render as "测量中…")
+ * and in the persisted bubble (read from msg.ttft_ms / msg.total_ms /
+ * msg.tokens / msg.tps). One source of truth keeps the two states
+ * pixel-identical once the live set is dropped.
+ */
+function PerfHeader({
+  clockMs,
+  perf,
+}: {
+  clockMs: number;
+  perf?: { ttft_ms?: number; total_ms?: number; tokens?: number; tps?: number };
+}) {
+  const ttft = perf?.ttft_ms ?? 0;
+  const total = perf?.total_ms ?? 0;
+  const tokens = perf?.tokens ?? 0;
+  const tps = perf?.tps ?? 0;
+  const hasPerf = total > 0 || ttft > 0 || tokens > 0;
+  return (
+    <div
+      className="pb-1.5 mb-1.5 border-b border-slate-200 text-[11px] text-slate-500 font-mono flex flex-wrap gap-x-3 gap-y-0.5"
+      title="服务器端测得：⏱ 请求开始时刻｜TTFT 首 token 延迟｜共 总耗时｜tokens 生成 token 数｜tok/s 解码吞吐"
+    >
+      <span>⏱ {formatClock(clockMs)}</span>
+      {ttft > 0 && <span>TTFT {ttft}ms</span>}
+      {total > 0 && <span>共 {total}ms</span>}
+      {tokens > 0 && <span>{tokens} tok</span>}
+      {tps > 0 && <span>{tps.toFixed(1)} tok/s</span>}
+      {!hasPerf && <span className="opacity-60">测量中…</span>}
+    </div>
+  );
 }
 
 /**
@@ -236,7 +287,7 @@ function ToolTraceLine({ activity }: { activity: ToolActivity }) {
 export function ChatLayout({
   sessions, currentSessionId, onSelectSession, onNewSession,
   onDeleteSession, onSendMessage, isLoading, streamingText, toolActivity,
-  currentStep, onStop, emptyState, renderMessage,
+  currentStep, livePerf, onStop, emptyState, renderMessage,
 }: ChatLayoutProps) {
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -383,6 +434,22 @@ export function ChatLayout({
           {isLoading && (
             <div className="flex justify-start">
               <div className="max-w-[90%] sm:max-w-[70%] bg-slate-100 rounded-xl px-4 py-2.5 space-y-2">
+                {/* Live perf header. Shows the request start clock the
+                    moment the user submits and fills in TTFT / total /
+                    tokens / tps as the SSE events land, so the user can
+                    see the turn is making progress before the first
+                    token even arrives. */}
+                {livePerf && (
+                  <PerfHeader
+                    clockMs={livePerf.clockMs}
+                    perf={{
+                      ttft_ms: livePerf.ttft_ms,
+                      total_ms: livePerf.total_ms,
+                      tokens: livePerf.tokens,
+                      tps: livePerf.tps,
+                    }}
+                  />
+                )}
                 {/* Tool calls sit above the text they produced, so the trace
                     reads in the order it happened instead of being parked in a
                     panel below the conversation. */}

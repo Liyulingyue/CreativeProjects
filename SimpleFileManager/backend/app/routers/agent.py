@@ -9,6 +9,7 @@ import json
 import logging
 import math
 import re
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Iterator, Optional
@@ -878,6 +879,19 @@ def agent_chat_stream(req: AgentRequest):
         # Accumulated across steps: the model reasons again after each tool
         # call. Lives in the generator, not the enclosing function.
         all_reasoning = ""
+        # Per-turn performance. t0 is request start (before any work);
+        # first_token_at is stamped on the FIRST text byte the LLM produces
+        # (reasoning chunk or answer chunk, whichever arrives first) so TTFT
+        # reflects when the user perceives the model as "started" — the
+        # first scratchpad delta lands in the UI even if it is collapsed.
+        # first_answer_token_at and last_answer_token_at bracket the answer
+        # decode phase only, so tps stays the model's actual generation rate
+        # and is not dragged down by tool-call latency.
+        t0 = time.monotonic()
+        first_token_at: float | None = None
+        first_answer_token_at: float | None = None
+        last_answer_token_at: float | None = None
+        token_count = 0
 
         yield sse("meta", {"steps_max": max_steps})
 
@@ -889,12 +903,29 @@ def agent_chat_stream(req: AgentRequest):
                 turn_text = ""
                 tool_calls: list[dict] = []
                 for kind, payload in chat_completion_stream(all_messages, tools=TOOLS):
+                    # First LLM text byte — reasoning chunk or answer chunk,
+                    # whichever arrives first. Tool calls are structured, not
+                    # text, so they don't qualify as "first token" in the
+                    # LLM-serving sense. The user perceives the model as
+                    # "started" the moment the first text delta lands,
+                    # regardless of whether it's a scratchpad chunk or the
+                    # final answer — so TTFT should reflect that.
+                    if first_token_at is None and kind in ("reasoning", "token"):
+                        first_token_at = time.monotonic()
                     if kind == "reasoning":
                         all_reasoning += payload
                         yield sse("reasoning", {"text": payload})
                     elif kind == "token":
+                        # Bracket the answer-text decode phase. Across
+                        # multiple agent steps each "final" step emits its
+                        # own answer chunk; tps is computed over the union
+                        # of those brackets minus the tool-call gaps.
+                        if first_answer_token_at is None:
+                            first_answer_token_at = time.monotonic()
+                        last_answer_token_at = time.monotonic()
                         turn_text += payload
                         emitted.append(payload)
+                        token_count += 1
                         yield sse("token", {"text": payload})
                     elif kind == "tool_call":
                         tool_calls.append(payload)
@@ -955,6 +986,31 @@ def agent_chat_stream(req: AgentRequest):
                 store = state.get_plan_store()
                 plans = [p.model_dump() for p in (store.get_plan(pid) for pid in plan_ids) if p]
 
+            # Per-turn perf for the UI / persistence.
+            #   ttft_ms:    request start -> first LLM text byte
+            #               (reasoning chunk or answer chunk — whichever
+            #               lands first). Captures the "I started
+            #               thinking" moment the user perceives.
+            #   total_ms:   request start -> done (wall clock).
+            #   tps:        answer decode rate only. Denominator is
+            #               last_answer_token_at - first_answer_token_at,
+            #               which excludes prefill, reasoning, and
+            #               tool-call gaps. So tps reflects the model's
+            #               pure generation speed, not turn efficiency.
+            now = time.monotonic()
+            total_ms = int((now - t0) * 1000)
+            ttft_ms = int((first_token_at - t0) * 1000) if first_token_at else 0
+            if first_answer_token_at and last_answer_token_at and last_answer_token_at > first_answer_token_at:
+                decode_s = last_answer_token_at - first_answer_token_at
+            elif first_token_at:
+                # No answer tokens were emitted (reasoning-only or
+                # all-tooling turn). Fall back to wall-clock so tps is
+                # 0 rather than NaN.
+                decode_s = now - first_token_at
+            else:
+                decode_s = 0.0
+            tps = (token_count / decode_s) if decode_s > 0 else 0.0
+
             yield sse("done", {
                 "response": final_text,
                 "reasoning": all_reasoning,
@@ -962,6 +1018,10 @@ def agent_chat_stream(req: AgentRequest):
                 "plans": plans,
                 "steps_used": steps_used,
                 "available_tools": AVAILABLE_TOOLS,
+                "ttft_ms": ttft_ms,
+                "total_ms": total_ms,
+                "tokens": token_count,
+                "tps": round(tps, 2),
             })
         except GeneratorExit:
             # The client already displayed these deltas. Keep the server-side

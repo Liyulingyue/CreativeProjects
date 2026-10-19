@@ -134,6 +134,13 @@ export interface ChatMessage {
   reasoning?: string;
   sources?: { file_path: string; score: number }[];
   timestamp: number;
+  /** Per-turn performance, captured by the agent SSE generator and persisted
+   *  via the same /chat_history/messages call. Zeros for user messages and
+   *  for legacy rows saved before the perf columns existed. */
+  ttft_ms?: number;
+  total_ms?: number;
+  tokens?: number;
+  tps?: number;
 }
 
 export interface ChatSession {
@@ -185,12 +192,17 @@ export async function addChatMessage(
   content: string,
   sources?: { file_path: string; score: number }[],
   reasoning?: string,
-  activity?: unknown[]
+  activity?: unknown[],
+  perf?: { ttft_ms?: number; total_ms?: number; tokens?: number; tps?: number }
 ): Promise<ChatMessage> {
   const res = await authFetch(`${API_BASE}/chat_history/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id: sessionId, role, content, sources, reasoning: reasoning ?? '', activity: activity ?? [] }),
+    body: JSON.stringify({
+      session_id: sessionId, role, content,
+      sources, reasoning: reasoning ?? '', activity: activity ?? [],
+      ...(perf ?? {}),
+    }),
   });
   if (!res.ok) throw new Error('Failed to add chat message');
   return res.json();

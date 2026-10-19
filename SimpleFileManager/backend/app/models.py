@@ -129,6 +129,13 @@ class ChatMessage(BaseModel):
     reasoning: str = ""
     sources: Optional[list[dict]] = None
     timestamp: int
+    # Per-turn performance, captured by the agent SSE generator. Defaults are 0
+    # so messages saved before the perf columns existed still parse; user
+    # messages always have zeros (the request is one-shot, not streamed).
+    ttft_ms: int = 0          # request start -> first "token" event
+    total_ms: int = 0         # request start -> "done" event
+    tokens: int = 0           # streamed tokens for the assistant turn
+    tps: float = 0.0          # tokens / (total - ttft) over the decode phase
 
 
 class ChatSession(BaseModel):
@@ -155,6 +162,13 @@ class AddMessageRequest(BaseModel):
     activity: list[dict] = []
     reasoning: str = ""
     sources: Optional[list[dict]] = None
+    # Per-turn performance; same semantics as ChatMessage. The agent endpoint
+    # measures these server-side and the frontend forwards them; chat-query
+    # (non-streaming) leaves them at 0.
+    ttft_ms: int = 0
+    total_ms: int = 0
+    tokens: int = 0
+    tps: float = 0.0
 
 
 class UpdateTitleRequest(BaseModel):

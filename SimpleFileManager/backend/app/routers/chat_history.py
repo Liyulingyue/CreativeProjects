@@ -58,6 +58,10 @@ def add_message(req: AddMessageRequest):
         sources=req.sources,
         reasoning=getattr(req, "reasoning", "") or "",
         activity=getattr(req, "activity", None) or [],
+        ttft_ms=getattr(req, "ttft_ms", 0) or 0,
+        total_ms=getattr(req, "total_ms", 0) or 0,
+        tokens=getattr(req, "tokens", 0) or 0,
+        tps=getattr(req, "tps", 0.0) or 0.0,
     )
 
 

@@ -336,6 +336,10 @@ class ChatHistoryService:
                     activity TEXT DEFAULT '[]',
                     sources TEXT,
                     timestamp INTEGER,
+                    ttft_ms INTEGER DEFAULT 0,
+                    total_ms INTEGER DEFAULT 0,
+                    tokens INTEGER DEFAULT 0,
+                    tps REAL DEFAULT 0.0,
                     FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
                 )
             """)
@@ -344,6 +348,17 @@ class ChatHistoryService:
                 conn.execute("ALTER TABLE chat_messages ADD COLUMN reasoning TEXT DEFAULT ''")
             if "activity" not in cols:
                 conn.execute("ALTER TABLE chat_messages ADD COLUMN activity TEXT DEFAULT '[]'")
+            # Per-turn perf columns. Older deployments saved without them; the
+            # ALTER TABLE adds them on first init after the schema bump. The
+            # defaults keep the SELECT contract safe for legacy rows.
+            for col, decl in (
+                ("ttft_ms", "INTEGER DEFAULT 0"),
+                ("total_ms", "INTEGER DEFAULT 0"),
+                ("tokens", "INTEGER DEFAULT 0"),
+                ("tps", "REAL DEFAULT 0.0"),
+            ):
+                if col not in cols:
+                    conn.execute(f"ALTER TABLE chat_messages ADD COLUMN {col} {decl}")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session ON chat_messages(session_id)")
             conn.commit()
             conn.close()
@@ -390,12 +405,15 @@ class ChatHistoryService:
 
     def _get_messages(self, conn: sqlite3.Connection, session_id: str) -> list[ChatMessage]:
         rows = conn.execute(
-            "SELECT id, role, content, reasoning, activity, sources, timestamp FROM chat_messages WHERE session_id = ? ORDER BY timestamp ASC",
+            "SELECT id, role, content, reasoning, activity, sources, timestamp,"
+            " ttft_ms, total_ms, tokens, tps"
+            " FROM chat_messages WHERE session_id = ? ORDER BY timestamp ASC",
             (session_id,)
         ).fetchall()
         messages = []
         for row in rows:
-            msg_id, role, content, reasoning, activity, sources, timestamp = row
+            msg_id, role, content, reasoning, activity, sources, timestamp, \
+                ttft_ms, total_ms, tokens, tps = row
             sources_list = json.loads(sources) if sources else None
             try:
                 activity_list = json.loads(activity) if activity else []
@@ -408,7 +426,11 @@ class ChatHistoryService:
                 activity=activity_list,
                 content=content,
                 sources=sources_list,
-                timestamp=timestamp
+                timestamp=timestamp,
+                ttft_ms=ttft_ms or 0,
+                total_ms=total_ms or 0,
+                tokens=tokens or 0,
+                tps=tps or 0.0,
             ))
         return messages
 
@@ -434,7 +456,8 @@ class ChatHistoryService:
         )
 
     def add_message(self, session_id: str, role: str, content: str, sources: Optional[list] = None,
-                    reasoning: str = "", activity: Optional[list] = None) -> ChatMessage:
+                    reasoning: str = "", activity: Optional[list] = None,
+                    ttft_ms: int = 0, total_ms: int = 0, tokens: int = 0, tps: float = 0.0) -> ChatMessage:
         msg_id = uuid.uuid4().hex
         now = int(time.time() * 1000)
         sources_json = json.dumps(sources) if sources else None
@@ -442,9 +465,11 @@ class ChatHistoryService:
             conn = self._get_conn()
             conn.execute(
                 "INSERT INTO chat_messages (id, session_id, role, content, reasoning, activity,"
-                " sources, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                " sources, timestamp, ttft_ms, total_ms, tokens, tps)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (msg_id, session_id, role, content, reasoning,
-                 json.dumps(activity, ensure_ascii=False) if activity else "[]", sources_json, now)
+                 json.dumps(activity, ensure_ascii=False) if activity else "[]", sources_json, now,
+                 ttft_ms, total_ms, tokens, tps)
             )
             conn.execute(
                 "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
@@ -453,7 +478,8 @@ class ChatHistoryService:
             conn.commit()
             conn.close()
         return ChatMessage(id=msg_id, role=role, content=content, reasoning=reasoning,
-                          activity=activity or [], sources=sources, timestamp=now)
+                          activity=activity or [], sources=sources, timestamp=now,
+                          ttft_ms=ttft_ms, total_ms=total_ms, tokens=tokens, tps=tps)
 
     def delete_session(self, session_id: str):
         with self._lock:
