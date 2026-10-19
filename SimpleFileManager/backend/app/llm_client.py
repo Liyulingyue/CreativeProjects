@@ -73,23 +73,19 @@ def _with_retry(operation, *args, **kwargs):
             time.sleep(delay)
 
 
-def _get_client(use_fast: bool = False) -> OpenAI:
-    """Return an OpenAI client pointed at either the main LLM or the
-    fast-path LLM (e.g. LFM2.5-350M on 9013).
+def _get_client(provider) -> OpenAI:
+    """Return an OpenAI client pointed at the given provider.
 
-    Fast falls back to the main endpoint when the fast URL is unset, so a
-    cloud-only deployment without the optional service keeps working.
-    Stripping the OpenAI-compat `/chat/completions` suffix is needed
-    because the SDK appends its own path; the `.env` ships the full
-    endpoint URL but older configs may have just the base.
+    Provider is duck-typed (any object with `base_url`, `model`,
+    `api_key`); the agent flow passes an `LLMProvider` from the
+    database, the settings probe builds a transient one with the
+    same shape. Stripping the OpenAI-compat `/chat/completions` suffix
+    is needed because the SDK appends its own path; settings typically
+    store the full endpoint URL but older configs may have just the
+    base.
     """
-    settings = state.get_settings()
-    if use_fast and settings.llm_fast_base_url:
-        base_url = settings.llm_fast_base_url
-        api_key = settings.llm_fast_api_key or "not-needed"
-    else:
-        base_url = settings.llm_base_url
-        api_key = settings.llm_api_key or "not-needed"
+    base_url = provider.base_url
+    api_key = provider.api_key or "not-needed"
     if base_url.endswith("/chat/completions"):
         base_url = base_url.rsplit("/chat/completions", 1)[0]
     return OpenAI(
@@ -105,16 +101,22 @@ def chat_completion(
     tools: Optional[list[dict]] = None,
     temperature: float = 0.7,
     max_tokens: Optional[int] = None,
-    use_fast: bool = False,
+    provider=None,
 ) -> dict:
-    """Send a chat completion request. Returns the raw choice message dict."""
+    """Send a chat completion request. Returns the raw choice message dict.
+
+    `provider` is duck-typed; the agent flow passes an LLMProvider from
+    the database, the settings probe builds a transient one with the
+    same shape. Falls back to the main provider when None is given.
+    """
+    if provider is None:
+        provider = state.get_chat_history().get_main_provider()
+        if provider is None:
+            raise RuntimeError("No LLM provider configured (add one in /settings)")
+    client = _get_client(provider)
     settings = state.get_settings()
-    client = _get_client(use_fast=use_fast)
-    model = settings.llm_model
-    if use_fast and settings.llm_fast_model:
-        model = settings.llm_fast_model
     kwargs: dict = {
-        "model": model,
+        "model": provider.model,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens or settings.max_output_tokens,
@@ -192,7 +194,7 @@ def chat_completion_stream(
     tools: Optional[list[dict]] = None,
     temperature: float = 0.7,
     max_tokens: Optional[int] = None,
-    use_fast: bool = False,
+    provider=None,
 ) -> Iterator[tuple[str, object]]:
     """Stream a chat completion.
 
@@ -201,27 +203,25 @@ def chat_completion_stream(
     are reassembled here because the wire format splits the function name and
     its JSON arguments across deltas.
 
-    `use_fast=True` routes the call to the optional fast-path LLM
-    (`llm_fast_base_url`, defaults to the 350M on 9013). Tools are still
-    passed through if provided, but the agent layer is expected to keep
-    tool-required turns on the main 24B -- the 350M picks tools much
-    less reliably, so leaving that decision here would just mean the
-    user pays for the fast latency without getting the smart
-    routing they asked for.
+    `provider` is duck-typed; the agent flow passes an LLMProvider from
+    the database, the settings probe builds a transient one with the
+    same shape. Falls back to the main provider when None is given.
+    Tools are still passed through if provided — the caller's choice
+    of provider is respected for the entire stream, including any
+    subsequent tool-call steps. (Pick a 24B-class provider if your
+    turn calls tools; the 350M picks them unreliably.)
 
     Retries apply only to establishing the stream: once tokens are flowing a
     retry would duplicate them.
     """
+    if provider is None:
+        provider = state.get_chat_history().get_main_provider()
+        if provider is None:
+            raise RuntimeError("No LLM provider configured (add one in /settings)")
+    client = _get_client(provider)
     settings = state.get_settings()
-    client = _get_client(use_fast=use_fast)
-    # When fast routing is requested, the model field is taken from the
-    # fast settings (falls back to the main model when unset so a misconfig
-    # on the operator's side still has a reasonable target).
-    model = settings.llm_model
-    if use_fast and settings.llm_fast_model:
-        model = settings.llm_fast_model
     kwargs: dict = {
-        "model": model,
+        "model": provider.model,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens or settings.max_output_tokens,

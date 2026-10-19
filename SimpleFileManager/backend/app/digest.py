@@ -94,6 +94,14 @@ class DigestService:
 
         try:
             from .llm_client import chat_completion
+            # Digest always uses the main provider — it's an automated
+            # background task with no UI selection. If the operator
+            # wants digest quality to differ, the right place is to
+            # add a "main_for_digest" override later, not to expose
+            # yet another knob in the chat UI.
+            provider = state.get_chat_history().get_main_provider()
+            if provider is None:
+                return None
             result = chat_completion(
                 messages=[
                     {"role": "system", "content": "你是一个私有知识库助手，负责把每天新增的文件整理成简洁实用的知识日报。"},
@@ -101,6 +109,7 @@ class DigestService:
                 ],
                 temperature=0.5,
                 max_tokens=state.get_settings().digest_max_tokens,
+                provider=provider,
             )
             return result.get("content")
         except Exception:

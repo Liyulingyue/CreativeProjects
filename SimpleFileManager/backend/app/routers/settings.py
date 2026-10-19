@@ -91,7 +91,7 @@ def test_connection() -> dict:
     ok=False with a clear "not configured" message rather than 500-ing
     the whole request."""
     result = {}
-    for key, probe in (("llm", _probe_llm), ("embedding", _probe_embedding), ("embedding_search", _probe_search_embedding), ("llm_fast", _probe_llm_fast)):
+    for key, probe in (("llm", _probe_llm), ("embedding", _probe_embedding), ("embedding_search", _probe_search_embedding)):
         t0 = time.time()
         ok, detail = probe()
         result[key] = {
@@ -110,6 +110,16 @@ def _probe_services() -> dict:
 
 
 def _probe_llm() -> tuple[bool, str]:
+    """Probe the main provider. Returns ok=True with a short content
+    excerpt on success; the agent's chat endpoint will report latency
+    on the badge. With the providers refactor, the "main" is the
+    is_main=1 row in llm_providers — when none is configured yet
+    the probe returns ok=False with a clear "add a provider" hint.
+    """
+    chat_svc = state.get_chat_history()
+    provider = chat_svc.get_main_provider()
+    if provider is None:
+        return False, "未配置（请到 /settings 添加 provider）"
     try:
         from ..llm_client import chat_completion
         result = chat_completion(
@@ -117,30 +127,7 @@ def _probe_llm() -> tuple[bool, str]:
             temperature=0,
             # only the first token is needed to prove the server answers
             max_tokens=8,
-        )
-        content = (result.get("content") or "").strip()
-        return True, content[:60] or "ok"
-    except Exception as e:
-        return False, str(e)[:200]
-
-
-def _probe_llm_fast() -> tuple[bool, str]:
-    """Probe the optional fast-path LLM. Skips the network call entirely
-    when the operator has not configured a base URL or the model name
-    is empty (cloud-only deployments), so the "Test connection" button
-    never reports a spurious failure for a service the user isn't
-    using. Errors reach the badge verbatim so the operator can tell
-    "service down" from "service misconfigured"."""
-    settings = state.get_settings()
-    if not settings.llm_fast_base_url:
-        return False, "未配置（fast URL 为空，'快'按钮回退 24B）"
-    try:
-        from ..llm_client import chat_completion
-        result = chat_completion(
-            messages=[{"role": "user", "content": "ping"}],
-            temperature=0,
-            max_tokens=8,
-            use_fast=True,
+            provider=provider,
         )
         content = (result.get("content") or "").strip()
         return True, content[:60] or "ok"

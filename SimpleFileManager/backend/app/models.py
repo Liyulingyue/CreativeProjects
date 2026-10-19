@@ -55,9 +55,12 @@ class SearchResult(BaseModel):
 
 
 class AppSettings(BaseModel):
-    llm_api_key: str = ""
-    llm_base_url: str = "https://api.minimaxi.com/v1"
-    llm_model: str = "gpt-4o-mini"
+    # Note: LLM endpoints (base_url / model / api_key) are no longer
+    # stored here. They live in the `llm_providers` table now (see
+    # /api/providers) and are managed through the Settings UI's
+    # Providers list. The router and llm_client read from the table
+    # at request time, so flipping a provider is instant — no
+    # server-level restart needed.
     embedding_api_key: str = ""
     embedding_base_url: str = "https://api.minimaxi.com/v1"
     embedding_model: str = "text-embedding-3-small"
@@ -70,21 +73,6 @@ class AppSettings(BaseModel):
     search_api_key: str = ""
     search_base_url: str = ""
     search_model: str = ""
-    # Optional fast-path LLM. When the user toggles "fast" on a chat
-    # turn, /api/agent/chat/stream reads LLM_FAST_BASE_URL and routes that
-    # single turn to the smaller model. Defaults to the 350M llama-server
-    # on 9013 that LLMServices/serve.sh brings up. The fields are kept
-    # blank by default so a cloud-only deployment stays working without
-    # the optional service.
-    llm_fast_api_key: str = ""
-    llm_fast_base_url: str = "http://127.0.0.1:9013/v1"
-    # Default matches the GGUF that LLMServices/serve.sh auto-loads on
-    # 9013 (see pick_llm_fast_model there). Keeping the basename
-    # rather than the absolute path so the same default works for
-    # local dev, remote deploys, and docker — the OpenAI client sends
-    # this verbatim and llama-server matches by file basename. Override
-    # here if you point the fast service at a different GGUF.
-    llm_fast_model: str = "LFM2.5-350M-Q4_0.gguf"
     index_interval: int = 300
     auto_index_enabled: bool = True
     index_debounce_seconds: int = 10
@@ -139,6 +127,43 @@ class IndexStatus(BaseModel):
     current_path: Optional[str] = None
 
 
+class LLMProvider(BaseModel):
+    """One row per LLM endpoint the operator has configured.
+
+    `is_main` is a singleton flag — at most one provider carries it. The
+    first provider the system sees (or the first one the operator
+    creates on an empty table) is automatically promoted to main, so
+    new sessions always have somewhere to land. The UI treats the
+    main as the default for fresh sessions; the user can pick a
+    different one per turn via the chat dropdown.
+    """
+    id: str
+    name: str
+    base_url: str
+    model: str
+    api_key: str = ""
+    is_main: bool = False
+    created_at: int = 0
+    updated_at: int = 0
+
+
+class LLMProviderCreate(BaseModel):
+    name: str
+    base_url: str
+    model: str
+    api_key: str = ""
+
+
+class LLMProviderUpdate(BaseModel):
+    name: Optional[str] = None
+    base_url: Optional[str] = None
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+    # The router enforces the singleton: setting is_main=True unmarks
+    # the rest of the table in the same transaction.
+    is_main: Optional[bool] = None
+
+
 class ChatMessage(BaseModel):
     id: str
     role: str
@@ -158,9 +183,13 @@ class ChatMessage(BaseModel):
     total_ms: int = 0         # request start -> "done" event
     tokens: int = 0           # streamed tokens for the assistant turn
     tps: float = 0.0          # tokens / (total - ttft) over the decode phase
-    # True when the assistant reply came from the fast-path LLM (350M
-    # instead of 24B). The chat UI renders a "⚡快" badge when this is
-    # set. Defaults to False for legacy rows and for all user messages.
+    # Which provider actually served the reply. Resolved server-side
+    # from the request override or the session default at message-
+    # send time; never empty for assistant messages. The chat UI
+    # looks up the provider by id to render the "via <name>" badge.
+    provider_id: Optional[str] = None
+    # Legacy field kept around so old rows (saved before the providers
+    # refactor) still parse. New writes never set it.
     use_fast: bool = False
 
 
@@ -170,6 +199,12 @@ class ChatSession(BaseModel):
     messages: list[ChatMessage] = []
     updated_at: int
     session_type: str = "chat"
+    # Default provider for this session. Set on session create from
+    # the main provider, then mutable from the chat UI — picking a
+    # different provider in the dropdown updates this and all
+    # subsequent messages in the session go through it. The agent
+    # endpoint reads this when the request does not override.
+    provider_id: Optional[str] = None
 
 
 class ChatHistoryResponse(BaseModel):
@@ -195,9 +230,12 @@ class AddMessageRequest(BaseModel):
     total_ms: int = 0
     tokens: int = 0
     tps: float = 0.0
-    # True when the assistant message was produced by the fast-path LLM.
-    # The frontend always sends this; older clients may omit it, in
-    # which case Pydantic defaults to False.
+    # Which provider served the reply. Resolved server-side from
+    # request override or session default; the chat UI looks the
+    # provider up to render the "via <name>" badge.
+    provider_id: Optional[str] = None
+    # Legacy field. New writes never set it; the router ignores it
+    # so old messages still parse and new code stays symmetric.
     use_fast: bool = False
 
 

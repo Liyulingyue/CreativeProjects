@@ -56,6 +56,8 @@ app.include_router(settings, prefix="/api/settings", tags=["settings"], dependen
 app.include_router(rag, prefix="/api/rag", tags=["rag"], dependencies=[auth_dep])
 app.include_router(chat, prefix="/api/chat", tags=["chat"], dependencies=[auth_dep])
 app.include_router(chat_history_router, prefix="/api/chat_history", tags=["chat_history"], dependencies=[auth_dep])
+from .routers import providers as providers_router  # noqa: E402
+app.include_router(providers_router.router, prefix="/api/providers", tags=["providers"], dependencies=[auth_dep])
 app.include_router(agent, prefix="/api/agent", tags=["agent"], dependencies=[auth_dep])
 app.include_router(organizer, prefix="/api/organizer", tags=["organizer"], dependencies=[auth_dep])
 app.include_router(plans, tags=["plans"], dependencies=[auth_dep])

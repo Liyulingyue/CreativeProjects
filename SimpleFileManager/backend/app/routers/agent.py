@@ -38,12 +38,14 @@ MAX_SESSION_MESSAGES = 400
 class AgentRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
-    # Per-turn fast-mode request: when true the LLM client routes this
-    # single turn to the optional fast-path server (e.g. LFM2.5-350M on
-    # 9013). The agent loop below ignores it whenever the turn is going
-    # to invoke a tool -- a 350M-picked tool is unreliable enough that
-    # the fast latency isn't worth the bad outcome. So in practice
-    # use_fast only takes effect for pure-chat turns (no tool calls).
+    # Per-turn override from the chat UI's provider dropdown. Wins
+    # over the session's default provider. Resolved server-side via
+    # _resolve_provider (override > session > main); a stale or
+    # unknown id falls through rather than 400-ing the request.
+    provider_id: Optional[str] = None
+    # Legacy field kept so old clients can still POST without 422.
+    # The router ignores it; provider selection lives on the
+    # llm_providers table now.
     use_fast: bool = False
 
 
@@ -273,24 +275,39 @@ SYSTEM_PROMPT = """你是 NASMind 的文件治理 Agent，负责帮助用户分�
 - 不确定时坦白不确定，比给出一个听起来合理但错误的答案有用得多。"""
 
 
-# Stripped-down system prompt for the fast (350M) path. The full agent
-# prompt above is too dense for a 350M — it picks up tool instructions
-# the user did not ask for, and bias toward English (its training base)
-# even when the user is writing Chinese. The replacement keeps the
-# assistant on-task: answer the question directly, in the user's
-# language, no tool calls. Tool-required turns fall through to 24B
-# anyway (agent layer forces that), so the fast path is honest about
-# what it can do.
-FAST_SYSTEM_PROMPT = """你是一个乐于助人的助手，用用户提问的语言直接回答。
-- 简短直接，不要超过 200 字
-- 不用工具，不要假装能访问本地文件
-- 不输出 thinking 或 scratchpad，直接给答案"""
-
 
 # ---- tool implementations (return dicts, never raise) ----
 
 def _rel(path: Path) -> str:
     return str(path.relative_to(get_storage_root()))
+
+def _resolve_provider(chat_svc, override_id: Optional[str], session_provider_id: Optional[str]):
+    """Pick the LLMProvider for an agent turn.
+
+    Precedence (highest first):
+      1. `override_id` — per-turn override from the chat UI's
+         provider dropdown, only honoured if it actually points at an
+         existing provider. A stale or bogus id falls through to the
+         session default rather than failing the request.
+      2. `session_provider_id` — the provider the user picked for
+         the session. Stale ids (the provider was deleted) also fall
+         through.
+      3. The system main — the singleton is_main=1 row.
+
+    Returns None if no provider exists at all (i.e. the operator
+    hasn't added one yet); the caller surfaces that as an error
+    to the chat UI.
+    """
+    if override_id:
+        p = chat_svc.get_provider(override_id)
+        if p is not None:
+            return p
+    if session_provider_id:
+        p = chat_svc.get_provider(session_provider_id)
+        if p is not None:
+            return p
+    return chat_svc.get_main_provider()
+
 
 def _human_size(num_bytes: int) -> str:
     """Render a byte count the same way the file browser does.
@@ -600,9 +617,9 @@ def execute_tool(name: str, arguments: dict) -> dict:
 
 # ---- LLM plumbing ----
 
-def chat_with_llm(messages: list[dict], tools: list[dict], use_fast: bool = False) -> dict:
+def chat_with_llm(messages: list[dict], tools: list[dict], provider) -> dict:
     try:
-        result = chat_completion(messages, tools=tools, use_fast=use_fast)
+        result = chat_completion(messages, tools=tools, provider=provider)
         choice = {"message": result}
         return {"choices": [choice]}
     except Exception as e:
@@ -688,16 +705,20 @@ class Session:
     def __init__(self):
         self.history: list[dict] = []
         self.memory: str = ""
+        # Mirrors chat_sessions.provider_id. Set on restore from db, and
+        # updated whenever a per-turn override is applied so the next
+        # turn in the same session keeps the user's pick.
+        self.provider_id: Optional[str] = None
 
-    def build_messages(self, use_fast: bool = False) -> list[dict]:
-        # Fast mode swaps in a stripped-down system prompt. The 350M
-        # chokes on the full agent instructions (it tries to call tools
-        # the user did not ask for, or mixes the user's language). The
-        # shorter "just be a helpful assistant that mirrors the user's
-        # language" keeps it on-task and produces usable replies for
-        # plain chat. The agent flow always uses the full prompt.
-        sys_prompt = FAST_SYSTEM_PROMPT if use_fast else SYSTEM_PROMPT
-        msgs = [{"role": "system", "content": sys_prompt}]
+    def build_messages(self) -> list[dict]:
+        # Always use the full agent system prompt. The legacy FAST_SYSTEM_PROMPT
+        # was a workaround for the 350M choking on the full instructions;
+        # with the new providers design, picking a 350M is a deliberate
+        # user choice (it shows in the chat dropdown) and the chat UI
+        # surfaces the quality tradeoff in a tooltip, so the operator-
+        # facing answer is now: "you picked a 350M, expect a 350M-grade
+        # response". The stripped prompt hack is gone.
+        msgs = [{"role": "system", "content": SYSTEM_PROMPT}]
         if self.memory:
             msgs.append({"role": "system", "content": f"【历史工作记忆（早期对话摘要）】\n{self.memory}"})
         # No sliding window here. A window that drops the oldest message each
@@ -764,6 +785,10 @@ def _restore_session(session_id: str) -> Session:
                 for m in chat_session.messages
                 if m.role in ("user", "assistant") and m.content
             ][-MAX_SESSION_MESSAGES:]
+            # Mirror the persisted provider_id into the in-memory
+            # session so the first turn after a cold start already
+            # sees the right default.
+            session.provider_id = chat_session.provider_id
     except Exception:
         pass
     sessions[session_id] = session
@@ -789,7 +814,15 @@ def agent_chat(req: AgentRequest):
     session.history.append({"role": "user", "content": req.message})
 
     session.compact()
-    all_messages = session.build_messages(use_fast=req.use_fast)
+    # Same provider-resolution precedence as the streaming endpoint.
+    chat_svc = state.get_chat_history()
+    provider = _resolve_provider(chat_svc, req.provider_id, session.provider_id)
+    if provider is None:
+        raise HTTPException(status_code=400, detail="没有可用的 LLM provider；请到 /settings 添加")
+    if req.provider_id:
+        chat_svc.update_session_provider(session_id, provider.id)
+        session.provider_id = provider.id
+    all_messages = session.build_messages()
 
     tool_results: list[dict] = []
     plan_ids: list[str] = []
@@ -798,7 +831,7 @@ def agent_chat(req: AgentRequest):
 
     for _ in range(state.get_settings().max_agent_steps):
         steps_used += 1
-        response = chat_with_llm(all_messages, TOOLS, use_fast=req.use_fast)
+        response = chat_with_llm(all_messages, TOOLS, provider=provider)
 
         if "error" in response:
             return AgentResponse(
@@ -896,14 +929,32 @@ def agent_chat_stream(req: AgentRequest):
         session = _get_session(session_id)
         session.history.append({"role": "user", "content": req.message})
         session.compact()
-        # The user-supplied use_fast is honoured only on the very first
-        # step. If that step decides to call a tool, every subsequent step
-        # forces main-24B regardless: the 350M-picked tool chain is too
-        # unreliable to be worth the speedup, and a half-fast / half-smart
-        # trace would corrupt the agent's session memory.
-        use_fast_turn = bool(req.use_fast)
-        use_fast_step = use_fast_turn
-        all_messages = session.build_messages(use_fast=use_fast_step)
+
+        # Resolve which provider this turn will use. Precedence:
+        #   1. `req.provider_id` — per-turn override from the chat UI's
+        #      provider dropdown. Wins over the session default.
+        #   2. `session.provider_id` — what the user picked the last
+        #      time they sent a message in this session.
+        #   3. Main provider — the system's default. Set on the
+        #      session at create time, so this branch is just a
+        #      backstop in case a legacy session predates the column.
+        # The user's pick is *stuck to the session* after this turn:
+        # if they picked a non-main provider, the session row gets
+        # updated so subsequent messages in the same conversation
+        # keep using it. They can switch back via the dropdown.
+        chat_svc = state.get_chat_history()
+        provider = _resolve_provider(chat_svc, req.provider_id, session.provider_id)
+        if provider is None:
+            yield sse("error", {"message": "没有可用的 LLM provider；请到 /settings 添加"})
+            return
+        if req.provider_id:
+            # Persist the override so subsequent turns in this session
+            # keep using the chosen provider. Done before the loop so
+            # the row write is visible to parallel readers (e.g. the
+            # sidebar session loader).
+            chat_svc.update_session_provider(session_id, provider.id)
+            session.provider_id = provider.id
+        all_messages = session.build_messages()
 
         tool_results: list[dict] = []
         plan_ids: list[str] = []
@@ -928,23 +979,25 @@ def agent_chat_stream(req: AgentRequest):
         last_answer_token_at: float | None = None
         token_count = 0
 
-        yield sse("meta", {"steps_max": max_steps, "use_fast": req.use_fast})
+        yield sse("meta", {
+            "steps_max": max_steps,
+            "provider_id": provider.id,
+            "provider_name": provider.name,
+        })
 
         try:
             for _ in range(max_steps):
                 steps_used += 1
                 yield sse("step", {"step": steps_used, "of": max_steps})
 
-                # After the first iteration the model has either emitted
-                # tool calls (forcing smart mode for the rest of the
-                # turn) or answered directly (fast was fine, keep it).
-                if steps_used > 1:
-                    use_fast_step = False
-                else:
-                    use_fast_step = use_fast_turn
                 turn_text = ""
                 tool_calls: list[dict] = []
-                for kind, payload in chat_completion_stream(all_messages, tools=TOOLS, use_fast=use_fast_step):
+                # The chosen provider drives the entire stream, including
+                # any tool-call follow-up. Pick a 24B-class provider if
+                # the turn calls tools; the 350M picks them unreliably.
+                # The chat UI warns the user about this in the provider
+                # dropdown's tooltip.
+                for kind, payload in chat_completion_stream(all_messages, tools=TOOLS, provider=provider):
                     # First LLM text byte — reasoning chunk or answer chunk,
                     # whichever arrives first. Tool calls are structured, not
                     # text, so they don't qualify as "first token" in the
@@ -1064,12 +1117,12 @@ def agent_chat_stream(req: AgentRequest):
                 "total_ms": total_ms,
                 "tokens": token_count,
                 "tps": round(tps, 2),
-                # Echo back the routing decision so the UI can label the
-                # bubble "fast" vs "smart" and the user can confirm the
-                # toggle actually took effect. The first step's value is
-                # the authoritative one; subsequent steps are forced
-                # smart when the model called a tool.
-                "use_fast": use_fast_turn and steps_used <= 1 and not tool_results,
+                # Echo the resolved provider so the chat UI can render the
+                # "via <name>" badge on the persisted bubble. The same id
+                # is written to chat_messages.provider_id, so this is
+                # the canonical answer the client should use.
+                "provider_id": provider.id,
+                "provider_name": provider.name,
             })
         except GeneratorExit:
             # The client already displayed these deltas. Keep the server-side

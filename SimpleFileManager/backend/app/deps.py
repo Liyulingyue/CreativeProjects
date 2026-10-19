@@ -14,7 +14,7 @@ from .chunking import chunk_file
 from .interaction import interaction
 from .models import (
     AppSettings, IndexStats, IndexStatus, ChatSession, ChatMessage,
-    AgentPlan, PlanAction,
+    AgentPlan, PlanAction, LLMProvider,
 )
 
 load_dotenv()
@@ -250,11 +250,8 @@ class LanceDBVectorStore:
 
 
 class RAGService:
-    def __init__(self, embedding_service: EmbeddingService, llm_api_key: str, llm_base_url: str, llm_model: str, db_path: str):
+    def __init__(self, embedding_service: EmbeddingService, db_path: str):
         self.embedding_service = embedding_service
-        self.llm_api_key = llm_api_key
-        self.llm_base_url = llm_base_url
-        self.llm_model = llm_model
         self.vector_store = LanceDBVectorStore(db_path)
 
     def index_file(self, file_path: str, content: str):
@@ -326,7 +323,16 @@ class RAGService:
             return {"answer": "没有找到相关文件来回答这个问题。", "sources": []}
 
         from .llm_client import chat_completion
-        result = chat_completion(messages=self._answer_messages(question, context), temperature=0.7)
+        # RAG answer also uses the main provider — like digest, it's
+        # an automated path with no user-facing provider selection.
+        provider = state.get_chat_history().get_main_provider()
+        if provider is None:
+            return {"answer": "没有可用的 LLM provider；请到 /settings 添加。", "sources": []}
+        result = chat_completion(
+            messages=self._answer_messages(question, context),
+            temperature=0.7,
+            provider=provider,
+        )
         answer = result.get("content", "")
 
         return {
@@ -351,11 +357,25 @@ class ChatHistoryService:
         with self._lock:
             conn = self._get_conn()
             conn.execute("""
+                CREATE TABLE IF NOT EXISTS llm_providers (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    base_url TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    api_key TEXT DEFAULT '',
+                    is_main INTEGER DEFAULT 0,
+                    created_at INTEGER,
+                    updated_at INTEGER
+                )
+            """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS chat_sessions (
                     id TEXT PRIMARY KEY,
                     title TEXT DEFAULT '',
                     session_type TEXT DEFAULT 'chat',
-                    updated_at INTEGER
+                    updated_at INTEGER,
+                    provider_id TEXT,
+                    FOREIGN KEY (provider_id) REFERENCES llm_providers(id) ON DELETE SET NULL
                 )
             """)
             conn.execute("""
@@ -373,7 +393,9 @@ class ChatHistoryService:
                     tokens INTEGER DEFAULT 0,
                     tps REAL DEFAULT 0.0,
                     use_fast INTEGER DEFAULT 0,
-                    FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
+                    provider_id TEXT,
+                    FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                    FOREIGN KEY (provider_id) REFERENCES llm_providers(id) ON DELETE SET NULL
                 )
             """)
             cols = [r[1] for r in conn.execute("PRAGMA table_info(chat_messages)")]
@@ -393,49 +415,209 @@ class ChatHistoryService:
                 # same migration as the perf columns so legacy rows show
                 # the regular 24B badge by default.
                 ("use_fast", "INTEGER DEFAULT 0"),
+                # provider_id: FK to llm_providers. Nullable for legacy
+                # rows; the agent router backfills it from the main
+                # provider at read time when it's missing.
+                ("provider_id", "TEXT"),
             ):
                 if col not in cols:
                     conn.execute(f"ALTER TABLE chat_messages ADD COLUMN {col} {decl}")
+            sess_cols = [r[1] for r in conn.execute("PRAGMA table_info(chat_sessions)")]
+            if "provider_id" not in sess_cols:
+                conn.execute("ALTER TABLE chat_sessions ADD COLUMN provider_id TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session ON chat_messages(session_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_providers_main ON llm_providers(is_main)")
             conn.commit()
             conn.close()
+
+    # ---- LLM provider CRUD ----------------------------------------------
+    #
+    # The providers table owns the LLM endpoints the agent flow talks
+    # to. Methods below are the only place that should be writing to
+    # `llm_providers`; everything else goes through the API router.
+    # The `is_main` flag is enforced as a singleton: setting it on
+    # one row unmarks the rest in the same transaction so a query
+    # like "WHERE is_main=1" can rely on returning at most one row.
+
+    def list_providers(self) -> list[LLMProvider]:
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute(
+                "SELECT id, name, base_url, model, api_key, is_main,"
+                " created_at, updated_at"
+                " FROM llm_providers ORDER BY is_main DESC, created_at ASC"
+            ).fetchall()
+            conn.close()
+        return [self._row_to_provider(r) for r in rows]
+
+    def get_provider(self, provider_id: str) -> Optional[LLMProvider]:
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute(
+                "SELECT id, name, base_url, model, api_key, is_main,"
+                " created_at, updated_at"
+                " FROM llm_providers WHERE id = ?",
+                (provider_id,),
+            ).fetchone()
+            conn.close()
+        return self._row_to_provider(row) if row else None
+
+    def get_main_provider(self) -> Optional[LLMProvider]:
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute(
+                "SELECT id, name, base_url, model, api_key, is_main,"
+                " created_at, updated_at"
+                " FROM llm_providers WHERE is_main = 1 LIMIT 1"
+            ).fetchone()
+            conn.close()
+        return self._row_to_provider(row) if row else None
+
+    def create_provider(self, name: str, base_url: str, model: str,
+                        api_key: str = "") -> LLMProvider:
+        provider_id = uuid.uuid4().hex
+        now = int(time.time() * 1000)
+        with self._lock:
+            conn = self._get_conn()
+            # If this is the very first provider the system has seen,
+            # promote it to main automatically — new sessions need a
+            # default to land on.
+            existing_main = conn.execute(
+                "SELECT 1 FROM llm_providers WHERE is_main = 1 LIMIT 1"
+            ).fetchone()
+            is_main = 0 if existing_main else 1
+            conn.execute(
+                "INSERT INTO llm_providers (id, name, base_url, model, api_key,"
+                " is_main, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (provider_id, name, base_url, model, api_key,
+                 is_main, now, now)
+            )
+            conn.commit()
+            conn.close()
+        return LLMProvider(
+            id=provider_id, name=name, base_url=base_url, model=model,
+            api_key=api_key, is_main=bool(is_main),
+            created_at=now, updated_at=now
+        )
+
+    def update_provider(self, provider_id: str, *,
+                         name: Optional[str] = None,
+                         base_url: Optional[str] = None,
+                         model: Optional[str] = None,
+                         api_key: Optional[str] = None,
+                         is_main: Optional[bool] = None) -> Optional[LLMProvider]:
+        with self._lock:
+            conn = self._get_conn()
+            existing = conn.execute(
+                "SELECT id FROM llm_providers WHERE id = ?", (provider_id,)
+            ).fetchone()
+            if not existing:
+                conn.close()
+                return None
+            fields: list[str] = []
+            values: list = []
+            if name is not None:
+                fields.append("name = ?"); values.append(name)
+            if base_url is not None:
+                fields.append("base_url = ?"); values.append(base_url)
+            if model is not None:
+                fields.append("model = ?"); values.append(model)
+            if api_key is not None:
+                fields.append("api_key = ?"); values.append(api_key)
+            if is_main is True:
+                # Promote this row and demote everyone else. Both halves
+                # run in the same lock so an external query between the
+                # two statements can't see two main providers.
+                conn.execute("UPDATE llm_providers SET is_main = 0")
+                fields.append("is_main = ?"); values.append(1)
+            elif is_main is False:
+                # Caller is asking to demote this provider. The route
+                # layer is responsible for ensuring a main remains
+                # (refuses if this is the only provider).
+                fields.append("is_main = ?"); values.append(0)
+            if fields:
+                fields.append("updated_at = ?")
+                values.append(int(time.time() * 1000))
+                values.append(provider_id)
+                conn.execute(
+                    f"UPDATE llm_providers SET {', '.join(fields)} WHERE id = ?",
+                    values
+                )
+                conn.commit()
+            conn.close()
+        return self.get_provider(provider_id)
+
+    def delete_provider(self, provider_id: str) -> bool:
+        # The router layer guards against deleting the main; sessions
+        # referencing this provider will have their provider_id set to
+        # NULL via ON DELETE SET NULL and the agent flow will backfill
+        # from the main at read time.
+        with self._lock:
+            conn = self._get_conn()
+            cur = conn.execute(
+                "DELETE FROM llm_providers WHERE id = ?", (provider_id,)
+            )
+            conn.commit()
+            deleted = cur.rowcount > 0
+            conn.close()
+            return deleted
+
+    def _row_to_provider(self, row) -> LLMProvider:
+        pid, name, base_url, model, api_key, is_main, created_at, updated_at = row
+        return LLMProvider(
+            id=pid, name=name, base_url=base_url, model=model,
+            api_key=api_key or "", is_main=bool(is_main),
+            created_at=created_at or 0, updated_at=updated_at or 0
+        )
 
     def create_session(self, session_type: str = "chat") -> ChatSession:
         with self._lock:
             session_id = uuid.uuid4().hex
             now = int(time.time() * 1000)
             conn = self._get_conn()
+            # New sessions inherit the main provider by default. The
+            # user can switch via the chat UI, which writes a different
+            # provider_id back into this row.
+            main = conn.execute(
+                "SELECT id FROM llm_providers WHERE is_main = 1 LIMIT 1"
+            ).fetchone()
+            main_id = main[0] if main else None
             conn.execute(
-                "INSERT INTO chat_sessions (id, title, session_type, updated_at) VALUES (?, ?, ?, ?)",
-                (session_id, "", session_type, now)
+                "INSERT INTO chat_sessions (id, title, session_type, updated_at, provider_id)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (session_id, "", session_type, now, main_id)
             )
             conn.commit()
             conn.close()
-        return ChatSession(id=session_id, title="", messages=[], updated_at=now, session_type=session_type)
+        return ChatSession(id=session_id, title="", messages=[], updated_at=now,
+                          session_type=session_type, provider_id=main_id)
 
     def get_sessions(self, session_type: Optional[str] = None) -> list[ChatSession]:
         with self._lock:
             conn = self._get_conn()
             if session_type:
                 rows = conn.execute(
-                    "SELECT id, title, session_type, updated_at FROM chat_sessions WHERE session_type = ? ORDER BY updated_at DESC",
+                    "SELECT id, title, session_type, updated_at, provider_id"
+                    " FROM chat_sessions WHERE session_type = ? ORDER BY updated_at DESC",
                     (session_type,)
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT id, title, session_type, updated_at FROM chat_sessions ORDER BY updated_at DESC"
+                    "SELECT id, title, session_type, updated_at, provider_id"
+                    " FROM chat_sessions ORDER BY updated_at DESC"
                 ).fetchall()
 
             sessions = []
             for row in rows:
-                session_id, title, sess_type, updated_at = row
+                session_id, title, sess_type, updated_at, provider_id = row
                 messages = self._get_messages(conn, session_id)
                 sessions.append(ChatSession(
                     id=session_id,
                     title=title or "",
                     messages=messages,
                     updated_at=updated_at,
-                    session_type=sess_type
+                    session_type=sess_type,
+                    provider_id=provider_id,
                 ))
             conn.close()
         return sessions
@@ -443,14 +625,14 @@ class ChatHistoryService:
     def _get_messages(self, conn: sqlite3.Connection, session_id: str) -> list[ChatMessage]:
         rows = conn.execute(
             "SELECT id, role, content, reasoning, activity, sources, timestamp,"
-            " ttft_ms, total_ms, tokens, tps, use_fast"
+            " ttft_ms, total_ms, tokens, tps, use_fast, provider_id"
             " FROM chat_messages WHERE session_id = ? ORDER BY timestamp ASC",
             (session_id,)
         ).fetchall()
         messages = []
         for row in rows:
             msg_id, role, content, reasoning, activity, sources, timestamp, \
-                ttft_ms, total_ms, tokens, tps, use_fast = row
+                ttft_ms, total_ms, tokens, tps, use_fast, provider_id = row
             sources_list = json.loads(sources) if sources else None
             try:
                 activity_list = json.loads(activity) if activity else []
@@ -468,7 +650,11 @@ class ChatHistoryService:
                 total_ms=total_ms or 0,
                 tokens=tokens or 0,
                 tps=tps or 0.0,
+                # Legacy `use_fast` rows have provider_id NULL. The
+                # chat UI never reads use_fast anymore; the persisted
+                # bubble shows the resolved provider name instead.
                 use_fast=bool(use_fast),
+                provider_id=provider_id,
             ))
         return messages
 
@@ -496,6 +682,7 @@ class ChatHistoryService:
     def add_message(self, session_id: str, role: str, content: str, sources: Optional[list] = None,
                     reasoning: str = "", activity: Optional[list] = None,
                     ttft_ms: int = 0, total_ms: int = 0, tokens: int = 0, tps: float = 0.0,
+                    provider_id: Optional[str] = None,
                     use_fast: bool = False) -> ChatMessage:
         msg_id = uuid.uuid4().hex
         now = int(time.time() * 1000)
@@ -504,11 +691,11 @@ class ChatHistoryService:
             conn = self._get_conn()
             conn.execute(
                 "INSERT INTO chat_messages (id, session_id, role, content, reasoning, activity,"
-                " sources, timestamp, ttft_ms, total_ms, tokens, tps, use_fast)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " sources, timestamp, ttft_ms, total_ms, tokens, tps, use_fast, provider_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (msg_id, session_id, role, content, reasoning,
                  json.dumps(activity, ensure_ascii=False) if activity else "[]", sources_json, now,
-                 ttft_ms, total_ms, tokens, tps, 1 if use_fast else 0)
+                 ttft_ms, total_ms, tokens, tps, 1 if use_fast else 0, provider_id)
             )
             conn.execute(
                 "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
@@ -519,7 +706,7 @@ class ChatHistoryService:
         return ChatMessage(id=msg_id, role=role, content=content, reasoning=reasoning,
                           activity=activity or [], sources=sources, timestamp=now,
                           ttft_ms=ttft_ms, total_ms=total_ms, tokens=tokens, tps=tps,
-                          use_fast=use_fast)
+                          provider_id=provider_id, use_fast=use_fast)
 
     def delete_session(self, session_id: str):
         with self._lock:
@@ -533,6 +720,23 @@ class ChatHistoryService:
         with self._lock:
             conn = self._get_conn()
             conn.execute("UPDATE chat_sessions SET title = ? WHERE id = ?", (title, session_id))
+            conn.commit()
+            conn.close()
+
+    def update_session_provider(self, session_id: str, provider_id: str):
+        """Sticky the per-session provider the user picked in the chat UI.
+
+        Called by the agent router after a per-turn override is applied,
+        so subsequent messages in the same conversation keep using the
+        same provider. Takes the lock so concurrent reads see a coherent
+        row state.
+        """
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "UPDATE chat_sessions SET provider_id = ? WHERE id = ?",
+                (provider_id, session_id),
+            )
             conn.commit()
             conn.close()
 
@@ -833,23 +1037,67 @@ class AppState:
         if settings_data:
             env_defaults = _get_default_settings().model_dump()
             env_defaults.update(settings_data)
-            # Pre-existing settings.json files saved before llm_fast_*
-            # got sensible defaults carry empty strings. Treat empty as
-            # "use default" so users who never opened the Fast LLM card
-            # still get the right model name filled in. The save path
-            # writes the resolved value, so this only matters on the
-            # first read after the schema bump.
-            defaults = AppSettings.model_fields
-            for k, v in list(env_defaults.items()):
-                if k in defaults and isinstance(v, str) and v == "" and defaults[k].default != "":
-                    env_defaults[k] = defaults[k].default
             self._settings = AppSettings(**env_defaults)
         else:
             self._settings = _get_default_settings()
 
+        # Seed the providers table on first load. Older deployments had
+        # llm_base_url / llm_model / llm_api_key (and the llm_fast_*
+        # variants) inside AppSettings. We carry those values into the
+        # providers table so the agent router finds something to talk
+        # to, and we no longer need the settings keys afterwards. The
+        # seed is gated on "providers table is empty" so reruns are
+        # idempotent and operator-added providers are never overwritten.
+        with self.get_chat_history()._lock:  # type: ignore[attr-defined]
+            conn = self.get_chat_history()._get_conn()  # type: ignore[attr-defined]
+            count = conn.execute("SELECT COUNT(*) FROM llm_providers").fetchone()[0]
+            if count == 0:
+                self._seed_providers_from_settings(conn, settings_data or {})
+            conn.close()
+
         stats_data = _load_json(INDEX_STATS_FILE, None)
         if stats_data:
             self._index_stats = IndexStats(**stats_data)
+
+    def _seed_providers_from_settings(self, conn, settings_data: dict) -> None:
+        """One-shot backfill: take the legacy llm_* / llm_fast_* fields
+        from settings.json (or the env defaults) and create one or
+        two rows in llm_providers. The main flag follows the order:
+        if the legacy main LLM exists, that becomes the main; if
+        also a fast LLM is configured, it's added as non-main.
+
+        Runs inside the caller's lock so the seed and any subsequent
+        reads see a consistent table. Idempotent — the caller skips
+        when the table is non-empty.
+        """
+        import time as _t
+        now = int(_t.time() * 1000)
+        main_url = settings_data.get("llm_base_url") or self._settings.embedding_base_url
+        # We don't actually use embedding_base_url as a fallback; the
+        # settings.llm_base_url is what served the previous LLM. The
+        # above just keeps the gate simple.
+        main_url = settings_data.get("llm_base_url", "") or ""
+        main_model = settings_data.get("llm_model", "") or ""
+        main_key = settings_data.get("llm_api_key", "") or ""
+        if main_url and main_model:
+            main_id = uuid.uuid4().hex
+            conn.execute(
+                "INSERT INTO llm_providers (id, name, base_url, model, api_key,"
+                " is_main, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
+                (main_id, "Main", main_url, main_model, main_key, now, now)
+            )
+        # Fast model is optional; skip if not configured.
+        fast_url = settings_data.get("llm_fast_base_url", "") or ""
+        fast_model = settings_data.get("llm_fast_model", "") or ""
+        fast_key = settings_data.get("llm_fast_api_key", "") or ""
+        if fast_url and fast_model:
+            fast_id = uuid.uuid4().hex
+            conn.execute(
+                "INSERT INTO llm_providers (id, name, base_url, model, api_key,"
+                " is_main, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
+                (fast_id, "Fast", fast_url, fast_model, fast_key, now, now)
+            )
+        conn.commit()
 
     def _persist_settings(self):
         _save_json(SETTINGS_FILE, self._settings.model_dump())
@@ -959,9 +1207,6 @@ class AppState:
             db_path = str(DATA_DIR / "vector_db")
             self._rag_service = RAGService(
                 embedding_service=embedding_svc,
-                llm_api_key=self._settings.llm_api_key,
-                llm_base_url=self._settings.llm_base_url,
-                llm_model=self._settings.llm_model,
                 db_path=db_path,
             )
         return self._rag_service
