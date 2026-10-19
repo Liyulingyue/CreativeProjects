@@ -141,6 +141,10 @@ export interface ChatMessage {
   total_ms?: number;
   tokens?: number;
   tps?: number;
+  /** True when this assistant message was produced by the fast-path LLM
+   *  (e.g. LFM2.5-350M on 9013). The bubble renders a "⚡快" badge so the
+   *  user can tell at a glance which model served the reply. */
+  use_fast?: boolean;
 }
 
 export interface ChatSession {
@@ -193,7 +197,8 @@ export async function addChatMessage(
   sources?: { file_path: string; score: number }[],
   reasoning?: string,
   activity?: unknown[],
-  perf?: { ttft_ms?: number; total_ms?: number; tokens?: number; tps?: number }
+  perf?: { ttft_ms?: number; total_ms?: number; tokens?: number; tps?: number },
+  useFast?: boolean
 ): Promise<ChatMessage> {
   const res = await authFetch(`${API_BASE}/chat_history/messages`, {
     method: 'POST',
@@ -202,6 +207,10 @@ export async function addChatMessage(
       session_id: sessionId, role, content,
       sources, reasoning: reasoning ?? '', activity: activity ?? [],
       ...(perf ?? {}),
+      // Persist which model served the reply. The chat bubble reads this
+      // to render the "快" / "智" badge so the user can tell fast and
+      // smart turns apart at a glance, including after a reload.
+      use_fast: useFast ?? false,
     }),
   });
   if (!res.ok) throw new Error('Failed to add chat message');
@@ -308,12 +317,20 @@ export async function streamAgentMessage(
   message: string,
   sessionId: string | undefined,
   onEvent: (event: AgentStreamEvent) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options?: { useFast?: boolean }
 ): Promise<void> {
   const res = await authFetch(`${API_BASE}/agent/chat/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, session_id: sessionId }),
+    body: JSON.stringify({
+      message,
+      session_id: sessionId,
+      // Per-turn fast mode: routes the LLM call to the small (350M) server
+      // on 9013 instead of the 24B on 9010. The server ignores it if a
+      // tool gets called (tool-required turns always stay on 24B).
+      use_fast: options?.useFast ?? false,
+    }),
     signal,
   });
   if (!res.ok || !res.body) {

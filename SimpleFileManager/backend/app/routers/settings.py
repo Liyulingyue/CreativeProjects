@@ -85,9 +85,13 @@ def service_health() -> dict:
 
 @settings.post("/test_connection")
 def test_connection() -> dict:
-    """Actively call both services and report latency + embedding dimension."""
+    """Actively call all reachable services and report latency. The fast
+    LLM is best-effort — when the operator has not configured a base
+    URL (or the 350M llama-server isn't running) the probe returns
+    ok=False with a clear "not configured" message rather than 500-ing
+    the whole request."""
     result = {}
-    for key, probe in (("llm", _probe_llm), ("embedding", _probe_embedding)):
+    for key, probe in (("llm", _probe_llm), ("embedding", _probe_embedding), ("llm_fast", _probe_llm_fast)):
         t0 = time.time()
         ok, detail = probe()
         result[key] = {
@@ -113,6 +117,30 @@ def _probe_llm() -> tuple[bool, str]:
             temperature=0,
             # only the first token is needed to prove the server answers
             max_tokens=8,
+        )
+        content = (result.get("content") or "").strip()
+        return True, content[:60] or "ok"
+    except Exception as e:
+        return False, str(e)[:200]
+
+
+def _probe_llm_fast() -> tuple[bool, str]:
+    """Probe the optional fast-path LLM. Skips the network call entirely
+    when the operator has not configured a base URL or the model name
+    is empty (cloud-only deployments), so the "Test connection" button
+    never reports a spurious failure for a service the user isn't
+    using. Errors reach the badge verbatim so the operator can tell
+    "service down" from "service misconfigured"."""
+    settings = state.get_settings()
+    if not settings.llm_fast_base_url:
+        return False, "未配置（fast URL 为空，'快'按钮回退 24B）"
+    try:
+        from ..llm_client import chat_completion
+        result = chat_completion(
+            messages=[{"role": "user", "content": "ping"}],
+            temperature=0,
+            max_tokens=8,
+            use_fast=True,
         )
         content = (result.get("content") or "").strip()
         return True, content[:60] or "ok"

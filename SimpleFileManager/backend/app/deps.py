@@ -340,6 +340,7 @@ class ChatHistoryService:
                     total_ms INTEGER DEFAULT 0,
                     tokens INTEGER DEFAULT 0,
                     tps REAL DEFAULT 0.0,
+                    use_fast INTEGER DEFAULT 0,
                     FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
                 )
             """)
@@ -356,6 +357,10 @@ class ChatHistoryService:
                 ("total_ms", "INTEGER DEFAULT 0"),
                 ("tokens", "INTEGER DEFAULT 0"),
                 ("tps", "REAL DEFAULT 0.0"),
+                # use_fast: 0/1 in SQLite (no native bool). Added on the
+                # same migration as the perf columns so legacy rows show
+                # the regular 24B badge by default.
+                ("use_fast", "INTEGER DEFAULT 0"),
             ):
                 if col not in cols:
                     conn.execute(f"ALTER TABLE chat_messages ADD COLUMN {col} {decl}")
@@ -406,14 +411,14 @@ class ChatHistoryService:
     def _get_messages(self, conn: sqlite3.Connection, session_id: str) -> list[ChatMessage]:
         rows = conn.execute(
             "SELECT id, role, content, reasoning, activity, sources, timestamp,"
-            " ttft_ms, total_ms, tokens, tps"
+            " ttft_ms, total_ms, tokens, tps, use_fast"
             " FROM chat_messages WHERE session_id = ? ORDER BY timestamp ASC",
             (session_id,)
         ).fetchall()
         messages = []
         for row in rows:
             msg_id, role, content, reasoning, activity, sources, timestamp, \
-                ttft_ms, total_ms, tokens, tps = row
+                ttft_ms, total_ms, tokens, tps, use_fast = row
             sources_list = json.loads(sources) if sources else None
             try:
                 activity_list = json.loads(activity) if activity else []
@@ -431,6 +436,7 @@ class ChatHistoryService:
                 total_ms=total_ms or 0,
                 tokens=tokens or 0,
                 tps=tps or 0.0,
+                use_fast=bool(use_fast),
             ))
         return messages
 
@@ -457,7 +463,8 @@ class ChatHistoryService:
 
     def add_message(self, session_id: str, role: str, content: str, sources: Optional[list] = None,
                     reasoning: str = "", activity: Optional[list] = None,
-                    ttft_ms: int = 0, total_ms: int = 0, tokens: int = 0, tps: float = 0.0) -> ChatMessage:
+                    ttft_ms: int = 0, total_ms: int = 0, tokens: int = 0, tps: float = 0.0,
+                    use_fast: bool = False) -> ChatMessage:
         msg_id = uuid.uuid4().hex
         now = int(time.time() * 1000)
         sources_json = json.dumps(sources) if sources else None
@@ -465,11 +472,11 @@ class ChatHistoryService:
             conn = self._get_conn()
             conn.execute(
                 "INSERT INTO chat_messages (id, session_id, role, content, reasoning, activity,"
-                " sources, timestamp, ttft_ms, total_ms, tokens, tps)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " sources, timestamp, ttft_ms, total_ms, tokens, tps, use_fast)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (msg_id, session_id, role, content, reasoning,
                  json.dumps(activity, ensure_ascii=False) if activity else "[]", sources_json, now,
-                 ttft_ms, total_ms, tokens, tps)
+                 ttft_ms, total_ms, tokens, tps, 1 if use_fast else 0)
             )
             conn.execute(
                 "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
@@ -479,7 +486,8 @@ class ChatHistoryService:
             conn.close()
         return ChatMessage(id=msg_id, role=role, content=content, reasoning=reasoning,
                           activity=activity or [], sources=sources, timestamp=now,
-                          ttft_ms=ttft_ms, total_ms=total_ms, tokens=tokens, tps=tps)
+                          ttft_ms=ttft_ms, total_ms=total_ms, tokens=tokens, tps=tps,
+                          use_fast=use_fast)
 
     def delete_session(self, session_id: str):
         with self._lock:
@@ -793,6 +801,16 @@ class AppState:
         if settings_data:
             env_defaults = _get_default_settings().model_dump()
             env_defaults.update(settings_data)
+            # Pre-existing settings.json files saved before llm_fast_*
+            # got sensible defaults carry empty strings. Treat empty as
+            # "use default" so users who never opened the Fast LLM card
+            # still get the right model name filled in. The save path
+            # writes the resolved value, so this only matters on the
+            # first read after the schema bump.
+            defaults = AppSettings.model_fields
+            for k, v in list(env_defaults.items()):
+                if k in defaults and isinstance(v, str) and v == "" and defaults[k].default != "":
+                    env_defaults[k] = defaults[k].default
             self._settings = AppSettings(**env_defaults)
         else:
             self._settings = _get_default_settings()

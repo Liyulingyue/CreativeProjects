@@ -169,6 +169,29 @@ export function SettingsPage() {
           </Card>
 
           <Card
+            icon="zap" tone="text-amber-500"
+            title="Fast LLM（可选 · 350M 等小模型）"
+            action={probes?.llm_fast ? <ProbeBadge result={probes.llm_fast} /> : undefined}
+          >
+            <div className="space-y-3">
+              <Field label="Base URL" hint="默认 9013 上 LFM2.5-350M；留空则 chat 上'快'按钮不生效（回退 24B）">
+                <input className={inputClass} value={settings.llm_fast_base_url} onChange={e => set({ llm_fast_base_url: e.target.value })} />
+              </Field>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Field label="模型名称" hint="留空则用主 LLM 的模型名">
+                  <input className={inputClass} value={settings.llm_fast_model} onChange={e => set({ llm_fast_model: e.target.value })} placeholder="例如 LFM2.5-350M-Q4_0.gguf" />
+                </Field>
+                <Field label="API Key" hint="本地服务可留空">
+                  <input type="password" className={inputClass} value={settings.llm_fast_api_key} onChange={e => set({ llm_fast_api_key: e.target.value })} />
+                </Field>
+              </div>
+              <p className="text-xs text-slate-400">
+                fast 模式：聊天顶部'智/快'按钮切到快，下一条消息走此服务；agent 第一步用它，一旦调 tool 后续步骤强制 24B。Fast 模型一般不带 function-call 训练，对话质量会弱一些。
+              </p>
+            </div>
+          </Card>
+
+          <Card
             icon="database" tone="text-violet-500"
             title="Embedding（向量化检索）"
             action={probes?.embedding ? <ProbeBadge result={probes.embedding} /> : undefined}

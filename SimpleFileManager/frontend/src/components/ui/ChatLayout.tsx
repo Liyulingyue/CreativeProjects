@@ -115,7 +115,12 @@ interface ChatLayoutProps {
   sessions: ChatSession[];
   currentSessionId: string | null;
   onSelectSession: (id: string) => void;
-  onNewSession: () => Promise<string>;
+  /**
+   * Clears the chat pane to the empty state without persisting anything.
+   * The DB row for a new conversation is created lazily on first message
+   * send, so this never produces a blank session entry.
+   */
+  onNewSession: () => void;
   onDeleteSession: (id: string) => void;
   onSendMessage: (content: string) => Promise<void>;
   isLoading: boolean;
@@ -124,6 +129,14 @@ interface ChatLayoutProps {
    *  / tokens / tps fill in as SSE events arrive. The persisted bubble
    *  reads the same numbers from the message's perf fields. */
   livePerf?: { clockMs: number; ttft_ms?: number; total_ms?: number; tokens?: number; tps?: number };
+  /**
+   * Per-turn "fast" toggle. When true, the next message gets routed to
+   * the small (350M) LLM service instead of the main 24B; the toggle
+   * auto-resets after each send so a stray tap doesn't accidentally
+   * shrink every subsequent reply.
+   */
+  useFast?: boolean;
+  onToggleFast?: () => void;
   /** Text received so far for the in-flight assistant reply. */
   streamingText?: string;
   /** Live scratchpad from the model's reasoning channel, shown collapsed. */
@@ -168,9 +181,11 @@ function formatClock(timestamp: number): string {
 function PerfHeader({
   clockMs,
   perf,
+  useFast,
 }: {
   clockMs: number;
   perf?: { ttft_ms?: number; total_ms?: number; tokens?: number; tps?: number };
+  useFast?: boolean;
 }) {
   const ttft = perf?.ttft_ms ?? 0;
   const total = perf?.total_ms ?? 0;
@@ -179,7 +194,7 @@ function PerfHeader({
   const hasPerf = total > 0 || ttft > 0 || tokens > 0;
   return (
     <div
-      className="pb-1.5 mb-1.5 border-b border-slate-200 text-[11px] text-slate-500 font-mono flex flex-wrap gap-x-3 gap-y-0.5"
+      className="pb-1.5 mb-1.5 border-b border-slate-200 text-[11px] text-slate-500 font-mono flex flex-wrap gap-x-3 gap-y-0.5 items-center"
       title="服务器端测得：⏱ 请求开始时刻｜TTFT 首 token 延迟｜共 总耗时｜tokens 生成 token 数｜tok/s 解码吞吐"
     >
       <span>⏱ {formatClock(clockMs)}</span>
@@ -188,6 +203,12 @@ function PerfHeader({
       {tokens > 0 && <span>{tokens} tok</span>}
       {tps > 0 && <span>{tps.toFixed(1)} tok/s</span>}
       {!hasPerf && <span className="opacity-60">测量中…</span>}
+      {/* Fast-mode marker. Rendered as plain text in the same line as
+          the other stats so a narrow bubble does not split ⚡ and 快
+          onto two lines (the previous "pill" wrapping did that). The
+          amber color still tells the user at a glance that the reply
+          came from the 350M instead of the 24B. */}
+      {useFast && <span className="text-amber-700" title="由 350M 快模型生成">⚡快</span>}
     </div>
   );
 }
@@ -287,7 +308,7 @@ function ToolTraceLine({ activity }: { activity: ToolActivity }) {
 export function ChatLayout({
   sessions, currentSessionId, onSelectSession, onNewSession,
   onDeleteSession, onSendMessage, isLoading, streamingText, toolActivity,
-  currentStep, livePerf, onStop, emptyState, renderMessage,
+  currentStep, livePerf, useFast, onToggleFast, onStop, emptyState, renderMessage,
 }: ChatLayoutProps) {
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -399,6 +420,18 @@ export function ChatLayout({
                     ? 'bg-indigo-600 text-white'
                     : 'bg-slate-100 text-slate-800'
                 }`}>
+                  {msg.role === 'assistant' && (
+                    <PerfHeader
+                      clockMs={msg.timestamp}
+                      perf={{
+                        ttft_ms: msg.ttft_ms,
+                        total_ms: msg.total_ms,
+                        tokens: msg.tokens,
+                        tps: msg.tps,
+                      }}
+                      useFast={msg.use_fast}
+                    />
+                  )}
                   {msg.activity && msg.activity.length > 0 && (
                     <div className="mb-2 space-y-1.5">
                       {msg.activity.map((a, i) =>
@@ -494,6 +527,27 @@ export function ChatLayout({
               className="flex-1 min-w-0 px-3 py-2 rounded-lg border border-slate-200 text-base sm:text-sm resize-none focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 transition-all"
               style={{ maxHeight: '150px' }}
             />
+            {/* Fast/smart pill. Disabled while a request is in flight so
+                the next-turn state can't change mid-stream, and hidden
+                entirely when the parent doesn't expose it (other
+                callers of ChatLayout that don't want the toggle). */}
+            {onToggleFast && (
+              <button
+                type="button"
+                onClick={onToggleFast}
+                disabled={isLoading}
+                title={useFast ? '快：下一条消息走 350M' : '智：24B，思考+工具'}
+                aria-pressed={!!useFast}
+                className={`flex items-center gap-1 px-2.5 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-40 ${
+                  useFast
+                    ? 'bg-amber-100 text-amber-800 border border-amber-200 hover:bg-amber-200'
+                    : 'bg-slate-100 text-slate-600 border border-transparent hover:bg-slate-200'
+                }`}
+              >
+                <Icon name={useFast ? 'zap' : 'bot'} size={14} />
+                {useFast ? '快' : '智'}
+              </button>
+            )}
             {isLoading && onStop ? (
               <button
                 type="button"
@@ -525,7 +579,7 @@ function SessionList({
 }: {
   sessions: ChatSession[];
   currentSessionId: string | null;
-  onNewSession: () => Promise<string>;
+  onNewSession: () => void;
   onSelectSession: (id: string) => void;
   onDeleteSession: (id: string) => void;
   getTitle: (s: ChatSession) => string;

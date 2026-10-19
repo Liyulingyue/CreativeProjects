@@ -38,6 +38,13 @@ MAX_SESSION_MESSAGES = 400
 class AgentRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
+    # Per-turn fast-mode request: when true the LLM client routes this
+    # single turn to the optional fast-path server (e.g. LFM2.5-350M on
+    # 9013). The agent loop below ignores it whenever the turn is going
+    # to invoke a tool -- a 350M-picked tool is unreliable enough that
+    # the fast latency isn't worth the bad outcome. So in practice
+    # use_fast only takes effect for pure-chat turns (no tool calls).
+    use_fast: bool = False
 
 
 class AgentResponse(BaseModel):
@@ -264,6 +271,20 @@ SYSTEM_PROMPT = """你是 NASMind 的文件治理 Agent，负责帮助用户分�
 - 如果某个说法在工具返回的内容里找不到依据，就明确说「工具返回的内容中没有
   依据」，而不是补一个像样的答案。
 - 不确定时坦白不确定，比给出一个听起来合理但错误的答案有用得多。"""
+
+
+# Stripped-down system prompt for the fast (350M) path. The full agent
+# prompt above is too dense for a 350M — it picks up tool instructions
+# the user did not ask for, and bias toward English (its training base)
+# even when the user is writing Chinese. The replacement keeps the
+# assistant on-task: answer the question directly, in the user's
+# language, no tool calls. Tool-required turns fall through to 24B
+# anyway (agent layer forces that), so the fast path is honest about
+# what it can do.
+FAST_SYSTEM_PROMPT = """你是一个乐于助人的助手，用用户提问的语言直接回答。
+- 简短直接，不要超过 200 字
+- 不用工具，不要假装能访问本地文件
+- 不输出 thinking 或 scratchpad，直接给答案"""
 
 
 # ---- tool implementations (return dicts, never raise) ----
@@ -579,9 +600,9 @@ def execute_tool(name: str, arguments: dict) -> dict:
 
 # ---- LLM plumbing ----
 
-def chat_with_llm(messages: list[dict], tools: list[dict]) -> dict:
+def chat_with_llm(messages: list[dict], tools: list[dict], use_fast: bool = False) -> dict:
     try:
-        result = chat_completion(messages, tools=tools)
+        result = chat_completion(messages, tools=tools, use_fast=use_fast)
         choice = {"message": result}
         return {"choices": [choice]}
     except Exception as e:
@@ -668,8 +689,15 @@ class Session:
         self.history: list[dict] = []
         self.memory: str = ""
 
-    def build_messages(self) -> list[dict]:
-        msgs = [{"role": "system", "content": SYSTEM_PROMPT}]
+    def build_messages(self, use_fast: bool = False) -> list[dict]:
+        # Fast mode swaps in a stripped-down system prompt. The 350M
+        # chokes on the full agent instructions (it tries to call tools
+        # the user did not ask for, or mixes the user's language). The
+        # shorter "just be a helpful assistant that mirrors the user's
+        # language" keeps it on-task and produces usable replies for
+        # plain chat. The agent flow always uses the full prompt.
+        sys_prompt = FAST_SYSTEM_PROMPT if use_fast else SYSTEM_PROMPT
+        msgs = [{"role": "system", "content": sys_prompt}]
         if self.memory:
             msgs.append({"role": "system", "content": f"【历史工作记忆（早期对话摘要）】\n{self.memory}"})
         # No sliding window here. A window that drops the oldest message each
@@ -761,7 +789,7 @@ def agent_chat(req: AgentRequest):
     session.history.append({"role": "user", "content": req.message})
 
     session.compact()
-    all_messages = session.build_messages()
+    all_messages = session.build_messages(use_fast=req.use_fast)
 
     tool_results: list[dict] = []
     plan_ids: list[str] = []
@@ -770,7 +798,7 @@ def agent_chat(req: AgentRequest):
 
     for _ in range(state.get_settings().max_agent_steps):
         steps_used += 1
-        response = chat_with_llm(all_messages, TOOLS)
+        response = chat_with_llm(all_messages, TOOLS, use_fast=req.use_fast)
 
         if "error" in response:
             return AgentResponse(
@@ -868,7 +896,14 @@ def agent_chat_stream(req: AgentRequest):
         session = _get_session(session_id)
         session.history.append({"role": "user", "content": req.message})
         session.compact()
-        all_messages = session.build_messages()
+        # The user-supplied use_fast is honoured only on the very first
+        # step. If that step decides to call a tool, every subsequent step
+        # forces main-24B regardless: the 350M-picked tool chain is too
+        # unreliable to be worth the speedup, and a half-fast / half-smart
+        # trace would corrupt the agent's session memory.
+        use_fast_turn = bool(req.use_fast)
+        use_fast_step = use_fast_turn
+        all_messages = session.build_messages(use_fast=use_fast_step)
 
         tool_results: list[dict] = []
         plan_ids: list[str] = []
@@ -893,16 +928,23 @@ def agent_chat_stream(req: AgentRequest):
         last_answer_token_at: float | None = None
         token_count = 0
 
-        yield sse("meta", {"steps_max": max_steps})
+        yield sse("meta", {"steps_max": max_steps, "use_fast": req.use_fast})
 
         try:
             for _ in range(max_steps):
                 steps_used += 1
                 yield sse("step", {"step": steps_used, "of": max_steps})
 
+                # After the first iteration the model has either emitted
+                # tool calls (forcing smart mode for the rest of the
+                # turn) or answered directly (fast was fine, keep it).
+                if steps_used > 1:
+                    use_fast_step = False
+                else:
+                    use_fast_step = use_fast_turn
                 turn_text = ""
                 tool_calls: list[dict] = []
-                for kind, payload in chat_completion_stream(all_messages, tools=TOOLS):
+                for kind, payload in chat_completion_stream(all_messages, tools=TOOLS, use_fast=use_fast_step):
                     # First LLM text byte — reasoning chunk or answer chunk,
                     # whichever arrives first. Tool calls are structured, not
                     # text, so they don't qualify as "first token" in the
@@ -1022,6 +1064,12 @@ def agent_chat_stream(req: AgentRequest):
                 "total_ms": total_ms,
                 "tokens": token_count,
                 "tps": round(tps, 2),
+                # Echo back the routing decision so the UI can label the
+                # bubble "fast" vs "smart" and the user can confirm the
+                # toggle actually took effect. The first step's value is
+                # the authoritative one; subsequent steps are forced
+                # smart when the model called a tool.
+                "use_fast": use_fast_turn and steps_used <= 1 and not tool_results,
             })
         except GeneratorExit:
             # The client already displayed these deltas. Keep the server-side

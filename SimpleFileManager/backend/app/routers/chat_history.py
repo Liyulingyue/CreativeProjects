@@ -62,6 +62,7 @@ def add_message(req: AddMessageRequest):
         total_ms=getattr(req, "total_ms", 0) or 0,
         tokens=getattr(req, "tokens", 0) or 0,
         tps=getattr(req, "tps", 0.0) or 0.0,
+        use_fast=bool(getattr(req, "use_fast", False)),
     )
 
 

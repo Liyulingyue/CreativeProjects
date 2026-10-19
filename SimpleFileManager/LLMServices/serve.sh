@@ -116,6 +116,43 @@ LLM_PID_FILE="$PID_DIR/llm.pid"
 LLM_LOG="$LOG_DIR/llm.log"
 LLM_PORT=9010
 
+# Fast-path LLM: a small (350M-class) model that answers simple questions in
+# under a second. Optional -- skipped silently when the gguf is absent so a
+# fresh checkout does not error on `serve.sh start`. The backend's
+# /api/agent/chat/stream reads LLM_FAST_BASE_URL from the project .env and
+# routes per-turn use_fast requests here. Pinning to the A520 LITTLE cores
+# keeps the fast path off the A720 big cores where the 24B is running, so
+# the two workloads never contend for the same cache lines.
+#
+# Disabled by default in this repo -- it pulls in a ~220 MB gguf and
+# reuses the embedding server's cpuset pattern. Set LLM_FAST_ENABLED=true
+# after dropping the file in models/lfm25-350m-q4_0/ to bring it up.
+# env_value() reads from the project .env so this works the same way as
+# MAX_CONTEXT_TOKENS / KV_CACHE_TYPE — the operator sets it once, the
+# next `serve.sh start` brings the 350M up on 9013. Env override at the
+# call site (LLM_FAST_ENABLED=true ./serve.sh start) still wins.
+LLM_FAST_ENABLED="${LLM_FAST_ENABLED:-$(env_value LLM_FAST_ENABLED false)}"
+pick_llm_fast_model() {
+    local candidate
+    for candidate in \
+        "$SCRIPT_DIR/models/lfm25-350m-q4_0/LFM2.5-350M-Q4_0.gguf"
+    do
+        if [ -f "$candidate" ]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    echo ""
+}
+LLM_FAST_MODEL="${LLM_FAST_MODEL:-$(pick_llm_fast_model)}"
+LLM_FAST_PID_FILE="$PID_DIR/llm-fast.pid"
+LLM_FAST_LOG="$LOG_DIR/llm-fast.log"
+LLM_FAST_PORT=9013
+# Cheap model is decode-bound on a few cores; reusing EMB_CPUSET keeps
+# the existing big.LITTLE topology map honest (chat on big, everything
+# else on little).
+LLM_FAST_CPUSET="${LLM_FAST_CPUSET:-$EMB_CPUSET}"
+
 # KV cache quantisation. f16 (default) is exact; q8_0 halves the bytes/token
 # in the K and V caches (from 80 KiB/tok to 40 KiB/tok on LFM2.5-24B), which
 # for our 32K*2-slot config drops KV memory from 5.0 GiB to 2.5 GiB. Quality
@@ -343,6 +380,10 @@ service_argv() {
     local svc_threads
     if [ "$mode" = embedding ]; then
         svc_threads="$EMB_THREADS"
+    elif [ "$mode" = "chat-fast" ]; then
+        # 350M is decode-bound on ~3 cores on the A520 LITTLE tier; no
+        # point opening 8 worker threads.
+        svc_threads="${LLM_FAST_THREADS:-3}"
     else
         svc_threads="$LLM_THREADS"
     fi
@@ -357,6 +398,13 @@ service_argv() {
             # in immediately. Per-slot cost is ~30 KiB KV cache for BGE-base-zh
             # so 8 slots is essentially free.
             echo "--model $model --host 0.0.0.0 --port $port --threads $svc_threads --pooling $EMBEDDING_POOLING --embeddings --parallel $EMBEDDING_PARALLEL"
+        elif [ "$mode" = "chat-fast" ]; then
+            # Fast-path chat. Smaller context (8K is plenty for short Q&A)
+            # and a single parallel slot since the 350M is decode-bound on
+            # 3-4 cores; an extra slot would just thrash the LITTLE caches.
+            # No -ctk/-ctv override: the 350M is small enough that f16
+            # KV costs ~6 MiB/slot, well under 1% of total memory.
+            echo "--model $model --host 0.0.0.0 --port $port --threads $svc_threads -c 8192 --parallel 1"
         else
             # --jinja is llama-server's default, and it is what makes the server
             # render the GGUF's own tokenizer.chat_template. Turning it off would
@@ -401,11 +449,15 @@ start_service() {
     # Pick the cpuset for this service. Pinning keeps the LLM out of the
     # embedding server's hot path and keeps chat latency from jittering when
     # the embedding's burst wakes idle worker threads on a different tier.
-    # Homogeneous machines leave one of these empty, which the guarded taskset
-    # below translates to "no pinning".
+    # The fast-path chat uses the embedding's cpuset (A520 LITTLE) by
+    # default so it does not fight the 24B on the big cores. Homogeneous
+    # machines leave one of these empty, which the guarded taskset below
+    # translates to "no pinning".
     local cpuset=""
     if [ "$mode" = embedding ]; then
         cpuset="$EMB_CPUSET"
+    elif [ "$mode" = "chat-fast" ]; then
+        cpuset="$LLM_FAST_CPUSET"
     else
         cpuset="$LLM_CPUSET"
     fi
@@ -646,6 +698,14 @@ case "${1:-}" in
         # search path. Starts only if the Vulkan-enabled build is present; on
         # cloud-only or CPU-only boxes this is a no-op.
         start_gpu_embedding || true
+        # Optional fast-path LLM. Brings up a small (350M-class) model on
+        # $LLM_FAST_PORT for per-turn `use_fast` requests. Skipped when
+        # the gguf is missing or LLM_FAST_ENABLED=false so a fresh
+        # checkout still works with just the 24B.
+        if [ "$LLM_FAST_ENABLED" = "true" ] && [ -n "$LLM_FAST_MODEL" ]; then
+            start_service "LLM-Fast" "$LLM_FAST_PID_FILE" "$LLM_FAST_LOG" \
+                "${LLM_FAST_BACKEND:-auto}" "$LLM_FAST_MODEL" "$LLM_FAST_PORT" chat-fast || true
+        fi
 
         echo ""
         echo "=== Services ==="
@@ -653,6 +713,9 @@ case "${1:-}" in
         echo "  Embedding (search):  http://127.0.0.1:$GPU_EMBEDDING_PORT/v1/embeddings"
         echo "  Chat API:            http://127.0.0.1:$LLM_PORT/v1/chat/completions"
         echo "  Models API:          http://127.0.0.1:$LLM_PORT/v1/models"
+        if [ "$LLM_FAST_ENABLED" = "true" ] && [ -n "$LLM_FAST_MODEL" ] && [ -f "$LLM_FAST_PID_FILE" ] && kill -0 "$(cat "$LLM_FAST_PID_FILE" 2>/dev/null)" 2>/dev/null; then
+            echo "  Chat API (fast):     http://127.0.0.1:$LLM_FAST_PORT/v1/chat/completions"
+        fi
         echo ""
         echo "Logs: $LOG_DIR/"
         ;;
@@ -664,10 +727,25 @@ case "${1:-}" in
         echo ""
         start_gpu_embedding
         ;;
+    start-fast)
+        # Bring up the fast-path LLM in isolation. Useful when the main
+        # stack is already running and the user just dropped the 350M
+        # gguf into the model dir.
+        if [ -z "$LLM_FAST_MODEL" ]; then
+            echo "error: no fast model under $SCRIPT_DIR/models/lfm25-350m-q4_0/." >&2
+            exit 1
+        fi
+        LLM_FAST_ENABLED=true start_service "LLM-Fast" "$LLM_FAST_PID_FILE" "$LLM_FAST_LOG" \
+            "${LLM_FAST_BACKEND:-auto}" "$LLM_FAST_MODEL" "$LLM_FAST_PORT" chat-fast
+        ;;
+    stop-fast)
+        stop_service "LLM-Fast" "$LLM_FAST_PID_FILE"
+        ;;
     stop)
         echo "=== Stopping LLM Services ==="
         stop_service "LLM" "$LLM_PID_FILE"
         stop_service "Embedding" "$EMBEDDING_PID_FILE"
+        stop_service "LLM-Fast" "$LLM_FAST_PID_FILE"
         stop_gpu_embedding
         ;;
     stop-gpu-embed)
@@ -677,6 +755,9 @@ case "${1:-}" in
         echo "=== LLM Services Status ==="
         status_service "Embedding" "$EMBEDDING_PID_FILE" "$EMBEDDING_PORT"
         status_service "LLM" "$LLM_PID_FILE" "$LLM_PORT"
+        if [ "$LLM_FAST_ENABLED" = "true" ] || [ -f "$LLM_FAST_PID_FILE" ]; then
+            status_service "LLM-Fast" "$LLM_FAST_PID_FILE" "$LLM_FAST_PORT"
+        fi
         echo ""
         show_backends
         ;;
@@ -684,6 +765,11 @@ case "${1:-}" in
         "$0" stop
         sleep 2
         "$0" start
+        ;;
+    restart-fast)
+        "$0" stop-fast || true
+        sleep 1
+        "$0" start-fast
         ;;
     help|--help|-h)
         echo "LLM Services - Manage embedding and chat API services"

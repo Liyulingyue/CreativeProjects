@@ -40,6 +40,18 @@ export function useChatSessions(sessionType: string = 'chat') {
     return session.id;
   }, [sessionType]);
 
+  // "New conversation" handler. The naive flow — POST /sessions the moment
+  // the user clicks the plus button — leaves an empty row in the DB for
+  // every abandoned draft and pollutes the sidebar with blanks. The chat
+  // send path already creates the session on the first message
+  // (`handleSendMessage` checks `if (!sessionId) sessionId = await
+  // createSession()`), so all "new" needs to do is clear the current
+  // selection. The empty state renders, the input keeps whatever the
+  // user has typed, and the DB row materialises on first send.
+  const startNewSession = useCallback(() => {
+    setCurrentSessionId(null);
+  }, []);
+
   const selectSession = useCallback((id: string) => {
     setCurrentSessionId(id);
     setSessions(prev => prev.map(s =>
@@ -85,7 +97,8 @@ export function useChatSessions(sessionType: string = 'chat') {
         total_ms: message.total_ms,
         tokens: message.tokens,
         tps: message.tps,
-      }
+      },
+      message.use_fast
     );
     setSessions(prev => prev.map(s => {
       if (s.id !== sessionId) return s;
@@ -107,6 +120,7 @@ export function useChatSessions(sessionType: string = 'chat') {
     currentSessionId,
     isLoading,
     createSession,
+    startNewSession,
     selectSession,
     deleteSession,
     updateSessionTitle,

@@ -57,7 +57,12 @@ function ChatWelcome({ onPick }: { onPick: (prompt: string) => void }) {
 }
 
 export function SimpleChat() {
-  const { sessions, currentSessionId, createSession, selectSession, deleteSession, addMessage } = useChatSessions('agent');
+  const { sessions, currentSessionId, createSession, startNewSession, selectSession, deleteSession, addMessage } = useChatSessions('agent');
+  // Per-turn fast-mode flag. The user toggles this next to the send
+  // button; the next message gets sent with use_fast=true. Sticky
+  // across turns: only reset on `startNewSession` / page reload, so
+  // a "fast" Q&A session stays on fast until the user flips it back.
+  const [useFast, setUseFast] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [streamingText, setStreamingText] = useState('');
   const reasoningRef = useRef('');
@@ -117,6 +122,11 @@ export function SimpleChat() {
     let turnPerf: { ttft_ms: number; total_ms: number; tokens: number; tps: number } = {
       ttft_ms: 0, total_ms: 0, tokens: 0, tps: 0,
     };
+    // Mirror the per-turn use_fast into the persisted message so the
+    // bubble's "⚡快" badge survives re-opening the session. The server
+    // echoes the actual decision (it can downgrade to smart if a tool
+    // got called) and we read that on the "done" event below.
+    let usedFast = useFast;
     // Client-side anchors for the live header. Used only when the server
     // doesn't emit the perf fields (e.g. legacy build) — and to measure
     // TTFT for the streaming bubble the moment the first text delta
@@ -190,11 +200,17 @@ export function SimpleChat() {
           } else if (event.type === 'done') {
             plans = event.plans || [];
             reply = event.response || reply;
+            // The server may downgrade a fast-mode request to smart when a
+            // tool call is required; mirror the actual decision so the
+            // streaming bubble's badge matches the persisted message.
+            const ev = event as unknown as { use_fast?: boolean; ttft_ms?: number; total_ms?: number; tokens?: number; tps?: number };
+            if (typeof ev.use_fast === 'boolean') {
+              usedFast = ev.use_fast;
+            }
             // The server emits the authoritative perf numbers in the
             // "done" event. Mirror them into both turnPerf (used when
             // persisting the assistant message) and livePerf (kept
             // visible until the persisted bubble takes its place).
-            const ev = event as unknown as Partial<typeof turnPerf> & { ttft_ms?: number; total_ms?: number; tokens?: number; tps?: number };
             if (typeof ev.ttft_ms === 'number') {
               turnPerf = {
                 ttft_ms: ev.ttft_ms,
@@ -219,7 +235,8 @@ export function SimpleChat() {
             streamError = event.message;
           }
         },
-        controller.signal
+        controller.signal,
+        { useFast: useFast }
       );
     } catch (e) {
       // An abort is a deliberate stop, not a failure — keep what arrived.
@@ -259,6 +276,11 @@ export function SimpleChat() {
       total_ms: turnPerf.total_ms,
       tokens: turnPerf.tokens,
       tps: turnPerf.tps,
+      // The server's authoritative answer may have downgraded us to
+      // smart if a tool got called. Persist whatever the server
+      // decided, not what the user asked for, so the badge stays
+      // honest when the user reopens the session.
+      use_fast: usedFast,
     });
     setStreamingText('');
     // Drop the live header once the persisted bubble (which carries the
@@ -269,13 +291,21 @@ export function SimpleChat() {
   // keeps the ref pointing at the latest closure without re-rendering
   sendRef.current = handleSendMessage;
 
+  // "New conversation" wrapper. Resets the fast-mode toggle so a new
+  // session starts at the 24B default; the user can re-tap the pill to
+  // opt into fast for the whole Q&A session if they want.
+  const handleNewSession = () => {
+    startNewSession();
+    setUseFast(false);
+  };
+
   return (
     <div className="h-full">
       <ChatLayout
         sessions={sessions}
         currentSessionId={currentSessionId}
         onSelectSession={selectSession}
-        onNewSession={createSession}
+        onNewSession={handleNewSession}
         onDeleteSession={deleteSession}
         onSendMessage={handleSendMessage}
         isLoading={isLoading}
@@ -283,6 +313,8 @@ export function SimpleChat() {
         toolActivity={toolActivity}
         currentStep={currentStep}
         livePerf={livePerf ?? undefined}
+        useFast={useFast}
+        onToggleFast={() => setUseFast(v => !v)}
         onStop={handleStop}
         emptyState={<ChatWelcome onPick={(p) => sendRef.current?.(p)} />}
       />

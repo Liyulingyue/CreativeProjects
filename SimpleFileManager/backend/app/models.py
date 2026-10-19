@@ -70,6 +70,21 @@ class AppSettings(BaseModel):
     search_api_key: str = ""
     search_base_url: str = ""
     search_model: str = ""
+    # Optional fast-path LLM. When the user toggles "fast" on a chat
+    # turn, /api/agent/chat/stream reads LLM_FAST_BASE_URL and routes that
+    # single turn to the smaller model. Defaults to the 350M llama-server
+    # on 9013 that LLMServices/serve.sh brings up. The fields are kept
+    # blank by default so a cloud-only deployment stays working without
+    # the optional service.
+    llm_fast_api_key: str = ""
+    llm_fast_base_url: str = "http://127.0.0.1:9013/v1"
+    # Default matches the GGUF that LLMServices/serve.sh auto-loads on
+    # 9013 (see pick_llm_fast_model there). Keeping the basename
+    # rather than the absolute path so the same default works for
+    # local dev, remote deploys, and docker — the OpenAI client sends
+    # this verbatim and llama-server matches by file basename. Override
+    # here if you point the fast service at a different GGUF.
+    llm_fast_model: str = "LFM2.5-350M-Q4_0.gguf"
     index_interval: int = 300
     auto_index_enabled: bool = True
     index_debounce_seconds: int = 10
@@ -136,6 +151,10 @@ class ChatMessage(BaseModel):
     total_ms: int = 0         # request start -> "done" event
     tokens: int = 0           # streamed tokens for the assistant turn
     tps: float = 0.0          # tokens / (total - ttft) over the decode phase
+    # True when the assistant reply came from the fast-path LLM (350M
+    # instead of 24B). The chat UI renders a "⚡快" badge when this is
+    # set. Defaults to False for legacy rows and for all user messages.
+    use_fast: bool = False
 
 
 class ChatSession(BaseModel):
@@ -169,6 +188,10 @@ class AddMessageRequest(BaseModel):
     total_ms: int = 0
     tokens: int = 0
     tps: float = 0.0
+    # True when the assistant message was produced by the fast-path LLM.
+    # The frontend always sends this; older clients may omit it, in
+    # which case Pydantic defaults to False.
+    use_fast: bool = False
 
 
 class UpdateTitleRequest(BaseModel):

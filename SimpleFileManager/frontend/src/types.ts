@@ -52,6 +52,21 @@ export interface AppSettings {
   max_context_tokens: number;
   max_output_tokens: number;
   digest_max_tokens: number;
+  /**
+   * Toggles LFM2.5-A2B's thinking/scratchpad mode. LFM does not honour
+   * request-level thinking-off, so flipping this causes the backend to
+   * write THINKING_ENABLED to .env and call `serve.sh restart`. The chat
+   * UI does not need to do anything special — when the restarted server
+   * stops emitting reasoning_content, the activity panel naturally
+   * collapses to tool traces only.
+   */
+  thinking_enabled: boolean;
+  /** Fast-path LLM (e.g. LFM2.5-350M on 9013). Optional; falls back to
+   *  the main LLM base URL when unset so cloud-only deployments keep
+   *  working. */
+  llm_fast_base_url: string;
+  llm_fast_model: string;
+  llm_fast_api_key: string;
 }
 
 export interface AutoIndexStatus {
