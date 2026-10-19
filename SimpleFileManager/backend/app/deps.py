@@ -997,9 +997,12 @@ def _get_default_settings() -> AppSettings:
         embedding_dim_str = str(_detect_embedding_dim(embedding_model, embedding_api_key, embedding_base_url))
 
     return AppSettings(
-        llm_api_key=os.getenv("LLM_API_KEY", ""),
-        llm_base_url=os.getenv("LLM_BASE_URL", "https://api.minimaxi.com/v1"),
-        llm_model=os.getenv("LLM_MODEL", "gpt-4o-mini"),
+        # LLM credentials live in the providers table now (see
+        # _seed_providers_from_settings for the one-time backfill
+        # from these env vars). The legacy LLM_* vars are still read
+        # by the seeder, so leave them in .env — the seeder only
+        # fires when the providers table is empty, and existing
+        # deployments upgrade in place.
         embedding_api_key=embedding_api_key,
         embedding_base_url=embedding_base_url,
         embedding_model=embedding_model,

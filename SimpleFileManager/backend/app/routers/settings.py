@@ -11,17 +11,20 @@ settings = APIRouter()
 @settings.get("")
 def get_settings() -> AppSettings:
     s = state.get_settings()
-    s.llm_api_key = "***" if s.llm_api_key else ""
+    # LLM credentials live in the providers table now; only the
+    # embedding/search API keys are still here, and they need the
+    # usual "***" mask so the saved value never goes over the wire.
     s.embedding_api_key = "***" if s.embedding_api_key else ""
+    s.search_api_key = "***" if s.search_api_key else ""
     return s
 
 
 @settings.post("")
 def update_settings(updates: dict) -> AppSettings:
-    if "llm_api_key" in updates and updates["llm_api_key"] == "***":
-        updates.pop("llm_api_key")
     if "embedding_api_key" in updates and updates["embedding_api_key"] == "***":
         updates.pop("embedding_api_key")
+    if "search_api_key" in updates and updates["search_api_key"] == "***":
+        updates.pop("search_api_key")
     return state.update_settings(updates)
 
 

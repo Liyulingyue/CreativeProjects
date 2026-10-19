@@ -1,8 +1,9 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { streamAgentMessage } from '../api';
 import type { AgentPlan } from '../types';
 import { useChatSessions } from '../hooks/useChatSessions';
+import { useProviders } from '../hooks/useProviders';
 import { ChatLayout } from './ui/ChatLayout';
 import { Icon } from './ui/Icon';
 
@@ -58,11 +59,14 @@ function ChatWelcome({ onPick }: { onPick: (prompt: string) => void }) {
 
 export function SimpleChat() {
   const { sessions, currentSessionId, createSession, startNewSession, selectSession, deleteSession, addMessage } = useChatSessions('agent');
-  // Per-turn fast-mode flag. The user toggles this next to the send
-  // button; the next message gets sent with use_fast=true. Sticky
-  // across turns: only reset on `startNewSession` / page reload, so
-  // a "fast" Q&A session stays on fast until the user flips it back.
-  const [useFast, setUseFast] = useState(false);
+  const providersApi = useProviders();
+  // Per-turn provider override. The chat UI shows a dropdown next to
+  // the send button; whatever the user picks goes out on the next
+  // message as req.provider_id. After the server resolves it, the
+  // session's provider_id is updated to the same value, so the next
+  // turn defaults to the user's pick even without the override.
+  // Switching back to the dropdown's "main" clears the override.
+  const [providerId, setProviderId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [streamingText, setStreamingText] = useState('');
   const reasoningRef = useRef('');
@@ -76,6 +80,10 @@ export function SimpleChat() {
   // get filled in as the SSE events arrive. Cleared on turn end so the
   // streaming bubble re-uses the same renderer without flicker.
   const [livePerf, setLivePerf] = useState<{ clockMs: number; ttft_ms?: number; total_ms?: number; tokens?: number; tps?: number } | null>(null);
+  // Provider name that the running turn actually went through, so
+  // the live perf header can show "via <name>" before the bubble
+  // gets persisted. Cleared on turn end like livePerf.
+  const [liveProviderName, setLiveProviderName] = useState<string | undefined>(undefined);
   const abortRef = useRef<AbortController | null>(null);
   const sendRef = useRef<((content: string) => Promise<void>) | null>(null);
 
@@ -122,11 +130,15 @@ export function SimpleChat() {
     let turnPerf: { ttft_ms: number; total_ms: number; tokens: number; tps: number } = {
       ttft_ms: 0, total_ms: 0, tokens: 0, tps: 0,
     };
-    // Mirror the per-turn use_fast into the persisted message so the
-    // bubble's "⚡快" badge survives re-opening the session. The server
-    // echoes the actual decision (it can downgrade to smart if a tool
-    // got called) and we read that on the "done" event below.
-    let usedFast = useFast;
+    // The server is the source of truth for which provider actually
+    // served the reply. We capture it from the SSE `done` event and
+    // mirror it into the persisted message so the bubble's
+    // "via <name>" badge survives a reload.
+    let servedProviderId: string | null = providerId;
+    // Stash the name on the component so the live perf header can
+    // render "via <name>" as soon as the SSE `done` lands, before
+    // the persisted bubble takes over. Cleared on turn end.
+    setLiveProviderName(undefined);
     // Client-side anchors for the live header. Used only when the server
     // doesn't emit the perf fields (e.g. legacy build) — and to measure
     // TTFT for the streaming bubble the moment the first text delta
@@ -200,23 +212,22 @@ export function SimpleChat() {
           } else if (event.type === 'done') {
             plans = event.plans || [];
             reply = event.response || reply;
-            // The server may downgrade a fast-mode request to smart when a
-            // tool call is required; mirror the actual decision so the
-            // streaming bubble's badge matches the persisted message.
-            const ev = event as unknown as { use_fast?: boolean; ttft_ms?: number; total_ms?: number; tokens?: number; tps?: number };
-            if (typeof ev.use_fast === 'boolean') {
-              usedFast = ev.use_fast;
+            // Server echoes the resolved provider. Capture for the
+            // persisted bubble and for the session-row update below.
+            if (event.provider_id) servedProviderId = event.provider_id;
+            if (event.provider_name) {
+              setLiveProviderName(event.provider_name);
             }
             // The server emits the authoritative perf numbers in the
             // "done" event. Mirror them into both turnPerf (used when
             // persisting the assistant message) and livePerf (kept
             // visible until the persisted bubble takes its place).
-            if (typeof ev.ttft_ms === 'number') {
+            if (typeof event.ttft_ms === 'number') {
               turnPerf = {
-                ttft_ms: ev.ttft_ms,
-                total_ms: ev.total_ms ?? 0,
-                tokens: ev.tokens ?? 0,
-                tps: ev.tps ?? 0,
+                ttft_ms: event.ttft_ms,
+                total_ms: event.total_ms ?? 0,
+                tokens: event.tokens ?? 0,
+                tps: event.tps ?? 0,
               };
               setLivePerf(prev => prev ? {
                 ...prev,
@@ -236,7 +247,7 @@ export function SimpleChat() {
           }
         },
         controller.signal,
-        { useFast: useFast }
+        { providerId: providerId }
       );
     } catch (e) {
       // An abort is a deliberate stop, not a failure — keep what arrived.
@@ -276,28 +287,55 @@ export function SimpleChat() {
       total_ms: turnPerf.total_ms,
       tokens: turnPerf.tokens,
       tps: turnPerf.tps,
-      // The server's authoritative answer may have downgraded us to
-      // smart if a tool got called. Persist whatever the server
-      // decided, not what the user asked for, so the badge stays
-      // honest when the user reopens the session.
-      use_fast: usedFast,
+      // The server is the source of truth for which provider
+      // actually served the reply; the bubble looks the name up
+      // from the providers list and renders "via <name>".
+      provider_id: servedProviderId,
     });
     setStreamingText('');
     // Drop the live header once the persisted bubble (which carries the
     // same numbers via the message's perf fields) takes its place.
     setLivePerf(null);
+    setLiveProviderName(undefined);
+    // Refresh sessions so the new assistant message appears in the
+    // sidebar with the resolved provider_id — without this the row
+    // would still show the previous (pre-override) state until the
+    // user clicks away and back.
+    await providersApi.refresh();
   };
 
   // keeps the ref pointing at the latest closure without re-rendering
   sendRef.current = handleSendMessage;
 
-  // "New conversation" wrapper. Resets the fast-mode toggle so a new
-  // session starts at the 24B default; the user can re-tap the pill to
-  // opt into fast for the whole Q&A session if they want.
+  // "New conversation" wrapper. The new session's default provider is
+  // already set to the main on the server; sync the dropdown to match
+  // so the user sees what the session will actually use.
   const handleNewSession = () => {
     startNewSession();
-    setUseFast(false);
+    setProviderId(null);
   };
+
+  // When the user clicks an existing session, sync the dropdown to
+  // whatever the session was last used with. Sessions created before
+  // the providers refactor have provider_id=null, in which case we
+  // show the dropdown's neutral "main" placeholder.
+  useEffect(() => {
+    if (!currentSessionId) {
+      setProviderId(null);
+      return;
+    }
+    const session = sessions.find(s => s.id === currentSessionId);
+    setProviderId(session?.provider_id ?? null);
+  }, [currentSessionId, sessions]);
+
+  // If the providers list finishes loading and the dropdown is still
+  // sitting on its initial null, snap it to the main so the user
+  // sees the actual model name on the empty state.
+  useEffect(() => {
+    if (providerId === null && providersApi.main && !currentSessionId) {
+      setProviderId(providersApi.main.id);
+    }
+  }, [providerId, providersApi.main, currentSessionId]);
 
   return (
     <div className="h-full">
@@ -313,8 +351,10 @@ export function SimpleChat() {
         toolActivity={toolActivity}
         currentStep={currentStep}
         livePerf={livePerf ?? undefined}
-        useFast={useFast}
-        onToggleFast={() => setUseFast(v => !v)}
+        liveProviderName={liveProviderName}
+        providers={providersApi.providers}
+        providerId={providerId}
+        onProviderChange={setProviderId}
         onStop={handleStop}
         emptyState={<ChatWelcome onPick={(p) => sendRef.current?.(p)} />}
       />

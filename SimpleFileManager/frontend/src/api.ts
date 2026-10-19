@@ -1,4 +1,4 @@
-import type { AgentPlan, AppSettings, AutoIndexStatus, PlanActionType } from './types';
+import type { AgentPlan, AppSettings, AutoIndexStatus, LLMProvider, LLMProviderCreate, LLMProviderUpdate, PlanActionType } from './types';
 import { authFetch, getToken as getAuthToken } from './auth';
 
 const API_BASE = '/api';
@@ -141,9 +141,14 @@ export interface ChatMessage {
   total_ms?: number;
   tokens?: number;
   tps?: number;
-  /** True when this assistant message was produced by the fast-path LLM
-   *  (e.g. LFM2.5-350M on 9013). The bubble renders a "⚡快" badge so the
-   *  user can tell at a glance which model served the reply. */
+  /** Which provider actually served this assistant reply. Resolved
+   *  server-side from the request override or the session default;
+   *  the chat UI looks the provider up to render the "via <name>"
+   *  badge. Empty for user messages. */
+  provider_id?: string | null;
+  /** Legacy field kept around so old rows (saved before the providers
+   *  refactor) still parse. New writes never set it; the chat UI no
+   *  longer reads it. */
   use_fast?: boolean;
 }
 
@@ -153,6 +158,12 @@ export interface ChatSession {
   messages: ChatMessage[];
   updated_at: number;
   session_type: string;
+  /** Default provider for this session. Set on session create from
+   *  the main provider, then mutable from the chat UI — picking a
+   *  different provider in the dropdown updates this and all
+   *  subsequent messages in the session go through it. The agent
+   *  endpoint reads this when the request does not override. */
+  provider_id?: string | null;
 }
 
 export interface ChatHistoryResponse {
@@ -198,7 +209,7 @@ export async function addChatMessage(
   reasoning?: string,
   activity?: unknown[],
   perf?: { ttft_ms?: number; total_ms?: number; tokens?: number; tps?: number },
-  useFast?: boolean
+  providerId?: string | null
 ): Promise<ChatMessage> {
   const res = await authFetch(`${API_BASE}/chat_history/messages`, {
     method: 'POST',
@@ -207,10 +218,10 @@ export async function addChatMessage(
       session_id: sessionId, role, content,
       sources, reasoning: reasoning ?? '', activity: activity ?? [],
       ...(perf ?? {}),
-      // Persist which model served the reply. The chat bubble reads this
-      // to render the "快" / "智" badge so the user can tell fast and
-      // smart turns apart at a glance, including after a reload.
-      use_fast: useFast ?? false,
+      // Persist which provider served the reply. The chat bubble reads
+      // this to render the "via <name>" badge so the user can tell at a
+      // glance which model served the reply, including after a reload.
+      provider_id: providerId ?? null,
     }),
   });
   if (!res.ok) throw new Error('Failed to add chat message');
@@ -284,16 +295,71 @@ export async function getAgentTools(): Promise<{
   return res.json();
 }
 
+// ---- LLM providers ----
+
+export async function listProviders(): Promise<LLMProvider[]> {
+  const res = await authFetch(`${API_BASE}/providers`);
+  if (!res.ok) throw new Error('Failed to fetch providers');
+  return res.json();
+}
+
+export async function createProvider(input: LLMProviderCreate): Promise<LLMProvider> {
+  const res = await authFetch(`${API_BASE}/providers`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    let detail = 'Failed to create provider';
+    try { const body = await res.json(); if (typeof body?.detail === 'string') detail = body.detail; } catch { /* keep default */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+export async function updateProvider(id: string, patch: LLMProviderUpdate): Promise<LLMProvider> {
+  const res = await authFetch(`${API_BASE}/providers/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    let detail = 'Failed to update provider';
+    try { const body = await res.json(); if (typeof body?.detail === 'string') detail = body.detail; } catch { /* keep default */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+export async function deleteProvider(id: string): Promise<void> {
+  const res = await authFetch(`${API_BASE}/providers/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    let detail = 'Failed to delete provider';
+    try { const body = await res.json(); if (typeof body?.detail === 'string') detail = body.detail; } catch { /* keep default */ }
+    throw new Error(detail);
+  }
+}
+
+export async function setMainProvider(id: string): Promise<LLMProvider> {
+  const res = await authFetch(`${API_BASE}/providers/${id}/set_main`, { method: 'POST' });
+  if (!res.ok) {
+    let detail = 'Failed to set main';
+    try { const body = await res.json(); if (typeof body?.detail === 'string') detail = body.detail; } catch { /* keep default */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
 // ---- Agent streaming (SSE) ----
 
 export type AgentStreamEvent =
-  | { type: 'meta'; steps_max: number }
+  | { type: 'meta'; steps_max: number; provider_id?: string; provider_name?: string }
   | { type: 'step'; step: number; of: number }
   | { type: 'reasoning'; text: string }
   | { type: 'token'; text: string }
   | { type: 'tool_start'; tool: string; args?: Record<string, unknown> }
   | { type: 'tool'; tool: string; args?: Record<string, unknown>; result: unknown }
-  | { type: 'done'; response: string; reasoning?: string; plans: AgentPlan[]; steps_used: number }
+  | { type: 'done'; response: string; reasoning?: string; plans: AgentPlan[]; steps_used: number; ttft_ms?: number; total_ms?: number; tokens?: number; tps?: number; provider_id?: string; provider_name?: string }
   | { type: 'error'; message: string };
 
 export interface AgentToolParam {
@@ -318,7 +384,7 @@ export async function streamAgentMessage(
   sessionId: string | undefined,
   onEvent: (event: AgentStreamEvent) => void,
   signal?: AbortSignal,
-  options?: { useFast?: boolean }
+  options?: { providerId?: string | null }
 ): Promise<void> {
   const res = await authFetch(`${API_BASE}/agent/chat/stream`, {
     method: 'POST',
@@ -326,10 +392,10 @@ export async function streamAgentMessage(
     body: JSON.stringify({
       message,
       session_id: sessionId,
-      // Per-turn fast mode: routes the LLM call to the small (350M) server
-      // on 9013 instead of the 24B on 9010. The server ignores it if a
-      // tool gets called (tool-required turns always stay on 24B).
-      use_fast: options?.useFast ?? false,
+      // Per-turn provider override. Resolution precedence on the
+      // server: this id > session.provider_id > main. A stale or
+      // unknown id falls through silently rather than 400-ing.
+      provider_id: options?.providerId ?? null,
     }),
     signal,
   });

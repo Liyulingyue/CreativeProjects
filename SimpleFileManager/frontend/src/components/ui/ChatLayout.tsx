@@ -5,6 +5,7 @@ import { MarkdownText } from './MarkdownText';
 // Reuse the api layer's types. They were duplicated here, which let the two
 // definitions drift apart silently until the session prop stopped type-checking.
 import type { ChatMessage, ChatSession } from '../../api';
+import type { LLMProvider } from '../../types';
 
 export type { ChatMessage, ChatSession };
 
@@ -129,14 +130,20 @@ interface ChatLayoutProps {
    *  / tokens / tps fill in as SSE events arrive. The persisted bubble
    *  reads the same numbers from the message's perf fields. */
   livePerf?: { clockMs: number; ttft_ms?: number; total_ms?: number; tokens?: number; tps?: number };
-  /**
-   * Per-turn "fast" toggle. When true, the next message gets routed to
-   * the small (350M) LLM service instead of the main 24B; the toggle
-   * auto-resets after each send so a stray tap doesn't accidentally
-   * shrink every subsequent reply.
-   */
-  useFast?: boolean;
-  onToggleFast?: () => void;
+  /** Resolved provider name for the running turn, surfaced from the
+   *  SSE `done` event. Rendered in the live header so the user sees
+   *  "via <name>" as soon as the model picks one, without waiting
+   *  for the persisted bubble to take over. */
+  liveProviderName?: string;
+  /** All configured LLM providers. Drives the per-turn dropdown next
+   *  to the send button. */
+  providers?: LLMProvider[];
+  /** Currently-selected provider for the next turn. `null` means
+   *  "session default" (which itself falls back to the main on the
+   *  server). The dropdown renders the provider name; the server
+   *  resolves the actual id. */
+  providerId?: string | null;
+  onProviderChange?: (id: string | null) => void;
   /** Text received so far for the in-flight assistant reply. */
   streamingText?: string;
   /** Live scratchpad from the model's reasoning channel, shown collapsed. */
@@ -181,11 +188,11 @@ function formatClock(timestamp: number): string {
 function PerfHeader({
   clockMs,
   perf,
-  useFast,
+  providerName,
 }: {
   clockMs: number;
   perf?: { ttft_ms?: number; total_ms?: number; tokens?: number; tps?: number };
-  useFast?: boolean;
+  providerName?: string;
 }) {
   const ttft = perf?.ttft_ms ?? 0;
   const total = perf?.total_ms ?? 0;
@@ -203,12 +210,10 @@ function PerfHeader({
       {tokens > 0 && <span>{tokens} tok</span>}
       {tps > 0 && <span>{tps.toFixed(1)} tok/s</span>}
       {!hasPerf && <span className="opacity-60">测量中…</span>}
-      {/* Fast-mode marker. Rendered as plain text in the same line as
-          the other stats so a narrow bubble does not split ⚡ and 快
-          onto two lines (the previous "pill" wrapping did that). The
-          amber color still tells the user at a glance that the reply
-          came from the 350M instead of the 24B. */}
-      {useFast && <span className="text-amber-700" title="由 350M 快模型生成">⚡快</span>}
+      {/* Provider badge. Renders as "via <name>" so the user can tell
+          at a glance which model served the reply, and so a re-opened
+          session shows the same model that produced it. */}
+      {providerName && <span className="text-slate-500" title="由该 provider 生成">via {providerName}</span>}
     </div>
   );
 }
@@ -308,12 +313,22 @@ function ToolTraceLine({ activity }: { activity: ToolActivity }) {
 export function ChatLayout({
   sessions, currentSessionId, onSelectSession, onNewSession,
   onDeleteSession, onSendMessage, isLoading, streamingText, toolActivity,
-  currentStep, livePerf, useFast, onToggleFast, onStop, emptyState, renderMessage,
+  currentStep, livePerf, liveProviderName, providers, providerId,
+  onProviderChange, onStop, emptyState, renderMessage,
 }: ChatLayoutProps) {
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const currentSession = sessions.find(s => s.id === currentSessionId);
+
+  // Look up a provider name by id. Used by the persisted bubble to
+  // render "via <name>". Unknown id (legacy rows, deleted providers)
+  // falls back to null so the badge is hidden rather than showing a
+  // stale name.
+  const providerNameFor = (id: string | null | undefined): string | undefined => {
+    if (!id || !providers) return undefined;
+    return providers.find(p => p.id === id)?.name;
+  };
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [currentSession?.messages]);
   // streamingText changes on every token and the message list is unchanged
@@ -429,7 +444,17 @@ export function ChatLayout({
                         tokens: msg.tokens,
                         tps: msg.tps,
                       }}
-                      useFast={msg.use_fast}
+                      // Persisted rows store the resolved provider id;
+                      // look the name up in the dropdown list. Legacy
+                      // rows from before the providers refactor only
+                      // have use_fast=true — show the old "⚡快" badge
+                      // for those so the visual continuity is preserved
+                      // until the user scrolls them out of view.
+                      providerName={
+                        msg.provider_id
+                          ? providerNameFor(msg.provider_id)
+                          : (msg.use_fast ? '350M' : undefined)
+                      }
                     />
                   )}
                   {msg.activity && msg.activity.length > 0 && (
@@ -481,6 +506,7 @@ export function ChatLayout({
                       tokens: livePerf.tokens,
                       tps: livePerf.tps,
                     }}
+                    providerName={liveProviderName}
                   />
                 )}
                 {/* Tool calls sit above the text they produced, so the trace
@@ -527,26 +553,25 @@ export function ChatLayout({
               className="flex-1 min-w-0 px-3 py-2 rounded-lg border border-slate-200 text-base sm:text-sm resize-none focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 transition-all"
               style={{ maxHeight: '150px' }}
             />
-            {/* Fast/smart pill. Disabled while a request is in flight so
-                the next-turn state can't change mid-stream, and hidden
+            {/* Provider dropdown. Lists every configured LLM and
+                sends the chosen one with the next request. Hidden
                 entirely when the parent doesn't expose it (other
-                callers of ChatLayout that don't want the toggle). */}
-            {onToggleFast && (
-              <button
-                type="button"
-                onClick={onToggleFast}
+                callers of ChatLayout that don't want provider
+                selection). The first option "main" resolves server-
+                side to the singleton is_main=1 row. */}
+            {onProviderChange && providers !== undefined && (
+              <select
+                value={providerId ?? '__main__'}
+                onChange={e => onProviderChange(e.target.value === '__main__' ? null : e.target.value)}
                 disabled={isLoading}
-                title={useFast ? '快：下一条消息走 350M' : '智：24B，思考+工具'}
-                aria-pressed={!!useFast}
-                className={`flex items-center gap-1 px-2.5 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-40 ${
-                  useFast
-                    ? 'bg-amber-100 text-amber-800 border border-amber-200 hover:bg-amber-200'
-                    : 'bg-slate-100 text-slate-600 border border-transparent hover:bg-slate-200'
-                }`}
+                title="下一条消息使用的 LLM；选 main 跟随系统默认"
+                className="px-2 py-2 rounded-lg border border-slate-200 bg-white text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 disabled:opacity-40 max-w-[140px] truncate"
               >
-                <Icon name={useFast ? 'zap' : 'bot'} size={14} />
-                {useFast ? '快' : '智'}
-              </button>
+                <option value="__main__">main (默认)</option>
+                {providers.filter(p => !p.is_main).map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
             )}
             {isLoading && onStop ? (
               <button

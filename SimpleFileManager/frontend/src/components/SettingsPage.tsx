@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { fetchSettings, updateSettings, testConnections } from '../api';
+import { fetchSettings, updateSettings, testConnections, createProvider as apiCreateProvider } from '../api';
 import { changePassword, checkAuthStatus } from '../auth';
 import { useToast } from './ui/Toast';
 import { Icon } from './ui/Icon';
-import type { AppSettings } from '../types';
+import type { AppSettings, LLMProvider, LLMProviderCreate, LLMProviderUpdate } from '../types';
+import { useProviders } from '../hooks/useProviders';
 
 interface ProbeResult { ok: boolean; detail?: string; latency_ms?: number; }
 
@@ -74,6 +75,162 @@ function ProbeBadge({ result }: { result: ProbeResult }) {
 
 const inputClass = 'w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 transition-all';
 
+/**
+ * Inline editor for one provider row. Keeps its own draft so the user
+ * can cancel mid-edit without polluting the list state. The "Set as
+ * main" / "Delete" actions live on the row outside the form so the
+ * user can always reach them, even while editing.
+ */
+function ProviderRow({
+  provider, isFirst, onSave, onDelete, onSetMain, canDelete,
+}: {
+  provider: LLMProvider;
+  isFirst: boolean;
+  onSave: (patch: LLMProviderUpdate) => Promise<void>;
+  onDelete: () => Promise<void>;
+  onSetMain: () => Promise<void>;
+  canDelete: boolean;
+}) {
+  const { toast } = useToast();
+  // `isFirst` is a hint that the row should auto-enter edit mode
+  // (used when the user lands on a fresh "add provider" flow that
+  // would otherwise leave an empty row idle). TS can't narrow
+  // `isFirst && false` to a usable state type, so widen explicitly.
+  const [editing, setEditing] = useState<boolean>(!!isFirst);
+  const [draft, setDraft] = useState({
+    name: provider.name,
+    base_url: provider.base_url,
+    model: provider.model,
+    api_key: provider.api_key,
+  });
+  const [busy, setBusy] = useState(false);
+
+  const handleSave = async () => {
+    if (!draft.name.trim() || !draft.base_url.trim() || !draft.model.trim()) {
+      toast('名称 / Base URL / 模型名称 不能为空', 'error');
+      return;
+    }
+    setBusy(true);
+    try {
+      await onSave({
+        name: draft.name.trim(),
+        base_url: draft.base_url.trim(),
+        model: draft.model.trim(),
+        api_key: draft.api_key,
+      });
+      setEditing(false);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : '保存失败', 'error');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className={`rounded-lg border ${provider.is_main ? 'border-indigo-300 bg-indigo-50/30' : 'border-slate-200 bg-white'} p-3`}>
+      {editing ? (
+        <div className="space-y-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <input className={inputClass} placeholder="名称（仅显示用）" value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} />
+            <input className={inputClass} placeholder="模型名称" value={draft.model} onChange={e => setDraft({ ...draft, model: e.target.value })} />
+          </div>
+          <input className={inputClass} placeholder="Base URL（OpenAI 兼容）" value={draft.base_url} onChange={e => setDraft({ ...draft, base_url: e.target.value })} />
+          <input type="password" className={inputClass} placeholder="API Key（本地可留空）" value={draft.api_key} onChange={e => setDraft({ ...draft, api_key: e.target.value })} />
+          <div className="flex items-center gap-2">
+            <button onClick={handleSave} disabled={busy}
+              className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-700 disabled:opacity-40 transition-colors">
+              {busy ? '保存中...' : '保存'}
+            </button>
+            <button onClick={() => { setEditing(false); setDraft({ name: provider.name, base_url: provider.base_url, model: provider.model, api_key: provider.api_key }); }}
+              className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 text-xs font-medium hover:bg-slate-200 transition-colors">
+              取消
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-start gap-3">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="font-medium text-sm text-slate-800 truncate">{provider.name}</span>
+              {provider.is_main && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 font-medium flex-shrink-0">MAIN</span>
+              )}
+            </div>
+            <div className="text-xs text-slate-500 font-mono truncate mt-0.5">{provider.model}</div>
+            <div className="text-[11px] text-slate-400 font-mono truncate mt-0.5">{provider.base_url}</div>
+          </div>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            {!provider.is_main && (
+              <button onClick={async () => { try { await onSetMain(); toast(`已将 ${provider.name} 设为 main`, 'success'); } catch (e) { toast(e instanceof Error ? e.message : '操作失败', 'error'); } }}
+                className="px-2 py-1 rounded text-xs text-indigo-600 hover:bg-indigo-50 transition-colors">
+                设为 main
+              </button>
+            )}
+            <button onClick={() => setEditing(true)} className="px-2 py-1 rounded text-xs text-slate-600 hover:bg-slate-100 transition-colors">
+              编辑
+            </button>
+            <button
+              onClick={async () => {
+                if (!canDelete) {
+                  toast('这是唯一的 provider，不能删除', 'error');
+                  return;
+                }
+                if (!window.confirm(`删除 provider "${provider.name}"?关联的会话会回退到 main。`)) return;
+                try { await onDelete(); toast('已删除', 'success'); } catch (e) { toast(e instanceof Error ? e.message : '删除失败', 'error'); }
+              }}
+              disabled={!canDelete}
+              className="px-2 py-1 rounded text-xs text-red-500 hover:bg-red-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              title={canDelete ? '删除' : '唯一的 provider 不能删除'}
+            >
+              删除
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AddProviderForm({ onAdded, onCancel }: { onAdded: (p: LLMProvider) => void; onCancel: () => void }) {
+  const { toast } = useToast();
+  const [draft, setDraft] = useState<LLMProviderCreate>({ name: '', base_url: '', model: '', api_key: '' });
+  const [busy, setBusy] = useState(false);
+
+  const handleAdd = async () => {
+    if (!draft.name.trim() || !draft.base_url.trim() || !draft.model.trim()) {
+      toast('名称 / Base URL / 模型名称 不能为空', 'error');
+      return;
+    }
+    setBusy(true);
+    try {
+      const created = await apiCreateProvider({
+        name: draft.name.trim(), base_url: draft.base_url.trim(), model: draft.model.trim(), api_key: draft.api_key,
+      });
+      onAdded(created);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : '创建失败', 'error');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50/50 p-3 space-y-2">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <input className={inputClass} placeholder="名称（仅显示用，如 Main / 350M）" value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} autoFocus />
+        <input className={inputClass} placeholder="模型名称" value={draft.model} onChange={e => setDraft({ ...draft, model: e.target.value })} />
+      </div>
+      <input className={inputClass} placeholder="Base URL（OpenAI 兼容，如 http://127.0.0.1:9010/v1）" value={draft.base_url} onChange={e => setDraft({ ...draft, base_url: e.target.value })} />
+      <input type="password" className={inputClass} placeholder="API Key（本地服务可留空）" value={draft.api_key} onChange={e => setDraft({ ...draft, api_key: e.target.value })} />
+      <div className="flex items-center gap-2">
+        <button onClick={handleAdd} disabled={busy}
+          className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-700 disabled:opacity-40 transition-colors">
+          {busy ? '创建中...' : '创建'}
+        </button>
+        <button onClick={onCancel} className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 text-xs font-medium hover:bg-slate-200 transition-colors">
+          取消
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function SettingsPage() {
   const { toast } = useToast();
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -85,6 +242,8 @@ export function SettingsPage() {
   const [isChangingPwd, setIsChangingPwd] = useState(false);
   const [probes, setProbes] = useState<Record<string, ProbeResult> | null>(null);
   const [isTesting, setIsTesting] = useState(false);
+  const [showAddProvider, setShowAddProvider] = useState(false);
+  const providersApi = useProviders();
   // Snapshot of the settings as loaded from the server, so the save
   // handler can tell which fields actually changed since page open. The
   // thinking toggle in particular needs a diff because the save
@@ -111,7 +270,7 @@ export function SettingsPage() {
     setIsSaving(true); setMessage(null);
     try {
       const saved = await updateSettings(settings);
-      setSettings({ ...settings, llm_api_key: saved.llm_api_key, embedding_api_key: saved.embedding_api_key });
+      setSettings({ ...settings, embedding_api_key: saved.embedding_api_key });
       // LFM does not support request-level thinking-off, so flipping the
       // toggle forces a llama-server restart that takes 10-20s while the
       // 14 GB GGUF reloads. Surface that explicitly so the user doesn't
@@ -172,45 +331,49 @@ export function SettingsPage() {
 
           <Card
             icon="bot" tone="text-indigo-500"
-            title="LLM（对话 / Agent / 日报）"
+            title="LLM Providers（对话 / Agent / 日报）"
             action={probes?.llm ? <ProbeBadge result={probes.llm} /> : undefined}
           >
-            <div className="space-y-3">
-              <Field label="Base URL" hint="OpenAI 兼容接口，本地推理可填 http://127.0.0.1:9010/v1">
-                <input className={inputClass} value={settings.llm_base_url} onChange={e => set({ llm_base_url: e.target.value })} />
-              </Field>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Field label="模型名称">
-                  <input className={inputClass} value={settings.llm_model} onChange={e => set({ llm_model: e.target.value })} />
-                </Field>
-                <Field label="API Key" hint="本地服务可留空">
-                  <input type="password" className={inputClass} value={settings.llm_api_key} onChange={e => set({ llm_api_key: e.target.value })} />
-                </Field>
+            {providersApi.isLoading ? (
+              <div className="text-xs text-slate-400">加载中...</div>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-xs text-slate-400">
+                  第一个被创建的 provider 自动成为 <strong className="text-slate-500">main</strong>（新对话的默认模型）。
+                  聊天顶部下拉可逐条消息切换到任意一个。系统始终至少保留一个 main。
+                </p>
+                <div className="space-y-2">
+                  {providersApi.providers.map(p => (
+                    <ProviderRow
+                      key={p.id}
+                      provider={p}
+                      isFirst={p === providersApi.providers[0]}
+                      onSave={(patch) => providersApi.update(p.id, patch).then(() => undefined)}
+                      onDelete={() => providersApi.remove(p.id).then(() => undefined)}
+                      onSetMain={() => providersApi.setMain(p.id).then(() => undefined)}
+                      canDelete={!(p.is_main && providersApi.providers.filter(x => x.is_main).length <= 1)}
+                    />
+                  ))}
+                  {providersApi.providers.length === 0 && (
+                    <div className="text-xs text-slate-400 px-1">还没有任何 provider，点击下方"添加"创建一个。</div>
+                  )}
+                </div>
+                {showAddProvider ? (
+                  <AddProviderForm
+                    onAdded={async () => { await providersApi.refresh(); setShowAddProvider(false); }}
+                    onCancel={() => setShowAddProvider(false)}
+                  />
+                ) : (
+                  <button
+                    onClick={() => setShowAddProvider(true)}
+                    className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-dashed border-slate-300 text-sm text-slate-500 hover:border-indigo-300 hover:text-indigo-600 transition-colors"
+                  >
+                    <Icon name="plus" size={14} />
+                    添加 provider
+                  </button>
+                )}
               </div>
-            </div>
-          </Card>
-
-          <Card
-            icon="zap" tone="text-amber-500"
-            title="Fast LLM（可选 · 350M 等小模型）"
-            action={probes?.llm_fast ? <ProbeBadge result={probes.llm_fast} /> : undefined}
-          >
-            <div className="space-y-3">
-              <Field label="Base URL" hint="默认 9013 上 LFM2.5-350M；留空则 chat 上'快'按钮不生效（回退 24B）">
-                <input className={inputClass} value={settings.llm_fast_base_url} onChange={e => set({ llm_fast_base_url: e.target.value })} />
-              </Field>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Field label="模型名称" hint="留空则用主 LLM 的模型名">
-                  <input className={inputClass} value={settings.llm_fast_model} onChange={e => set({ llm_fast_model: e.target.value })} placeholder="例如 LFM2.5-350M-Q4_0.gguf" />
-                </Field>
-                <Field label="API Key" hint="本地服务可留空">
-                  <input type="password" className={inputClass} value={settings.llm_fast_api_key} onChange={e => set({ llm_fast_api_key: e.target.value })} />
-                </Field>
-              </div>
-              <p className="text-xs text-slate-400">
-                fast 模式：聊天顶部'智/快'按钮切到快，下一条消息走此服务；agent 第一步用它，一旦调 tool 后续步骤强制 24B。Fast 模型一般不带 function-call 训练，对话质量会弱一些。
-              </p>
-            </div>
+            )}
           </Card>
 
           <Card

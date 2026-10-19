@@ -30,10 +30,31 @@ export interface SearchResult {
   query: string;
 }
 
+/**
+ * One configured LLM endpoint. The is_main flag is a singleton — at
+ * most one provider carries it, and the chat UI uses it as the
+ * default for newly-created sessions. The chat dropdown lets the
+ * user pick any provider (main or otherwise) per turn.
+ */
+export interface LLMProvider {
+  id: string;
+  name: string;
+  base_url: string;
+  model: string;
+  api_key: string;
+  is_main: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
+/** Payload for POST /api/providers. The server assigns id and timestamps. */
+export type LLMProviderCreate = Omit<LLMProvider, 'id' | 'is_main' | 'created_at' | 'updated_at'>;
+
+/** Payload for PATCH /api/providers/{id}. All fields optional; is_main
+ *  triggers the singleton-promote/demote logic in the service. */
+export type LLMProviderUpdate = Partial<LLMProviderCreate> & { is_main?: boolean };
+
 export interface AppSettings {
-  llm_api_key: string;
-  llm_base_url: string;
-  llm_model: string;
   embedding_api_key: string;
   embedding_base_url: string;
   embedding_model: string;
@@ -71,12 +92,6 @@ export interface AppSettings {
    * collapses to tool traces only.
    */
   thinking_enabled: boolean;
-  /** Fast-path LLM (e.g. LFM2.5-350M on 9013). Optional; falls back to
-   *  the main LLM base URL when unset so cloud-only deployments keep
-   *  working. */
-  llm_fast_base_url: string;
-  llm_fast_model: string;
-  llm_fast_api_key: string;
 }
 
 export interface AutoIndexStatus {
