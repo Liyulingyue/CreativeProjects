@@ -102,10 +102,20 @@ export function useChatSessions(sessionType: string = 'chat') {
     );
     setSessions(prev => prev.map(s => {
       if (s.id !== sessionId) return s;
+      // An assistant message's provider_id is the model that
+      // actually served the reply — mirror it onto the session
+      // row so the chat UI's "next turn uses the same model"
+      // behaviour stays consistent. The server already does the
+      // same write to chat_sessions.provider_id, but without
+      // this the local cache would keep the stale value (the
+      // pre-pick main) and a subsequent useEffect in SimpleChat
+      // would snap the dropdown back to main.
+      const nextProviderId = newMessage.provider_id ?? s.provider_id;
       return {
         ...s,
         messages: [...s.messages, newMessage],
         updated_at: Date.now(),
+        provider_id: nextProviderId,
       };
     }));
     return newMessage.id;
