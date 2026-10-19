@@ -73,6 +73,38 @@ def _save_json(path: Path, data):
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
+def _update_env_value(path: Path, key: str, value: str) -> None:
+    """Idempotently set `key=value` in a .env-style file.
+
+    Preserves comments, blank lines, and key ordering. If the key is
+    already present (in any line starting with optional whitespace) it
+    gets its value rewritten in place; otherwise the key is appended at
+    the end. No quoting/escaping — values are written verbatim, which is
+    fine for our booleans, ports, and URLs. The .env is intentionally
+    hand-edited, so we never silently rewrite user comments.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+    replaced = False
+    if path.exists():
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                stripped = line.lstrip()
+                if not replaced and stripped.startswith(f"{key}="):
+                    lines.append(f"{key}={value}\n")
+                    replaced = True
+                else:
+                    lines.append(line)
+    if not replaced:
+        # Ensure a trailing newline before appending, so the new key sits
+        # on its own line regardless of whether the file ended with one.
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] = lines[-1] + "\n"
+        lines.append(f"{key}={value}\n")
+    with open(path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+
 def _calc_storage_used() -> int:
     total = 0
     for root, dirs, files in os.walk(DATA_DIR):
@@ -829,6 +861,12 @@ class AppState:
         return self._settings
 
     def update_settings(self, updates: dict) -> AppSettings:
+        # Snapshot thinking_enabled BEFORE applying updates, so we can
+        # tell whether the toggle actually flipped. LFM2.5-A2B does not
+        # support request-level thinking-off, so a value change forces
+        # a llama-server restart — surfacing the diff here lets the
+        # route layer return a "restart required" hint to the UI.
+        prev_thinking = self._settings.thinking_enabled
         for k, v in updates.items():
             if hasattr(self._settings, k):
                 setattr(self._settings, k, v)
@@ -837,7 +875,49 @@ class AppState:
         # Drop the cached search embedder too; the next search picks up
         # whatever EMBEDDING_SEARCH_URL now points at.
         self._search_embedding_service = None
+
+        # If the thinking toggle flipped, write the new value to .env
+        # and bounce llama-server. We do this even when flipping back to
+        # True, because the running server might have been started with
+        # the old flag and we want both transitions to go through the
+        # same path.
+        if "thinking_enabled" in updates and updates["thinking_enabled"] != prev_thinking:
+            self._apply_thinking_setting(self._settings.thinking_enabled)
+
         return self._settings
+
+    def _apply_thinking_setting(self, enabled: bool) -> None:
+        """Persist `enabled` to the project .env and bounce llama-server.
+
+        The .env at the repo root is what `LLMServices/serve.sh` reads via
+        its `env_value` helper; we update only the THINKING_ENABLED key so
+        the rest of the file (DB URLs, INDEX_*, MAX_*, etc.) is left
+        untouched. After the write we run `serve.sh restart`, which is
+        blocking on the order of 10-20s while the 14 GB GGUF reloads. We
+        catch and log any error so a restart failure still leaves the
+        setting persisted — the next manual restart will pick it up.
+        """
+        env_path = BASE_DIR.parent / ".env"
+        try:
+            _update_env_value(env_path, "THINKING_ENABLED", "true" if enabled else "false")
+        except Exception as e:
+            print(f"[settings] failed to update .env: {e}")
+        serve_sh = BASE_DIR.parent / "LLMServices" / "serve.sh"
+        if not serve_sh.is_file():
+            print(f"[settings] serve.sh not found at {serve_sh}; skipping restart")
+            return
+        try:
+            import subprocess
+            subprocess.run(
+                ["bash", str(serve_sh), "restart"],
+                cwd=str(serve_sh.parent),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except Exception as e:
+            print(f"[settings] serve.sh restart failed: {e}")
 
     def get_index_stats(self) -> IndexStats:
         self._index_stats.storage_used = _calc_storage_used()

@@ -106,6 +106,13 @@ class AppSettings(BaseModel):
     max_output_tokens: int = 4096
     # Digests summarise a whole day of changes, so they get a larger budget.
     digest_max_tokens: int = 8192
+    # Toggle for LFM2.5-A2B's thinking mode. LFM does not support
+    # request-level thinking-off, so flipping this does NOT take effect
+    # immediately — the backend writes THINKING_ENABLED to .env and calls
+    # `LLMServices/serve.sh restart`, which re-launches llama-server with
+    # --reasoning off. Restart is several seconds; in-flight chats on
+    # port 9010 will fail. UI must surface this prominently.
+    thinking_enabled: bool = True
 
 
 class IndexStats(BaseModel):

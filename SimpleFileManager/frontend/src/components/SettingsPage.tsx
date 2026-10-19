@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { fetchSettings, updateSettings, testConnections } from '../api';
 import { changePassword, checkAuthStatus } from '../auth';
 import { useToast } from './ui/Toast';
@@ -85,10 +85,21 @@ export function SettingsPage() {
   const [isChangingPwd, setIsChangingPwd] = useState(false);
   const [probes, setProbes] = useState<Record<string, ProbeResult> | null>(null);
   const [isTesting, setIsTesting] = useState(false);
+  // Snapshot of the settings as loaded from the server, so the save
+  // handler can tell which fields actually changed since page open. The
+  // thinking toggle in particular needs a diff because the save
+  // endpoint triggers a llama-server restart when it flips — surfacing
+  // the diff lets the toast say "restarting" instead of the generic
+  // "applied" message.
+  const initialSettingsRef = useRef<AppSettings | null>(null);
 
   useEffect(() => {
     (async () => {
-      try { setSettings(await fetchSettings()); } catch (e) { console.error('Failed:', e); }
+      try {
+        const s = await fetchSettings();
+        setSettings(s);
+        initialSettingsRef.current = s;
+      } catch (e) { console.error('Failed:', e); }
     })();
     checkAuthStatus().then(s => setHasPassword(s.has_password)).catch(() => {});
   }, []);
@@ -101,7 +112,18 @@ export function SettingsPage() {
     try {
       const saved = await updateSettings(settings);
       setSettings({ ...settings, llm_api_key: saved.llm_api_key, embedding_api_key: saved.embedding_api_key });
-      setMessage('已保存并即时生效');
+      // LFM does not support request-level thinking-off, so flipping the
+      // toggle forces a llama-server restart that takes 10-20s while the
+      // 14 GB GGUF reloads. Surface that explicitly so the user doesn't
+      // think the page hung — the save button was disabled the whole time
+      // and the response is what unblocks it.
+      const prev = initialSettingsRef.current;
+      const thinkingFlipped = prev != null && prev.thinking_enabled !== settings.thinking_enabled;
+      if (thinkingFlipped) {
+        setMessage(`已保存，llama-server 已重启以${settings.thinking_enabled ? '启用' : '关闭'}思考模式`);
+      } else {
+        setMessage('已保存并即时生效');
+      }
     } catch (e) { setMessage(e instanceof Error ? e.message : '保存失败'); } finally { setIsSaving(false); }
   };
 
@@ -232,6 +254,17 @@ export function SettingsPage() {
                 不限制时模型会一直生成到自然结束，容易挤掉后续对话的上下文空间。
                 注意该上限<strong className="text-slate-500">包含模型的思考过程</strong>，设得过小会导致回复空白，建议不低于 1024。
               </p>
+              <div className="pt-2 border-t border-slate-100">
+                <Toggle
+                  checked={settings.thinking_enabled}
+                  onChange={() => set({ thinking_enabled: !settings.thinking_enabled })}
+                  label="思考模式（需重启）"
+                  hint="关闭后 llama-server 启动时加 --reasoning-budget 0，模型直接出答案不再写 scratchpad；agent 的工具选择与 plan 推理质量会明显下降"
+                />
+                <p className="text-xs text-amber-600 mt-2">
+                  切换后保存会重启 llama-server（约 10-20 秒），期间 9010 端口上的请求会失败。改动持久化到 .env，手动重启也会沿用。
+                </p>
+              </div>
             </div>
           </Card>
 
