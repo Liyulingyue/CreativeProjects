@@ -376,35 +376,34 @@ export function SettingsPage() {
             action={probes?.embedding ? <ProbeBadge result={probes.embedding} /> : undefined}
           >
             <div className="space-y-3">
-              <Field label="Base URL" hint="本地推理可填 http://127.0.0.1:9011/v1（索引器用）">
-                <input className={inputClass} value={settings.embedding_base_url} onChange={e => set({ embedding_base_url: e.target.value })} />
-              </Field>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <Field label="模型名称">
-                  <input className={inputClass} value={settings.embedding_model} onChange={e => set({ embedding_model: e.target.value })} />
-                </Field>
-                <Field label="向量维度" hint="AUTO 或具体数字">
-                  <input className={inputClass} value={settings.embedding_dim} onChange={e => set({ embedding_dim: e.target.value })} />
-                </Field>
-                <Field label="API Key" hint="可留空">
-                  <input type="password" className={inputClass} value={settings.embedding_api_key} onChange={e => set({ embedding_api_key: e.target.value })} />
-                </Field>
+              <p className="text-xs text-slate-400">
+                两个端点共享同一套向量空间（dim 必须一致）。
+                Indexer 在后台跑，Search 在用户查询时跑——后者通常指向 GPU 端点避免抢 A520 LITTLE 资源。
+              </p>
+              <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium text-slate-800">Indexer</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 font-medium">必填</span>
+                </div>
+                <input className={inputClass} placeholder="Base URL（本地默认 http://127.0.0.1:9011/v1）"
+                  value={settings.embedding_base_url} onChange={e => set({ embedding_base_url: e.target.value })} />
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <input className={inputClass} placeholder="模型名称" value={settings.embedding_model} onChange={e => set({ embedding_model: e.target.value })} />
+                  <input className={inputClass} placeholder="向量维度（AUTO 或具体数字）" value={settings.embedding_dim} onChange={e => set({ embedding_dim: e.target.value })} />
+                  <input type="password" className={inputClass} placeholder="API Key（可留空）" value={settings.embedding_api_key} onChange={e => set({ embedding_api_key: e.target.value })} />
+                </div>
               </div>
-              <div className="pt-2 border-t border-slate-100">
-                <div className="text-sm font-medium text-slate-700 mb-1">搜索专用 Embedding（可选）</div>
-                <p className="text-xs text-slate-400 mb-2">
-                  用户搜查询问走另一条路径（本地默认 9012 GPU 端点）。留空则跟上面索引器共用一个。
-                </p>
-                <Field label="Search Base URL" hint="默认 9012（GPU Vulkan），留空回退 9011">
-                  <input className={inputClass} value={settings.search_base_url} onChange={e => set({ search_base_url: e.target.value })} placeholder="http://127.0.0.1:9012/v1" />
-                </Field>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
-                  <Field label="Search 模型名称" hint="留空则跟主 embedding 同名">
-                    <input className={inputClass} value={settings.search_model} onChange={e => set({ search_model: e.target.value })} placeholder="bge-base-zh-v1.5" />
-                  </Field>
-                  <Field label="Search API Key" hint="本地服务可留空">
-                    <input type="password" className={inputClass} value={settings.search_api_key} onChange={e => set({ search_api_key: e.target.value })} />
-                  </Field>
+              <div className="rounded-lg border border-slate-200 bg-slate-50/40 p-3 space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium text-slate-800">Search</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 font-medium">可选</span>
+                  <span className="text-[11px] text-slate-400">留空则回退 Indexer</span>
+                </div>
+                <input className={inputClass} placeholder="Search Base URL（本地 GPU 端点 http://127.0.0.1:9012/v1）"
+                  value={settings.search_base_url} onChange={e => set({ search_base_url: e.target.value })} />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <input className={inputClass} placeholder="Search 模型名称（留空跟随 Indexer）" value={settings.search_model} onChange={e => set({ search_model: e.target.value })} />
+                  <input type="password" className={inputClass} placeholder="Search API Key（本地可留空）" value={settings.search_api_key} onChange={e => set({ search_api_key: e.target.value })} />
                 </div>
               </div>
             </div>
