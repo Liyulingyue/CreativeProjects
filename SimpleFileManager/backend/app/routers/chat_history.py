@@ -51,6 +51,10 @@ def add_message(req: AddMessageRequest):
     """Add a message to a chat session"""
     chat_svc = state.get_chat_history()
     _require_session(req.session_id)
+    # use_fast is no longer forwarded: the column stays on disk for
+    # back-compat with rows saved before the providers refactor, but
+    # new writes take the default (0). The legacy `use_fast` field
+    # is still accepted on the request so old clients don't 422.
     return chat_svc.add_message(
         session_id=req.session_id,
         role=req.role,
@@ -63,7 +67,6 @@ def add_message(req: AddMessageRequest):
         tokens=getattr(req, "tokens", 0) or 0,
         tps=getattr(req, "tps", 0.0) or 0.0,
         provider_id=getattr(req, "provider_id", None),
-        use_fast=bool(getattr(req, "use_fast", False)),
     )
 
 

@@ -129,17 +129,46 @@ STORAGE_PATH/                    # .env 中 STORAGE_PATH 配置的目录
 ### AppSettings
 ```python
 {
-    "llm_api_key": str,
-    "llm_base_url": str,
-    "llm_model": str,
+    # LLM credentials live in the llm_providers table (CRUD at
+    # /api/providers, rendered in /settings). AppSettings no longer
+    # carries them — see "LLM Providers" below.
     "embedding_api_key": str,
     "embedding_base_url": str,
     "embedding_model": str,
     "embedding_dim": str,
+    # Search-time embedding override; falls back to the main
+    # embedding_* when unset.
+    "search_api_key": str,
+    "search_base_url": str,
+    "search_model": str,
     "index_interval": int,
     "storage_path": str,
     "theme": str,
+    "thinking_enabled": bool,  # LFM scratchpad; restart to apply
 }
+```
+
+### LLM Providers
+```python
+# Each row in llm_providers is one configured LLM endpoint.
+{
+    "id": str,            # uuid hex
+    "name": str,          # display only
+    "base_url": str,      # OpenAI-compatible
+    "model": str,
+    "api_key": str,
+    "is_main": bool,      # singleton; new sessions default to it
+    "created_at": int,    # ms epoch
+    "updated_at": int,
+}
+# Resolution precedence for an agent turn:
+#   1. AgentRequest.provider_id (per-turn override from the chat
+#      dropdown) — stale/bogus ids fall through.
+#   2. chat_sessions.provider_id (sticky default for the session;
+#      updated on every successful override).
+#   3. The system main (is_main=1). Falls back to an error when
+#      no main is configured — the operator must add one in
+#      /settings before chat can be used.
 ```
 
 ## 安全考虑

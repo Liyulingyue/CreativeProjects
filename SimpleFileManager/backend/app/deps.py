@@ -682,20 +682,22 @@ class ChatHistoryService:
     def add_message(self, session_id: str, role: str, content: str, sources: Optional[list] = None,
                     reasoning: str = "", activity: Optional[list] = None,
                     ttft_ms: int = 0, total_ms: int = 0, tokens: int = 0, tps: float = 0.0,
-                    provider_id: Optional[str] = None,
-                    use_fast: bool = False) -> ChatMessage:
+                    provider_id: Optional[str] = None) -> ChatMessage:
         msg_id = uuid.uuid4().hex
         now = int(time.time() * 1000)
         sources_json = json.dumps(sources) if sources else None
         with self._lock:
             conn = self._get_conn()
+            # use_fast is no longer written — the column stays for
+            # back-compat with rows saved before the providers
+            # refactor, but new rows just take the column default (0).
             conn.execute(
                 "INSERT INTO chat_messages (id, session_id, role, content, reasoning, activity,"
-                " sources, timestamp, ttft_ms, total_ms, tokens, tps, use_fast, provider_id)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " sources, timestamp, ttft_ms, total_ms, tokens, tps, provider_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (msg_id, session_id, role, content, reasoning,
                  json.dumps(activity, ensure_ascii=False) if activity else "[]", sources_json, now,
-                 ttft_ms, total_ms, tokens, tps, 1 if use_fast else 0, provider_id)
+                 ttft_ms, total_ms, tokens, tps, provider_id)
             )
             conn.execute(
                 "UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
@@ -703,10 +705,12 @@ class ChatHistoryService:
             )
             conn.commit()
             conn.close()
-        return ChatMessage(id=msg_id, role=role, content=content, reasoning=reasoning,
-                          activity=activity or [], sources=sources, timestamp=now,
-                          ttft_ms=ttft_ms, total_ms=total_ms, tokens=tokens, tps=tps,
-                          provider_id=provider_id, use_fast=use_fast)
+        return ChatMessage(
+            id=msg_id, role=role, content=content, reasoning=reasoning,
+            activity=activity or [], sources=sources, timestamp=now,
+            ttft_ms=ttft_ms, total_ms=total_ms, tokens=tokens, tps=tps,
+            provider_id=provider_id,
+        )
 
     def delete_session(self, session_id: str):
         with self._lock:
@@ -1063,25 +1067,44 @@ class AppState:
             self._index_stats = IndexStats(**stats_data)
 
     def _seed_providers_from_settings(self, conn, settings_data: dict) -> None:
-        """One-shot backfill: take the legacy llm_* / llm_fast_* fields
-        from settings.json (or the env defaults) and create one or
-        two rows in llm_providers. The main flag follows the order:
-        if the legacy main LLM exists, that becomes the main; if
-        also a fast LLM is configured, it's added as non-main.
+        """One-shot backfill for deployments upgrading from the
+        pre-providers version of SimpleFileManager.
 
-        Runs inside the caller's lock so the seed and any subsequent
-        reads see a consistent table. Idempotent — the caller skips
-        when the table is non-empty.
+        In that version, the LLM endpoint lived in AppSettings
+        (llm_base_url / llm_model / llm_api_key) and an optional
+        fast model in (llm_fast_base_url / llm_fast_model /
+        llm_fast_api_key). AppSettings no longer carries these
+        fields, so the persisted settings.json will be empty for
+        them; the values that actually drive a deployment now
+        live in .env, so the seeder reads them straight from the
+        environment. Old settings.json values are still consulted
+        first so an in-flight upgrade that has settings.json but
+        no env vars does not lose its endpoint.
+
+        Runs inside the caller's lock so the seed and any
+        subsequent reads see a consistent table. Idempotent —
+        the caller skips when the table is non-empty.
         """
         import time as _t
         now = int(_t.time() * 1000)
-        main_url = settings_data.get("llm_base_url") or self._settings.embedding_base_url
-        # We don't actually use embedding_base_url as a fallback; the
-        # settings.llm_base_url is what served the previous LLM. The
-        # above just keeps the gate simple.
-        main_url = settings_data.get("llm_base_url", "") or ""
-        main_model = settings_data.get("llm_model", "") or ""
-        main_key = settings_data.get("llm_api_key", "") or ""
+        # settings.json wins if it still carries the legacy fields;
+        # otherwise fall back to the env vars that LLM_Services
+        # / serve.sh already use. The env path is the common case
+        # after the refactor; the settings path only matters for
+        # a deployment mid-upgrade whose settings.json was written
+        # before the field removal.
+        main_url = (
+            settings_data.get("llm_base_url", "")
+            or os.getenv("LLM_BASE_URL", "")
+        )
+        main_model = (
+            settings_data.get("llm_model", "")
+            or os.getenv("LLM_MODEL", "")
+        )
+        main_key = (
+            settings_data.get("llm_api_key", "")
+            or os.getenv("LLM_API_KEY", "")
+        )
         if main_url and main_model:
             main_id = uuid.uuid4().hex
             conn.execute(
@@ -1090,9 +1113,18 @@ class AppState:
                 (main_id, "Main", main_url, main_model, main_key, now, now)
             )
         # Fast model is optional; skip if not configured.
-        fast_url = settings_data.get("llm_fast_base_url", "") or ""
-        fast_model = settings_data.get("llm_fast_model", "") or ""
-        fast_key = settings_data.get("llm_fast_api_key", "") or ""
+        fast_url = (
+            settings_data.get("llm_fast_base_url", "")
+            or os.getenv("LLM_FAST_BASE_URL", "")
+        )
+        fast_model = (
+            settings_data.get("llm_fast_model", "")
+            or os.getenv("LLM_FAST_MODEL", "")
+        )
+        fast_key = (
+            settings_data.get("llm_fast_api_key", "")
+            or os.getenv("LLM_FAST_API_KEY", "")
+        )
         if fast_url and fast_model:
             fast_id = uuid.uuid4().hex
             conn.execute(
