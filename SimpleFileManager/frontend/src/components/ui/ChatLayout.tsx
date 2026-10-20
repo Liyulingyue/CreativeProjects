@@ -280,31 +280,57 @@ function ToolTraceLine({ activity }: { activity: ToolActivity }) {
       <button
         onClick={() => !running && setOpen(v => !v)}
         disabled={running}
-        className="flex items-center gap-1.5 text-left disabled:cursor-default group"
+        className="flex items-center gap-1.5 text-left disabled:cursor-default group w-full"
       >
         {running ? (
           <div className="w-2.5 h-2.5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
         ) : (
           <Icon name="checkCircle" size={12} className="text-green-600 flex-shrink-0" />
         )}
-        <span className="font-mono text-indigo-700">{activity.tool}</span>
+        <span className="font-mono text-indigo-700 flex-shrink-0">{activity.tool}</span>
         {args.length > 0 && (
-          <span className="text-slate-500 font-mono truncate">
-            {args.map(([k, v]) => `${k}=${typeof v === 'string' ? (v.length > 24 ? v.slice(0, 24) + '…' : v) : JSON.stringify(v)}`).join(' ')}
+          // Show the first arg's value as a short hint (max ~28 chars).
+          // Long summaries would otherwise blow past the row width and
+          // get hard-truncated by `truncate`, which loses the actual
+          // useful context. Full args only render after a click.
+          <span className="text-slate-400 font-mono truncate min-w-0">
+            {(() => {
+              const [k, v] = args[0];
+              const value = typeof v === 'string'
+                ? (v.length > 28 ? v.slice(0, 28) + '…' : v)
+                : JSON.stringify(v);
+              return `${k}=${value}${args.length > 1 ? `, +${args.length - 1}` : ''}`;
+            })()}
           </span>
         )}
-        {!running && activity.result !== undefined && (
+        {!running && (args.length > 0 || activity.result !== undefined) && (
           <Icon
-            name="chevronDown"
+            name="chevronRight"
             size={11}
-            className={`flex-shrink-0 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`}
+            className={`flex-shrink-0 text-slate-400 transition-transform ${open ? 'rotate-90' : ''}`}
           />
         )}
       </button>
-      {open && !running && activity.result !== undefined && (
-        <pre className="mt-1 ml-5 p-2 bg-white/70 rounded text-[11px] leading-relaxed text-slate-600 whitespace-pre-wrap break-words break-words max-h-40 overflow-y-auto">
-          {stringify(activity.result)}
-        </pre>
+      {open && !running && (
+        <div className="mt-1 ml-5 space-y-2">
+          {args.length > 0 && (
+            <div className="rounded bg-white/70 p-2 text-[11px] font-mono leading-relaxed">
+              {args.map(([k, v]) => (
+                <div key={k} className="flex gap-2">
+                  <span className="text-slate-500 flex-shrink-0">{k}=</span>
+                  <span className="text-slate-700 break-all whitespace-pre-wrap min-w-0">
+                    {typeof v === 'string' ? v : JSON.stringify(v, null, 2)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          {activity.result !== undefined && (
+            <pre className="p-2 bg-white/70 rounded text-[11px] leading-relaxed text-slate-600 whitespace-pre-wrap break-words max-h-40 overflow-y-auto">
+              {stringify(activity.result)}
+            </pre>
+          )}
+        </div>
       )}
     </div>
   );
