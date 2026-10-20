@@ -577,9 +577,10 @@ export function SettingsPage() {
             ) : (
               <div className="space-y-3">
                 <p className="text-xs text-slate-400">
-                  <strong className="text-slate-500">Index</strong> 由后台索引器读取，<strong className="text-slate-500">Search</strong> 由用户查询路径读取；
-                  Search 留空时自动回退到 Index。同一向量空间下两端的 dim 必须一致，
-                  切到不同 dim 的 provider 需要重新建索引。
+                  每个 row 独立选 <strong className="text-slate-500">Index</strong> / <strong className="text-slate-500">Search</strong> 角色
+                  （可同时是两者）。系统当前各取一个：Index 给后台索引器，Search 给查询路径；
+                  Search 留空时回退到 Index。多个 row 暂不 fanout——同 dim 的两个 Search 实际只跑第一个，
+                  多 dim 切换需要重新建索引。
                 </p>
                 <div className="space-y-2">
                   {embProvidersApi.providers.map(p => (
