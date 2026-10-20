@@ -6,6 +6,8 @@ from .routers import fs, search, settings, rag, chat, chat_history_router, agent
 from .routers.auth import is_auth_enabled, set_password
 from .indexer import indexer
 from .auto_digest import auto_digest
+from .routers import providers as providers_router  # noqa: E402
+from .routers import embedding_providers as embedding_providers_router  # noqa: E402
 
 
 def _init_auth():
@@ -58,6 +60,7 @@ app.include_router(chat, prefix="/api/chat", tags=["chat"], dependencies=[auth_d
 app.include_router(chat_history_router, prefix="/api/chat_history", tags=["chat_history"], dependencies=[auth_dep])
 from .routers import providers as providers_router  # noqa: E402
 app.include_router(providers_router.router, prefix="/api/providers", tags=["providers"], dependencies=[auth_dep])
+app.include_router(embedding_providers_router.router, prefix="/api/embedding_providers", tags=["embedding_providers"], dependencies=[auth_dep])
 app.include_router(agent, prefix="/api/agent", tags=["agent"], dependencies=[auth_dep])
 app.include_router(organizer, prefix="/api/organizer", tags=["organizer"], dependencies=[auth_dep])
 app.include_router(plans, tags=["plans"], dependencies=[auth_dep])

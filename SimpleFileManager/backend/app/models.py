@@ -61,18 +61,18 @@ class AppSettings(BaseModel):
     # Providers list. The router and llm_client read from the table
     # at request time, so flipping a provider is instant — no
     # server-level restart needed.
-    embedding_api_key: str = ""
-    embedding_base_url: str = "https://api.minimaxi.com/v1"
-    embedding_model: str = "text-embedding-3-small"
-    embedding_dim: str = "AUTO"
-    # Dedicated embedding endpoint for the search/chat path. Falls back to
-    # the indexer endpoint when unset, so cloud-only deployments keep
-    # working. On this box we point it at a GPU-backed llama-server so user
-    # queries have a dedicated low-latency path independent of the indexer's
-    # batched work on the A520 LITTLE cores.
-    search_api_key: str = ""
-    search_base_url: str = ""
-    search_model: str = ""
+    #
+    # Embedding endpoints have moved to the `embedding_providers`
+    # table for the same reason. Two roles hang off the table:
+    #   - is_index: which endpoint the background indexer uses.
+    #     Singleton — at least one must always exist.
+    #   - is_search: optional dedicated endpoint for the runtime
+    #     search/chat path. Falls back to the is_index row when
+    #     unset. Operators without a GPU search endpoint can leave
+    #     it set and search will share the index endpoint.
+    # dim must match across the index + search pair; changing it
+    # requires re-indexing (the indexer would otherwise reject the
+    # next batch as soon as the row goes in).
     index_interval: int = 300
     auto_index_enabled: bool = True
     index_debounce_seconds: int = 10
@@ -162,6 +162,59 @@ class LLMProviderUpdate(BaseModel):
     # The router enforces the singleton: setting is_main=True unmarks
     # the rest of the table in the same transaction.
     is_main: Optional[bool] = None
+
+
+class EmbeddingProvider(BaseModel):
+    """One row per embedding endpoint the operator has configured.
+
+    Two role flags hang off the row:
+      - `is_index`: the background indexer reads from this row. Singleton.
+        At least one provider must always carry it; the system refuses to
+        demote the last one.
+      - `is_search`: optional dedicated endpoint for the runtime search /
+        chat path. Singleton but may be empty — in that case the search
+        path transparently falls back to the is_index row.
+
+    `dim` is the operator-declared embedding dimension. "AUTO" lets the
+    server probe the model on first startup; an explicit integer pins it
+    so a dim change requires an explicit (and visible) reindex. The
+    indexer refuses to start a new run when the configured dim disagrees
+    with the dim already in vector_db.
+    """
+    id: str
+    name: str
+    base_url: str
+    model: str
+    dim: str = "AUTO"
+    api_key: str = ""
+    is_index: bool = False
+    is_search: bool = False
+    created_at: int = 0
+    updated_at: int = 0
+
+
+class EmbeddingProviderCreate(BaseModel):
+    name: str
+    base_url: str
+    model: str
+    # Server-side default is "AUTO" so the operator doesn't have to know
+    # the dim when adding a new provider; the indexer probes on first use.
+    dim: str = "AUTO"
+    api_key: str = ""
+
+
+class EmbeddingProviderUpdate(BaseModel):
+    name: Optional[str] = None
+    base_url: Optional[str] = None
+    model: Optional[str] = None
+    dim: Optional[str] = None
+    api_key: Optional[str] = None
+    # The router layer enforces singletons: setting is_index=True
+    # unmarks the rest of the table, and is_index=False is refused when
+    # this is the only main. is_search is a simple toggle with no
+    # "last one" rule (search can be empty).
+    is_index: Optional[bool] = None
+    is_search: Optional[bool] = None
 
 
 class ChatMessage(BaseModel):

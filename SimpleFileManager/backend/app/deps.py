@@ -14,7 +14,7 @@ from .chunking import chunk_file
 from .interaction import interaction
 from .models import (
     AppSettings, IndexStats, IndexStatus, ChatSession, ChatMessage,
-    AgentPlan, PlanAction, LLMProvider,
+    AgentPlan, PlanAction, LLMProvider, EmbeddingProvider,
 )
 
 load_dotenv()
@@ -150,7 +150,22 @@ class LanceDBVectorStore:
             # LanceDB's vector search accepts a fixed-size list. Keep the
             # configured dimension in the schema so a service restart cannot
             # silently create a table with a different shape.
-            dim = EMBEDDING_DIM_MAP.get(state.get_settings().embedding_model, 0)
+            #
+            # Dim comes from the is_index embedding provider (the
+            # indexer-side row). "AUTO" resolves to a probe of the
+            # model. Known models short-circuit the probe so a cold
+            # start without network still picks a sane dim.
+            idx = state.get_chat_history().get_index_embedding_provider()
+            dim = 0
+            if idx is not None:
+                dim_str = idx.dim or "AUTO"
+                if dim_str != "AUTO":
+                    try:
+                        dim = int(dim_str)
+                    except ValueError:
+                        dim = 0
+                else:
+                    dim = EMBEDDING_DIM_MAP.get(idx.model, 0)
             if not dim:
                 try:
                     dim = len(self._probe_dim())
@@ -427,6 +442,26 @@ class ChatHistoryService:
                 conn.execute("ALTER TABLE chat_sessions ADD COLUMN provider_id TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session ON chat_messages(session_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_providers_main ON llm_providers(is_main)")
+            # Embedding providers live alongside LLM providers for
+            # symmetry — same SQLite file, same locking, same singleton
+            # enforcement. Two singletons (is_index, is_search) hang
+            # off this table.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS embedding_providers (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    base_url TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    dim TEXT DEFAULT 'AUTO',
+                    api_key TEXT DEFAULT '',
+                    is_index INTEGER DEFAULT 0,
+                    is_search INTEGER DEFAULT 0,
+                    created_at INTEGER,
+                    updated_at INTEGER
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_emb_providers_index ON embedding_providers(is_index)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_emb_providers_search ON embedding_providers(is_search)")
             conn.commit()
             conn.close()
 
@@ -744,6 +779,195 @@ class ChatHistoryService:
             conn.commit()
             conn.close()
 
+    # ---- Embedding provider CRUD ----------------------------------------
+    #
+    # Two singletons hang off this table: is_index (the indexer reads
+    # this row) and is_search (the search path reads this row, falling
+    # back to the index row when unset). The create method auto-promotes
+    # the first row to is_index so an empty table never strands the
+    # system. is_search is genuinely optional and may be empty.
+    #
+    # The dim field is the operator-declared embedding dimension. "AUTO"
+    # is resolved to a concrete integer on first use; once resolved, the
+    # indexer enforces the dim against the LanceDB schema so a
+    # misconfiguration is loud rather than silent. Swapping the index
+    # row to a different-dim provider does NOT auto-reindex — the
+    # operator must drop the vector table by hand (or trigger a
+    # reindex via the existing indexer run paths). This matches how
+    # LanceDB itself models schema changes.
+
+    def list_embedding_providers(self) -> list[EmbeddingProvider]:
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute(
+                "SELECT id, name, base_url, model, dim, api_key,"
+                " is_index, is_search, created_at, updated_at"
+                " FROM embedding_providers"
+                " ORDER BY is_index DESC, is_search DESC, created_at ASC"
+            ).fetchall()
+            conn.close()
+        return [self._row_to_embedding_provider(r) for r in rows]
+
+    def get_embedding_provider(self, provider_id: str) -> Optional[EmbeddingProvider]:
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute(
+                "SELECT id, name, base_url, model, dim, api_key,"
+                " is_index, is_search, created_at, updated_at"
+                " FROM embedding_providers WHERE id = ?",
+                (provider_id,),
+            ).fetchone()
+            conn.close()
+        return self._row_to_embedding_provider(row) if row else None
+
+    def get_index_embedding_provider(self) -> Optional[EmbeddingProvider]:
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute(
+                "SELECT id, name, base_url, model, dim, api_key,"
+                " is_index, is_search, created_at, updated_at"
+                " FROM embedding_providers WHERE is_index = 1 LIMIT 1"
+            ).fetchone()
+            conn.close()
+        return self._row_to_embedding_provider(row) if row else None
+
+    def get_search_embedding_provider(self) -> Optional[EmbeddingProvider]:
+        """Search path's provider. Prefers is_search=1; falls back to
+        the is_index row when search is unset (cloud-only deployments
+        share one endpoint)."""
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute(
+                "SELECT id, name, base_url, model, dim, api_key,"
+                " is_index, is_search, created_at, updated_at"
+                " FROM embedding_providers WHERE is_search = 1 LIMIT 1"
+            ).fetchone()
+            if not row:
+                row = conn.execute(
+                    "SELECT id, name, base_url, model, dim, api_key,"
+                    " is_index, is_search, created_at, updated_at"
+                    " FROM embedding_providers WHERE is_index = 1 LIMIT 1"
+                ).fetchone()
+            conn.close()
+        return self._row_to_embedding_provider(row) if row else None
+
+    def create_embedding_provider(
+        self, name: str, base_url: str, model: str,
+        dim: str = "AUTO", api_key: str = "",
+    ) -> EmbeddingProvider:
+        provider_id = uuid.uuid4().hex
+        now = int(time.time() * 1000)
+        with self._lock:
+            conn = self._get_conn()
+            # First provider auto-promotes to is_index. is_search is
+            # opt-in via PATCH so the user explicitly chooses whether
+            # to dedicate this endpoint to the search path.
+            existing_index = conn.execute(
+                "SELECT 1 FROM embedding_providers WHERE is_index = 1 LIMIT 1"
+            ).fetchone()
+            is_index = 0 if existing_index else 1
+            conn.execute(
+                "INSERT INTO embedding_providers (id, name, base_url, model, dim,"
+                " api_key, is_index, is_search, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+                (provider_id, name, base_url, model, dim, api_key,
+                 is_index, now, now)
+            )
+            conn.commit()
+            conn.close()
+        return EmbeddingProvider(
+            id=provider_id, name=name, base_url=base_url, model=model,
+            dim=dim, api_key=api_key, is_index=bool(is_index),
+            is_search=False, created_at=now, updated_at=now,
+        )
+
+    def update_embedding_provider(self, provider_id: str, *,
+                                  name: Optional[str] = None,
+                                  base_url: Optional[str] = None,
+                                  model: Optional[str] = None,
+                                  dim: Optional[str] = None,
+                                  api_key: Optional[str] = None,
+                                  is_index: Optional[bool] = None,
+                                  is_search: Optional[bool] = None) -> Optional[EmbeddingProvider]:
+        with self._lock:
+            conn = self._get_conn()
+            existing = conn.execute(
+                "SELECT id FROM embedding_providers WHERE id = ?", (provider_id,)
+            ).fetchone()
+            if not existing:
+                conn.close()
+                return None
+            fields: list[str] = []
+            values: list = []
+            if name is not None:
+                fields.append("name = ?"); values.append(name)
+            if base_url is not None:
+                fields.append("base_url = ?"); values.append(base_url)
+            if model is not None:
+                fields.append("model = ?"); values.append(model)
+            if dim is not None:
+                fields.append("dim = ?"); values.append(dim)
+            if api_key is not None:
+                fields.append("api_key = ?"); values.append(api_key)
+            if is_index is True:
+                # Singleton promote: demote the rest before stamping
+                # this row. Both halves run in the same lock so an
+                # external query between the two statements cannot see
+                # two index providers.
+                conn.execute("UPDATE embedding_providers SET is_index = 0")
+                fields.append("is_index = ?"); values.append(1)
+            elif is_index is False:
+                # Caller is asking to demote this row. The router
+                # layer is responsible for ensuring another is_index
+                # row remains (refuses when this is the only one).
+                fields.append("is_index = ?"); values.append(0)
+            if is_search is True:
+                # Search is also a singleton. Demote the rest so
+                # "search is exactly one row" stays an invariant.
+                conn.execute("UPDATE embedding_providers SET is_search = 0")
+                fields.append("is_search = ?"); values.append(1)
+            elif is_search is False:
+                # No "last search" rule — search may be empty (the
+                # system falls back to the index row).
+                fields.append("is_search = ?"); values.append(0)
+            if fields:
+                fields.append("updated_at = ?")
+                values.append(int(time.time() * 1000))
+                values.append(provider_id)
+                conn.execute(
+                    f"UPDATE embedding_providers SET {', '.join(fields)} WHERE id = ?",
+                    values
+                )
+                conn.commit()
+            conn.close()
+        return self.get_embedding_provider(provider_id)
+
+    def delete_embedding_provider(self, provider_id: str) -> bool:
+        with self._lock:
+            conn = self._get_conn()
+            # Refuse silently: router layer is responsible for the
+            # "is_index" guard since it knows whether this is the
+            # last index row.
+            cur = conn.execute(
+                "DELETE FROM embedding_providers WHERE id = ?", (provider_id,)
+            )
+            conn.commit()
+            deleted = cur.rowcount > 0
+            conn.close()
+            return deleted
+
+    def _row_to_embedding_provider(self, row) -> EmbeddingProvider:
+        if row is None:
+            return None  # type: ignore[return-value]
+        (pid, name, base_url, model, dim, api_key,
+         is_index, is_search, created_at, updated_at) = row
+        return EmbeddingProvider(
+            id=pid, name=name, base_url=base_url, model=model,
+            dim=dim or "AUTO", api_key=api_key or "",
+            is_index=bool(is_index), is_search=bool(is_search),
+            created_at=created_at or 0, updated_at=updated_at or 0,
+        )
+
 
 def get_storage_root() -> Path:
     """Resolve the user-facing storage root from current settings (never the .simplefilemanager dir)."""
@@ -983,37 +1207,14 @@ class PlanStore:
 
 
 def _get_default_settings() -> AppSettings:
-    embedding_dim_str = os.getenv("EMBEDDING_DIM", "AUTO")
-    embedding_api_key = os.getenv("EMBEDDING_API_KEY", "")
-    embedding_base_url = os.getenv("EMBEDDING_BASE_URL", "https://api.minimaxi.com/v1")
-    embedding_model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
-
-    # Separate embedding endpoint for the search path. Defaults to the same
-    # endpoint as the indexer, so deployments without a dedicated search
-    # embedder (e.g. cloud-only) keep working unchanged. On this box we point
-    # EMBEDDING_SEARCH_URL at the GPU-backed llama-server so user queries get
-    # a low-latency single-chunk slot independent of the indexer's batches.
-    search_api_key = os.getenv("EMBEDDING_SEARCH_API_KEY", embedding_api_key)
-    search_base_url = os.getenv("EMBEDDING_SEARCH_URL", embedding_base_url)
-    search_model = os.getenv("EMBEDDING_SEARCH_MODEL", embedding_model)
-
-    if embedding_dim_str == "AUTO":
-        embedding_dim_str = str(_detect_embedding_dim(embedding_model, embedding_api_key, embedding_base_url))
-
     return AppSettings(
-        # LLM credentials live in the providers table now (see
-        # _seed_providers_from_settings for the one-time backfill
-        # from these env vars). The legacy LLM_* vars are still read
-        # by the seeder, so leave them in .env — the seeder only
-        # fires when the providers table is empty, and existing
-        # deployments upgrade in place.
-        embedding_api_key=embedding_api_key,
-        embedding_base_url=embedding_base_url,
-        embedding_model=embedding_model,
-        embedding_dim=embedding_dim_str,
-        search_api_key=search_api_key,
-        search_base_url=search_base_url,
-        search_model=search_model,
+        # LLM credentials live in the llm_providers table (see
+        # _seed_providers_from_settings). Embedding credentials live
+        # in the embedding_providers table (see
+        # _seed_embedding_providers_from_settings). Both seeders read
+        # the legacy env vars and settings.json fields, so leaving
+        # them in .env keeps existing deployments upgrading in place
+        # — no env rewrites required.
         index_interval=int(os.getenv("INDEX_INTERVAL", "300")),
         auto_index_enabled=os.getenv("AUTO_INDEX_ENABLED", "true").lower() in ("true", "1", "yes"),
         index_debounce_seconds=int(os.getenv("INDEX_DEBOUNCE_SECONDS", "10")),
@@ -1060,6 +1261,13 @@ class AppState:
             count = conn.execute("SELECT COUNT(*) FROM llm_providers").fetchone()[0]
             if count == 0:
                 self._seed_providers_from_settings(conn, settings_data or {})
+            emb_count = conn.execute(
+                "SELECT COUNT(*) FROM embedding_providers"
+            ).fetchone()[0]
+            if emb_count == 0:
+                self._seed_embedding_providers_from_settings(
+                    conn, settings_data or {}
+                )
             conn.close()
 
         stats_data = _load_json(INDEX_STATS_FILE, None)
@@ -1132,6 +1340,92 @@ class AppState:
                 " is_main, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
                 (fast_id, "Fast", fast_url, fast_model, fast_key, now, now)
             )
+        conn.commit()
+
+    def _seed_embedding_providers_from_settings(
+        self, conn, settings_data: dict,
+    ) -> None:
+        """One-shot backfill for the embedding providers table.
+
+        Mirrors `_seed_providers_from_settings` for the embedding
+        side: in the pre-providers version of SimpleFileManager
+        AppSettings carried `embedding_base_url / embedding_model /
+        embedding_dim / embedding_api_key` for the indexer, plus
+        optional `search_base_url / search_model / search_api_key`
+        for the dedicated search path. AppSettings no longer holds
+        these fields, so the persisted settings.json will be empty
+        for them; the values that actually drive a deployment now
+        live in .env. The seeder reads settings.json first (so a
+        mid-upgrade deployment doesn't lose its endpoint) and falls
+        back to the env vars that LLMServices/serve.sh already
+        passes through.
+
+        Runs inside the caller's lock. Idempotent — the caller
+        skips when the table is non-empty.
+        """
+        import time as _t
+        now = int(_t.time() * 1000)
+        # Indexer: required. settings.json wins; env vars backfill
+        # when settings.json was written before the field removal.
+        idx_url = (
+            settings_data.get("embedding_base_url", "")
+            or os.getenv("EMBEDDING_BASE_URL", "")
+        )
+        idx_model = (
+            settings_data.get("embedding_model", "")
+            or os.getenv("EMBEDDING_MODEL", "")
+        )
+        idx_dim = (
+            settings_data.get("embedding_dim", "")
+            or os.getenv("EMBEDDING_DIM", "AUTO")
+        )
+        idx_key = (
+            settings_data.get("embedding_api_key", "")
+            or os.getenv("EMBEDDING_API_KEY", "")
+        )
+        if idx_url and idx_model:
+            idx_id = uuid.uuid4().hex
+            conn.execute(
+                "INSERT INTO embedding_providers (id, name, base_url, model, dim,"
+                " api_key, is_index, is_search, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?)",
+                (idx_id, "Indexer", idx_url, idx_model, idx_dim,
+                 idx_key, now, now)
+            )
+        # Search: optional. Only seed a second row when the search
+        # URL/model differ from the index row — otherwise sharing
+        # the index row is the right behaviour and an extra row
+        # would just be a duplicate.
+        search_url = (
+            settings_data.get("search_base_url", "")
+            or os.getenv("EMBEDDING_SEARCH_URL", "")
+        )
+        search_model = (
+            settings_data.get("search_model", "")
+            or os.getenv("EMBEDDING_SEARCH_MODEL", "")
+        )
+        search_key = (
+            settings_data.get("search_api_key", "")
+            or os.getenv("EMBEDDING_SEARCH_API_KEY", "")
+        )
+        if search_url and search_model and (
+            search_url != idx_url or search_model != idx_model
+        ):
+            search_id = uuid.uuid4().hex
+            conn.execute(
+                "INSERT INTO embedding_providers (id, name, base_url, model, dim,"
+                " api_key, is_index, is_search, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, 0, 1, ?, ?)",
+                (search_id, "Search", search_url, search_model, idx_dim,
+                 search_key, now, now)
+            )
+            # The indexer is no longer the search's only backend; flip
+            # the search role onto the dedicated row.
+            if idx_url and idx_model:
+                conn.execute(
+                    "UPDATE embedding_providers SET is_search = 1"
+                    " WHERE id = ?", (search_id,)
+                )
         conn.commit()
 
     def _persist_settings(self):
@@ -1234,10 +1528,17 @@ class AppState:
 
     def get_rag_service(self) -> RAGService:
         if self._rag_service is None:
+            # Indexer is the is_index=1 row. The RAG service is what
+            # the indexer runs on, so it shares that endpoint. When no
+            # provider is configured the user gets a friendly error
+            # from the RAG query endpoint instead of a 500.
+            idx = self.get_chat_history().get_index_embedding_provider()
+            if idx is None:
+                raise RuntimeError(
+                    "没有可用的 embedding provider；请到 /settings 添加"
+                )
             embedding_svc = EmbeddingService(
-                api_key=self._settings.embedding_api_key,
-                base_url=self._settings.embedding_base_url,
-                model=self._settings.embedding_model,
+                api_key=idx.api_key, base_url=idx.base_url, model=idx.model,
             )
             db_path = str(DATA_DIR / "vector_db")
             self._rag_service = RAGService(
@@ -1249,22 +1550,46 @@ class AppState:
     def get_search_embedding_service(self) -> EmbeddingService:
         """Embedding client for the user-facing search/chat path.
 
-        Reads EMBEDDING_SEARCH_* (or falls back to EMBEDDING_* when unset),
-        so the same settings that drive the indexer also work on machines
-        without a separate GPU embedder. The search embedder is created
-        lazily and cached on the AppState so per-query HTTP connections are
-        reused; the cache is invalidated by update_settings().
+        Reads the is_search=1 row (falling back to the is_index row
+        when search is unset, so cloud-only deployments share one
+        endpoint). Created lazily and cached on the AppState so
+        per-query HTTP connections are reused; the cache is
+        invalidated by `invalidate_embedding_caches()` whenever the
+        underlying provider row is mutated.
         """
         if getattr(self, "_search_embedding_service", None) is None:
-            s = self._settings
-            # Empty string means "not configured" -> fall back to indexer URL.
-            base_url = s.search_base_url or s.embedding_base_url
-            api_key = s.search_api_key or s.embedding_api_key
-            model = s.search_model or s.embedding_model
+            chat_svc = self.get_chat_history()
+            prov = chat_svc.get_search_embedding_provider()
+            if prov is None:
+                raise RuntimeError(
+                    "没有可用的 embedding provider；请到 /settings 添加"
+                )
             self._search_embedding_service = EmbeddingService(
-                api_key=api_key, base_url=base_url, model=model,
+                api_key=prov.api_key,
+                base_url=prov.base_url,
+                model=prov.model,
             )
         return self._search_embedding_service
+
+    def invalidate_embedding_caches(self) -> None:
+        """Drop the cached EmbeddingService instances.
+
+        Called after any update_embedding_provider / set-role / delete
+        so a fresh request picks up the new endpoint. The RAG service
+        (which embeds the indexer-side query vector) and the search
+        service share the cache surface; both are dropped together.
+        """
+        self._search_embedding_service = None
+        # Don't drop _rag_service here — the RAG service also owns the
+        # LanceDB handle, which is expensive to re-open. The indexer's
+        # base_url/model only matters at embed() time, so drop the
+        # inner service instead.
+        if self._rag_service is not None:
+            idx = self.get_chat_history().get_index_embedding_provider()
+            if idx is not None:
+                self._rag_service.embedding_service = EmbeddingService(
+                    api_key=idx.api_key, base_url=idx.base_url, model=idx.model,
+                )
 
     def get_chat_history(self) -> ChatHistoryService:
         if self._chat_history is None:

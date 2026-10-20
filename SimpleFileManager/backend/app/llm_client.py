@@ -169,10 +169,20 @@ def get_embeddings(
     """
     if not texts:
         return []
-    settings = state.get_settings()
-    base_url = base_url or settings.embedding_base_url
-    api_key = api_key or settings.embedding_api_key
-    model = model or settings.embedding_model
+    # Fall back to the is_index row when callers omit fields. The
+    # search path always passes its own values, so the fallback
+    # only matters for callers that don't know which provider to
+    # use (probes, the dim detector). The previous default read
+    # AppSettings, but those fields moved to the providers table
+    # in the embedding refactor.
+    if not base_url or not api_key or not model:
+        idx = state.get_chat_history().get_index_embedding_provider()
+        if idx is not None:
+            base_url = base_url or idx.base_url
+            api_key = api_key or idx.api_key
+            model = model or idx.model
+    if not (base_url and model):
+        raise RuntimeError("没有可用的 embedding provider；请到 /settings 添加")
     client = _get_embedding_client(base_url, api_key)
     resp = _with_retry(client.embeddings.create, input=texts, model=model)
     by_index = {item.index: item.embedding for item in resp.data}

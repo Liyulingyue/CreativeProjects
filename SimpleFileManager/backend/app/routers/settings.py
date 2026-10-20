@@ -10,21 +10,14 @@ settings = APIRouter()
 
 @settings.get("")
 def get_settings() -> AppSettings:
-    s = state.get_settings()
-    # LLM credentials live in the providers table now; only the
-    # embedding/search API keys are still here, and they need the
-    # usual "***" mask so the saved value never goes over the wire.
-    s.embedding_api_key = "***" if s.embedding_api_key else ""
-    s.search_api_key = "***" if s.search_api_key else ""
-    return s
+    # Both LLM and embedding credentials now live in their own
+    # providers tables (llm_providers / embedding_providers). Nothing
+    # sensitive in AppSettings needs the "***" mask any more.
+    return state.get_settings()
 
 
 @settings.post("")
 def update_settings(updates: dict) -> AppSettings:
-    if "embedding_api_key" in updates and updates["embedding_api_key"] == "***":
-        updates.pop("embedding_api_key")
-    if "search_api_key" in updates and updates["search_api_key"] == "***":
-        updates.pop("search_api_key")
     return state.update_settings(updates)
 
 
@@ -139,38 +132,63 @@ def _probe_llm() -> tuple[bool, str]:
 
 
 def _probe_embedding() -> tuple[bool, str]:
-    settings_data = state.get_settings()
+    """Probe the is_index embedding provider. When the row declares
+    'AUTO' we just report the detected dim; when it's pinned the
+    probe verifies the actual response dim matches what the row
+    declared, so a misconfigured row is loud rather than silent."""
+    chat_svc = state.get_chat_history()
+    idx = chat_svc.get_index_embedding_provider()
+    if idx is None:
+        return False, "未配置（请到 /settings 添加 provider）"
     try:
         from ..llm_client import get_embedding
-        vec = get_embedding("ping")
+        vec = get_embedding(
+            "ping",
+            base_url=idx.base_url,
+            api_key=idx.api_key,
+            model=idx.model,
+        )
         dim = len(vec)
-        actual = _dim_matches(dim, settings_data.embedding_dim)
+        actual = _dim_matches(dim, idx.dim)
         if not actual:
-            return False, f"维度不匹配：服务返回 {dim}，设置为 {settings_data.embedding_dim}，请修改 EMBEDDING_DIM"
+            return False, f"维度不匹配：服务返回 {dim}，设置为 {idx.dim}，请修改 dim"
         return True, f"维度 {dim}"
     except Exception as e:
         return False, str(e)[:200]
 
 
 def _probe_search_embedding() -> tuple[bool, str]:
-    """Probe the search-time embedding path. Skips the network call
-    when no search endpoint is configured (falls back to the main
-    indexer endpoint, which is fine for cloud-only deployments that
-    don't have a dedicated low-latency slot). When configured but
-    unreachable, returns ok=False with the upstream error so the
-    operator can tell "not configured" from "service down"."""
-    settings_data = state.get_settings()
-    if not settings_data.search_base_url:
-        return True, "未配置（共用主 embedding）"
+    """Probe the search-time embedding path. When the search role
+    is empty the system falls back to the index row, so we report
+    that explicitly; when the dedicated search row exists we
+    verify it answers. The dim must match the index row because
+    both share the same vector space — a mismatch surfaces as
+    probe failure rather than a runtime crash."""
+    chat_svc = state.get_chat_history()
+    idx = chat_svc.get_index_embedding_provider()
+    search = chat_svc.get_search_embedding_provider()
+    if search is None:
+        return True, "未配置（共用 index）"
+    if idx is not None and search.id == idx.id:
+        return True, "未配置（共用 index）"
     try:
         from ..llm_client import get_embedding
         vec = get_embedding(
             "ping",
-            base_url=settings_data.search_base_url,
-            api_key=settings_data.search_api_key,
-            model=settings_data.search_model,
+            base_url=search.base_url,
+            api_key=search.api_key,
+            model=search.model,
         )
         dim = len(vec)
+        if idx is not None:
+            try:
+                declared = int(idx.dim)
+            except (TypeError, ValueError):
+                declared = 0
+            if declared and dim != declared:
+                return False, (
+                    f"维度不匹配：search 服务返回 {dim}，index 设置为 {idx.dim}，两者必须一致"
+                )
         return True, f"维度 {dim}"
     except Exception as e:
         return False, str(e)[:200]
