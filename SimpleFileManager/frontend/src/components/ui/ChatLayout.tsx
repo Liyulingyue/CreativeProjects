@@ -321,13 +321,13 @@ export function ChatLayout({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const currentSession = sessions.find(s => s.id === currentSessionId);
 
-  // Look up the model name for a provider id. Used by the persisted
-  // bubble to render "via <model>". Unknown id (legacy rows,
+  // Look up the provider name for a provider id. Used by the persisted
+  // bubble to render "via <name>". Unknown id (legacy rows,
   // deleted providers) falls back to null so the badge is hidden
   // rather than showing a stale name.
-  const modelNameFor = (id: string | null | undefined): string | undefined => {
+  const providerNameFor = (id: string | null | undefined): string | undefined => {
     if (!id || !providers) return undefined;
-    return providers.find(p => p.id === id)?.model;
+    return providers.find(p => p.id === id)?.name;
   };
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [currentSession?.messages]);
@@ -452,8 +452,8 @@ export function ChatLayout({
                       // them out of view.
                       providerName={
                         msg.provider_id
-                          ? modelNameFor(msg.provider_id)
-                          : (msg.use_fast ? '350M' : undefined)
+                          ? providerNameFor(msg.provider_id)
+                          : (msg.use_fast ? 'Fast' : undefined)
                       }
                     />
                   )}
@@ -553,11 +553,10 @@ export function ChatLayout({
               className="flex-1 min-w-0 px-3 py-2 rounded-lg border border-slate-200 text-base sm:text-sm resize-none focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 transition-all"
               style={{ maxHeight: '150px' }}
             />
-            {/* Provider dropdown. Lists every configured LLM by
-                model name. The first option resolves server-side to
-                the singleton is_main=1 row. If two providers share
-                a model the operator picked from /settings will see
-                duplicate options — out of scope for the chat UI. */}
+            {/* Provider dropdown. Shows provider.name (the friendly alias
+                set in /settings) as the option label, with model name as
+                subtitle. The __main__ option resolves server-side to the
+                singleton is_main=1 row. */}
             {onProviderChange && providers !== undefined && (
               <select
                 value={providerId ?? '__main__'}
@@ -569,13 +568,13 @@ export function ChatLayout({
                 {(() => {
                   const main = providers.find(p => p.is_main);
                   return (
-                    <option value="__main__">
-                      {main ? main.model : 'main (默认)'}
+                    <option value="__main__" title={main?.model}>
+                      {main ? `${main.name} (${main.model})` : 'main (默认)'}
                     </option>
                   );
                 })()}
                 {providers.filter(p => !p.is_main).map(p => (
-                  <option key={p.id} value={p.id}>{p.model}</option>
+                  <option key={p.id} value={p.id} title={p.model}>{p.name} ({p.model})</option>
                 ))}
               </select>
             )}
