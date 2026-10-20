@@ -35,6 +35,10 @@ export interface SearchResult {
  * most one provider carries it, and the chat UI uses it as the
  * default for newly-created sessions. The chat dropdown lets the
  * user pick any provider (main or otherwise) per turn.
+ *
+ * `max_tokens` is an optional per-provider output cap. When set, the
+ * effective limit is min(provider.max_tokens, system_max_tokens). When
+ * null the system ceiling applies by itself.
  */
 export interface LLMProvider {
   id: string;
@@ -43,6 +47,7 @@ export interface LLMProvider {
   model: string;
   api_key: string;
   is_main: boolean;
+  max_tokens: number | null;
   created_at: number;
   updated_at: number;
 }

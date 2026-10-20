@@ -136,6 +136,11 @@ class LLMProvider(BaseModel):
     new sessions always have somewhere to land. The UI treats the
     main as the default for fresh sessions; the user can pick a
     different one per turn via the chat dropdown.
+
+    `max_tokens` is an optional per-provider output cap. When set, the
+    effective limit is min(provider.max_tokens, system_max_tokens) so
+    the provider cap never exceeds the system ceiling but can tighten
+    it further. When null the system ceiling applies by itself.
     """
     id: str
     name: str
@@ -143,6 +148,7 @@ class LLMProvider(BaseModel):
     model: str
     api_key: str = ""
     is_main: bool = False
+    max_tokens: Optional[int] = None
     created_at: int = 0
     updated_at: int = 0
 
@@ -152,6 +158,7 @@ class LLMProviderCreate(BaseModel):
     base_url: str
     model: str
     api_key: str = ""
+    max_tokens: Optional[int] = None
 
 
 class LLMProviderUpdate(BaseModel):
@@ -162,6 +169,7 @@ class LLMProviderUpdate(BaseModel):
     # The router enforces the singleton: setting is_main=True unmarks
     # the rest of the table in the same transaction.
     is_main: Optional[bool] = None
+    max_tokens: Optional[int] = None
 
 
 class EmbeddingProvider(BaseModel):

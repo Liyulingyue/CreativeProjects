@@ -98,6 +98,7 @@ function ProviderRow({
     base_url: provider.base_url,
     model: provider.model,
     api_key: provider.api_key,
+    max_tokens: provider.max_tokens ?? '',
   });
   const [busy, setBusy] = useState(false);
 
@@ -113,6 +114,7 @@ function ProviderRow({
         base_url: draft.base_url.trim(),
         model: draft.model.trim(),
         api_key: draft.api_key,
+        max_tokens: draft.max_tokens === '' ? undefined : Number(draft.max_tokens),
       });
       setEditing(false);
     } catch (e) {
@@ -130,12 +132,13 @@ function ProviderRow({
           </div>
           <input className={inputClass} placeholder="Base URL（OpenAI 兼容）" value={draft.base_url} onChange={e => setDraft({ ...draft, base_url: e.target.value })} />
           <input type="password" className={inputClass} placeholder="API Key（本地可留空）" value={draft.api_key} onChange={e => setDraft({ ...draft, api_key: e.target.value })} />
+          <input type="number" className={inputClass} placeholder="最大生成 tokens（留空使用系统上限）" value={draft.max_tokens} onChange={e => setDraft({ ...draft, max_tokens: e.target.value })} min={1} />
           <div className="flex items-center gap-2">
             <button onClick={handleSave} disabled={busy}
               className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-700 disabled:opacity-40 transition-colors">
               {busy ? '保存中...' : '保存'}
             </button>
-            <button onClick={() => { setEditing(false); setDraft({ name: provider.name, base_url: provider.base_url, model: provider.model, api_key: provider.api_key }); }}
+            <button onClick={() => { setEditing(false); setDraft({ name: provider.name, base_url: provider.base_url, model: provider.model, api_key: provider.api_key, max_tokens: provider.max_tokens ?? '' }); }}
               className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 text-xs font-medium hover:bg-slate-200 transition-colors">
               取消
             </button>
@@ -148,6 +151,11 @@ function ProviderRow({
               <span className="font-medium text-sm text-slate-800 truncate">{provider.name}</span>
               {provider.is_main && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 font-medium flex-shrink-0">MAIN</span>
+              )}
+              {provider.max_tokens && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 font-medium flex-shrink-0" title={`上限 ${provider.max_tokens} tokens`}>
+                  max {provider.max_tokens}
+                </span>
               )}
             </div>
             <div className="text-xs text-slate-500 font-mono truncate mt-0.5">{provider.model}</div>
@@ -187,7 +195,7 @@ function ProviderRow({
 
 function AddProviderForm({ onAdded, onCancel }: { onAdded: (p: LLMProvider) => void; onCancel: () => void }) {
   const { toast } = useToast();
-  const [draft, setDraft] = useState<LLMProviderCreate>({ name: '', base_url: '', model: '', api_key: '' });
+  const [draft, setDraft] = useState<LLMProviderCreate>({ name: '', base_url: '', model: '', api_key: '', max_tokens: null as number | null });
   const [busy, setBusy] = useState(false);
 
   const handleAdd = async () => {
@@ -198,7 +206,7 @@ function AddProviderForm({ onAdded, onCancel }: { onAdded: (p: LLMProvider) => v
     setBusy(true);
     try {
       const created = await apiCreateProvider({
-        name: draft.name.trim(), base_url: draft.base_url.trim(), model: draft.model.trim(), api_key: draft.api_key,
+        name: draft.name.trim(), base_url: draft.base_url.trim(), model: draft.model.trim(), api_key: draft.api_key, max_tokens: draft.max_tokens,
       });
       onAdded(created);
     } catch (e) {
@@ -214,6 +222,7 @@ function AddProviderForm({ onAdded, onCancel }: { onAdded: (p: LLMProvider) => v
       </div>
       <input className={inputClass} placeholder="Base URL（OpenAI 兼容，如 http://127.0.0.1:9010/v1）" value={draft.base_url} onChange={e => setDraft({ ...draft, base_url: e.target.value })} />
       <input type="password" className={inputClass} placeholder="API Key（本地服务可留空）" value={draft.api_key} onChange={e => setDraft({ ...draft, api_key: e.target.value })} />
+      <input type="number" className={inputClass} placeholder="最大生成 tokens（留空使用系统上限）" value={draft.max_tokens ?? ''} onChange={e => setDraft({ ...draft, max_tokens: e.target.value ? Number(e.target.value) : null })} min={1} />
       <div className="flex items-center gap-2">
         <button onClick={handleAdd} disabled={busy}
           className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-700 disabled:opacity-40 transition-colors">

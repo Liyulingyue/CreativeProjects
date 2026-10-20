@@ -115,11 +115,16 @@ def chat_completion(
             raise RuntimeError("No LLM provider configured (add one in /settings)")
     client = _get_client(provider)
     settings = state.get_settings()
+    system_cap = max_tokens or settings.max_output_tokens
+    if provider.max_tokens:
+        effective_max = min(provider.max_tokens, system_cap)
+    else:
+        effective_max = system_cap
     kwargs: dict = {
         "model": provider.model,
         "messages": messages,
         "temperature": temperature,
-        "max_tokens": max_tokens or settings.max_output_tokens,
+        "max_tokens": effective_max,
     }
     if tools:
         kwargs["tools"] = tools
@@ -230,11 +235,16 @@ def chat_completion_stream(
             raise RuntimeError("No LLM provider configured (add one in /settings)")
     client = _get_client(provider)
     settings = state.get_settings()
+    system_cap = max_tokens or settings.max_output_tokens
+    if provider.max_tokens:
+        effective_max = min(provider.max_tokens, system_cap)
+    else:
+        effective_max = system_cap
     kwargs: dict = {
         "model": provider.model,
         "messages": messages,
         "temperature": temperature,
-        "max_tokens": max_tokens or settings.max_output_tokens,
+        "max_tokens": effective_max,
         "stream": True,
     }
     if tools:

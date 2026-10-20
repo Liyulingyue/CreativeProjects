@@ -35,7 +35,8 @@ def create_provider(req: LLMProviderCreate) -> LLMProvider:
     if not req.name.strip() or not req.base_url.strip() or not req.model.strip():
         raise HTTPException(status_code=400, detail="name / base_url / model 不能为空")
     return state.get_chat_history().create_provider(
-        req.name.strip(), req.base_url.strip(), req.model.strip(), req.api_key
+        req.name.strip(), req.base_url.strip(), req.model.strip(), req.api_key,
+        max_tokens=req.max_tokens,
     )
 
 
@@ -62,6 +63,7 @@ def update_provider(provider_id: str, req: LLMProviderUpdate) -> LLMProvider:
         model=req.model,
         api_key=req.api_key,
         is_main=req.is_main,
+        max_tokens=req.max_tokens,
     )
     if result is None:
         raise HTTPException(status_code=404, detail="provider 不存在")

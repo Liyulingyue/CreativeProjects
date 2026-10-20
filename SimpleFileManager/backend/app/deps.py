@@ -379,10 +379,15 @@ class ChatHistoryService:
                     model TEXT NOT NULL,
                     api_key TEXT DEFAULT '',
                     is_main INTEGER DEFAULT 0,
+                    max_tokens INTEGER,
                     created_at INTEGER,
                     updated_at INTEGER
                 )
             """)
+            # Migrate existing rows: add max_tokens column if missing
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(llm_providers)")]
+            if "max_tokens" not in cols:
+                conn.execute("ALTER TABLE llm_providers ADD COLUMN max_tokens INTEGER")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS chat_sessions (
                     id TEXT PRIMARY KEY,
@@ -483,7 +488,7 @@ class ChatHistoryService:
             # row — the user expects "set as main" to flip the
             # badge, not to jump the row to the top.
             rows = conn.execute(
-                "SELECT id, name, base_url, model, api_key, is_main,"
+                "SELECT id, name, base_url, model, api_key, is_main, max_tokens,"
                 " created_at, updated_at"
                 " FROM llm_providers ORDER BY created_at ASC"
             ).fetchall()
@@ -494,7 +499,7 @@ class ChatHistoryService:
         with self._lock:
             conn = self._get_conn()
             row = conn.execute(
-                "SELECT id, name, base_url, model, api_key, is_main,"
+                "SELECT id, name, base_url, model, api_key, is_main, max_tokens,"
                 " created_at, updated_at"
                 " FROM llm_providers WHERE id = ?",
                 (provider_id,),
@@ -506,7 +511,7 @@ class ChatHistoryService:
         with self._lock:
             conn = self._get_conn()
             row = conn.execute(
-                "SELECT id, name, base_url, model, api_key, is_main,"
+                "SELECT id, name, base_url, model, api_key, is_main, max_tokens,"
                 " created_at, updated_at"
                 " FROM llm_providers WHERE is_main = 1 LIMIT 1"
             ).fetchone()
@@ -514,7 +519,8 @@ class ChatHistoryService:
         return self._row_to_provider(row) if row else None
 
     def create_provider(self, name: str, base_url: str, model: str,
-                        api_key: str = "") -> LLMProvider:
+                        api_key: str = "",
+                        max_tokens: Optional[int] = None) -> LLMProvider:
         provider_id = uuid.uuid4().hex
         now = int(time.time() * 1000)
         with self._lock:
@@ -528,15 +534,17 @@ class ChatHistoryService:
             is_main = 0 if existing_main else 1
             conn.execute(
                 "INSERT INTO llm_providers (id, name, base_url, model, api_key,"
-                " is_main, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                " is_main, max_tokens, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (provider_id, name, base_url, model, api_key,
-                 is_main, now, now)
+                 is_main, max_tokens, now, now)
             )
             conn.commit()
             conn.close()
         return LLMProvider(
             id=provider_id, name=name, base_url=base_url, model=model,
             api_key=api_key, is_main=bool(is_main),
+            max_tokens=max_tokens,
             created_at=now, updated_at=now
         )
 
@@ -545,7 +553,9 @@ class ChatHistoryService:
                          base_url: Optional[str] = None,
                          model: Optional[str] = None,
                          api_key: Optional[str] = None,
-                         is_main: Optional[bool] = None) -> Optional[LLMProvider]:
+                         is_main: Optional[bool] = None,
+                         max_tokens: Optional[int] = None
+                         ) -> Optional[LLMProvider]:
         with self._lock:
             conn = self._get_conn()
             existing = conn.execute(
@@ -564,6 +574,8 @@ class ChatHistoryService:
                 fields.append("model = ?"); values.append(model)
             if api_key is not None:
                 fields.append("api_key = ?"); values.append(api_key)
+            if max_tokens is not None:
+                fields.append("max_tokens = ?"); values.append(max_tokens)
             if is_main is True:
                 # Promote this row and demote everyone else. Both halves
                 # run in the same lock so an external query between the
@@ -603,10 +615,12 @@ class ChatHistoryService:
             return deleted
 
     def _row_to_provider(self, row) -> LLMProvider:
-        pid, name, base_url, model, api_key, is_main, created_at, updated_at = row
+        (pid, name, base_url, model, api_key, is_main, max_tokens,
+         created_at, updated_at) = row
         return LLMProvider(
             id=pid, name=name, base_url=base_url, model=model,
             api_key=api_key or "", is_main=bool(is_main),
+            max_tokens=max_tokens or None,
             created_at=created_at or 0, updated_at=updated_at or 0
         )
 
