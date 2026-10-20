@@ -477,10 +477,15 @@ class ChatHistoryService:
     def list_providers(self) -> list[LLMProvider]:
         with self._lock:
             conn = self._get_conn()
+            # Sort by creation order only. The is_main flag is
+            # surfaced via the MAIN badge on the row, so reordering
+            # when main flips would only move an already-marked
+            # row — the user expects "set as main" to flip the
+            # badge, not to jump the row to the top.
             rows = conn.execute(
                 "SELECT id, name, base_url, model, api_key, is_main,"
                 " created_at, updated_at"
-                " FROM llm_providers ORDER BY is_main DESC, created_at ASC"
+                " FROM llm_providers ORDER BY created_at ASC"
             ).fetchall()
             conn.close()
         return [self._row_to_provider(r) for r in rows]
@@ -799,11 +804,16 @@ class ChatHistoryService:
     def list_embedding_providers(self) -> list[EmbeddingProvider]:
         with self._lock:
             conn = self._get_conn()
+            # Sort by creation order only. The roles (is_index /
+            # is_search) are surfaced via badges on each row, so
+            # reordering the list when a role flips would only
+            # move the visual position of an already-marked row,
+            # which is jarring — the user expects "set as index"
+            # to flip a badge, not to jump the row to the top.
             rows = conn.execute(
                 "SELECT id, name, base_url, model, dim, api_key,"
                 " is_index, is_search, created_at, updated_at"
-                " FROM embedding_providers"
-                " ORDER BY is_index DESC, is_search DESC, created_at ASC"
+                " FROM embedding_providers ORDER BY created_at ASC"
             ).fetchall()
             conn.close()
         return [self._row_to_embedding_provider(r) for r in rows]
