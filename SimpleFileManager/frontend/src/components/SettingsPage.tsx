@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { fetchSettings, updateSettings, testConnections, createProvider as apiCreateProvider } from '../api';
+import { fetchSettings, updateSettings, testConnections, createProvider as apiCreateProvider, createEmbeddingProvider as apiCreateEmbProvider } from '../api';
 import { changePassword, checkAuthStatus } from '../auth';
 import { useToast } from './ui/Toast';
 import { Icon } from './ui/Icon';
-import type { AppSettings, LLMProvider, LLMProviderCreate, LLMProviderUpdate } from '../types';
+import type { AppSettings, EmbeddingProvider, EmbeddingProviderCreate, EmbeddingProviderUpdate, LLMProvider, LLMProviderCreate, LLMProviderUpdate } from '../types';
 import { useProviders } from '../hooks/useProviders';
+import { useEmbeddingProviders } from '../hooks/useEmbeddingProviders';
 
 interface ProbeResult { ok: boolean; detail?: string; latency_ms?: number; }
 
@@ -226,6 +227,191 @@ function AddProviderForm({ onAdded, onCancel }: { onAdded: (p: LLMProvider) => v
   );
 }
 
+/**
+ * One embedding provider row. Two role buttons ("Set as Index" /
+ * "Set as Search") sit on the row next to Edit / Delete, mirroring
+ * the LLM ProviderRow's "Set as main" pattern. Both roles can be
+ * on at once (a single endpoint that serves both the indexer and
+ * the search path); Index is required and refused-by-server when
+ * the row is the only is_index, while Search is genuinely optional.
+ */
+function EmbeddingProviderRow({
+  provider, canDelete, onSave, onDelete, onSetIndex, onUnsetIndex, onSetSearch, onUnsetSearch,
+}: {
+  provider: EmbeddingProvider;
+  canDelete: boolean;
+  onSave: (patch: EmbeddingProviderUpdate) => Promise<void>;
+  onDelete: () => Promise<void>;
+  onSetIndex: () => Promise<void>;
+  onUnsetIndex: () => Promise<void>;
+  onSetSearch: () => Promise<void>;
+  onUnsetSearch: () => Promise<void>;
+}) {
+  const { toast } = useToast();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState({
+    name: provider.name,
+    base_url: provider.base_url,
+    model: provider.model,
+    dim: provider.dim,
+    api_key: provider.api_key,
+  });
+  const [busy, setBusy] = useState(false);
+
+  const handleSave = async () => {
+    if (!draft.name.trim() || !draft.base_url.trim() || !draft.model.trim()) {
+      toast('名称 / Base URL / 模型名称 不能为空', 'error');
+      return;
+    }
+    setBusy(true);
+    try {
+      await onSave({
+        name: draft.name.trim(),
+        base_url: draft.base_url.trim(),
+        model: draft.model.trim(),
+        dim: draft.dim.trim() || 'AUTO',
+        api_key: draft.api_key,
+      });
+      setEditing(false);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : '保存失败', 'error');
+    } finally { setBusy(false); }
+  };
+
+  const runRole = async (label: string, fn: () => Promise<void>) => {
+    try { await fn(); toast(`${provider.name} → ${label}`, 'success'); }
+    catch (e) { toast(e instanceof Error ? e.message : '操作失败', 'error'); }
+  };
+
+  return (
+    <div className={`rounded-lg border ${provider.is_index ? 'border-violet-300 bg-violet-50/30' : 'border-slate-200 bg-white'} p-3`}>
+      {editing ? (
+        <div className="space-y-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <input className={inputClass} placeholder="名称（仅显示用）" value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} />
+            <input className={inputClass} placeholder="模型名称" value={draft.model} onChange={e => setDraft({ ...draft, model: e.target.value })} />
+          </div>
+          <input className={inputClass} placeholder="Base URL（OpenAI 兼容）" value={draft.base_url} onChange={e => setDraft({ ...draft, base_url: e.target.value })} />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <input className={inputClass} placeholder="维度（AUTO 或具体数字，如 768）" value={draft.dim} onChange={e => setDraft({ ...draft, dim: e.target.value })} />
+            <input type="password" className={inputClass} placeholder="API Key（本地可留空）" value={draft.api_key} onChange={e => setDraft({ ...draft, api_key: e.target.value })} />
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={handleSave} disabled={busy}
+              className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-700 disabled:opacity-40 transition-colors">
+              {busy ? '保存中...' : '保存'}
+            </button>
+            <button onClick={() => { setEditing(false); setDraft({ name: provider.name, base_url: provider.base_url, model: provider.model, dim: provider.dim, api_key: provider.api_key }); }}
+              className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 text-xs font-medium hover:bg-slate-200 transition-colors">
+              取消
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-start gap-3">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-medium text-sm text-slate-800 truncate">{provider.name}</span>
+              {provider.is_index && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 font-medium flex-shrink-0">INDEX</span>
+              )}
+              {provider.is_search && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 font-medium flex-shrink-0">SEARCH</span>
+              )}
+            </div>
+            <div className="text-xs text-slate-500 font-mono truncate mt-0.5">{provider.model} <span className="text-slate-400">· dim {provider.dim}</span></div>
+            <div className="text-[11px] text-slate-400 font-mono truncate mt-0.5">{provider.base_url}</div>
+          </div>
+          <div className="flex items-center gap-1 flex-shrink-0 flex-wrap justify-end">
+            {provider.is_index ? (
+              <button onClick={() => runRole('取消 Index', onUnsetIndex)} className="px-2 py-1 rounded text-xs text-violet-700 hover:bg-violet-50 transition-colors">
+                取消 Index
+              </button>
+            ) : (
+              <button onClick={() => runRole('设为 Index', onSetIndex)} className="px-2 py-1 rounded text-xs text-violet-700 hover:bg-violet-50 transition-colors">
+                设为 Index
+              </button>
+            )}
+            {provider.is_search ? (
+              <button onClick={() => runRole('取消 Search', onUnsetSearch)} className="px-2 py-1 rounded text-xs text-slate-600 hover:bg-slate-100 transition-colors">
+                取消 Search
+              </button>
+            ) : (
+              <button onClick={() => runRole('设为 Search', onSetSearch)} className="px-2 py-1 rounded text-xs text-slate-600 hover:bg-slate-100 transition-colors">
+                设为 Search
+              </button>
+            )}
+            <button onClick={() => setEditing(true)} className="px-2 py-1 rounded text-xs text-slate-600 hover:bg-slate-100 transition-colors">
+              编辑
+            </button>
+            <button
+              onClick={async () => {
+                if (!canDelete) {
+                  toast('这是唯一的 INDEX provider，不能删除', 'error');
+                  return;
+                }
+                if (!window.confirm(`删除 embedding provider "${provider.name}"?`)) return;
+                try { await onDelete(); toast('已删除', 'success'); } catch (e) { toast(e instanceof Error ? e.message : '删除失败', 'error'); }
+              }}
+              disabled={!canDelete}
+              className="px-2 py-1 rounded text-xs text-red-500 hover:bg-red-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              title={canDelete ? '删除' : '唯一的 INDEX provider 不能删除'}
+            >
+              删除
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AddEmbeddingProviderForm({ onAdded, onCancel }: { onAdded: (p: EmbeddingProvider) => void; onCancel: () => void }) {
+  const { toast } = useToast();
+  const [draft, setDraft] = useState<EmbeddingProviderCreate>({ name: '', base_url: '', model: '', dim: 'AUTO', api_key: '' });
+  const [busy, setBusy] = useState(false);
+
+  const handleAdd = async () => {
+    if (!draft.name.trim() || !draft.base_url.trim() || !draft.model.trim()) {
+      toast('名称 / Base URL / 模型名称 不能为空', 'error');
+      return;
+    }
+    setBusy(true);
+    try {
+      const created = await apiCreateEmbProvider({
+        name: draft.name.trim(), base_url: draft.base_url.trim(), model: draft.model.trim(),
+        dim: (draft.dim ?? 'AUTO').trim() || 'AUTO', api_key: draft.api_key,
+      });
+      onAdded(created);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : '创建失败', 'error');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50/50 p-3 space-y-2">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <input className={inputClass} placeholder="名称（仅显示用，如 Indexer / Search）" value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} autoFocus />
+        <input className={inputClass} placeholder="模型名称" value={draft.model} onChange={e => setDraft({ ...draft, model: e.target.value })} />
+      </div>
+      <input className={inputClass} placeholder="Base URL（OpenAI 兼容，如 http://127.0.0.1:9011/v1/embeddings）" value={draft.base_url} onChange={e => setDraft({ ...draft, base_url: e.target.value })} />
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <input className={inputClass} placeholder="维度（AUTO 或具体数字，如 768）" value={draft.dim} onChange={e => setDraft({ ...draft, dim: e.target.value })} />
+        <input type="password" className={inputClass} placeholder="API Key（本地可留空）" value={draft.api_key} onChange={e => setDraft({ ...draft, api_key: e.target.value })} />
+      </div>
+      <div className="flex items-center gap-2">
+        <button onClick={handleAdd} disabled={busy}
+          className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-700 disabled:opacity-40 transition-colors">
+          {busy ? '创建中...' : '创建'}
+        </button>
+        <button onClick={onCancel} className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 text-xs font-medium hover:bg-slate-200 transition-colors">
+          取消
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function SettingsPage() {
   const { toast } = useToast();
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -239,6 +425,8 @@ export function SettingsPage() {
   const [isTesting, setIsTesting] = useState(false);
   const [showAddProvider, setShowAddProvider] = useState(false);
   const providersApi = useProviders();
+  const embProvidersApi = useEmbeddingProviders();
+  const [showAddEmbProvider, setShowAddEmbProvider] = useState(false);
   // Snapshot of the settings as loaded from the server, so the save
   // handler can tell which fields actually changed since page open. The
   // thinking toggle in particular needs a diff because the save
@@ -265,7 +453,9 @@ export function SettingsPage() {
     setIsSaving(true); setMessage(null);
     try {
       const saved = await updateSettings(settings);
-      setSettings({ ...settings, embedding_api_key: saved.embedding_api_key });
+      // Embedding credentials live in the providers table now; nothing
+      // to mask back into local state on save.
+      setSettings(saved);
       // LFM does not support request-level thinking-off, so flipping the
       // toggle forces a llama-server restart that takes 10-20s while the
       // 14 GB GGUF reloads. Surface that explicitly so the user doesn't
@@ -372,41 +562,59 @@ export function SettingsPage() {
 
           <Card
             icon="database" tone="text-violet-500"
-            title="Embedding（向量化检索）"
-            action={probes?.embedding ? <ProbeBadge result={probes.embedding} /> : undefined}
+            title="Embedding Providers（向量化检索）"
+            action={
+              <div className="flex items-center gap-1.5">
+                {probes?.embedding ? <ProbeBadge result={probes.embedding} /> : null}
+                {probes?.embedding_search && embProvidersApi.searchProvider && embProvidersApi.indexProvider?.id !== embProvidersApi.searchProvider.id ? (
+                  <ProbeBadge result={probes.embedding_search} />
+                ) : null}
+              </div>
+            }
           >
-            <div className="space-y-3">
-              <p className="text-xs text-slate-400">
-                两个端点共享同一套向量空间（dim 必须一致）。
-                Indexer 在后台跑，Search 在用户查询时跑——后者通常指向 GPU 端点避免抢 A520 LITTLE 资源。
-              </p>
-              <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-slate-800">Indexer</span>
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 font-medium">必填</span>
+            {embProvidersApi.isLoading ? (
+              <div className="text-xs text-slate-400">加载中...</div>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-xs text-slate-400">
+                  <strong className="text-slate-500">Index</strong> 由后台索引器读取，<strong className="text-slate-500">Search</strong> 由用户查询路径读取；
+                  Search 留空时自动回退到 Index。同一向量空间下两端的 dim 必须一致，
+                  切到不同 dim 的 provider 需要重新建索引。
+                </p>
+                <div className="space-y-2">
+                  {embProvidersApi.providers.map(p => (
+                    <EmbeddingProviderRow
+                      key={p.id}
+                      provider={p}
+                      canDelete={!(p.is_index && embProvidersApi.providers.filter(x => x.is_index).length <= 1)}
+                      onSave={(patch) => embProvidersApi.update(p.id, patch).then(() => undefined)}
+                      onDelete={() => embProvidersApi.remove(p.id).then(() => undefined)}
+                      onSetIndex={() => embProvidersApi.update(p.id, { is_index: true }).then(() => undefined)}
+                      onUnsetIndex={() => embProvidersApi.update(p.id, { is_index: false }).then(() => undefined)}
+                      onSetSearch={() => embProvidersApi.update(p.id, { is_search: true }).then(() => undefined)}
+                      onUnsetSearch={() => embProvidersApi.update(p.id, { is_search: false }).then(() => undefined)}
+                    />
+                  ))}
+                  {embProvidersApi.providers.length === 0 && (
+                    <div className="text-xs text-slate-400 px-1">还没有任何 embedding provider，点击下方"添加"创建一个。</div>
+                  )}
                 </div>
-                <input className={inputClass} placeholder="Base URL（本地默认 http://127.0.0.1:9011/v1）"
-                  value={settings.embedding_base_url} onChange={e => set({ embedding_base_url: e.target.value })} />
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                  <input className={inputClass} placeholder="模型名称" value={settings.embedding_model} onChange={e => set({ embedding_model: e.target.value })} />
-                  <input className={inputClass} placeholder="向量维度（AUTO 或具体数字）" value={settings.embedding_dim} onChange={e => set({ embedding_dim: e.target.value })} />
-                  <input type="password" className={inputClass} placeholder="API Key（可留空）" value={settings.embedding_api_key} onChange={e => set({ embedding_api_key: e.target.value })} />
-                </div>
+                {showAddEmbProvider ? (
+                  <AddEmbeddingProviderForm
+                    onAdded={async () => { await embProvidersApi.refresh(); setShowAddEmbProvider(false); }}
+                    onCancel={() => setShowAddEmbProvider(false)}
+                  />
+                ) : (
+                  <button
+                    onClick={() => setShowAddEmbProvider(true)}
+                    className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-dashed border-slate-300 text-sm text-slate-500 hover:border-indigo-300 hover:text-indigo-600 transition-colors"
+                  >
+                    <Icon name="plus" size={14} />
+                    添加 provider
+                  </button>
+                )}
               </div>
-              <div className="rounded-lg border border-slate-200 bg-slate-50/40 p-3 space-y-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-slate-800">Search</span>
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 font-medium">可选</span>
-                  <span className="text-[11px] text-slate-400">留空则回退 Indexer</span>
-                </div>
-                <input className={inputClass} placeholder="Search Base URL（本地 GPU 端点 http://127.0.0.1:9012/v1）"
-                  value={settings.search_base_url} onChange={e => set({ search_base_url: e.target.value })} />
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <input className={inputClass} placeholder="Search 模型名称（留空跟随 Indexer）" value={settings.search_model} onChange={e => set({ search_model: e.target.value })} />
-                  <input type="password" className={inputClass} placeholder="Search API Key（本地可留空）" value={settings.search_api_key} onChange={e => set({ search_api_key: e.target.value })} />
-                </div>
-              </div>
-            </div>
+            )}
           </Card>
 
           {/* These govern how the configured models behave, so they belong with

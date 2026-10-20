@@ -54,21 +54,47 @@ export type LLMProviderCreate = Omit<LLMProvider, 'id' | 'is_main' | 'created_at
  *  triggers the singleton-promote/demote logic in the service. */
 export type LLMProviderUpdate = Partial<LLMProviderCreate> & { is_main?: boolean };
 
+/**
+ * One configured embedding endpoint. Two role flags hang off the
+ * row: `is_index` (the background indexer reads this, singleton
+ * — at least one row must always carry it) and `is_search`
+ * (the runtime search/chat path reads this, may be empty).
+ * `dim` is the operator-declared dimension; "AUTO" lets the
+ * server probe on first use, an explicit integer pins it so a
+ * dim change requires an explicit (and visible) reindex.
+ */
+export interface EmbeddingProvider {
+  id: string;
+  name: string;
+  base_url: string;
+  model: string;
+  dim: string;
+  api_key: string;
+  is_index: boolean;
+  is_search: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
+/** Payload for POST /api/embedding_providers. */
+export type EmbeddingProviderCreate = Omit<
+  EmbeddingProvider,
+  'id' | 'is_index' | 'is_search' | 'created_at' | 'updated_at' | 'dim'
+> & { dim?: string };
+
+/** Payload for PATCH /api/embedding_providers/{id}. All fields optional;
+ *  is_index / is_search trigger the singleton-promote/demote logic. */
+export type EmbeddingProviderUpdate = Partial<EmbeddingProviderCreate> & {
+  is_index?: boolean;
+  is_search?: boolean;
+};
+
 export interface AppSettings {
-  embedding_api_key: string;
-  embedding_base_url: string;
-  embedding_model: string;
-  embedding_dim: string;
-  /**
-   * Dedicated embedding endpoint for the search/chat path. By default
-   * unset, so a cloud-only deployment keeps working. On this box we
-   * point it at the GPU-backed llama-server (port 9012) so user queries
-   * have a low-latency path that does not queue behind the indexer's
-   * batched work on the A520 LITTLE cores.
-   */
-  search_api_key: string;
-  search_base_url: string;
-  search_model: string;
+  // Embedding endpoints (base_url / model / dim / api_key) and the
+  // dedicated search override moved to the embedding_providers table
+  // (CRUD at /api/embedding_providers, rendered in /settings). Same
+  // shape as the LLM refactor: two role singletons (is_index,
+  // is_search) instead of one.
   index_interval: number;
   auto_index_enabled: boolean;
   index_debounce_seconds: number;

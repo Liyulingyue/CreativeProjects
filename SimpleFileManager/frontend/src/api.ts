@@ -1,4 +1,9 @@
-import type { AgentPlan, AppSettings, AutoIndexStatus, LLMProvider, LLMProviderCreate, LLMProviderUpdate, PlanActionType } from './types';
+import type {
+  AgentPlan, AppSettings, AutoIndexStatus,
+  LLMProvider, LLMProviderCreate, LLMProviderUpdate,
+  EmbeddingProvider, EmbeddingProviderCreate, EmbeddingProviderUpdate,
+  PlanActionType,
+} from './types';
 import { authFetch, getToken as getAuthToken } from './auth';
 
 const API_BASE = '/api';
@@ -348,6 +353,51 @@ export async function setMainProvider(id: string): Promise<LLMProvider> {
     throw new Error(detail);
   }
   return res.json();
+}
+
+// ---- Embedding providers ----
+
+export async function listEmbeddingProviders(): Promise<EmbeddingProvider[]> {
+  const res = await authFetch(`${API_BASE}/embedding_providers`);
+  if (!res.ok) throw new Error('Failed to fetch embedding providers');
+  return res.json();
+}
+
+export async function createEmbeddingProvider(input: EmbeddingProviderCreate): Promise<EmbeddingProvider> {
+  const res = await authFetch(`${API_BASE}/embedding_providers`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    let detail = 'Failed to create embedding provider';
+    try { const body = await res.json(); if (typeof body?.detail === 'string') detail = body.detail; } catch { /* keep default */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+export async function updateEmbeddingProvider(id: string, patch: EmbeddingProviderUpdate): Promise<EmbeddingProvider> {
+  const res = await authFetch(`${API_BASE}/embedding_providers/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    let detail = 'Failed to update embedding provider';
+    try { const body = await res.json(); if (typeof body?.detail === 'string') detail = body.detail; } catch { /* keep default */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+export async function deleteEmbeddingProvider(id: string): Promise<void> {
+  const res = await authFetch(`${API_BASE}/embedding_providers/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    let detail = 'Failed to delete embedding provider';
+    try { const body = await res.json(); if (typeof body?.detail === 'string') detail = body.detail; } catch { /* keep default */ }
+    throw new Error(detail);
+  }
 }
 
 // ---- Agent streaming (SSE) ----
