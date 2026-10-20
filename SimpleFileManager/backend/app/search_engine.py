@@ -86,6 +86,18 @@ class HybridSearchEngine:
         conn.commit()
         conn.close()
 
+    def rename_file(self, old: str, new: str):
+        """Rewrite the path column for every chunk of a renamed file.
+
+        Used by the indexer's move-detection pass when content is
+        unchanged. Cheaper than delete-then-upsert because the FTS5
+        tree isn't rebuilt.
+        """
+        conn = self._get_conn()
+        conn.execute("UPDATE fts_files SET path = ? WHERE path = ?", (new, old))
+        conn.commit()
+        conn.close()
+
     def clear(self):
         conn = self._get_conn()
         conn.execute("DELETE FROM fts_files")

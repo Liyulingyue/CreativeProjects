@@ -8,6 +8,7 @@ as text.
 """
 
 import logging
+import hashlib
 import os
 import sqlite3
 import threading
@@ -159,14 +160,109 @@ class AutoIndexer:
             conn.execute("ALTER TABLE file_index ADD COLUMN chunk_count INTEGER NOT NULL DEFAULT 0")
         if "chunk_sig" not in cols:
             conn.execute("ALTER TABLE file_index ADD COLUMN chunk_sig TEXT NOT NULL DEFAULT ''")
+        # SHA-256 of file content, populated lazily on scan. Used by the
+        # move-detection pass to recognise a file that has been renamed to
+        # a different path: instead of dropping the old index and re-embedding
+        # the new one, we just rewrite the path in the manifest, the FTS
+        # table, and the vector store. NULL is allowed and means "not yet
+        # computed"; the next scan fills it in.
+        if "content_hash" not in cols:
+            conn.execute("ALTER TABLE file_index ADD COLUMN content_hash TEXT")
         conn.commit()
         conn.close()
 
-    def _known_files(self) -> dict[str, tuple[float, int]]:
+    def _known_files(self) -> dict[str, tuple[float, int, Optional[str]]]:
+        """path -> (mtime, size, content_hash).
+
+        content_hash is the SHA-256 of the file at last indexing, used by
+        the move-detection pass to recognise that a file has been renamed
+        rather than deleted-and-added. Hashes are populated lazily on
+        first scan after the column was added.
+        """
         conn = self._get_conn()
-        rows = conn.execute("SELECT path, mtime, size FROM file_index").fetchall()
+        rows = conn.execute(
+            "SELECT path, mtime, size, content_hash FROM file_index"
+        ).fetchall()
         conn.close()
-        return {r[0]: (r[1], r[2]) for r in rows}
+        return {r[0]: (r[1], r[2], r[3]) for r in rows}
+
+    def _compute_hash(self, abs_path: str) -> Optional[str]:
+        """SHA-256 of file content, or None on read failure.
+
+        We hash the raw bytes (not the extracted text) so two files that
+        parse to the same text but differ in binary form — e.g. an updated
+        PDF — still hash differently. Files that fail to open return None;
+        the caller treats that as 'no hash yet' and falls back to treating
+        the file as new.
+        """
+        try:
+            h = hashlib.sha256()
+            with open(abs_path, "rb") as f:
+                for block in iter(lambda: f.read(1 << 20), b""):
+                    h.update(block)
+            return h.hexdigest()
+        except OSError:
+            return None
+
+    def _set_hash(self, path: str, content_hash: Optional[str]):
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE file_index SET content_hash = ? WHERE path = ?",
+            (content_hash, path),
+        )
+        conn.commit()
+        conn.close()
+
+    def _rename_manifest(self, old: str, new: str):
+        """Rewrite path in the manifest. PK makes this atomic.
+
+        vec_done / chunk_count / chunk_sig / content_hash are kept — the
+        file at the new path is bit-identical to the one at the old path,
+        so all the indexing work still applies.
+        """
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE file_index SET path = ? WHERE path = ?",
+            (new, old),
+        )
+        conn.commit()
+        conn.close()
+
+    def _backfill_hashes(self, current: dict[str, tuple[float, int]],
+                          known: dict[str, tuple[float, int, Optional[str]]]):
+        """Populate NULL content_hash entries on demand.
+
+        Walks every path in `current`, computes SHA-256 if the stored hash
+        is missing, and updates both the manifest row and the in-memory
+        `known` cache. The pass is bounded — a file with a stored hash is
+        a single cheap SELECT — so the steady-state cost is one disk read
+        per NULL row until none remain.
+        """
+        # Cap backfill per scan so a freshly-upgraded system with thousands
+        # of un-hashed files doesn't spend an entire scan on hashing. The
+        # remainder picks up on the next pass.
+        budget = 200
+        to_update: list[tuple[str, str]] = []
+        for path, (mtime, size) in current.items():
+            if budget <= 0:
+                break
+            prev = known.get(path)
+            if prev is not None and prev[2]:
+                continue
+            digest = self._compute_hash(path)
+            if not digest:
+                continue
+            to_update.append((digest, path))
+            known[path] = (mtime, size, digest)
+            budget -= 1
+        if to_update:
+            conn = self._get_conn()
+            conn.executemany(
+                "UPDATE file_index SET content_hash = ? WHERE path = ?",
+                to_update,
+            )
+            conn.commit()
+            conn.close()
 
     def _vector_progress(self) -> dict[str, tuple[int, int]]:
         """path -> (chunks already embedded, total chunks)."""
@@ -456,6 +552,97 @@ class AutoIndexer:
                 [p for p in known if p not in self._present_paths]
                 if self._last_enumeration_complete else []
             )
+
+            # ---- hash backfill ----
+            # The content_hash column was added later than the rest of the
+            # manifest, so files indexed before the migration have NULL
+            # hashes. Compute and store them lazily on the first scan that
+            # sees each one — read I/O is bounded, hashing is cheap, and a
+            # NULL hash is the only reason a real move wouldn't be detected
+            # by the pass below. Skip files whose mtime/size already match
+            # known AND have a hash; they're already populated.
+            self._backfill_hashes(current, known)
+
+            # ---- move detection ----
+            # The plain delete/add diff can't tell a rename apart from a
+            # genuine delete-then-add. With content_hash in the manifest,
+            # pair up files that disappeared at one path and reappeared at
+            # another with identical content; rewrite the path in place
+            # across the manifest, the FTS index, and the vector store.
+            # Both sides stay in the scan's working set, just with the
+            # old path dropped from `removed` and the new path dropped from
+            # `to_index` so neither re-embedding nor a delete runs.
+            #
+            # Hashes are only computed for files that need them — new files
+            # (not in known) and files whose mtime/size changed. A file
+            # already in known with matching mtime/size has a valid stored
+            # hash from a previous scan, and a moved file must keep its
+            # mtime to qualify anyway.
+            moves: list[tuple[str, str]] = []
+            if removed and self._last_enumeration_complete:
+                to_index_set = set(to_index)
+                # Index the current side by hash. For each new/changed file,
+                # hash on demand — only files we'd otherwise re-index.
+                added_paths = [p for p in to_index_set if p not in known]
+                new_hashes: dict[str, Optional[str]] = {}
+                for p in added_paths:
+                    new_hashes[p] = self._compute_hash(p)
+                # Match against stored hashes of files that disappeared.
+                removed_by_hash: dict[str, str] = {}
+                for old in removed:
+                    h = known[old][2]
+                    if h:
+                        removed_by_hash.setdefault(h, old)
+                # Build deterministic pairs: each removed hash claims the
+                # lexicographically smallest new path that matches it.
+                # Anything left over is a real delete (no new home) or a
+                # real add (no old home) and stays in the diff sets.
+                used_new: set[str] = set()
+                used_old: set[str] = set()
+                for h, old in removed_by_hash.items():
+                    candidates = sorted(
+                        np for np, nh in new_hashes.items()
+                        if nh == h and np not in used_new
+                    )
+                    if not candidates:
+                        continue
+                    new = candidates[0]
+                    moves.append((old, new))
+                    used_new.add(new)
+                    used_old.add(old)
+                if moves:
+                    # Apply the path rewrite across the manifest, FTS, and
+                    # vector store before phase 1 runs. Phase 1 will then
+                    # skip these because the cached `known` view shows
+                    # `new` with the old mtime/size/hash — the file at the
+                    # new path is bit-identical so nothing changed.
+                    rag_svc = state.get_rag_service()
+                    for old, new in moves:
+                        old_mtime, old_size, old_hash = known[old]
+                        try:
+                            self._rename_manifest(old, new)
+                        except Exception:
+                            traceback.print_exc()
+                            continue
+                        try:
+                            search_engine.rename_file(old, new)
+                        except Exception:
+                            traceback.print_exc()
+                        try:
+                            rag_svc.vector_store.rename_file(old, new)
+                        except Exception:
+                            traceback.print_exc()
+                        # Reflect the rename in the in-memory cache so the
+                        # rest of the scan sees `new` as up-to-date.
+                        known.pop(old, None)
+                        known[new] = (old_mtime, old_size, old_hash)
+                    # Remove moved entries from `removed` and `to_index` so
+                    # the rest of the pass treats them as unchanged.
+                    removed = [p for p in removed if p not in used_old]
+                    to_index = [p for p in to_index if p not in used_new]
+                    changed_files -= used_new
+                    log.info("detected %d file move(s), skipped re-embedding", len(moves))
+            # -----------------------
 
             rag_svc = state.get_rag_service()
             indexed, failed = 0, 0

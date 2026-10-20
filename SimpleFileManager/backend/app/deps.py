@@ -221,6 +221,21 @@ class LanceDBVectorStore:
         escaped = file_path.replace("'", "''")
         self._table.delete(f"file_path = '{escaped}'")
 
+    def rename_file(self, old: str, new: str):
+        """Rewrite the file_path column for every chunk of a renamed file.
+
+        Move-detection pass: when the indexer recognises that the same
+        content has appeared at a new path, we update the path column in
+        place rather than delete-then-reinsert. This preserves the
+        row_id and keeps the existing vector index intact.
+        """
+        old_esc = old.replace("'", "''")
+        new_esc = new.replace("'", "''")
+        self._table.update(
+            where=f"file_path = '{old_esc}'",
+            values={"file_path": new},
+        )
+
     def clear(self):
         if "file_embeddings" in self.table_names():
             self.db.drop_table("file_embeddings")
