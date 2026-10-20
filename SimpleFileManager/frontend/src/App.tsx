@@ -12,7 +12,7 @@ import { SettingsPage } from './components/SettingsPage';
 import { LoginPage } from './components/LoginPage';
 import { ServiceStatus } from './components/ServiceStatus';
 import { useCollapse } from './hooks/useCollapse';
-import { checkAuthStatus, getToken, getAuthEnabled, logout } from './auth';
+import { checkAuthStatus, getAuthEnabled, logout, verifyToken } from './auth';
 import { fetchPlans } from './api';
 
 const NAV_ITEMS = [
@@ -47,12 +47,19 @@ function App() {
 
   useEffect(() => {
     checkAuthStatus()
-      .then(status => {
+      .then(async status => {
         if (!status.requires_auth) {
           setAuthed(true);
-        } else if (getToken()) {
-          setAuthed(true);
+          return;
         }
+        // Token in localStorage may be expired or stale (e.g. password
+        // changed on the server while we held a previous token). Verifying
+        // it via the API instead of trusting localStorage breaks the
+        // ghost-token loop: old token → API returns 401 → page reloads →
+        // old token still there → repeat forever. verifyToken hits the
+        // server's real session table and rejects bad tokens outright.
+        const v = await verifyToken();
+        if (v.valid) setAuthed(true);
       })
       .catch(() => setAuthed(true))
       .finally(() => setAuthChecking(false));
