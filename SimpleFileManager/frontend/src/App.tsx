@@ -12,7 +12,7 @@ import { SettingsPage } from './components/SettingsPage';
 import { LoginPage } from './components/LoginPage';
 import { ServiceStatus } from './components/ServiceStatus';
 import { useCollapse } from './hooks/useCollapse';
-import { checkAuthStatus, getAuthEnabled, logout, verifyToken } from './auth';
+import { checkAuthStatus, getAuthEnabled, logout, onAuthLogout, verifyToken } from './auth';
 import { fetchPlans } from './api';
 
 const NAV_ITEMS = [
@@ -64,6 +64,12 @@ function App() {
       .catch(() => setAuthed(true))
       .finally(() => setAuthChecking(false));
   }, []);
+
+  // Listen for 401s from any authFetch call. Drops us into LoginPage
+  // in place instead of doing a hard window.location.reload() —
+  // that reloaded the entire React app on every API failure, and
+  // multiple concurrent 401s would queue up multiple reloads.
+  useEffect(() => onAuthLogout(() => setAuthed(false)), []);
 
   const handleLogout = async () => {
     await logout();

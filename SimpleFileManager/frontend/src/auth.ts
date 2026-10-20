@@ -30,6 +30,20 @@ export function authHeaders(): Record<string, string> {
   return {};
 }
 
+/**
+ * Fired on window when authFetch sees a 401. App listens for this and
+ * flips into the unauthenticated state (showing LoginPage) instead of
+ * doing a hard window.location.reload(), which restarts the whole
+ * React app on every API failure.
+ */
+export const AUTH_LOGOUT_EVENT = 'sfm:auth-logout';
+
+export function onAuthLogout(handler: () => void): () => void {
+  const wrapped = () => handler();
+  window.addEventListener(AUTH_LOGOUT_EVENT, wrapped);
+  return () => window.removeEventListener(AUTH_LOGOUT_EVENT, wrapped);
+}
+
 export async function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
   const headers: Record<string, string> = {
     ...(options.headers as Record<string, string> || {}),
@@ -41,8 +55,11 @@ export async function authFetch(url: string, options: RequestInit = {}): Promise
   const res = await fetch(url, { ...options, headers });
   if (res.status === 401) {
     clearToken();
-    window.location.hash = '#/login';
-    window.location.reload();
+    // Dispatch a logout event so App can swap to LoginPage in place
+    // instead of reloading the entire SPA. Multiple concurrent 401s
+    // would otherwise trigger multiple reloads; the event model is
+    // idempotent — handlers just set a state flag.
+    window.dispatchEvent(new CustomEvent(AUTH_LOGOUT_EVENT));
     throw new Error('Unauthorized');
   }
   return res;
