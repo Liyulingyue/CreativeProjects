@@ -454,6 +454,13 @@ class ChatHistoryService:
                 # rows; the agent router backfills it from the main
                 # provider at read time when it's missing.
                 ("provider_id", "TEXT"),
+                # plans: JSON array of AgentPlan dicts, populated when
+                # the agent's submit_plan tool ran during this turn.
+                # Drives the inline approve button in the chat bubble.
+                # Stored as JSON rather than FKs because plans are
+                # also their own first-class rows in the plans table;
+                # this is just a snapshot for replay on reload.
+                ("plans", "TEXT"),
             ):
                 if col not in cols:
                     conn.execute(f"ALTER TABLE chat_messages ADD COLUMN {col} {decl}")
@@ -694,19 +701,30 @@ class ChatHistoryService:
     def _get_messages(self, conn: sqlite3.Connection, session_id: str) -> list[ChatMessage]:
         rows = conn.execute(
             "SELECT id, role, content, reasoning, activity, sources, timestamp,"
-            " ttft_ms, total_ms, tokens, tps, use_fast, provider_id"
+            " ttft_ms, total_ms, tokens, tps, use_fast, provider_id, plans"
             " FROM chat_messages WHERE session_id = ? ORDER BY timestamp ASC",
             (session_id,)
         ).fetchall()
         messages = []
         for row in rows:
-            msg_id, role, content, reasoning, activity, sources, timestamp, \
-                ttft_ms, total_ms, tokens, tps, use_fast, provider_id = row
+            (msg_id, role, content, reasoning, activity, sources, timestamp,
+             ttft_ms, total_ms, tokens, tps, use_fast, provider_id, plans) = row
             sources_list = json.loads(sources) if sources else None
             try:
                 activity_list = json.loads(activity) if activity else []
             except (TypeError, ValueError):
                 activity_list = []
+            # plans was added later than the rest of the perf columns;
+            # NULL on legacy rows. Empty string vs NULL is an
+            # implementation detail of how sqlite reports it, so guard
+            # both. A malformed JSON blob (corrupt db, partial write)
+            # is treated as no plans rather than crashing the read.
+            plans_list = None
+            if plans:
+                try:
+                    plans_list = json.loads(plans)
+                except (TypeError, ValueError):
+                    plans_list = None
             messages.append(ChatMessage(
                 id=msg_id,
                 role=role,
@@ -724,6 +742,7 @@ class ChatHistoryService:
                 # bubble shows the resolved provider name instead.
                 use_fast=bool(use_fast),
                 provider_id=provider_id,
+                plans=plans_list,
             ))
         return messages
 
@@ -751,10 +770,12 @@ class ChatHistoryService:
     def add_message(self, session_id: str, role: str, content: str, sources: Optional[list] = None,
                     reasoning: str = "", activity: Optional[list] = None,
                     ttft_ms: int = 0, total_ms: int = 0, tokens: int = 0, tps: float = 0.0,
-                    provider_id: Optional[str] = None) -> ChatMessage:
+                    provider_id: Optional[str] = None,
+                    plans: Optional[list] = None) -> ChatMessage:
         msg_id = uuid.uuid4().hex
         now = int(time.time() * 1000)
         sources_json = json.dumps(sources) if sources else None
+        plans_json = json.dumps(plans, ensure_ascii=False) if plans else None
         with self._lock:
             conn = self._get_conn()
             # use_fast is no longer written — the column stays for
@@ -762,10 +783,11 @@ class ChatHistoryService:
             # refactor, but new rows just take the column default (0).
             conn.execute(
                 "INSERT INTO chat_messages (id, session_id, role, content, reasoning, activity,"
-                " sources, timestamp, ttft_ms, total_ms, tokens, tps, provider_id)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " sources, plans, timestamp, ttft_ms, total_ms, tokens, tps, provider_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (msg_id, session_id, role, content, reasoning,
-                 json.dumps(activity, ensure_ascii=False) if activity else "[]", sources_json, now,
+                 json.dumps(activity, ensure_ascii=False) if activity else "[]", sources_json,
+                 plans_json, now,
                  ttft_ms, total_ms, tokens, tps, provider_id)
             )
             conn.execute(
@@ -778,7 +800,7 @@ class ChatHistoryService:
             id=msg_id, role=role, content=content, reasoning=reasoning,
             activity=activity or [], sources=sources, timestamp=now,
             ttft_ms=ttft_ms, total_ms=total_ms, tokens=tokens, tps=tps,
-            provider_id=provider_id,
+            provider_id=provider_id, plans=plans,
         )
 
     def delete_session(self, session_id: str):

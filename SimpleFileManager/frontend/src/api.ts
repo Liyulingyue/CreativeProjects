@@ -151,6 +151,11 @@ export interface ChatMessage {
    *  the chat UI looks the provider up to render the "via <name>"
    *  badge. Empty for user messages. */
   provider_id?: string | null;
+  /** Plans submitted by the agent during this turn. Drives the
+   *  inline approve-and-execute button rendered next to the chat
+   *  bubble so the user doesn't have to navigate to the approval
+   *  center for a single-turn plan. */
+  plans?: AgentPlan[];
   /** Legacy field kept around so old rows (saved before the providers
    *  refactor) still parse. New writes never set it; the chat UI no
    *  longer reads it. */
@@ -214,7 +219,8 @@ export async function addChatMessage(
   reasoning?: string,
   activity?: unknown[],
   perf?: { ttft_ms?: number; total_ms?: number; tokens?: number; tps?: number },
-  providerId?: string | null
+  providerId?: string | null,
+  plans?: AgentPlan[]
 ): Promise<ChatMessage> {
   const res = await authFetch(`${API_BASE}/chat_history/messages`, {
     method: 'POST',
@@ -227,6 +233,10 @@ export async function addChatMessage(
       // this to render the "via <name>" badge so the user can tell at a
       // glance which model served the reply, including after a reload.
       provider_id: providerId ?? null,
+      // Persist agent plans so the bubble can offer an inline
+      // "批准并执行" button without the user navigating to the
+      // approval center. None for messages without plans.
+      plans: plans ?? null,
     }),
   });
   if (!res.ok) throw new Error('Failed to add chat message');

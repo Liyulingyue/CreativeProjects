@@ -249,6 +249,13 @@ class ChatMessage(BaseModel):
     # send time; never empty for assistant messages. The chat UI
     # looks up the provider by id to render the "via <name>" badge.
     provider_id: Optional[str] = None
+    # Plans submitted by the agent during this turn. The chat UI
+    # uses these to render an inline "批准并执行" button next to
+    # the plan summary so the user doesn't have to navigate to the
+    # approval center. None for messages without plans; an empty
+    # list for the (rare) case where the agent called submit_plan
+    # but the call failed and no plan was recorded.
+    plans: Optional[list[dict]] = None
     # Legacy field kept around so old rows (saved before the providers
     # refactor) still parse. New writes never set it.
     use_fast: bool = False
@@ -295,6 +302,10 @@ class AddMessageRequest(BaseModel):
     # request override or session default; the chat UI looks the
     # provider up to render the "via <name>" badge.
     provider_id: Optional[str] = None
+    # Plans submitted by the agent during this turn. The chat UI
+    # uses these to render an inline "批准并执行" button so the
+    # user doesn't have to navigate to the approval center.
+    plans: Optional[list[dict]] = None
     # Legacy field. New writes never set it; the router ignores it
     # so old messages still parse and new code stays symmetric.
     use_fast: bool = False

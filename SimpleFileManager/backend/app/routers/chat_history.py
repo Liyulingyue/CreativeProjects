@@ -67,6 +67,7 @@ def add_message(req: AddMessageRequest):
         tokens=getattr(req, "tokens", 0) or 0,
         tps=getattr(req, "tps", 0.0) or 0.0,
         provider_id=getattr(req, "provider_id", None),
+        plans=getattr(req, "plans", None),
     )
 
 

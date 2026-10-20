@@ -81,7 +81,7 @@ export function useChatSessions(sessionType: string = 'chat') {
     ));
   }, []);
 
-  const addMessage = useCallback(async (
+const addMessage = useCallback(async (
     sessionId: string,
     message: Omit<ChatMessage, 'id' | 'timestamp'>
   ): Promise<string> => {
@@ -98,7 +98,8 @@ export function useChatSessions(sessionType: string = 'chat') {
         tokens: message.tokens,
         tps: message.tps,
       },
-      message.provider_id
+      message.provider_id,
+      message.plans
     );
     setSessions(prev => prev.map(s => {
       if (s.id !== sessionId) return s;

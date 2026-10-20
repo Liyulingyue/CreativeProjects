@@ -2,10 +2,13 @@ import { useState, useEffect, useRef } from 'react';
 import { Icon } from './Icon';
 import { useCollapse } from '../../hooks/useCollapse';
 import { MarkdownText } from './MarkdownText';
+import { approvePlan, executePlan } from '../../api';
+import { useToast } from './Toast';
+import { ConfirmDialog } from './Dialog';
 // Reuse the api layer's types. They were duplicated here, which let the two
 // definitions drift apart silently until the session prop stopped type-checking.
 import type { ChatMessage, ChatSession } from '../../api';
-import type { LLMProvider } from '../../types';
+import type { LLMProvider, AgentPlan } from '../../types';
 
 export type { ChatMessage, ChatSession };
 
@@ -336,6 +339,90 @@ function ToolTraceLine({ activity }: { activity: ToolActivity }) {
   );
 }
 
+/**
+ * Inline approve-and-execute for plans that the agent produced during this
+ * turn. Renders a small card under the assistant bubble with the plan title,
+ * a status badge, and a single "批准并执行" button so the user can act
+ * without navigating to the approval center. After a successful run the
+ * badge flips to the terminal state and the button is hidden — the plan is
+ * still in the approval center for audit/replay.
+ */
+function InlinePlanApproval({ plans }: { plans: AgentPlan[] }) {
+  const { toast } = useToast();
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [localStatus, setLocalStatus] = useState<Record<string, string>>({});
+
+  const status = (p: AgentPlan) => localStatus[p.id] ?? p.status;
+
+  const onConfirmExecute = async (plan: AgentPlan) => {
+    setConfirming(null);
+    setBusyId(plan.id);
+    try {
+      await approvePlan(plan.id);
+      const updated = await executePlan(plan.id);
+      setLocalStatus(prev => ({ ...prev, [plan.id]: updated.status }));
+      toast(updated.status === 'executed' ? `「${plan.title}」已执行` : `执行完成（${updated.status}）`, 'success');
+    } catch (e) {
+      toast(e instanceof Error ? e.message : '执行失败', 'error');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="mt-2 pt-2 border-t border-slate-200 space-y-2">
+      {plans.map(p => {
+        const s = status(p);
+        const isPending = s === 'pending';
+        const isBusy = busyId === p.id;
+        return (
+          <div key={p.id} className="rounded-lg bg-white border border-slate-200 p-2.5 text-xs space-y-1.5">
+            <div className="flex items-center gap-2 flex-wrap">
+              <Icon name="clipboard" size={12} className="text-indigo-500 flex-shrink-0" />
+              <span className="font-medium text-slate-700">{p.title}</span>
+              <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                s === 'pending' ? 'bg-amber-50 text-amber-700'
+                : s === 'approved' ? 'bg-blue-50 text-blue-700'
+                : s === 'executed' ? 'bg-green-50 text-green-700'
+                : s === 'executed_with_errors' ? 'bg-orange-50 text-orange-700'
+                : 'bg-slate-100 text-slate-500'
+              }`}>
+                {s === 'pending' ? '待审批'
+                  : s === 'approved' ? '已批准'
+                  : s === 'executed' ? '已执行'
+                  : s === 'executed_with_errors' ? '部分失败'
+                  : s}
+              </span>
+              <span className="text-slate-400">{p.actions.length} 个操作</span>
+            </div>
+            {isPending && (
+              <button onClick={() => setConfirming(p.id)} disabled={isBusy}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-green-600 text-white text-xs font-medium hover:bg-green-700 disabled:opacity-50 transition-colors">
+                <Icon name="check" size={12} />批准并执行
+              </button>
+            )}
+          </div>
+        );
+      })}
+      {confirming && (
+        <ConfirmDialog
+          open={!!confirming}
+          title="执行计划"
+          message={`确认执行计划「${plans.find(x => x.id === confirming)?.title ?? ''}」？该操作将真实修改文件系统。`}
+          confirmText="执行"
+          danger
+          onConfirm={() => {
+            const plan = plans.find(x => x.id === confirming);
+            if (plan) onConfirmExecute(plan);
+          }}
+          onCancel={() => setConfirming(null)}
+        />
+      )}
+    </div>
+  );
+}
+
 export function ChatLayout({
   sessions, currentSessionId, onSelectSession, onNewSession,
   onDeleteSession, onSendMessage, isLoading, streamingText, toolActivity,
@@ -510,6 +597,9 @@ export function ChatLayout({
                         </div>
                       ))}
                     </div>
+                  )}
+                  {msg.plans && msg.plans.length > 0 && (
+                    <InlinePlanApproval plans={msg.plans} />
                   )}
                 </div>
               </div>

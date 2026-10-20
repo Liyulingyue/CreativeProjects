@@ -277,7 +277,7 @@ export function SimpleChat() {
 
     if (plans.length > 0) {
       const actionCount = plans.reduce((n: number, p: AgentPlan) => n + (p.actions?.length ?? 0), 0);
-      finalText += `\n\n已生成 ${plans.length} 份整理计划（共 ${actionCount} 个操作），请到「整理」页的审批中心批准后执行。`;
+      finalText += `\n\n已生成 ${plans.length} 份整理计划（共 ${actionCount} 个操作），请到「整理」页审批中心批准后执行。`;
     }
 
     // Persist the scratchpad with the reply. It lives only in the streaming
@@ -296,6 +296,10 @@ export function SimpleChat() {
       // actually served the reply; the bubble looks the name up
       // from the providers list and renders "via <name>".
       provider_id: servedProviderId,
+      // Plans the agent submitted during this turn. The chat bubble
+      // renders an inline "批准并执行" button per plan so the user
+      // can act on a one-turn plan without leaving the conversation.
+      plans,
     });
     setStreamingText('');
     // Drop the live header once the persisted bubble (which carries the
