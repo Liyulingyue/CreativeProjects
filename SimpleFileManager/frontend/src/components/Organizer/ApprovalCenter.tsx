@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { approvePlan, deletePlan, executePlan, fetchPlans, rejectPlan } from '../../api';
 import { useToast } from '../ui/Toast';
+import { ConfirmDialog } from '../ui/Dialog';
 import { Icon } from '../ui/Icon';
 import type { AgentPlan, PlanAction, PlanStatus } from '../../types';
 
@@ -46,17 +47,21 @@ function PlanCard({ plan, onChanged }: { plan: AgentPlan; onChanged: () => void 
   const { toast } = useToast();
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const statusMeta = STATUS_META[plan.status] ?? STATUS_META.pending;
   const isPending = plan.status === 'pending';
-  const isApproved = plan.status === 'approved';
 
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
     try { await fn(); onChanged(); } catch (e) { toast(e instanceof Error ? e.message : '操作失败', 'error'); } finally { setBusy(false); }
   };
 
-  const handleApproveAndExecute = async () => {
-    if (!window.confirm(`确认执行计划「${plan.title}」？该操作将真实修改文件系统。`)) return;
+  const handleApproveAndExecute = () => {
+    setConfirming(true);
+  };
+
+  const handleConfirmExecute = async () => {
+    setConfirming(false);
     setBusy(true);
     try {
       await approvePlan(plan.id);
@@ -103,6 +108,15 @@ function PlanCard({ plan, onChanged }: { plan: AgentPlan; onChanged: () => void 
           {plan.actions.map(a => <ActionRow key={a.id} action={a} />)}
         </div>
       )}
+      <ConfirmDialog
+        open={confirming}
+        title="执行计划"
+        message={`确认执行计划「${plan.title}」？该操作将真实修改文件系统。`}
+        confirmText="执行"
+        danger
+        onConfirm={handleConfirmExecute}
+        onCancel={() => setConfirming(false)}
+      />
     </div>
   );
 }
