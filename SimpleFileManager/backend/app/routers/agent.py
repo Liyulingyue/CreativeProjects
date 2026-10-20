@@ -275,6 +275,26 @@ SYSTEM_PROMPT = """你是 NASMind 的文件治理 Agent，负责帮助用户分�
 - 不确定时坦白不确定，比给出一个听起来合理但错误的答案有用得多。"""
 
 
+# Keywords that strongly suggest the user wants a file-system action.
+# Used by the post-processing guard to catch cases where the model
+# answered with text instead of calling submit_plan.
+_ACTION_PATTERNS = [
+    "建立", "创建", "新增", "添加",
+    "移动", "转移", "搬移",
+    "复制", "拷贝",
+    "删除", "移除", "清理",
+    "重命名", "改名",
+    "放入", "放到", "放到", "放进",
+    "整理", "归类",
+    "把...移到", "把...放到",
+]
+
+
+def _looks_like_action_request(text: str) -> bool:
+    if not text:
+        return False
+    return any(pat in text for pat in _ACTION_PATTERNS)
+
 
 # ---- tool implementations (return dicts, never raise) ----
 
@@ -885,6 +905,31 @@ def agent_chat(req: AgentRequest):
 
         final_text = message.get("content") or "（模型未返回内容，请重试）"
         all_messages.append({"role": "assistant", "content": final_text})
+
+        # ---- post-processing guard ----
+        # Small models (350M class) occasionally respond with descriptive text
+        # instead of calling submit_plan when the user asks for an action
+        # (create folder / move / rename / delete). Detect this and inject a
+        # correction nudge so the model gets a second chance to call the tool.
+        last_user_msg = ""
+        for m in reversed(all_messages[:-1]):
+            if m.get("role") == "user":
+                last_user_msg = m.get("content", "")
+                break
+        submitted_plan = any(
+            tr.get("tool") == "submit_plan" for tr in tool_results
+        )
+        if _looks_like_action_request(last_user_msg) and not submitted_plan:
+            correction = (
+                "注意：你刚才的回复描述了操作结果，但并没有调用 submit_plan 工具。\n"
+                "涉及文件变更（创建文件夹/移动/复制/删除/重命名）的操作必须通过 submit_plan "
+                "提交计划，等待用户审批后才能执行。你无法直接修改任何文件。\n"
+                "请立即调用 submit_plan 工具提交计划，不要在回复中描述操作结果。"
+            )
+            all_messages.append({"role": "user", "content": correction})
+            steps_used -= 1   # correction nudge doesn't count as a step
+            continue
+        # ---------------------------
         break
     else:
         final_text = "已达到单次任务的最大步数限制，请查看已收集的信息或换个更简单的请求。"
