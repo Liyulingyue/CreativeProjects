@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { approvePlan, deletePlan, executePlan, fetchPlans, rejectPlan } from '../../api';
 import { useToast } from '../ui/Toast';
-import { ConfirmDialog } from '../ui/Dialog';
 import { Icon } from '../ui/Icon';
 import type { AgentPlan, PlanAction, PlanStatus } from '../../types';
 
@@ -47,7 +46,6 @@ function PlanCard({ plan, onChanged }: { plan: AgentPlan; onChanged: () => void 
   const { toast } = useToast();
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [confirmExecute, setConfirmExecute] = useState(false);
   const statusMeta = STATUS_META[plan.status] ?? STATUS_META.pending;
   const isPending = plan.status === 'pending';
   const isApproved = plan.status === 'approved';
@@ -55,6 +53,16 @@ function PlanCard({ plan, onChanged }: { plan: AgentPlan; onChanged: () => void 
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
     try { await fn(); onChanged(); } catch (e) { toast(e instanceof Error ? e.message : '操作失败', 'error'); } finally { setBusy(false); }
+  };
+
+  const handleApproveAndExecute = async () => {
+    if (!window.confirm(`确认执行计划「${plan.title}」？该操作将真实修改文件系统。`)) return;
+    setBusy(true);
+    try {
+      await approvePlan(plan.id);
+      await executePlan(plan.id);
+      onChanged();
+    } catch (e) { toast(e instanceof Error ? e.message : '操作失败', 'error'); } finally { setBusy(false); }
   };
 
   return (
@@ -71,19 +79,13 @@ function PlanCard({ plan, onChanged }: { plan: AgentPlan; onChanged: () => void 
         <div className="flex flex-col gap-1.5 shrink-0">
           {isPending && (
             <>
-              <button onClick={() => run(() => approvePlan(plan.id))} disabled={busy}
+              <button onClick={handleApproveAndExecute} disabled={busy}
                 className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-green-600 text-white text-xs font-medium hover:bg-green-700 disabled:opacity-50 transition-colors">
-                <Icon name="check" size={14} />批准
+                <Icon name="check" size={14} />批准并执行
               </button>
               <button onClick={() => run(() => rejectPlan(plan.id))} disabled={busy}
                 className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 text-xs font-medium hover:bg-slate-200 disabled:opacity-50 transition-colors">拒绝</button>
             </>
-          )}
-          {isApproved && (
-            <button onClick={() => setConfirmExecute(true)} disabled={busy}
-              className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-700 disabled:opacity-50 transition-colors">
-              <Icon name="zap" size={14} />执行
-            </button>
           )}
           {!isPending && !isApproved && (
             <button onClick={() => run(() => deletePlan(plan.id))} disabled={busy}
@@ -101,8 +103,6 @@ function PlanCard({ plan, onChanged }: { plan: AgentPlan; onChanged: () => void 
           {plan.actions.map(a => <ActionRow key={a.id} action={a} />)}
         </div>
       )}
-      <ConfirmDialog open={confirmExecute} title="执行计划" message={`确认执行计划「${plan.title}」？该操作将真实修改文件系统。`}
-        onConfirm={() => { setConfirmExecute(false); run(() => executePlan(plan.id)); }} onCancel={() => setConfirmExecute(false)} danger />
     </div>
   );
 }

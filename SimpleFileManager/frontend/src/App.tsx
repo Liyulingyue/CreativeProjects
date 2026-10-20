@@ -13,6 +13,7 @@ import { LoginPage } from './components/LoginPage';
 import { ServiceStatus } from './components/ServiceStatus';
 import { useCollapse } from './hooks/useCollapse';
 import { checkAuthStatus, getToken, getAuthEnabled, logout } from './auth';
+import { fetchPlans } from './api';
 
 const NAV_ITEMS = [
   { to: '/', label: '文件管理', icon: 'folder' as const },
@@ -30,6 +31,19 @@ function App() {
   const { collapsed: navCollapsed, toggle: toggleNav } = useCollapse('sfm.navCollapsed');
   const [authed, setAuthed] = useState(false);
   const [authChecking, setAuthChecking] = useState(true);
+  const [pendingPlanCount, setPendingPlanCount] = useState(0);
+
+  const loadPendingPlans = () => {
+    fetchPlans('pending')
+      .then(plans => setPendingPlanCount(plans.length))
+      .catch(() => {});
+  };
+
+  useEffect(() => { loadPendingPlans(); }, []);
+  useEffect(() => {
+    const id = setInterval(loadPendingPlans, 15000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     checkAuthStatus()
@@ -125,6 +139,11 @@ function App() {
               >
                 <Icon name={item.icon} size={18} />
                 {!navCollapsed && item.label}
+                {item.to === '/organizer' && pendingPlanCount > 0 && (
+                  <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-semibold">
+                    {pendingPlanCount}
+                  </span>
+                )}
               </NavLink>
             ))}
           </nav>
