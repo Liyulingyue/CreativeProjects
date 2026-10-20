@@ -87,7 +87,7 @@ function PlanCard({ plan, onChanged }: { plan: AgentPlan; onChanged: () => void 
                 className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 text-xs font-medium hover:bg-slate-200 disabled:opacity-50 transition-colors">拒绝</button>
             </>
           )}
-          {!isPending && !isApproved && (
+          {!isPending && (
             <button onClick={() => run(() => deletePlan(plan.id))} disabled={busy}
               className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-500 text-xs font-medium hover:bg-slate-200 disabled:opacity-50 transition-colors">清除</button>
           )}
