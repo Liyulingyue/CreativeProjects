@@ -568,13 +568,13 @@ export function ChatLayout({
                 {(() => {
                   const main = providers.find(p => p.is_main);
                   return (
-                    <option value="__main__" title={main?.model}>
-                      {main ? `${main.name} (${main.model})` : 'main (默认)'}
+                    <option value="__main__">
+                      {main ? main.name : 'main (默认)'}
                     </option>
                   );
                 })()}
                 {providers.filter(p => !p.is_main).map(p => (
-                  <option key={p.id} value={p.id} title={p.model}>{p.name} ({p.model})</option>
+                  <option key={p.id} value={p.id}>{p.name}</option>
                 ))}
               </select>
             )}
