@@ -352,6 +352,7 @@ function InlinePlanApproval({ plans }: { plans: AgentPlan[] }) {
   const [confirming, setConfirming] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [localStatus, setLocalStatus] = useState<Record<string, string>>({});
+  const [errorResult, setErrorResult] = useState<{ plan: AgentPlan; result: AgentPlan } | null>(null);
 
   const status = (p: AgentPlan) => localStatus[p.id] ?? p.status;
 
@@ -362,13 +363,26 @@ function InlinePlanApproval({ plans }: { plans: AgentPlan[] }) {
       await approvePlan(plan.id);
       const updated = await executePlan(plan.id);
       setLocalStatus(prev => ({ ...prev, [plan.id]: updated.status }));
-      toast(updated.status === 'executed' ? `「${plan.title}」已执行` : `执行完成（${updated.status}）`, 'success');
+      if (updated.status === 'executed') {
+        toast(`「${plan.title}」已执行`, 'success');
+      } else if (updated.status === 'executed_with_errors') {
+        setErrorResult({ plan, result: updated });
+      } else {
+        toast(`执行完成（${updated.status}）`, 'info');
+      }
     } catch (e) {
       toast(e instanceof Error ? e.message : '执行失败', 'error');
     } finally {
       setBusyId(null);
     }
   };
+
+  const failedActions = errorResult
+    ? errorResult.plan.actions.filter((_, i) => {
+        const r = errorResult.result.actions?.[i];
+        return r && r.status === 'failed';
+      })
+    : [];
 
   return (
     <div className="mt-2 pt-2 border-t border-slate-200 space-y-2">
@@ -417,6 +431,23 @@ function InlinePlanApproval({ plans }: { plans: AgentPlan[] }) {
             if (plan) onConfirmExecute(plan);
           }}
           onCancel={() => setConfirming(null)}
+        />
+      )}
+      {errorResult && (
+        <ConfirmDialog
+          open={!!errorResult}
+          title="部分操作失败"
+          message={
+            `计划「${errorResult.plan.title}」执行完成，但有 ${failedActions.length} 个操作失败：\n\n` +
+            failedActions.map(a => {
+              const i = errorResult.plan.actions.findIndex(x => x.id === a.id);
+              const r = errorResult.result.actions?.[i];
+              return `• ${a.action_type}: ${a.source_path || a.target_path || '未知路径'}\n  错误: ${r?.result || '未知错误'}`;
+            }).join('\n\n')
+          }
+          confirmText="知道了"
+          onConfirm={() => setErrorResult(null)}
+          onCancel={() => setErrorResult(null)}
         />
       )}
     </div>
