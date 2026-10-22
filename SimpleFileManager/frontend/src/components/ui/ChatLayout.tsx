@@ -357,6 +357,7 @@ function InlinePlanApproval({ plans }: { plans: AgentPlan[] }) {
   const [rejecting, setRejecting] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [localStatus, setLocalStatus] = useState<Record<string, string>>({});
+  const [resolvedIds, setResolvedIds] = useState<Record<string, boolean>>({});
   const [errorResult, setErrorResult] = useState<{ plan: AgentPlan; result: AgentPlan } | null>(null);
 
   const planIds = plans.map(p => p.id).join(',');
@@ -372,8 +373,15 @@ function InlinePlanApproval({ plans }: { plans: AgentPlan[] }) {
       .then(results => {
         if (cancelled) return;
         const next: Record<string, string> = {};
-        results.forEach((r, i) => { if (r) next[ids[i]] = r.status; });
+        const done: Record<string, boolean> = {};
+        results.forEach((r, i) => {
+          if (r) next[ids[i]] = r.status;
+          // Mark resolved even when the fetch failed: a plan the server
+          // can't find is not something we can act on anyway.
+          done[ids[i]] = true;
+        });
         setLocalStatus(prev => ({ ...next, ...prev }));
+        setResolvedIds(prev => ({ ...done, ...prev }));
       });
     return () => { cancelled = true; };
   }, [planIds]);
@@ -426,7 +434,12 @@ function InlinePlanApproval({ plans }: { plans: AgentPlan[] }) {
     <div className="mt-2 pt-2 border-t border-slate-200 space-y-2">
       {plans.map(p => {
         const s = status(p);
-        const isPending = s === 'pending';
+        // Gate the action buttons on having resolved the live status.
+        // Until the fetch lands we can't know whether this plan is still
+        // pending, so rendering a clickable button would let the user
+        // fire an action at an already-executed plan.
+        const isResolved = !!resolvedIds[p.id];
+        const isPending = isResolved && s === 'pending';
         const isBusy = busyId === p.id;
         return (
           <div key={p.id} className="rounded-lg bg-white border border-slate-200 p-2.5 text-xs space-y-1.5">
@@ -434,14 +447,16 @@ function InlinePlanApproval({ plans }: { plans: AgentPlan[] }) {
               <Icon name="clipboard" size={12} className="text-indigo-500 flex-shrink-0" />
               <span className="font-medium text-slate-700">{p.title}</span>
               <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                s === 'pending' ? 'bg-amber-50 text-amber-700'
+                !isResolved ? 'bg-slate-100 text-slate-400'
+                : s === 'pending' ? 'bg-amber-50 text-amber-700'
                 : s === 'approved' ? 'bg-blue-50 text-blue-700'
                 : s === 'executed' ? 'bg-green-50 text-green-700'
                 : s === 'executed_with_errors' ? 'bg-orange-50 text-orange-700'
                 : s === 'rejected' ? 'bg-slate-100 text-slate-600'
                 : 'bg-slate-100 text-slate-500'
               }`}>
-                {s === 'pending' ? '待审批'
+                {!isResolved ? '…'
+                  : s === 'pending' ? '待审批'
                   : s === 'approved' ? '已批准'
                   : s === 'executed' ? '已执行'
                   : s === 'executed_with_errors' ? '部分失败'
