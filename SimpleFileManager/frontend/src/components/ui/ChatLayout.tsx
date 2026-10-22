@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Icon } from './Icon';
 import { useCollapse } from '../../hooks/useCollapse';
 import { MarkdownText } from './MarkdownText';
-import { approvePlan, executePlan } from '../../api';
+import { approvePlan, executePlan, rejectPlan, fetchPlan } from '../../api';
 import { useToast } from './Toast';
 import { ConfirmDialog } from './Dialog';
 // Reuse the api layer's types. They were duplicated here, which let the two
@@ -342,17 +342,41 @@ function ToolTraceLine({ activity }: { activity: ToolActivity }) {
 /**
  * Inline approve-and-execute for plans that the agent produced during this
  * turn. Renders a small card under the assistant bubble with the plan title,
- * a status badge, and a single "批准并执行" button so the user can act
- * without navigating to the approval center. After a successful run the
- * badge flips to the terminal state and the button is hidden — the plan is
- * still in the approval center for audit/replay.
+ * a status badge, and approve / reject buttons so the user can act without
+ * navigating to the approval center.
+ *
+ * The `plans` snapshot baked into the message is captured at submit time, so
+ * its `status` is frozen at 'pending'. On mount we re-read the real status
+ * from the server — otherwise a reloaded page would keep offering
+ * "批准并执行" for a plan that was already executed, and clicking it would
+ * fail with a confusing server error.
  */
 function InlinePlanApproval({ plans }: { plans: AgentPlan[] }) {
   const { toast } = useToast();
   const [confirming, setConfirming] = useState<string | null>(null);
+  const [rejecting, setRejecting] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [localStatus, setLocalStatus] = useState<Record<string, string>>({});
   const [errorResult, setErrorResult] = useState<{ plan: AgentPlan; result: AgentPlan } | null>(null);
+
+  const planIds = plans.map(p => p.id).join(',');
+
+  // Re-read the authoritative status for every plan referenced by this
+  // bubble. The stored snapshot is stale by design (it records what the
+  // agent submitted, not what the user decided).
+  useEffect(() => {
+    let cancelled = false;
+    const ids = planIds.split(',').filter(Boolean);
+    if (!ids.length) return;
+    Promise.all(ids.map(id => fetchPlan(id).catch(() => null)))
+      .then(results => {
+        if (cancelled) return;
+        const next: Record<string, string> = {};
+        results.forEach((r, i) => { if (r) next[ids[i]] = r.status; });
+        setLocalStatus(prev => ({ ...next, ...prev }));
+      });
+    return () => { cancelled = true; };
+  }, [planIds]);
 
   const status = (p: AgentPlan) => localStatus[p.id] ?? p.status;
 
@@ -372,6 +396,20 @@ function InlinePlanApproval({ plans }: { plans: AgentPlan[] }) {
       }
     } catch (e) {
       toast(e instanceof Error ? e.message : '执行失败', 'error');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const onConfirmReject = async (plan: AgentPlan) => {
+    setRejecting(null);
+    setBusyId(plan.id);
+    try {
+      const updated = await rejectPlan(plan.id);
+      setLocalStatus(prev => ({ ...prev, [plan.id]: updated.status }));
+      toast(`已拒绝「${plan.title}」`, 'info');
+    } catch (e) {
+      toast(e instanceof Error ? e.message : '拒绝失败', 'error');
     } finally {
       setBusyId(null);
     }
@@ -400,21 +438,29 @@ function InlinePlanApproval({ plans }: { plans: AgentPlan[] }) {
                 : s === 'approved' ? 'bg-blue-50 text-blue-700'
                 : s === 'executed' ? 'bg-green-50 text-green-700'
                 : s === 'executed_with_errors' ? 'bg-orange-50 text-orange-700'
+                : s === 'rejected' ? 'bg-slate-100 text-slate-600'
                 : 'bg-slate-100 text-slate-500'
               }`}>
                 {s === 'pending' ? '待审批'
                   : s === 'approved' ? '已批准'
                   : s === 'executed' ? '已执行'
                   : s === 'executed_with_errors' ? '部分失败'
+                  : s === 'rejected' ? '已拒绝'
                   : s}
               </span>
               <span className="text-slate-400">{p.actions.length} 个操作</span>
             </div>
             {isPending && (
-              <button onClick={() => setConfirming(p.id)} disabled={isBusy}
-                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-green-600 text-white text-xs font-medium hover:bg-green-700 disabled:opacity-50 transition-colors">
-                <Icon name="check" size={12} />批准并执行
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button onClick={() => setConfirming(p.id)} disabled={isBusy}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-green-600 text-white text-xs font-medium hover:bg-green-700 disabled:opacity-50 transition-colors">
+                  <Icon name="check" size={12} />批准并执行
+                </button>
+                <button onClick={() => setRejecting(p.id)} disabled={isBusy}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white border border-slate-300 text-slate-600 text-xs font-medium hover:bg-slate-50 hover:text-slate-800 disabled:opacity-50 transition-colors">
+                  <Icon name="x" size={12} />拒绝
+                </button>
+              </div>
             )}
           </div>
         );
@@ -431,6 +477,20 @@ function InlinePlanApproval({ plans }: { plans: AgentPlan[] }) {
             if (plan) onConfirmExecute(plan);
           }}
           onCancel={() => setConfirming(null)}
+        />
+      )}
+      {rejecting && (
+        <ConfirmDialog
+          open={!!rejecting}
+          title="拒绝计划"
+          message={`确认拒绝计划「${plans.find(x => x.id === rejecting)?.title ?? ''}」？拒绝后不会执行任何操作。`}
+          confirmText="拒绝"
+          danger
+          onConfirm={() => {
+            const plan = plans.find(x => x.id === rejecting);
+            if (plan) onConfirmReject(plan);
+          }}
+          onCancel={() => setRejecting(null)}
         />
       )}
       {errorResult && (
