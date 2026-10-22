@@ -1,6 +1,5 @@
 import os
 import shutil
-import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -18,8 +17,6 @@ from ..models import (
 )
 
 fs = APIRouter()
-
-log = logging.getLogger(__name__)
 
 # Preview reads the whole file to slice it by character offset, so this bounds
 # how large a file may be before preview refuses it outright.
@@ -167,15 +164,6 @@ def move(req: MoveRequest) -> FileOperation:
 
     try:
         shutil.move(str(src), str(dest))
-        # A move made outside the indexer leaves the manifest, the FTS
-        # index, and the vector store pointing at the old path until the
-        # next scan runs — and the file gets embedded a second time under
-        # its new name. Tell the index now.
-        try:
-            from ..indexer import indexer
-            indexer.notify_rename(str(src), str(dest))
-        except Exception:
-            log.exception("failed to notify indexer of rename %s -> %s", src, dest)
         return FileOperation(success=True, message="File moved", path=str(dest))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -228,36 +228,6 @@ class AutoIndexer:
         conn.commit()
         conn.close()
 
-    def notify_rename(self, old: str, new: str):
-        """Tell the index that a file moved, so it stays consistent now.
-
-        The scan pass can detect moves on its own via content_hash, but that
-        only happens when a scan runs. A rename performed outside the indexer
-        (the plan executor, for instance) would otherwise leave the manifest
-        pointing at a path that no longer exists until the next scan — and
-        the file would get embedded a second time under its new name.
-
-        Best-effort: each of the three stores is updated independently so one
-        failure does not leave the rest un-updated. Failures are logged and
-        swallowed because the scan's move detection remains as a backstop.
-        """
-        if old == new:
-            return
-        try:
-            self._rename_manifest(old, new)
-        except Exception:
-            log.exception("notify_rename: manifest update failed for %s", old)
-            return
-        try:
-            search_engine.rename_file(old, new)
-        except Exception:
-            log.exception("notify_rename: FTS update failed for %s", old)
-        try:
-            state.get_rag_service().vector_store.rename_file(old, new)
-        except Exception:
-            log.exception("notify_rename: vector store update failed for %s", old)
-        log.info("index notified of rename: %s -> %s", old, new)
-
     def _backfill_hashes(self, current: dict[str, tuple[float, int]],
                           known: dict[str, tuple[float, int, Optional[str]]]):
         """Populate NULL content_hash entries on demand.

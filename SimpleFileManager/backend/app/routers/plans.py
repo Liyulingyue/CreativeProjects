@@ -7,15 +7,12 @@ Every executed action is recorded in an execution log.
 
 import os
 import shutil
-import logging
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
 from ..deps import state, resolve_under_root, PathOutsideRoot, validate_plan_action, get_storage_root
 from ..models import AgentPlan, CreatePlanRequest
-
-log = logging.getLogger(__name__)
 
 plans = APIRouter(prefix="/api/plans", tags=["plans"])
 
@@ -215,15 +212,6 @@ def _execute_action(action_type: str, source: str, target: str) -> str:
             raise FileExistsError(f"Target already exists: {target}")
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(src), str(dest))
-        # The move bypassed the indexer, which only notices renames during
-        # a scan. Tell it now so the manifest, FTS index, and vector store
-        # keep pointing at the file instead of leaving a stale row behind
-        # and re-embedding the same content under its new name.
-        try:
-            from ..indexer import indexer
-            indexer.notify_rename(str(src), str(dest))
-        except Exception:
-            log.exception("failed to notify indexer of rename %s -> %s", src, dest)
         return f"Moved {source} -> {target}"
 
     raise ValueError(f"Unknown action_type: {action_type}")
