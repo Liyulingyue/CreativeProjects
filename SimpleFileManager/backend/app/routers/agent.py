@@ -8,6 +8,7 @@ the user to review before execution.
 import json
 import logging
 import math
+import os
 import re
 import time
 import uuid
@@ -520,6 +521,62 @@ def tool_search_content(pattern: str, path: str = "") -> dict:
     return {"success": True, "pattern": pattern, "matches": matches, "total": len(matches)}
 
 
+def _rel_to_root(path: Path) -> str:
+    """Storage-relative path with forward slashes."""
+    root = get_storage_root()
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return str(path)
+    text = rel.as_posix()
+    return text if text else "."
+
+
+def _find_by_basename(name: str) -> list[str]:
+    """All storage-relative paths whose basename equals `name`.
+
+    Used to repair a source_path the agent guessed at the wrong depth. The
+    search is bounded to the storage root and skips the metadata directory.
+    """
+    root = get_storage_root()
+    hits: list[str] = []
+    try:
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames
+                           if not d.startswith(".") and d != ".simplefilemanager"]
+            for fn in filenames:
+                if fn == name:
+                    hits.append(_rel_to_root(Path(dirpath) / fn))
+                    if len(hits) > 20:
+                        return hits
+    except OSError:
+        return hits
+    return hits
+
+
+def _resolve_source_path(source: str) -> tuple[Optional[str], list[str]]:
+    """Resolve an agent-supplied source path to a real file.
+
+    Returns (resolved_path, candidates). `resolved_path` is the corrected
+    relative path when the original one was wrong but the file was
+    unambiguous; it is None when the path is fine or the file cannot be
+    found. `candidates` lists every match when the basename is ambiguous.
+    """
+    try:
+        target = resolve_under_root(source)
+    except PathOutsideRoot:
+        return None, []
+    if target.exists():
+        return None, []
+    name = Path(source).name
+    if not name:
+        return None, []
+    matches = _find_by_basename(name)
+    if len(matches) == 1:
+        return matches[0], []
+    return None, matches
+
+
 def tool_submit_plan(title: str, summary: str = "", actions: Optional[list[dict]] = None) -> dict:
     actions = actions or []
     if not actions:
@@ -529,11 +586,43 @@ def tool_submit_plan(title: str, summary: str = "", actions: Optional[list[dict]
         error = validate_plan_action(a)
         if error:
             return {"success": False, "error": error}
+        action_type = a.get("action_type", "move")
+        source = a.get("source_path")
+        target = a.get("target_path")
+        reason = a.get("reason", "")
+
+        # Guard against the failure mode where the agent remembers a path
+        # from an earlier turn and the file has since been moved. A plan
+        # with a dead source_path still creates its target folder and then
+        # fails every move, leaving the user with a half-applied plan.
+        if action_type in ("move", "rename", "delete") and source:
+            resolved, candidates = _resolve_source_path(source)
+            if resolved:
+                reason = (f"{reason} [自动修正路径: {source} → {resolved}]").strip()
+                source = resolved
+            elif candidates:
+                return {"success": False, "error": (
+                    f"Source not found: {source}. The file name '{Path(source).name}' "
+                    f"exists in more than one place: {', '.join(candidates)}. "
+                    f"Use one of those exact paths as source_path."
+                )}
+            else:
+                try:
+                    exists = resolve_under_root(source).exists()
+                except PathOutsideRoot:
+                    exists = False
+                if not exists:
+                    return {"success": False, "error": (
+                        f"Source not found: {source}. No file with that name exists "
+                        f"anywhere under the storage root. Call list_directory (or "
+                        f"find_files) to get the real path before submitting a plan."
+                    )}
+
         cleaned.append({
-            "action_type": a.get("action_type", "move"),
-            "source_path": a.get("source_path"),
-            "target_path": a.get("target_path"),
-            "reason": a.get("reason", ""),
+            "action_type": action_type,
+            "source_path": source,
+            "target_path": target,
+            "reason": reason,
         })
     plan = state.get_plan_store().create_plan(
         title=title,
