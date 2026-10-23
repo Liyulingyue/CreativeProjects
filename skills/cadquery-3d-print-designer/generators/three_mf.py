@@ -54,15 +54,11 @@ Usage
 """
 from __future__ import annotations
 
-import io
 import re
-import shutil
 import tempfile
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
-
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -162,15 +158,6 @@ def _mesh_xml(mesh: trimesh.Trimesh, indent: str = "    ") -> str:
 # ---------------------------------------------------------- XML splicing core
 
 
-# Match a single <object id="N" ...>...</object> block.  The body
-# capture is non-greedy and DOTALL so nested </object> tags in the
-# body cannot accidentally close the match.  The id attribute is
-# captured for sanity checking.
-_OBJECT_RE = re.compile(
-    rb'(<object\b[^>]*\bid="(?P<id>\d+)"[^>]*>)(.*?)(</object>)',
-    re.DOTALL,
-)
-
 # Match a single <mesh ...>...</mesh> block (with or without attributes).
 _MESH_RE = re.compile(rb'<mesh\b[^>]*>.*?</mesh>', re.DOTALL)
 
@@ -182,9 +169,6 @@ _RESOURCES_RE = re.compile(
 
 # Match a <build>...</build> block.
 _BUILD_RE = re.compile(rb'(<build\b[^>]*>)(.*?)(</build>)', re.DOTALL)
-
-# Match an <item .../> inside <build>.  Self-closing only.
-_ITEM_RE = re.compile(rb'<item\b[^/>]*/>')
 
 
 def _splice_object_mesh(xml_bytes: bytes, object_id: int, new_mesh_xml: str) -> bytes:
@@ -278,15 +262,15 @@ def _insert_object_and_build_item(
 
 
 # ---------------------------------------------------------------- public API
-
-
 @dataclass
 class PartInfo:
     """One leaf-object inside the loaded 3MF."""
+
     object_id: int
     name: str
-    mesh: trimesh.Trimesh
+    mesh: trimesh.Trimesh | None
     bbox: np.ndarray  # shape (2, 3): [mins, maxs]
+
 
     @property
     def size(self) -> tuple[float, float, float]:
@@ -431,6 +415,11 @@ class Bundle:
         byte of the original mesh.
         """
         original = self.get_part(object_id=object_id).mesh
+        if original is None:
+            raise ThreeMFError(
+                f"object id={object_id} has no readable mesh - it is an "
+                f"assembly or a mesh that trimesh could not parse"
+            )
         new = _cq_to_trimesh(shape)
 
         try:

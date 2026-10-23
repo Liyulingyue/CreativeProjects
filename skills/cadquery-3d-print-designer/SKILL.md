@@ -76,7 +76,20 @@ Verify:
 python -c "import cadquery as cq, pyvista as pv, trimesh; print('cq', cq.__version__, 'pv', pv.__version__, 'trimesh', trimesh.__version__)"
 ```
 
-Linux also needs `xvfb` for PyVista off-screen rendering.
+**If PyPI is slow, use a mirror** — the `cadquery-ocp` wheel alone is ~68 MB and can stall for many minutes on the default index:
+
+```bash
+pip install -i https://pypi.tuna.tsinghua.edu.cn/simple cadquery pyvista trimesh manifold3d
+```
+
+### Headless rendering (Linux)
+
+PyVista renders through VTK, which needs a GL context. On a headless box there are two ways to get one:
+
+1. **EGL / OSMesa (preferred, no root needed).** VTK falls back to it automatically when `DISPLAY` is unset, provided the Mesa libraries are present. On Ubuntu these are `libegl1`, `libegl-mesa0` and `libgl1-mesa-dri`; verify with `ldconfig -p | grep -E 'libEGL|libGL'`. Nothing else to install.
+2. **Xvfb (fallback).** If VTK complains about a missing GL context, install it: `sudo apt install xvfb`, then call `pv.start_xvfb()` before rendering.
+
+Both give software rasterisation — fine for CAD previews, no GPU required. Expect one harmless `bad X server connection. DISPLAY=` warning on stderr; the PNG is still written correctly.
 
 ---
 
@@ -123,22 +136,45 @@ ribs.save("cross_grille.stl")
 
 ### Step 2: PyVista Off-Screen Multi-View Rendering
 
+Use the shared renderer. It accepts a generator result, a `cq.Workplane` or a `cq.Shape` — the `GridPanel` / `RibbedPlate` dataclasses are unwrapped automatically, so you never have to pass `p.shape` by hand:
+
+```python
+from generators import grid_panel, render
+
+panel = grid_panel(length=266, width=156, thickness=3, rib=4, gap=5, direction="u")
+render(panel, "panel", views=("iso", "front", "top"), outdir="out")
+# -> out/panel.stl, out/panel_iso.png, out/panel_front.png, out/panel_top.png
+```
+
+Useful flags:
+
+| flag | effect |
+| --- | --- |
+| `edges=30` | draw only feature edges sharper than 30° — **the STL triangulation is dropped** |
+| `edges=True` | draw every edge, including the STL's triangle boundaries |
+| `bounds=True` | add the bounding box and X/Y/Z axes with mm labels |
+| `extra=<shape>` | overlay a second part translucently as a reference |
+
+**Why `edges` matters.** On a tessellated STL, PyVista's `show_edges=True` draws the *triangle* boundaries, not the part's feature edges. A flat panel then renders as a grid of little squares instead of a row of slots — the geometry is fine, the picture is lying. `edges=30` keeps the real corners and drops the triangulation (whose dihedral angle is 0).
+
+If you need a hand-rolled plot instead of the shared renderer:
+
 ```python
 import pyvista as pv
 
-def render_preview(stl_path="output_model.stl", output_img="preview_iso.png"):
-    mesh = pv.read(stl_path)
-    plotter = pv.Plotter(off_screen=True)
-    plotter.add_mesh(mesh, color="whitesmoke", show_edges=True, edge_color="gray", specular=0.5)
-    plotter.add_bounding_box(color="black", line_width=1)
-    plotter.show_bounds(grid='back', location='outer', ticks='both',
-                        xlabel='X (mm)', ylabel='Y (mm)', zlabel='Z (mm)')
-    plotter.view_isometric()
-    plotter.screenshot(output_img)
-    plotter.close()
-
-render_preview()
+mesh = pv.read("output_model.stl")
+plotter = pv.Plotter(off_screen=True)
+plotter.add_mesh(mesh, color="whitesmoke", show_edges=True,
+                 edge_color="gray", feature_angle=30, specular=0.5)
+plotter.add_bounding_box(color="black", line_width=1)
+plotter.show_bounds(grid='back', location='outer', ticks='both',
+                    xtitle='X (mm)', ytitle='Y (mm)', ztitle='Z (mm)')
+plotter.view_isometric()
+plotter.screenshot("preview_iso.png")
+plotter.close()
 ```
+
+> `xlabel` / `ylabel` / `zlabel` were renamed to `xtitle` / `ytitle` / `ztitle` in PyVista 0.44 and now emit a `PyVistaDeprecationWarning`.
 
 ### Step 3: Zero-Dependency Fallback (CadQuery Native SVG)
 
@@ -236,11 +272,16 @@ Whether generated from scratch or spliced into a 3MF, every part must be:
 - Manifold: every edge shared by exactly two faces.
 - Coordinate-convention: XY is the flat face, Z is the print direction.
 
-`generators.core.verify()` checks all three. `generators.core.analytic_volume()` checks the volume against a hand-derived formula for the lattice parts, so a broken slot that lands on a wall face fails loudly instead of silently shipping a non-perforated plate. Run the tests:
+`generators.core.verify()` enforces the first two by assertion — one solid, one shell, and OCCT BRep validity (which rejects non-manifold edges, free boundary edges and self-intersecting faces). The third is a construction rule: every generator authors in XY and extrudes along Z, so the flat face is always the XY plane.
+
+`generators.core.analytic_volume()` computes the material volume of a two-axis lattice by inclusion-exclusion, and `verify()` compares it against the real solid. A broken slot that lands on a wall face and leaves a membrane fails loudly instead of silently shipping a non-perforated plate. The overlap term is summed from the actual slot intervals, so it stays correct even when the end rails are wide enough that the outermost slots of the two families no longer cross.
+
+Run the tests:
 
 ```bash
 python -m generators.selftest          # CSG generators (CadQuery required)
 python -m generators.three_mf_selftest # 3MF round-trip (CadQuery required for shape bridges; trimesh-only paths also covered)
+python -m generators.demo               # render the sample parts into out/
 ```
 
 ## Dependencies
@@ -251,6 +292,6 @@ python -m generators.three_mf_selftest # 3MF round-trip (CadQuery required for s
 - `trimesh >= 4.0` (3MF read + mesh bridge)
 - `numpy` (transitive via trimesh)
 - `manifold3d` (optional, only needed for `union_replace`)
-- Linux: `xvfb` for off-screen PyVista
+- Linux headless: EGL/Mesa (`libegl1`, `libegl-mesa0`, `libgl1-mesa-dri`) is enough; `xvfb` only as a fallback
 
 `generators/three_mf.py` keeps `cadquery` as a *lazy* import so reading/inspecting a Bambu 3MF works with `trimesh` alone — useful for QA scripts and for CI smoke tests that do not need the full OCCT stack.

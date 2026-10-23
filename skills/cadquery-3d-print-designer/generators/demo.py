@@ -1,5 +1,6 @@
-"""Generate the sample parts so you can eyeball what the generators produce.
+r"""Generate the sample parts so you can eyeball what the generators produce.
 
+    .venv/bin/python -m generators.demo
     .venv\Scripts\python.exe -m generators.demo
 """
 from __future__ import annotations
@@ -18,15 +19,21 @@ def main() -> int:
     for d in ("u", "v"):
         p = grid_panel(L, W, T, rib=4, gap=5, direction=d)
         print(p)
-        for f in render(p.shape, f"grid_panel_{d}", views=("iso", "front", "top")):
+        for f in render(p, f"grid_panel_{d}", views=("iso", "front", "top")):
             print("   ", f)
 
     print("\n=== ribbed_plate: cross lattice on a solid base ===")
     for d in ("u", "both"):
         p = ribbed_plate(L, W, base=3, rib_w=4, gap=5, rib_h=6, direction=d)
         print(p)
-        for f in render(p.shape, f"ribbed_plate_{d}", views=("iso", "front", "top")):
+        for f in render(p, f"ribbed_plate_{d}", views=("iso", "front", "top")):
             print("   ", f)
+
+    print("\n=== one dimensioned view, with axes ===")
+    p = grid_panel(L, W, T, rib=4, gap=5, direction="u")
+    for f in render(p, "grid_panel_u_measured", views=("iso",),
+                    edges=30, bounds=True):
+        print("   ", f)
 
     print("\n=== parameter sweep sanity (no render, just the numbers) ===")
     print(f"{'gap':>5} {'ribs':>5} {'slots':>6} {'open%':>7} {'volume mm3':>12}")

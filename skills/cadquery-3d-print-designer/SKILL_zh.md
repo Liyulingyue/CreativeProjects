@@ -69,11 +69,25 @@ output.3mf <─ 重新打包：除了改过的文件，原 ZIP 其余字节原�
 ```bash
 python -m venv .venv
 .venv\Scripts\Activate.ps1     # Windows
+source .venv/bin/activate       # Linux / macOS
 
 pip install cadquery pyvista trimesh
 # 可选：布尔合并需要的后端
 pip install manifold3d
 ```
+
+**PyPI 慢的话换镜像** —— 光 `cadquery-ocp` 一个轮子就有 ~68MB，默认源上能卡好几分钟：
+
+```bash
+pip install -i https://pypi.tuna.tsinghua.edu.cn/simple cadquery pyvista trimesh manifold3d
+```
+
+**Linux 无头渲染**：PyVista 底层是 VTK，需要一个 GL context。两种方式：
+
+1. **EGL / OSMesa（首选，不需要 root）**。`DISPLAY` 为空时 VTK 会自动回退，前提是系统装了 Mesa。Ubuntu 上是 `libegl1`、`libegl-mesa0`、`libgl1-mesa-dri`，用 `ldconfig -p | grep -E 'libEGL|libGL'` 验证。不用装别的东西。
+2. **Xvfb（兜底）**。VTK 报缺 GL context 时才需要：`sudo apt install xvfb`，然后渲染前调 `pv.start_xvfb()`。
+
+两种都是软件光栅化，做 CAD 预览完全够用，不需要 GPU。stderr 上会出现一行无害的 `bad X server connection. DISPLAY=` 警告，PNG 依然是正确的。
 
 ### 2. 让 AI 用这个 skill
 
@@ -110,12 +124,13 @@ AI 会按上面"双流水线"选择 A 还是 B，并按选定流水线执行。
 
 修改或扩展这个 skill 时：
 
-1. **STL/3MF 网格必须是流形（manifold）**：不能有反面法线、非流形边。CadQuery 的 CSG 操作天然保证这一点，但 `.stl` 导入再导出可能破坏。
+1. **STL/3MF 网格必须是流形（manifold）**：不能有反面法线、非流形边。CadQuery 的 CSG 操作天然保证这一点，但 `.stl` 导入再导出可能破坏。`generators.core.verify()` 会用 OCCT 的 BRep 合法性检查把这类问题挡下来。
 2. **打印间隙默认值**：M3 → 3.3 mm，M4 → 4.3 mm，M5 → 5.3 mm，压配合额外 +0.1 ~ +0.2 mm。
-3. **PyVista 离屏渲染**：必须 `off_screen=True`，否则会弹 GUI。Linux 服务器需要 `pv.start_xvfb()`。
+3. **PyVista 离屏渲染**：必须 `off_screen=True`，否则会弹 GUI。Linux 无头机器优先靠 EGL/Mesa，`pv.start_xvfb()` 是兜底。
 4. **回退方案**：检测不到 PyVista 时不要硬失败，切到 `cq.exporters.export(..., "xxx.svg", opt={...})`。
 5. **3MF 写入严禁全量重生成**：必须解包 → 字节级改 → 重新打包。任何重写整个 3dmodel.model 的路径都会丢拓竹元数据。
 6. **`generators/three_mf.py` 里 cadquery 是懒加载**：纯 trimesh 的读 / 检查 / round-trip 不依赖 CadQuery，方便 CI smoke test。
+7. **渲染边的坑**：在 STL 上 `show_edges=True` 画的是**三角面片的边**，不是零件的特征边 —— 一块平板会渲染成一片小方格，看起来像几何错了，其实只是画法骗人。要真边线用 `feature_angle=30`（渲染器的 `edges=30`）。三角面的二面角是 0，30° 阈值刚好把它们滤掉。
 
 ## 依赖项
 
@@ -125,7 +140,7 @@ AI 会按上面"双流水线"选择 A 还是 B，并按选定流水线执行。
 - trimesh >= 4.0
 - numpy（trimesh 传递依赖）
 - manifold3d（可选，仅 `union_replace` 需要）
-- Linux 下额外：xvfb（PyVista 离屏渲染）
+- Linux 无头：EGL/Mesa（`libegl1`、`libegl-mesa0`、`libgl1-mesa-dri`）就够了；`xvfb` 只是兜底
 
 ## 文件清单
 

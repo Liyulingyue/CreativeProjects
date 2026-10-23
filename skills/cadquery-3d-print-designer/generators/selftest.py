@@ -195,6 +195,69 @@ def t_panel_reproducible():
     assert abs(a - b) < 1e-6, (a, b)
 
 
+def t_panel_asymmetric_rails():
+    """Wide end rails on one axis only must not confuse the volume oracle.
+
+    When the rails are wide enough that the outermost slot of one family no
+    longer crosses the outermost slot of the other, not every u/v pair
+    overlaps.  The overlap term used to assume n_u * n_v and over-estimated
+    the material, which made verify() reject a perfectly good part.
+    """
+    for ru, rv in ((5, 5), (5, 30), (30, 5), (40, 40)):
+        p = grid_panel(266, 156, 3, rib=4, gap=5, direction="both",
+                       allow_disconnected=True, auto_rails=False,
+                       end_rail_u=ru, end_rail_v=rv)
+        assert abs(p.stats["ratio"] - 1.0) < 1e-4, (
+            f"end_rail_u={ru} end_rail_v={rv} -> ratio {p.stats['ratio']}")
+
+
+def t_panel_analytic_volume_exact():
+    """analytic_volume() must equal the real solid for two-axis lattices."""
+    from .core import analytic_volume, layout
+    L, W, T = 266.0, 156.0, 3.0
+    lu = layout(L, 4, 5)
+    lv = layout(W, 4, 5)
+    for ru, rv in ((0.0, 0.0), (5.0, 5.0), (5.0, 30.0), (30.0, 5.0)):
+        expected = analytic_volume(L, W, T, lu, lv, True, True,
+                                   end_rail_u=ru, end_rail_v=rv)
+        p = grid_panel(L, W, T, rib=4, gap=5, direction="both",
+                       allow_disconnected=True, auto_rails=False,
+                       end_rail_u=ru, end_rail_v=rv)
+        assert abs(p.stats["volume"] - expected) < 1.0, (
+            f"end_rail_u={ru} end_rail_v={rv}: "
+            f"solid {p.stats['volume']} != analytic {expected}")
+
+
+def t_panel_is_valid_brep():
+    """Every shipped part must be a valid, manifold BRep."""
+    for p in (grid_panel(266, 156, 3, rib=4, gap=5, direction="u"),
+              grid_panel(266, 156, 3, rib=4, gap=5, direction="v"),
+              ribbed_plate(266, 156, base=3, rib_w=4, gap=5, rib_h=6,
+                           direction="both")):
+        assert p.stats.get("valid") is True, p.stats
+
+
+def t_render_accepts_generator_result():
+    """render() must unwrap GridPanel / RibbedPlate itself.
+
+    Passing the generator result straight in used to raise
+    TypeError: compound() argument after * must be an iterable.
+    """
+    try:
+        import pyvista  # noqa: F401
+    except ImportError:
+        return                      # preview is optional, skip the check
+    import tempfile
+    from .render import render
+    with tempfile.TemporaryDirectory() as td:
+        out = render(grid_panel(60, 40, 3, rib=4, gap=5, direction="u"),
+                     "t", views=("iso",), outdir=td)
+        assert out and out[0].exists(), out
+        out = render(ribbed_plate(60, 40, base=3, rib_w=4, gap=5, rib_h=6),
+                     "t2", views=("top",), outdir=td)
+        assert out and out[0].exists(), out
+
+
 # ---------------------------------------------------------- ribbed_plate ----
 
 def t_rib_basic():
@@ -251,6 +314,7 @@ def main() -> int:
         ("layout", "t_layout_"),
         ("grid_panel", "t_panel_"),
         ("ribbed_plate", "t_rib_"),
+        ("render", "t_render_"),
     ]
     for title, prefix in groups:
         print(title)
