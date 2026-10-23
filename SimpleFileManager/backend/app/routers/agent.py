@@ -35,6 +35,12 @@ MAX_TOOL_RESULT_CHARS = 4000
 # so whenever it does engage it invalidates the prompt cache prefix.
 MAX_SESSION_MESSAGES = 400
 
+# How many times one turn may be nudged to call submit_plan after it
+# answered with prose instead. Bounded on purpose: an earlier version
+# decremented the step counter on each nudge, so a model that never
+# called the tool could never exhaust the loop.
+MAX_SUBMIT_PLAN_RETRIES = 2
+
 
 class AgentRequest(BaseModel):
     message: str
@@ -48,14 +54,6 @@ class AgentRequest(BaseModel):
     # The router ignores it; provider selection lives on the
     # llm_providers table now.
     use_fast: bool = False
-
-
-class AgentResponse(BaseModel):
-    response: str
-    tool_results: Optional[list[dict]] = None
-    plans: list[dict] = []
-    steps_used: int = 0
-    available_tools: list[str] = []
 
 
 # ---- tool schemas (OpenAI function calling format) ----
@@ -302,6 +300,43 @@ def _looks_like_action_request(text: str) -> bool:
     if not text:
         return False
     return any(pat in text for pat in _ACTION_PATTERNS)
+
+
+# Phrases a model reaches for when it believes it filed a plan. Used only to
+# decide where to place the correction notice — the plan store is the real
+# authority on whether anything was submitted.
+#
+# Matched as a co-occurrence rather than fixed substrings: Chinese lets the
+# model slot words between the verb and the noun ("已为您提交整理计划"),
+# which no literal list of bigrams survives.
+_SUBMISSION_CLAIM_VERBS = ["提交", "已生成", "生成", "创建", "plan", "submitted"]
+
+# The fabricated id the model invented when it had not called the tool at all.
+# A long hex run next to a plan reference is the signature of that, and it
+# shows up even in replies that never use a claim verb.
+_FABRICATED_ID_RE = re.compile(r"\b[0-9a-f]{24,}\b")
+
+
+def _claims_submitted_plan(text: str) -> bool:
+    """True when the reply asserts a plan was filed.
+
+    The model writes "已提交计划，ID: <hex>" purely from the shape of an
+    earlier successful turn, sometimes with an invented id. Detecting the
+    claim lets the correction notice land after it, where the user reads it,
+    instead of above a sentence they would otherwise take at face value.
+
+    Deliberately loose — it only picks where to put the notice, and a false
+    positive costs nothing but a sentence in the wrong order.
+    """
+    if not text:
+        return False
+    lowered = text.lower()
+    if "计划" in text and any(v in lowered for v in _SUBMISSION_CLAIM_VERBS):
+        return True
+    # English-only replies, and bare id mentions.
+    if "plan" in lowered:
+        return True
+    return bool("计划" in text and _FABRICATED_ID_RE.search(text))
 
 
 # ---- tool implementations (return dicts, never raise) ----
@@ -921,133 +956,6 @@ def _get_session(session_id: str) -> Session:
     return _restore_session(session_id)
 
 
-@agent.post("/chat", response_model=AgentResponse)
-def agent_chat(req: AgentRequest):
-    interaction.mark_active()
-    session_id = req.session_id or "default"
-    _require_agent_session(session_id)
-    session = _get_session(session_id)
-    session.history.append({"role": "user", "content": req.message})
-
-    session.compact()
-    # Same provider-resolution precedence as the streaming endpoint.
-    chat_svc = state.get_chat_history()
-    provider = _resolve_provider(chat_svc, req.provider_id, session.provider_id)
-    if provider is None:
-        raise HTTPException(status_code=400, detail="没有可用的 LLM provider；请到 /settings 添加")
-    if req.provider_id:
-        chat_svc.update_session_provider(session_id, provider.id)
-        session.provider_id = provider.id
-    all_messages = session.build_messages()
-
-    tool_results: list[dict] = []
-    plan_ids: list[str] = []
-    steps_used = 0
-    final_text = ""
-
-    for _ in range(state.get_settings().max_agent_steps):
-        steps_used += 1
-        response = chat_with_llm(all_messages, TOOLS, provider=provider)
-
-        if "error" in response:
-            return AgentResponse(
-                response=f"模型调用失败: {response['error']}",
-                tool_results=tool_results or None,
-                plans=[], steps_used=steps_used, available_tools=AVAILABLE_TOOLS,
-            )
-
-        choice = (response.get("choices") or [{}])[0]
-        message = choice.get("message", {})
-        tool_calls = message.get("tool_calls") or []
-
-        if tool_calls:
-            # preserve the full assistant tool_calls message so the API
-            # can link the following tool results to their call ids. The
-            # `type: "function"` field is required by the OpenAI tool-call
-            # schema; llama-server returns it as None on the wire and rejects
-            # it on the way back in ("Missing tool call type"), so inject
-            # it here before the assistant message is sent back.
-            tool_calls_for_history = [
-                {
-                    "id": tc.get("id", ""),
-                    "type": "function",
-                    "function": tc.get("function", {}),
-                }
-                for tc in tool_calls
-            ]
-            all_messages.append({
-                "role": "assistant",
-                "content": message.get("content") or "",
-                "tool_calls": tool_calls_for_history,
-            })
-            for tc in tool_calls:
-                fn_name = None
-                try:
-                    fn_name = tc["function"]["name"]
-                    arguments = json.loads(tc["function"].get("arguments") or "{}")
-                except (KeyError, json.JSONDecodeError) as e:
-                    result = {"success": False, "error": f"Malformed tool call: {e}"}
-                else:
-                    result = execute_tool(fn_name, arguments)
-                    if fn_name == "submit_plan" and result.get("success"):
-                        plan_ids.append(result.get("plan_id", ""))
-                tool_results.append({"tool": fn_name or "unknown", "result": result})
-                all_messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.get("id", ""),
-                    "content": json.dumps(_trim(result), ensure_ascii=False),
-                })
-            continue
-
-        final_text = message.get("content") or "（模型未返回内容，请重试）"
-        all_messages.append({"role": "assistant", "content": final_text})
-
-        # ---- post-processing guard ----
-        # Small models (350M class) occasionally respond with descriptive text
-        # instead of calling submit_plan when the user asks for an action
-        # (create folder / move / rename / delete). Detect this and inject a
-        # correction nudge so the model gets a second chance to call the tool.
-        last_user_msg = ""
-        for m in reversed(all_messages[:-1]):
-            if m.get("role") == "user":
-                last_user_msg = m.get("content", "")
-                break
-        submitted_plan = any(
-            tr.get("tool") == "submit_plan" for tr in tool_results
-        )
-        if _looks_like_action_request(last_user_msg) and not submitted_plan:
-            correction = (
-                "注意：你刚才的回复描述了操作结果，但并没有调用 submit_plan 工具。\n"
-                "涉及文件变更（创建文件夹/移动/复制/删除/重命名）的操作必须通过 submit_plan "
-                "提交计划，等待用户审批后才能执行。你无法直接修改任何文件。\n"
-                "请立即调用 submit_plan 工具提交计划，不要在回复中描述操作结果。"
-            )
-            all_messages.append({"role": "user", "content": correction})
-            steps_used -= 1   # correction nudge doesn't count as a step
-            continue
-        # ---------------------------
-        break
-    else:
-        final_text = "已达到单次任务的最大步数限制，请查看已收集的信息或换个更简单的请求。"
-        all_messages.append({"role": "assistant", "content": final_text})
-
-    # persist trimmed history (drop intermediate tool noise)
-    session.history = [m for m in all_messages if m.get("role") in ("user", "assistant")][-MAX_SESSION_MESSAGES:]
-
-    plans = []
-    if plan_ids:
-        store = state.get_plan_store()
-        plans = [p.model_dump() for p in (store.get_plan(pid) for pid in plan_ids) if p]
-
-    return AgentResponse(
-        response=final_text,
-        tool_results=tool_results or None,
-        plans=plans,
-        steps_used=steps_used,
-        available_tools=AVAILABLE_TOOLS,
-    )
-
-
 @agent.post("/chat/stream")
 def agent_chat_stream(req: AgentRequest):
     """Server-sent events variant of /chat.
@@ -1099,6 +1007,7 @@ def agent_chat_stream(req: AgentRequest):
 
         tool_results: list[dict] = []
         plan_ids: list[str] = []
+        submit_plan_retries = 0
         steps_used = 0
         max_steps = state.get_settings().max_agent_steps
         emitted: list[str] = []  # streamed text, kept for session history
@@ -1204,7 +1113,52 @@ def agent_chat_stream(req: AgentRequest):
                     continue
 
                 final_text = turn_text or "（模型未返回内容，请重试）"
-                yield sse("token", {"text": ""})
+
+                # ---- post-processing guard ----
+                # The model sometimes narrates an action instead of calling
+                # submit_plan: "已提交计划，ID 是 <hex>" with no tool call
+                # behind it. The plan does not exist, so the approval centre
+                # shows nothing and the user has no way to act — worse, the
+                # fabricated id reads as authoritative. Force a retry while
+                # there are steps left, then say plainly that nothing was
+                # submitted instead of passing the claim through.
+                #
+                # The trigger is the turn's own request, read from req.message
+                # rather than from the tail of all_messages: a nudge appended
+                # below becomes the newest user turn, so scanning history
+                # would end up inspecting the correction's own wording.
+                submitted_plan = any(
+                    tr.get("tool") == "submit_plan" and tr["result"].get("success")
+                    for tr in tool_results
+                )
+                wants_action = _looks_like_action_request(req.message)
+                retries_left = MAX_SUBMIT_PLAN_RETRIES - submit_plan_retries
+                if wants_action and not submitted_plan and retries_left > 0:
+                    submit_plan_retries += 1
+                    correction = (
+                        "注意：你刚才的回复描述了操作结果，但并没有真正调用 submit_plan 工具。\n"
+                        "涉及文件变更（创建文件夹/移动/复制/删除/重命名）的操作必须通过 submit_plan "
+                        "提交计划，等待用户审批后才能执行。你无法直接修改任何文件。\n"
+                        "也不要编造计划 ID——用户看不到任何计划时会以为系统出错。\n"
+                        "请立即调用 submit_plan 工具提交计划，不要在回复中描述操作结果。"
+                    )
+                    all_messages.append({"role": "user", "content": correction})
+                    final_text = ""
+                    continue
+
+                if wants_action and not submitted_plan:
+                    # Out of retries. Say what actually happened rather than
+                    # letting a fabricated plan id stand as the answer.
+                    notice = (
+                        "\n\n（本次没有提交任何整理计划：模型没有调用 submit_plan 工具，"
+                        "「整理」页里不会有任务。上面的描述只是模型生成的文字，"
+                        "文件系统未被改动。可以再说一次，或换个说法。）"
+                    )
+                    if not _claims_submitted_plan(final_text):
+                        final_text = notice.lstrip() + "\n\n" + final_text
+                    else:
+                        final_text += notice
+                    yield sse("token", {"text": ""})
                 all_messages.append({"role": "assistant", "content": final_text})
                 break
             else:

@@ -264,31 +264,6 @@ export interface AgentMessage {
   timestamp: number;
 }
 
-export interface AgentResponse {
-  response: string;
-  tool_results?: Array<{
-    tool: string;
-    arguments: Record<string, unknown>;
-    result: unknown;
-  }>;
-  plans: AgentPlan[];
-  steps_used: number;
-  available_tools: string[];
-}
-
-export async function sendAgentMessage(
-  message: string,
-  sessionId?: string
-): Promise<AgentResponse> {
-  const res = await authFetch(`${API_BASE}/agent/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, session_id: sessionId }),
-  });
-  if (!res.ok) throw new Error('Failed to send agent message');
-  return res.json();
-}
-
 export interface AgentToolDisplay {
   name: string;
   risk_label: string;
