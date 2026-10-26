@@ -358,6 +358,7 @@ function InlinePlanApproval({ plans }: { plans: AgentPlan[] }) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [localStatus, setLocalStatus] = useState<Record<string, string>>({});
   const [resolvedIds, setResolvedIds] = useState<Record<string, boolean>>({});
+  const [goneIds, setGoneIds] = useState<Record<string, boolean>>({});
   const [errorResult, setErrorResult] = useState<{ plan: AgentPlan; result: AgentPlan } | null>(null);
 
   const planIds = plans.map(p => p.id).join(',');
@@ -374,14 +375,23 @@ function InlinePlanApproval({ plans }: { plans: AgentPlan[] }) {
         if (cancelled) return;
         const next: Record<string, string> = {};
         const done: Record<string, boolean> = {};
+        const gone: Record<string, boolean> = {};
         results.forEach((r, i) => {
-          if (r) next[ids[i]] = r.status;
-          // Mark resolved even when the fetch failed: a plan the server
-          // can't find is not something we can act on anyway.
+          if (r) {
+            next[ids[i]] = r.status;
+          } else {
+            // The server has no such plan. It was deleted from the
+            // approval centre, or its id was never real to begin with.
+            // Either way there is nothing to approve or reject, and the
+            // snapshot's own status is fiction — so drop the buttons
+            // instead of offering an action that can only 404.
+            gone[ids[i]] = true;
+          }
           done[ids[i]] = true;
         });
         setLocalStatus(prev => ({ ...next, ...prev }));
         setResolvedIds(prev => ({ ...done, ...prev }));
+        setGoneIds(prev => ({ ...gone, ...prev }));
       });
     return () => { cancelled = true; };
   }, [planIds]);
@@ -438,8 +448,9 @@ function InlinePlanApproval({ plans }: { plans: AgentPlan[] }) {
         // Until the fetch lands we can't know whether this plan is still
         // pending, so rendering a clickable button would let the user
         // fire an action at an already-executed plan.
+        const isGone = !!goneIds[p.id];
         const isResolved = !!resolvedIds[p.id];
-        const isPending = isResolved && s === 'pending';
+        const isPending = isResolved && !isGone && s === 'pending';
         const isBusy = busyId === p.id;
         return (
           <div key={p.id} className="rounded-lg bg-white border border-slate-200 p-2.5 text-xs space-y-1.5">
@@ -447,7 +458,8 @@ function InlinePlanApproval({ plans }: { plans: AgentPlan[] }) {
               <Icon name="clipboard" size={12} className="text-indigo-500 flex-shrink-0" />
               <span className="font-medium text-slate-700">{p.title}</span>
               <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                !isResolved ? 'bg-slate-100 text-slate-400'
+                isGone ? 'bg-slate-100 text-slate-400'
+                : !isResolved ? 'bg-slate-100 text-slate-400'
                 : s === 'pending' ? 'bg-amber-50 text-amber-700'
                 : s === 'approved' ? 'bg-blue-50 text-blue-700'
                 : s === 'executed' ? 'bg-green-50 text-green-700'
@@ -455,7 +467,8 @@ function InlinePlanApproval({ plans }: { plans: AgentPlan[] }) {
                 : s === 'rejected' ? 'bg-slate-100 text-slate-600'
                 : 'bg-slate-100 text-slate-500'
               }`}>
-                {!isResolved ? '…'
+                {isGone ? '计划已删除'
+                  : !isResolved ? '…'
                   : s === 'pending' ? '待审批'
                   : s === 'approved' ? '已批准'
                   : s === 'executed' ? '已执行'
@@ -465,6 +478,11 @@ function InlinePlanApproval({ plans }: { plans: AgentPlan[] }) {
               </span>
               <span className="text-slate-400">{p.actions.length} 个操作</span>
             </div>
+            {isGone && (
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                这个计划在审批中心已被删除，无法再批准或执行。
+              </p>
+            )}
             {isPending && (
               <div className="flex items-center gap-1.5">
                 <button onClick={() => setConfirming(p.id)} disabled={isBusy}

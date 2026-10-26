@@ -514,27 +514,46 @@ export async function createPlan(input: CreatePlanInput): Promise<AgentPlan> {
   return res.json();
 }
 
+/**
+ * Turn a non-OK response into an Error carrying the server's own message.
+ * The backend explains *why* a call was refused ("Plan is executed, cannot
+ * approve", "Plan not found") and that is the part the user needs — a bare
+ * "Failed to reject plan" hides both the cause and the difference between a
+ * missing plan and a plan in the wrong state.
+ */
+async function planError(res: Response, fallback: string): Promise<Error> {
+  let detail = '';
+  try {
+    const body = await res.json();
+    if (body && typeof body.detail === 'string') detail = body.detail;
+  } catch {
+    // Not JSON, or the body was already consumed. Keep the fallback.
+  }
+  if (res.status === 404) return new Error('这个计划已不存在，可能已被删除');
+  return new Error(detail || fallback);
+}
+
 export async function approvePlan(planId: string): Promise<AgentPlan> {
   const res = await authFetch(`${API_BASE}/plans/${planId}/approve`, { method: 'POST' });
-  if (!res.ok) throw new Error('Failed to approve plan');
+  if (!res.ok) throw await planError(res, 'Failed to approve plan');
   return res.json();
 }
 
 export async function rejectPlan(planId: string): Promise<AgentPlan> {
   const res = await authFetch(`${API_BASE}/plans/${planId}/reject`, { method: 'POST' });
-  if (!res.ok) throw new Error('Failed to reject plan');
+  if (!res.ok) throw await planError(res, 'Failed to reject plan');
   return res.json();
 }
 
 export async function executePlan(planId: string): Promise<AgentPlan> {
   const res = await authFetch(`${API_BASE}/plans/${planId}/execute`, { method: 'POST' });
-  if (!res.ok) throw new Error('Failed to execute plan');
+  if (!res.ok) throw await planError(res, 'Failed to execute plan');
   return res.json();
 }
 
 export async function deletePlan(planId: string): Promise<void> {
   const res = await authFetch(`${API_BASE}/plans/${planId}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error('Failed to delete plan');
+  if (!res.ok) throw await planError(res, 'Failed to delete plan');
 }
 
 // ---- Auto Indexer ----
