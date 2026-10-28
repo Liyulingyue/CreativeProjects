@@ -99,8 +99,15 @@ export function SearchPage() {
               curiosity: the embedding model is weak on Chinese, so a user who
               needs precision cannot filter semantic noise out of a fused list. */}
           {/* Full-width row on phones: three buttons plus the input box do not
-              fit on one 375px line. */}
-          <div className="order-2 w-full flex-shrink-0 rounded-lg border border-slate-200 overflow-hidden sm:order-none sm:w-auto">
+              fit on one 375px line.
+
+              The wrapper has to be a flex container for `flex-1` on the
+              buttons to mean anything. It was a plain block, so the
+              buttons laid out at their content width (44+68+56) and left
+              the remaining 190px of the row empty — which read as an
+              unfinished layout. The desktop case looked fine because
+              `sm:flex-none` turns the grow off there anyway. */}
+          <div className="order-2 w-full flex flex-shrink-0 rounded-lg border border-slate-200 overflow-hidden sm:order-none sm:w-auto">
             {([
               ['hybrid', '混合'],
               ['keyword', '仅关键词'],
