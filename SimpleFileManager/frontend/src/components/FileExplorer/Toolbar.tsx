@@ -29,9 +29,14 @@ export function Toolbar({
   hasSelection, selectionCount, clipboardHasContent, viewMode, onViewModeChange,
 }: ToolbarProps) {
   return (
-    <div className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-white border-b border-slate-200 flex-shrink-0">
-      {/* Search */}
-      <div className="relative flex-1 min-w-0">
+    <div className="flex flex-wrap items-center gap-2 px-3 sm:px-4 py-2 bg-white border-b border-slate-200 flex-shrink-0">
+      {/* Search.
+          On a phone the fixed controls (view switcher, refresh, upload,
+          new folder, delete) add up to ~286px, which left the search box
+          40px wide — a placeholder that did not fit and an input nobody
+          could type into. Giving it a full row on small screens keeps it
+          usable; from sm up it goes back to sharing the row and growing. */}
+      <div className="relative w-full sm:w-auto sm:flex-1 min-w-0">
         <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
           <Icon name="search" size={16} />
         </span>
@@ -41,7 +46,7 @@ export function Toolbar({
           onChange={(e) => onSearchChange(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && onSearch()}
           placeholder="搜索..."
-          className="w-full pl-9 pr-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-base sm:text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 transition-all"
+          className="w-full pl-9 pr-3 py-2 sm:py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-base sm:text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 transition-all"
         />
       </div>
 

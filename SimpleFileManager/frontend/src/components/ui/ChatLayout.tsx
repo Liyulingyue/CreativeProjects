@@ -782,7 +782,14 @@ export function ChatLayout({
         )}
 
         <div className="border-t border-slate-100 p-3 flex-shrink-0">
-          <form onSubmit={handleSubmit} className="flex items-end gap-2">
+          {/* The composer wraps on a phone. Sharing one row with the
+              provider picker left the textarea 164px wide on a 390px
+              screen — with a placeholder that did not fit — while 120px
+              of dead space sat between it and the send button. The
+              textarea takes a full row there and the picker and the
+              button share the next one; from sm up everything is back on
+              a single row as before. */}
+          <form onSubmit={handleSubmit} className="flex flex-wrap sm:flex-nowrap items-end gap-2">
             <textarea
               ref={inputRef}
               value={input}
@@ -790,7 +797,7 @@ export function ChatLayout({
               onKeyDown={handleKeyDown}
               placeholder="输入问题... (Shift+Enter 换行)"
               rows={1}
-              className="flex-1 min-w-0 px-3 py-2 rounded-lg border border-slate-200 text-base sm:text-sm resize-none focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 transition-all"
+              className="w-full sm:w-auto sm:flex-1 min-w-0 px-3 py-2 rounded-lg border border-slate-200 text-base sm:text-sm resize-none focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 transition-all"
               style={{ maxHeight: '150px' }}
             />
             {/* Provider dropdown. Shows provider.name (the friendly alias
@@ -803,7 +810,7 @@ export function ChatLayout({
                 onChange={e => onProviderChange(e.target.value === '__main__' ? null : e.target.value)}
                 disabled={isLoading}
                 title="下一条消息使用的 LLM；选 main 跟随系统默认"
-                className="px-2 py-2 rounded-lg border border-slate-200 bg-white text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 disabled:opacity-40 max-w-[220px] truncate"
+                className="flex-1 sm:flex-none sm:max-w-[220px] px-2 py-2 rounded-lg border border-slate-200 bg-white text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 disabled:opacity-40 truncate"
               >
                 {(() => {
                   const main = providers.find(p => p.is_main);
