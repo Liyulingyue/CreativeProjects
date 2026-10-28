@@ -9,21 +9,26 @@ interface BreadcrumbProps {
 export function Breadcrumb({ path, onNavigate }: BreadcrumbProps) {
   if (!path) return null;
   const parts = path.split(/[/\\]/).filter(Boolean);
+  const last = parts.length - 1;
+  // On a phone a deep path squeezes every crumb down to a few pixels.
+  // Middle segments collapse first -- the current directory is the one
+  // worth keeping legible.
+  const hiddenAt = (i: number) => i !== last && i - parts.length + 1 < -1;
 
   return (
-    <div className="flex items-center gap-0.5 px-4 py-2 bg-white border-b border-slate-100 text-sm overflow-x-auto flex-shrink-0">
+    <div className="flex items-center gap-0.5 px-4 py-2 text-sm overflow-x-auto flex-shrink-0">
       <Icon name="hardDrive" size={14} className="text-slate-400 mr-1 flex-shrink-0" />
       {parts.map((part, index) => {
         const partPath = '/' + parts.slice(0, index + 1).join('/');
-        const isLast = index === parts.length - 1;
-        // On a phone a deep path squeezes every crumb down to a few pixels.
-        // Middle segments collapse first -- the current directory is the one
-        // worth keeping legible.
-        const depth = index - parts.length + 1;
-        const hideOnMobile = !isLast && depth < -1;
+        const isLast = index === last;
+        const hideOnMobile = hiddenAt(index);
+        // The separator belongs between two crumbs. When a crumb is hidden
+        // on mobile its separator has to go too, or the path reads as a
+        // run of empty chevrons: "home > > > > backend > data".
+        const showSeparator = index > 0 && !hideOnMobile && !hiddenAt(index - 1);
         return (
           <Fragment key={partPath}>
-            {index > 0 && <Icon name="chevronRight" size={14} className="text-slate-300 mx-0.5 flex-shrink-0" />}
+            {showSeparator && <Icon name="chevronRight" size={14} className="text-slate-300 mx-0.5 flex-shrink-0" />}
             {isLast ? (
               <span className="font-medium text-slate-700 whitespace-nowrap truncate min-w-0">{part}</span>
             ) : (

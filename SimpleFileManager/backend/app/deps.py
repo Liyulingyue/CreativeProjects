@@ -227,14 +227,46 @@ class LanceDBVectorStore:
         Move-detection pass: when the indexer recognises that the same
         content has appeared at a new path, we update the path column in
         place rather than delete-then-reinsert. This preserves the
-        row_id and keeps the existing vector index intact.
+        vector index intact.
+
+        The row id has to move with it. add_many derives the id from
+        sha256(file_path), so a renamed row keeps an id that encodes the
+        *old* path. A later re-embed then computes the id for the new
+        path, finds no matching key, and inserts a second row for every
+        chunk -- the file ends up indexed twice and every search returns
+        each passage twice. Rewriting the id keeps the key consistent
+        with the path it encodes.
         """
         old_esc = old.replace("'", "''")
         new_esc = new.replace("'", "''")
-        self._table.update(
-            where=f"file_path = '{old_esc}'",
-            values={"file_path": new},
-        )
+        try:
+            rows = (self._table.to_arrow()
+                    .select(["id", "file_path", "content", "chunk_idx", "vector"])
+                    .to_pylist())
+        except Exception:
+            rows = []
+        moved = [r for r in rows if r.get("file_path") == old]
+        if not moved:
+            self._table.update(
+                where=f"file_path = '{old_esc}'",
+                values={"file_path": new},
+            )
+            return
+        # Re-key and re-insert. The vectors travel with the rows, so this
+        # costs no embedding work.
+        self._table.delete(f"file_path = '{old_esc}'")
+        new_digest = hashlib.sha256(new.encode()).hexdigest()
+        rekeyed = [{
+            "id": f"{new_digest}#{int(r.get('chunk_idx', 0))}",
+            "file_path": new,
+            "content": r.get("content", ""),
+            "chunk_idx": int(r.get("chunk_idx", 0)),
+            "vector": r.get("vector"),
+        } for r in moved]
+        (self._table.merge_insert("id")
+         .when_matched_update_all()
+         .when_not_matched_insert_all()
+         .execute(rekeyed))
 
     def clear(self):
         if "file_embeddings" in self.table_names():
@@ -268,10 +300,16 @@ class LanceDBVectorStore:
             entry = merged.get(path)
             if entry is None:
                 content = str(row.get("content") or "")
+                # Collapse whitespace. The raw chunk keeps the document's
+                # own line breaks and indentation, and the UI renders this
+                # as a clamped snippet — where a run of blank lines and
+                # tabs counts against the line budget and leaves the last
+                # visible row sliced through the middle.
+                snippet = " ".join(content.split())
                 merged[path] = {
                     "id": row.get("id", ""),
                     "file_path": path,
-                    "content_preview": content[:200] + ("…" if len(content) > 200 else ""),
+                    "content_preview": snippet[:200] + ("…" if len(snippet) > 200 else ""),
                     "chunk_count": 1,
                 }
             else:

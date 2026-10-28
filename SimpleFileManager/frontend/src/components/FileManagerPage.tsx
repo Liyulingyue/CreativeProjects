@@ -659,10 +659,16 @@ export function FileManagerPage() {
               </div>
             );
           })()}
-          <div className="flex items-center gap-2 flex-shrink-0">
+          {/* The breadcrumb carries its own white background and border. The
+              sidebar toggle used to sit outside it, so on a phone the page
+              background showed through as a grey block to the left of the
+              path — it read as a stray empty panel. One white bar for
+              both. */}
+          <div className="flex items-center gap-2 flex-shrink-0 bg-white border-b border-slate-100">
             <button
-              className="lg:hidden p-2 ml-1 rounded-lg text-slate-500 hover:bg-slate-100"
+              className="lg:hidden p-2 ml-1 my-1 rounded-lg text-slate-500 hover:bg-slate-100 flex-shrink-0"
               onClick={() => setSidebarOpen(true)}
+              title="展开目录树"
             >
               <Icon name="folder" size={18} />
             </button>

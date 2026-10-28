@@ -238,13 +238,13 @@ export function IndexPage() {
     <div className="flex flex-col h-full bg-slate-50">
       {/* Header */}
       <div className="bg-white border-b border-slate-200 px-4 sm:px-6 py-3 flex items-center justify-between flex-wrap gap-2 flex-shrink-0">
-        <div className="grid grid-cols-2 gap-2 sm:flex sm:gap-3 w-full sm:w-auto">
-          <div className="bg-indigo-50 rounded-lg px-4 py-2 text-center">
+        <div className="flex flex-wrap gap-2 sm:flex-nowrap sm:gap-3 w-full sm:w-auto">
+          <div className="flex-1 basis-[calc(50%-0.25rem)] sm:basis-auto bg-indigo-50 rounded-lg px-4 py-2 text-center">
             <div className="text-xl font-bold text-indigo-600">{stats?.indexed_count ?? '-'}</div>
             <div className="text-xs text-slate-500">已索引</div>
           </div>
           <div
-            className="bg-indigo-50 rounded-lg px-4 py-2 text-center"
+            className="flex-1 basis-[calc(50%-0.25rem)] sm:basis-auto bg-indigo-50 rounded-lg px-4 py-2 text-center"
             title={`已向量化 ${stats?.vector_count ?? 0} 块，共 ${stats?.total_chunks ?? 0} 块`}
           >
             <div className="text-xl font-bold text-indigo-600">{stats?.semantic_percent ?? 0}%</div>
@@ -253,7 +253,7 @@ export function IndexPage() {
             </div>
           </div>
           {autoStatus && (
-            <div className="bg-slate-50 rounded-lg px-4 py-2 text-center">
+            <div className="flex-1 basis-[calc(50%-0.25rem)] sm:basis-auto bg-slate-50 rounded-lg px-4 py-2 text-center">
               <div className="text-xl font-bold text-slate-600">{autoStatus.indexed_files}</div>
               <div className="text-xs text-slate-500">自动清单</div>
             </div>
@@ -261,7 +261,7 @@ export function IndexPage() {
           {skipped && (skipped.unsupported.length > 0 || skipped.failed.length > 0 || skipped.oversized.length > 0) && (
             <button
               onClick={() => setShowSkipped(v => !v)}
-              className={`bg-amber-50 rounded-lg px-4 py-2 text-center transition-colors hover:bg-amber-100 ${
+              className={`flex-1 basis-[calc(50%-0.25rem)] sm:basis-auto bg-amber-50 rounded-lg px-4 py-2 text-center transition-colors hover:bg-amber-100 ${
                 showSkipped ? 'ring-1 ring-amber-300' : ''
               }`}
               title="查看未索引的文件"
@@ -449,7 +449,13 @@ export function IndexPage() {
                       {file.percent >= 100 ? ' ✓' : ` · ${file.percent}%`}
                     </span>
                   </div>
-                  <div className="text-xs text-slate-500 bg-slate-50 rounded-md p-2 line-clamp-2">{file.content_preview}</div>
+                  {/* Padding lives on the wrapper, not the clamped text.
+                      overflow clips at the padding box, so padding on the
+                      clamped element itself let the third line bleed into
+                      the bottom padding and sit there sliced in half. */}
+                  <div className="bg-slate-50 rounded-md p-2">
+                    <div className="text-xs text-slate-500 line-clamp-2">{file.content_preview}</div>
+                  </div>
                 </div>
               ))}
             </div>
