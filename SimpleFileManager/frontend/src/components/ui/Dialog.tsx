@@ -33,6 +33,52 @@ export function Dialog({ open, title, onClose, children }: DialogProps) {
   );
 }
 
+interface SheetProps {
+  open: boolean;
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}
+
+/**
+ * Bottom sheet on a phone, centred dialog from sm up.
+ *
+ * A centred dialog is the right shape for "answer this question", but
+ * not for "let me look at some detail and get back to what I was
+ * doing" — on a 390px screen the panel floats in the middle with
+ * nothing beneath it, and dismissing it means finding the close
+ * button. A sheet rises from the bottom edge the way the platform
+ * does, keeps the page visible above it, and dismisses by tapping
+ * away.
+ */
+export function Sheet({ open, title, onClose, children }: SheetProps) {
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => { if (e.key === 'Escape' && open) onClose(); };
+    document.addEventListener('keydown', handleEscape);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center sm:justify-center">
+      <div className="fixed inset-0 bg-black/30 backdrop-blur-sm" onClick={onClose} />
+      <div
+        className="relative bg-white rounded-t-2xl sm:rounded-xl shadow-popover w-full sm:max-w-md sm:mx-4 max-h-[85vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 flex-shrink-0">
+          <h3 className="text-base font-semibold text-slate-900">{title}</h3>
+          <button onClick={onClose} aria-label="关闭" className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors">
+            <Icon name="x" size={18} />
+          </button>
+        </div>
+        <div className="px-5 py-4 overflow-y-auto">{children}</div>
+      </div>
+    </div>
+  );
+}
+
 interface ConfirmDialogProps {
   open: boolean;
   title: string;

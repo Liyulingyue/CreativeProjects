@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { fetchAutoIndexStatus, fetchIndexSkipped, pauseAutoIndex, resumeAutoIndex, runAutoIndexNow, updateSettings } from '../api';
 import { authFetch } from '../auth';
 import { useToast } from './ui/Toast';
-import { ConfirmDialog } from './ui/Dialog';
+import { ConfirmDialog, Sheet } from './ui/Dialog';
 import { Icon } from './ui/Icon';
 import type { AutoIndexStatus } from '../types';
 import type { IndexSkipped } from '../api';
@@ -146,6 +146,58 @@ function ScheduleControl({ status, onPause, onResume, onChangeHours }: {
   );
 }
 
+/**
+ * The four counters. Extracted because a phone shows them inside the
+ * status sheet while a desktop shows them in the header, and there is
+ * no reason for the two copies to drift.
+ */
+function StatCards({ stats, autoStatus, skippedCount, showSkipped, onToggleSkipped }: {
+  stats: IndexStats | null;
+  autoStatus: AutoIndexStatus | null;
+  skippedCount: number;
+  showSkipped: boolean;
+  onToggleSkipped: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap gap-2 sm:gap-3 w-full sm:w-auto">
+      <div className="flex-1 basis-[calc(50%-0.25rem)] sm:basis-auto bg-indigo-50 rounded-lg px-4 py-2 text-center">
+        <div className="text-xl font-bold text-indigo-600">{stats?.indexed_count ?? '-'}</div>
+        <div className="text-xs text-slate-500">已索引</div>
+      </div>
+      <div
+        className="flex-1 basis-[calc(50%-0.25rem)] sm:basis-auto bg-indigo-50 rounded-lg px-4 py-2 text-center"
+        title={`已向量化 ${stats?.vector_count ?? 0} 块，共 ${stats?.total_chunks ?? 0} 块`}
+      >
+        <div className="text-xl font-bold text-indigo-600">{stats?.semantic_percent ?? 0}%</div>
+        <div className="text-xs text-slate-500">
+          语义覆盖 {stats?.vector_count ?? 0}/{stats?.total_chunks ?? 0}
+        </div>
+      </div>
+      {autoStatus && (
+        <div className="flex-1 basis-[calc(50%-0.25rem)] sm:basis-auto bg-slate-50 rounded-lg px-4 py-2 text-center">
+          <div className="text-xl font-bold text-slate-600">{autoStatus.indexed_files}</div>
+          <div className="text-xs text-slate-500">自动清单</div>
+        </div>
+      )}
+      {skippedCount > 0 && (
+        <button
+          onClick={onToggleSkipped}
+          className={`flex-1 basis-[calc(50%-0.25rem)] sm:basis-auto bg-amber-50 rounded-lg px-4 py-2 text-center transition-colors hover:bg-amber-100 ${
+            showSkipped ? 'ring-1 ring-amber-300' : ''
+          }`}
+          title="查看未索引的文件"
+        >
+          <div className="text-xl font-bold text-amber-600">{skippedCount}</div>
+          <div className="text-xs text-amber-700 flex items-center gap-1">
+            未索引
+            <Icon name={showSkipped ? 'chevronDown' : 'chevronRight'} size={11} />
+          </div>
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function IndexPage() {
   const { toast } = useToast();
   const [stats, setStats] = useState<IndexStats | null>(null);
@@ -158,7 +210,11 @@ export function IndexPage() {
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmDeleteFile, setConfirmDeleteFile] = useState<string | null>(null);
   const [skipped, setSkipped] = useState<IndexSkipped | null>(null);
+  const skippedCount = skipped
+    ? skipped.unsupported.length + skipped.failed.length + skipped.oversized.length
+    : 0;
   const [showSkipped, setShowSkipped] = useState(false);
+  const [showStatusSheet, setShowStatusSheet] = useState(false);
 
   const handlePause = async (seconds: number) => {
     try { await pauseAutoIndex(seconds); await loadAutoStatus(); }
@@ -238,52 +294,18 @@ export function IndexPage() {
     <div className="flex flex-col h-full bg-slate-50">
       {/* Header */}
       <div className="bg-white border-b border-slate-200 px-4 sm:px-6 py-3 flex items-center justify-between flex-wrap gap-2 flex-shrink-0">
-        <div className="flex flex-wrap gap-2 sm:flex-nowrap sm:gap-3 w-full sm:w-auto">
-          <div className="flex-1 basis-[calc(50%-0.25rem)] sm:basis-auto bg-indigo-50 rounded-lg px-4 py-2 text-center">
-            <div className="text-xl font-bold text-indigo-600">{stats?.indexed_count ?? '-'}</div>
-            <div className="text-xs text-slate-500">已索引</div>
-          </div>
-          <div
-            className="flex-1 basis-[calc(50%-0.25rem)] sm:basis-auto bg-indigo-50 rounded-lg px-4 py-2 text-center"
-            title={`已向量化 ${stats?.vector_count ?? 0} 块，共 ${stats?.total_chunks ?? 0} 块`}
-          >
-            <div className="text-xl font-bold text-indigo-600">{stats?.semantic_percent ?? 0}%</div>
-            <div className="text-xs text-slate-500">
-              语义覆盖 {stats?.vector_count ?? 0}/{stats?.total_chunks ?? 0}
-            </div>
-          </div>
-          {autoStatus && (
-            <div className="flex-1 basis-[calc(50%-0.25rem)] sm:basis-auto bg-slate-50 rounded-lg px-4 py-2 text-center">
-              <div className="text-xl font-bold text-slate-600">{autoStatus.indexed_files}</div>
-              <div className="text-xs text-slate-500">自动清单</div>
-            </div>
-          )}
-          {skipped && (skipped.unsupported.length > 0 || skipped.failed.length > 0 || skipped.oversized.length > 0) && (
-            <button
-              onClick={() => setShowSkipped(v => !v)}
-              className={`flex-1 basis-[calc(50%-0.25rem)] sm:basis-auto bg-amber-50 rounded-lg px-4 py-2 text-center transition-colors hover:bg-amber-100 ${
-                showSkipped ? 'ring-1 ring-amber-300' : ''
-              }`}
-              title="查看未索引的文件"
-            >
-              <div className="text-xl font-bold text-amber-600">
-                {skipped.unsupported.length + skipped.failed.length + skipped.oversized.length}
-              </div>
-              <div className="text-xs text-amber-700 flex items-center gap-1">
-                未索引
-                <Icon name={showSkipped ? 'chevronDown' : 'chevronRight'} size={11} />
-              </div>
-            </button>
-          )}
+        <div className="hidden md:flex md:flex-nowrap md:gap-3">
+          <StatCards
+            stats={stats}
+            autoStatus={autoStatus}
+            skippedCount={skippedCount}
+            showSkipped={showSkipped}
+            onToggleSkipped={() => setShowSkipped(v => !v)}
+          />
         </div>
-        <div className="flex gap-2 items-center flex-wrap w-full sm:w-auto">
+        <div className="hidden md:flex md:gap-2 md:items-center">
           {autoStatus && (
-            /* The status line used to share a row with the schedule picker
-               and three buttons, which left it 37px wide — long enough to
-               hold the ellipsis of a truncated string and nothing else,
-               next to an orphaned toggle switch. On a phone it now takes
-               a row of its own and the text gets the space. */
-            <div className="flex items-center gap-2 min-w-0 w-full sm:w-auto sm:flex-none">
+            <div className="flex items-center gap-2 min-w-0 flex-none">
               <span className="text-xs text-slate-500 truncate flex-1 min-w-0">
                 自动索引{autoStatus.enabled ? ` · 每 ${autoStatus.interval}s${autoStatus.last_scan_time ? ` · 上次 ${formatScanTime(autoStatus.last_scan_time)}` : ''}${autoStatus.pending_changes > 0 ? ` · ${autoStatus.pending_changes} 待处理` : ''}` : '（已关闭）'}
                 {autoStatus.yielded_for_interaction && (
@@ -307,7 +329,7 @@ export function IndexPage() {
               </button>
             </div>
           )}
-                    {autoStatus && (
+          {autoStatus && (
             <ScheduleControl
               status={autoStatus}
               onPause={handlePause}
@@ -326,16 +348,92 @@ export function IndexPage() {
             <button onClick={loadIndex}
               className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-100 text-slate-600 text-sm font-medium hover:bg-slate-200 transition-colors"
               title="刷新">
-              <Icon name="refresh" size={15} /><span className="hidden sm:inline">刷新</span>
+              <Icon name="refresh" size={15} />刷新
             </button>
             <button onClick={() => setConfirmClear(true)} disabled={isClearing || (stats?.indexed_count ?? 0) === 0}
               className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-red-50 text-red-600 text-sm font-medium hover:bg-red-100 disabled:opacity-40 transition-colors"
               title="清空索引">
-              <Icon name="trash" size={15} /><span className="hidden sm:inline">{isClearing ? '清空中...' : '清空'}</span>
+              <Icon name="trash" size={15} />{isClearing ? '清空中...' : '清空'}
             </button>
           </div>
         </div>
+
+        {/* Phone header. The full one above is four rows of counters and
+            controls, which on a 390x844 screen is a quarter of the
+            viewport before a single indexed file is visible. What stays
+            here is the primary action and the auto-index switch — the
+            two things that change what the page is doing — and the
+            counters move into a sheet one tap away. */}
+        <div className="md:hidden w-full space-y-2">
+          <div className="flex items-center gap-2">
+            <button onClick={handleScanNow} disabled={isScanning}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 transition-colors flex-shrink-0">
+              <Icon name="zap" size={15} />{isScanning ? '扫描中...' : '立即扫描'}
+            </button>
+            <button
+              onClick={() => setShowStatusSheet(true)}
+              className="flex-1 min-w-0 flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-slate-100 text-slate-700 text-sm font-medium hover:bg-slate-200 transition-colors"
+            >
+              <span className="truncate">
+                {stats?.indexed_count ?? '-'} 文件 · 语义 {stats?.semantic_percent ?? 0}%
+              </span>
+              <Icon name="chevronDown" size={14} className="flex-shrink-0 text-slate-400" />
+            </button>
+          </div>
+          {autoStatus && (
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-xs text-slate-500 truncate flex-1 min-w-0">
+                自动索引{autoStatus.enabled ? ` · 每 ${autoStatus.interval}s${autoStatus.last_scan_time ? ` · 上次 ${formatScanTime(autoStatus.last_scan_time)}` : ''}${autoStatus.pending_changes > 0 ? ` · ${autoStatus.pending_changes} 待处理` : ''}` : '（已关闭）'}
+              </span>
+              <button onClick={handleToggleAuto} disabled={isToggling}
+                className={`relative w-10 h-[22px] rounded-full transition-colors disabled:opacity-50 flex-shrink-0
+                  after:content-[''] after:absolute after:-inset-y-2.5 after:-inset-x-2.5 ${autoStatus.enabled ? 'bg-indigo-600' : 'bg-slate-300'}`}
+                style={{ width: '40px', height: '22px' }}
+                title={autoStatus.enabled ? '关闭' : '开启'}>
+                <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${autoStatus.enabled ? 'translate-x-[18px]' : 'translate-x-0'}`}
+                  style={{ transform: autoStatus.enabled ? 'translateX(18px)' : 'translateX(0)'}} />
+              </button>
+            </div>
+          )}
+        </div>
       </div>
+
+      {/* The counters and the secondary controls, one tap away. A sheet
+          rather than a centred dialog: on a phone it rises from the
+          bottom edge and leaves the page visible above it. */}
+      <Sheet open={showStatusSheet} title="索引状态" onClose={() => setShowStatusSheet(false)}>
+        <StatCards
+          stats={stats}
+          autoStatus={autoStatus}
+          skippedCount={skippedCount}
+          showSkipped={showSkipped}
+          onToggleSkipped={() => { setShowSkipped(v => !v); setShowStatusSheet(false); }}
+        />
+        {autoStatus && (
+          <div className="mt-4 pt-4 border-t border-slate-100">
+            <div className="text-xs text-slate-500 mb-2">生效时段</div>
+            <ScheduleControl
+              status={autoStatus}
+              onPause={handlePause}
+              onResume={handleResume}
+              onChangeHours={(w) => {
+                updateSettings({ index_active_hours: w }).then(() => loadAutoStatus()).catch(
+                  (e) => toast('保存失败: ' + (e instanceof Error ? e.message : '未知错误'), 'error'));
+              }}
+            />
+          </div>
+        )}
+        <div className="mt-4 pt-4 border-t border-slate-100 flex gap-2">
+          <button onClick={loadIndex}
+            className="flex-1 items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg bg-slate-100 text-slate-700 text-sm font-medium hover:bg-slate-200 transition-colors">
+            <Icon name="refresh" size={15} />刷新
+          </button>
+          <button onClick={() => setConfirmClear(true)} disabled={isClearing || (stats?.indexed_count ?? 0) === 0}
+            className="flex-1 items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg bg-red-50 text-red-600 text-sm font-medium hover:bg-red-100 disabled:opacity-40 transition-colors">
+            <Icon name="trash" size={15} />{isClearing ? '清空中...' : '清空索引'}
+          </button>
+        </div>
+      </Sheet>
 
       <div className="flex-1 overflow-y-auto p-6">
         {showSkipped && skipped && (
