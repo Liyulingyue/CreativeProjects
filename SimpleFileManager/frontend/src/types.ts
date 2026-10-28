@@ -105,6 +105,8 @@ export interface AppSettings {
   index_debounce_seconds: number;
   index_active_hours: string;
   max_agent_steps: number;
+  /** Wall-clock ceiling for one agent turn, in seconds. 0 disables it. */
+  agent_time_budget_seconds: number;
   storage_path: string;
   theme: string;
   auto_digest_enabled: boolean;

@@ -80,6 +80,17 @@ class AppSettings(BaseModel):
     # run. May wrap past midnight (23:00-07:00).
     index_active_hours: str = "all"
     max_agent_steps: int = 8
+    # Wall-clock ceiling for one agent turn, in seconds.
+    #
+    # max_agent_steps counts turns, not time, and on this hardware a turn
+    # is not a fixed cost: a 24B on CPU prefills new tokens at ~24ms each
+    # and generates at ~4.7 tok/s, so one step can take a second or ten
+    # minutes depending on how much the model decided to think. A step
+    # limit alone let a single question run for thirteen minutes.
+    #
+    # The turn stops when it hits this and answers with what it has. Zero
+    # disables the ceiling.
+    agent_time_budget_seconds: int = 180
     storage_path: str = "./data"
     theme: str = "light"
     auto_digest_enabled: bool = False

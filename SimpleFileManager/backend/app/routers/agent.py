@@ -82,7 +82,7 @@ TOOLS = [
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Path relative to storage root."},
-                    "limit": {"type": "integer", "description": "Max characters to read (default 12000; raise or lower as needed)."},
+                    "limit": {"type": "integer", "description": "Max characters to read (default 4000; raise or lower as needed)."},
                     "offset": {"type": "integer", "description": "Character offset to start from, for reading a long file in parts (default 0)."},
                 },
                 "required": ["path"],
@@ -190,7 +190,7 @@ TOOL_DISPLAY: dict[str, dict] = {
     },
     "read_file": {
         "title": "读取文件",
-        "summary": "读取文本文件的内容，默认返回 12000 字，超长会截断，可用 offset 分批续读。支持纯文本、Markdown、代码、PDF 与 DOCX。文件很大、想了解整体内容时优先用 semantic_search。",
+        "summary": "读取文本文件的内容，默认返回 4000 字，超长会截断，可用 offset 分批续读。支持纯文本、Markdown、代码、PDF 与 DOCX。文件很大、想了解整体内容时优先用 semantic_search。",
         "risk": "read",
         "params": {
             "path": "相对存储根目录的文件路径",
@@ -430,7 +430,7 @@ def tool_list_directory(path: str) -> dict:
     return {"success": True, "path": _rel(target) if target != get_storage_root() else ".", "items": items, "count": len(items)}
 
 
-def tool_read_file(path: str, limit: int = 12000, offset: int = 0) -> dict:
+def tool_read_file(path: str, limit: int = 4000, offset: int = 0) -> dict:
     try:
         target = resolve_under_root(path)
     except PathOutsideRoot:
@@ -720,7 +720,7 @@ def tool_semantic_search(query: str, path: str = "", top_k: int = 5) -> dict:
             "location": r["path"].split("/")[-1],
             "chunk": r.get("chunk_idx"),
             "matched_by": r.get("sources", []),
-            "text": (r.get("preview") or "")[:600],
+            "text": (r.get("preview") or "")[:300],
         }
         for r in items
     ]
@@ -1009,7 +1009,21 @@ def agent_chat_stream(req: AgentRequest):
         plan_ids: list[str] = []
         submit_plan_retries = 0
         steps_used = 0
-        max_steps = state.get_settings().max_agent_steps
+        settings = state.get_settings()
+        max_steps = settings.max_agent_steps
+        # Wall-clock ceiling for the turn. A step limit counts steps, but a
+        # step here is not a fixed cost -- it is however long the model
+        # decides to think. See the note on the setting.
+        time_budget = settings.agent_time_budget_seconds
+        # The last non-empty text the model produced, so a turn that ends
+        # on a limit still answers with something instead of a bare notice.
+        last_answer_text = ""
+        # Why the loop stopped early, if it did.
+        stop_reason: str = ""
+        # Tool call signatures, for spotting a model that is going in
+        # circles: the same call with the same arguments three times over
+        # is not a search that is refining itself.
+        call_signatures: list[str] = []
         emitted: list[str] = []  # streamed text, kept for session history
         turn_complete = False
         # Accumulated across steps: the model reasons again after each tool
@@ -1037,8 +1051,18 @@ def agent_chat_stream(req: AgentRequest):
 
         try:
             for _ in range(max_steps):
+                # Stop on the clock before starting more work. A turn that
+                # has already spent its budget should answer, not dig in.
+                if time_budget and (time.monotonic() - t0) > time_budget:
+                    stop_reason = "time"
+                    yield sse("step", {"step": steps_used, "of": max_steps, "stopped": "time"})
+                    break
                 steps_used += 1
-                yield sse("step", {"step": steps_used, "of": max_steps})
+                yield sse("step", {
+                    "step": steps_used,
+                    "of": max_steps,
+                    "elapsed_s": round(time.monotonic() - t0, 1),
+                })
 
                 turn_text = ""
                 tool_calls: list[dict] = []
@@ -1075,6 +1099,24 @@ def agent_chat_stream(req: AgentRequest):
                     elif kind == "tool_call":
                         tool_calls.append(payload)
 
+                    # The budget has to be enforced here, not only between
+                    # steps. A single generation can run for minutes on
+                    # this box -- the model is free to think for 4000
+                    # tokens before it emits a word -- so a check that
+                    # only ran between steps would let one step blow
+                    # through the whole allowance.
+                    if time_budget and (time.monotonic() - t0) > time_budget:
+                        stop_reason = "time"
+                        break
+                if stop_reason:
+                    # The stream was cut short. Whatever came out is what
+                    # there is; the turn ends and reports it.
+                    final_text = turn_text or last_answer_text
+                    if turn_text.strip():
+                        last_answer_text = turn_text.strip()
+                    all_messages.append({"role": "assistant", "content": final_text})
+                    break
+
                 if tool_calls:
                     all_messages.append({
                         "role": "assistant",
@@ -1088,6 +1130,7 @@ def agent_chat_stream(req: AgentRequest):
                             for tc in tool_calls
                         ],
                     })
+                    stuck = False
                     for tc in tool_calls:
                         name = tc["name"]
                         args_for_display: dict = {}
@@ -1100,9 +1143,23 @@ def agent_chat_stream(req: AgentRequest):
                             # announce before running so the UI can show real
                             # progress instead of guessing when work finishes
                             yield sse("tool_start", {"tool": name, "args": args_for_display})
-                            result = execute_tool(name, arguments)
-                            if name == "submit_plan" and result.get("success"):
-                                plan_ids.append(result.get("plan_id", ""))
+                            # A model that keeps asking the same question
+                            # differently is not refining its search, it is
+                            # stuck. Count the calls and stop when one
+                            # repeats: the turn then answers with what it
+                            # has instead of spending the whole budget.
+                            signature = f"{name}:{json.dumps(arguments, sort_keys=True, ensure_ascii=False)}"
+                            call_signatures.append(signature)
+                            if call_signatures.count(signature) >= 3:
+                                result = {
+                                    "success": False,
+                                    "error": "同一个调用重复了三次，已停止继续尝试。请用现有结果回答，或换一种检索方式。",
+                                }
+                                stuck = True
+                            else:
+                                result = execute_tool(name, arguments)
+                                if name == "submit_plan" and result.get("success"):
+                                    plan_ids.append(result.get("plan_id", ""))
                         tool_results.append({"tool": name, "result": result})
                         yield sse("tool", {"tool": name, "args": args_for_display, "result": result})
                         all_messages.append({
@@ -1110,9 +1167,17 @@ def agent_chat_stream(req: AgentRequest):
                             "tool_call_id": tc["id"],
                             "content": json.dumps(_trim(result), ensure_ascii=False),
                         })
+                        if stuck:
+                            break
+                    if stuck:
+                        stop_reason = "loop"
+                        yield sse("step", {"step": steps_used, "of": max_steps, "stopped": "loop"})
+                        break
                     continue
 
                 final_text = turn_text or "（模型未返回内容，请重试）"
+                if turn_text.strip():
+                    last_answer_text = turn_text.strip()
 
                 # ---- post-processing guard ----
                 # The model sometimes narrates an action instead of calling
@@ -1162,8 +1227,64 @@ def agent_chat_stream(req: AgentRequest):
                 all_messages.append({"role": "assistant", "content": final_text})
                 break
             else:
-                final_text = "已达到单次任务的最大步数限制，请查看已收集的信息或换个更简单的请求。"
+                # The step budget ran out. Whatever the model managed to
+                # say is still an answer -- replacing it with a notice
+                # threw away the work and left the user with nothing but
+                # a complaint about the limit.
+                notice = "已达到单次任务的最大步数限制，请查看已收集的信息或换个更简单的请求。"
+                final_text = f"{last_answer_text}\n\n（{notice}）" if last_answer_text else notice
                 yield sse("token", {"text": final_text})
+                all_messages.append({"role": "assistant", "content": final_text})
+
+            if stop_reason:
+                # An early stop still has to answer. The model may never
+                # have written an answer -- it may have spent the whole
+                # turn calling tools -- so ask it for one more, with what
+                # it already has in hand.
+                reason_text = {
+                    "time": f"已用完本次任务的时间预算（{time_budget} 秒）",
+                    "loop": "反复调用同一个工具，已停止继续尝试",
+                }.get(stop_reason, "已停止")
+                body = last_answer_text or final_text
+                if not body.strip():
+                    # The model spent the turn on tools and thinking and
+                    # never wrote an answer. Give it one more pass with
+                    # the tools taken away, so it has to answer with what
+                    # it already has. The pass is not on the clock: the
+                    # answer is the point of the turn.
+                    #
+                    # The prefill is cheap -- the prompt cache still holds
+                    # everything up to the last tool result, so only the
+                    # new instruction is evaluated. max_tokens caps the
+                    # answer, reasoning included, so it cannot wander.
+                    followup = (
+                        "不要再调用工具。请根据已经收集到的信息直接回答用户的问题；"
+                        "如果确实找不到答案，就说明你查了什么、为什么没有结论。"
+                    )
+                    all_messages.append({"role": "user", "content": followup})
+                    # The answer pass gets its own window. It is the one
+                    # part of the turn that must not be cut short -- it is
+                    # the answer -- but it is still bounded, or a turn
+                    # that blew its research budget could go on for
+                    # minutes more.
+                    answer_deadline = t0 + (time_budget * 1.5 if time_budget else 0)
+                    try:
+                        for kind, payload in chat_completion_stream(
+                            all_messages, tools=[], provider=provider, max_tokens=2048
+                        ):
+                            if kind == "token":
+                                final_text += payload
+                            if answer_deadline and time.monotonic() > answer_deadline:
+                                break
+                    except Exception as e:
+                        log.warning("final answer pass failed: %s", e)
+                    if final_text.strip():
+                        final_text = final_text.strip()
+                    else:
+                        final_text = f"（{reason_text}。模型没有给出可展示的回答，请查看下面的工具调用记录。）"
+                else:
+                    final_text = f"{body}\n\n（{reason_text}。上面的内容是停止前已经得到的结果。）"
+                yield sse("token", {"text": ""})
                 all_messages.append({"role": "assistant", "content": final_text})
 
             session.history = [

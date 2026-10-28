@@ -1318,6 +1318,7 @@ def _get_default_settings() -> AppSettings:
         auto_index_enabled=os.getenv("AUTO_INDEX_ENABLED", "true").lower() in ("true", "1", "yes"),
         index_debounce_seconds=int(os.getenv("INDEX_DEBOUNCE_SECONDS", "10")),
         max_agent_steps=int(os.getenv("MAX_AGENT_STEPS", "8")),
+        agent_time_budget_seconds=int(os.getenv("AGENT_TIME_BUDGET_SECONDS", "180")),
         storage_path=os.getenv("STORAGE_PATH", "./data"),
         auto_digest_enabled=os.getenv("AUTO_DIGEST_ENABLED", "false").lower() in ("true", "1", "yes"),
         auto_digest_mode=os.getenv("AUTO_DIGEST_MODE", "scheduled"),
