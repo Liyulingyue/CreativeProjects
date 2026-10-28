@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import { approvePlan, deletePlan, executePlan, fetchPlans, rejectPlan } from '../../api';
 import { useToast } from '../ui/Toast';
 import { ConfirmDialog } from '../ui/Dialog';
@@ -23,6 +23,17 @@ const STATUS_META: Record<PlanStatus, { label: string; className: string }> = {
 
 function ActionRow({ action }: { action: PlanAction }) {
   const meta = ACTION_META[action.action_type] ?? ACTION_META.move;
+  // Every field carries a label. Two of them used to be bare text
+  // flowing after the labelled ones -- the reason and the error had no
+  // label at all, so a reader could not tell a long sentence apart
+  // from a failure message. They were four lines of prose with the
+  // first two prefixed and the last two not.
+  const fields: { label: string; value: string; className: string }[] = [];
+  if (action.source_path) fields.push({ label: '源', value: action.source_path, className: 'text-slate-600' });
+  if (action.target_path) fields.push({ label: '目标', value: action.target_path, className: 'text-slate-600' });
+  if (action.reason) fields.push({ label: '理由', value: action.reason, className: 'text-slate-400' });
+  if (action.result && action.status === 'failed') fields.push({ label: '错误', value: action.result, className: 'text-red-500' });
+
   return (
     <div className="flex items-start gap-3 p-3 rounded-lg bg-slate-50">
       <div className={`w-7 h-7 shrink-0 rounded-md flex items-center justify-center ${meta.color}`}>
@@ -34,10 +45,19 @@ function ActionRow({ action }: { action: PlanAction }) {
           {action.status === 'done' && <span className="text-xs text-green-600 flex items-center gap-0.5"><Icon name="check" size={12} />成功</span>}
           {action.status === 'failed' && <span className="text-xs text-red-600">失败</span>}
         </div>
-        {action.source_path && <div className="text-xs text-slate-600 truncate mt-0.5">源: {action.source_path}</div>}
-        {action.target_path && <div className="text-xs text-slate-600 truncate">目标: {action.target_path}</div>}
-        {action.reason && <div className="text-xs text-slate-400 mt-0.5">{action.reason}</div>}
-        {action.result && action.status === 'failed' && <div className="text-xs text-red-500 mt-0.5">{action.result}</div>}
+        {fields.length > 0 && (
+          <div className="mt-1 grid grid-cols-[2rem_1fr] gap-x-2 gap-y-1 items-start">
+            {fields.map((f) => (
+              <Fragment key={f.label}>
+                <span className="text-xs text-slate-400 leading-4">{f.label}</span>
+                <span
+                  className={`text-xs leading-4 break-words ${f.className} ${f.label === '理由' ? 'line-clamp-2' : ''}`}
+                  title={f.label === '理由' ? f.value : undefined}
+                >{f.value}</span>
+              </Fragment>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -98,16 +118,18 @@ function PlanCard({ plan, onChanged }: { plan: AgentPlan; onChanged: () => void 
           )}
         </div>
       </div>
-      <button onClick={() => setExpanded(v => !v)}
-        className="w-full px-4 pb-3 text-left text-xs text-indigo-500 hover:text-indigo-600 transition-colors flex items-center gap-1">
-        <Icon name={expanded ? 'chevronDown' : 'chevronRight'} size={14} />
-        {expanded ? '收起操作详情' : '展开操作详情'}
-      </button>
       {expanded && (
-        <div className="px-4 pb-4 space-y-2">
+        <div className="px-4 pb-3 space-y-2">
           {plan.actions.map(a => <ActionRow key={a.id} action={a} />)}
         </div>
       )}
+      {/* The toggle sits below the details it controls. Above them it read
+          as a heading for the plan rather than a control over the list. */}
+      <button onClick={() => setExpanded(v => !v)}
+        className="w-full px-4 pb-3 text-left text-xs text-indigo-500 hover:text-indigo-600 transition-colors flex items-center gap-1">
+        <Icon name={expanded ? 'chevronDown' : 'chevronRight'} size={14} />
+        {expanded ? '收起操作详情' : `展开操作详情 (${plan.actions.length})`}
+      </button>
       <ConfirmDialog
         open={confirming}
         title="执行计划"
