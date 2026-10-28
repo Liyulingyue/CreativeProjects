@@ -158,13 +158,17 @@ export function ApprovalCenter() {
 
   return (
     <div className="bg-slate-50 rounded-lg border border-slate-200 p-4">
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <Icon name="shield" size={18} className="text-indigo-500" />
-          <span className="text-base font-semibold text-slate-700">审批中心</span>
-          <span className="text-xs text-slate-400">所有文件变更必须经人工批准</span>
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <Icon name="shield" size={18} className="text-indigo-500 flex-shrink-0" />
+          <span className="text-base font-semibold text-slate-700 whitespace-nowrap">审批中心</span>
+          {/* The title already says what this is. The sentence beside it
+              took 12 characters of the header on a phone and pushed the
+              whole row onto two lines; there is nothing to say here that
+              the heading does not. */}
+          <span className="text-xs text-slate-400 hidden lg:inline">所有文件变更必须经人工批准</span>
         </div>
-        <div className="flex gap-1">
+        <div className="flex gap-1 flex-shrink-0">
           <button onClick={() => setFilter('pending')}
             className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${filter === 'pending' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-100'}`}>待审批</button>
           <button onClick={() => setFilter('all')}
