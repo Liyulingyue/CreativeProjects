@@ -22,6 +22,18 @@ interface IndexStats {
   semantic_percent: number;
 }
 
+/**
+ * The backend hands out an ISO timestamp ("2026-10-28T09:20:33"). Spelling
+ * that out verbatim put 19 characters of punctuation into a one-line status
+ * strip, and on a phone it was most of what pushed the readable part out of
+ * view. Show the minute instead; the exact value stays in the title.
+ */
+function formatScanTime(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(iso);
+  if (!m) return iso;
+  return `${m[2]}-${m[3]} ${m[4]}:${m[5]}`;
+}
+
 
 
 /**
@@ -226,7 +238,7 @@ export function IndexPage() {
     <div className="flex flex-col h-full bg-slate-50">
       {/* Header */}
       <div className="bg-white border-b border-slate-200 px-4 sm:px-6 py-3 flex items-center justify-between flex-wrap gap-2 flex-shrink-0">
-        <div className="grid grid-cols-2 gap-2 sm:flex sm:gap-3">
+        <div className="grid grid-cols-2 gap-2 sm:flex sm:gap-3 w-full sm:w-auto">
           <div className="bg-indigo-50 rounded-lg px-4 py-2 text-center">
             <div className="text-xl font-bold text-indigo-600">{stats?.indexed_count ?? '-'}</div>
             <div className="text-xs text-slate-500">已索引</div>
@@ -264,11 +276,16 @@ export function IndexPage() {
             </button>
           )}
         </div>
-        <div className="flex gap-2 items-center flex-wrap">
+        <div className="flex gap-2 items-center flex-wrap w-full sm:w-auto">
           {autoStatus && (
-            <div className="flex items-center gap-2 mr-1 min-w-0 flex-1 sm:flex-none">
-              <span className="text-xs text-slate-500 truncate">
-                自动索引{autoStatus.enabled ? ` · 每 ${autoStatus.interval}s${autoStatus.last_scan_time ? ` · 上次 ${autoStatus.last_scan_time}` : ''}${autoStatus.pending_changes > 0 ? ` · ${autoStatus.pending_changes} 待处理` : ''}` : '（已关闭）'}
+            /* The status line used to share a row with the schedule picker
+               and three buttons, which left it 37px wide — long enough to
+               hold the ellipsis of a truncated string and nothing else,
+               next to an orphaned toggle switch. On a phone it now takes
+               a row of its own and the text gets the space. */
+            <div className="flex items-center gap-2 min-w-0 w-full sm:w-auto sm:flex-none">
+              <span className="text-xs text-slate-500 truncate flex-1 min-w-0">
+                自动索引{autoStatus.enabled ? ` · 每 ${autoStatus.interval}s${autoStatus.last_scan_time ? ` · 上次 ${formatScanTime(autoStatus.last_scan_time)}` : ''}${autoStatus.pending_changes > 0 ? ` · ${autoStatus.pending_changes} 待处理` : ''}` : '（已关闭）'}
                 {autoStatus.yielded_for_interaction && (
                   <span className="ml-1 text-indigo-500" title="检测到你正在使用对话或搜索，索引已暂停让出算力，闲置后自动继续">
                     · 已为交互让路
@@ -305,14 +322,18 @@ export function IndexPage() {
             className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 transition-colors">
             <Icon name="zap" size={15} />{isScanning ? '扫描中...' : '立即扫描'}
           </button>
-          <button onClick={loadIndex}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-100 text-slate-600 text-sm font-medium hover:bg-slate-200 transition-colors">
-            <Icon name="refresh" size={15} />刷新
-          </button>
-          <button onClick={() => setConfirmClear(true)} disabled={isClearing || (stats?.indexed_count ?? 0) === 0}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-red-50 text-red-600 text-sm font-medium hover:bg-red-100 disabled:opacity-40 transition-colors">
-            <Icon name="trash" size={15} />{isClearing ? '清空中...' : '清空'}
-          </button>
+          <div className="flex gap-2">
+            <button onClick={loadIndex}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-100 text-slate-600 text-sm font-medium hover:bg-slate-200 transition-colors"
+              title="刷新">
+              <Icon name="refresh" size={15} /><span className="hidden sm:inline">刷新</span>
+            </button>
+            <button onClick={() => setConfirmClear(true)} disabled={isClearing || (stats?.indexed_count ?? 0) === 0}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-red-50 text-red-600 text-sm font-medium hover:bg-red-100 disabled:opacity-40 transition-colors"
+              title="清空索引">
+              <Icon name="trash" size={15} /><span className="hidden sm:inline">{isClearing ? '清空中...' : '清空'}</span>
+            </button>
+          </div>
         </div>
       </div>
 
