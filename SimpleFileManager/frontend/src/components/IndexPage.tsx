@@ -514,7 +514,7 @@ export function IndexPage() {
           <div className="space-y-3">
             <div className="text-sm text-slate-500">已索引文件 ({files.length})</div>
             <div className="text-xs text-slate-400 -mt-2">
-              文件一旦入库即可被关键词搜索；每张卡片下方的进度条表示语义向量化推进到哪一块，可随时离开，稍后回来继续。搜索结果会标出命中的块号。
+              卡片下方的进度条表示语义向量化的进度。
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {files.map(file => (
