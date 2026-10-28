@@ -60,7 +60,11 @@ export function DigestPage() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <div className="md:col-span-1">
+            {/* Desktop keeps the list beside the report. On a phone the
+                same list sat above the report and grew with it -- one row
+                per day, forever -- pushing the content off the screen.
+                A picker holds its height whatever the count. */}
+            <div className="hidden md:col-span-1 md:block">
               <div className="bg-white rounded-lg border border-slate-200 p-3">
                 <div className="text-sm font-semibold text-slate-700 mb-2">历史日报</div>
                 <div className="space-y-0.5">
@@ -74,12 +78,25 @@ export function DigestPage() {
                 </div>
               </div>
             </div>
+            <div className="md:hidden">
+              <label htmlFor="digest-history" className="block text-sm font-semibold text-slate-700 mb-2">历史日报</label>
+              <select
+                id="digest-history"
+                value={current.date}
+                onChange={e => fetchDigest(e.target.value).then(setCurrent).catch(console.error)}
+                className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-white text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 transition-all"
+              >
+                {digestList.map(d => (
+                  <option key={d.date} value={d.date}>{d.date} · {d.files_count} 个文件</option>
+                ))}
+              </select>
+            </div>
             <div className="md:col-span-3">
               <div className="bg-white rounded-lg border border-slate-200 p-4 sm:p-5">
                 <div className="flex items-center justify-between mb-4 pb-3 border-b border-slate-100">
                   <div>
                     <div className="text-base font-semibold text-slate-800">知识日报 · {current.date}</div>
-                    <div className="hidden sm:block text-xs text-slate-400 mt-0.5">{current.files_count} 个文件 · {current.generated_by === 'llm' ? 'AI 撰写' : '基础清单（LLM 未配置）'}</div>
+                    <div className="text-xs text-slate-400 mt-0.5">{current.files_count} 个文件 · {current.generated_by === 'llm' ? 'AI 撰写' : '基础清单（LLM 未配置）'}</div>
                   </div>
                   {latest?.date === current.date && <span className="px-2 py-0.5 rounded-full bg-green-50 text-green-600 text-xs font-medium">最新</span>}
                 </div>
