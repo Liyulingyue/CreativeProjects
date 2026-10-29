@@ -16,6 +16,15 @@ export interface BrowseResult {
   total_count: number;
   dirs_count: number;
   files_count: number;
+  /** Free space on the disk holding the storage root. */
+  disk?: {
+    ok: boolean;
+    total?: number;
+    used?: number;
+    free?: number;
+    used_pct?: number;
+    detail?: string;
+  } | null;
 }
 
 export interface FileOperation {

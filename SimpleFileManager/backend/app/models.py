@@ -33,6 +33,9 @@ class BrowseResult(BaseModel):
     total_count: int
     dirs_count: int
     files_count: int
+    # Free space on the disk holding the storage root, so the browser
+    # can say when the disk is nearly full.
+    disk: Optional[dict] = None
 
 
 class FileOperation(BaseModel):

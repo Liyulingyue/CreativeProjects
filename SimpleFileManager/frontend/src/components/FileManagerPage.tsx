@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   fetchBrowse, fetchTree, createFolder, deletePath, movePath, searchFiles,
-  uploadFiles, downloadFile, copyPath,
+  uploadFiles, downloadFile, downloadZip, copyPath,
   type BrowseResult, type FileNode, type TreeNode,
 } from '../api';
 import { FileGrid, FileList, FileCompactList, Toolbar, Breadcrumb, isPreviewable, formatSize } from './FileExplorer';
@@ -431,14 +431,20 @@ export function FileManagerPage() {
   };
 
   const handleDownload = (node?: FileNode) => {
+    // A browser cannot download a directory, so one is packed into a
+    // zip first. The server builds it into a file and streams it.
+    const grab = (n: FileNode) => {
+      const job = n.is_dir ? downloadZip(n.path) : downloadFile(n.path);
+      job
+        .then(() => toast(n.is_dir ? `正在打包下载 ${n.name}` : '开始下载 ' + n.name, 'info'))
+        .catch(() => toast('下载失败', 'error'));
+    };
     if (node) {
-      downloadFile(node.path).then(() => toast('开始下载 ' + node.name, 'info')).catch(() => toast('下载失败', 'error'));
+      grab(node);
     } else if (selectedPaths.size === 1) {
       const path = Array.from(selectedPaths)[0];
       const node = browseResult?.items.find(i => i.path === path);
-      if (node && !node.is_dir) {
-        downloadFile(node.path).then(() => toast('开始下载 ' + node.name, 'info')).catch(() => toast('下载失败', 'error'));
-      }
+      if (node) grab(node);
     }
   };
 
@@ -699,9 +705,16 @@ export function FileManagerPage() {
             <div className="text-center py-12 text-red-500">{error}</div>
           ) : browseResult ? (
             <>
-              <div className="px-4 py-1.5 text-xs text-slate-500 bg-white border-b border-slate-100 flex items-center justify-between flex-shrink-0">
-                <span>{browseResult.total_count} 项 · {browseResult.dirs_count} 文件夹 · {browseResult.files_count} 文件</span>
-                {selectedPaths.size > 0 && <span className="text-indigo-600 font-medium">已选 {selectedPaths.size} 项</span>}
+              <div className="px-4 py-1.5 text-xs text-slate-500 bg-white border-b border-slate-100 flex items-center justify-between gap-2 flex-shrink-0">
+                <span className="truncate">{browseResult.total_count} 项 · {browseResult.dirs_count} 文件夹 · {browseResult.files_count} 文件</span>
+                <div className="flex items-center gap-3 flex-shrink-0">
+                  {browseResult.disk?.ok && browseResult.disk.free !== undefined && (
+                    <span className="hidden sm:inline" title="存储空间">
+                      剩余 {formatSize(browseResult.disk.free)}
+                    </span>
+                  )}
+                  {selectedPaths.size > 0 && <span className="text-indigo-600 font-medium">已选 {selectedPaths.size} 项</span>}
+                </div>
               </div>
               <div className="flex-1 overflow-auto bg-slate-50/30">{renderFileList()}</div>
             </>

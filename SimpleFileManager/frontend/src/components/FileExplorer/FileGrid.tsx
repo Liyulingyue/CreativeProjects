@@ -106,6 +106,9 @@ export default function FileGrid({
             <span className="text-xs text-slate-700 truncate w-full text-center px-1" title={folder.name}>
               {folder.name}
             </span>
+            {folder.size > 0 && (
+              <span className="text-[10px] text-slate-400 mt-0.5">{formatSize(folder.size)}</span>
+            )}
 
             <div className="absolute -top-2 right-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity flex items-center gap-0.5 bg-white rounded-lg shadow-popover border border-slate-100 px-1 py-0.5 z-10">
               <button onClick={(e) => { e.stopPropagation(); onRename(folder); }} className={hoverBtn}><Icon name="edit" size={14} /></button>

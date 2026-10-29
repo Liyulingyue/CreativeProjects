@@ -62,18 +62,28 @@ self.addEventListener('fetch', (event) => {
     return
   }
 
-  // Static assets: cache first, they are content-hashed by the build.
-  event.respondWith(
-    caches.match(request).then(
-      (cached) =>
-        cached ||
-        fetch(request).then((response) => {
-          if (response.ok && response.type === 'basic') {
-            const copy = response.clone()
-            caches.open(VERSION).then((cache) => cache.put(request, copy))
-          }
-          return response
-        }),
-    ),
-  )
+  // Build assets are content-hashed, so caching them first is safe: a new
+  // build produces a new name. Anything else -- a module the dev server
+  // serves, a file an operator drops in -- goes to the network every time,
+  // because "cache first" on a URL that is not hashed means serving a stale
+  // file for as long as the cache lives.
+  if (url.pathname.startsWith('/assets/')) {
+    event.respondWith(
+      caches.match(request).then(
+        (cached) =>
+          cached ||
+          fetch(request).then((response) => {
+            if (response.ok && response.type === 'basic') {
+              const copy = response.clone()
+              caches.open(VERSION).then((cache) => cache.put(request, copy))
+            }
+            return response
+          }),
+      ),
+    )
+    return
+  }
+
+  // Everything else: network, and nothing stored.
+  event.respondWith(fetch(request))
 })

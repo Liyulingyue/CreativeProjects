@@ -1,11 +1,14 @@
 import os
 import shutil
+import tempfile
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 from ..deps import state, get_storage_root, resolve_under_root, PathOutsideRoot
 from ..models import (
     BrowseResult,
@@ -15,6 +18,7 @@ from ..models import (
     FileOperation,
     MoveRequest,
 )
+from ..storage_stats import dir_size, disk_info, invalidate as invalidate_sizes
 from ..trash import TrashError, TrashService
 
 fs = APIRouter()
@@ -90,7 +94,10 @@ def _path_to_filenode(path: Path) -> FileNode:
         name=path.name,
         path=str(path),
         is_dir=path.is_dir(),
-        size=stat.st_size if path.is_file() else 0,
+        # A directory's size is the sum of everything under it, which
+        # is what a user asking "how big is this" means. It is cached,
+        # because walking every subtree on every listing is not free.
+        size=dir_size(path),
         modified=modified_dt.strftime("%Y-%m-%dT%H:%M:%S"),
         created=created_dt.strftime("%Y-%m-%dT%H:%M:%S"),
         extension=path.suffix.lower(),
@@ -137,6 +144,7 @@ def browse(path: Optional[str] = None) -> BrowseResult:
         total_count=len(items),
         dirs_count=dirs_count,
         files_count=files_count,
+        disk=disk_info(Path(storage_path)),
     )
 
 
@@ -147,6 +155,7 @@ def create_folder(req: CreateFolderRequest) -> FileOperation:
 
     try:
         target.mkdir(parents=True, exist_ok=False)
+        invalidate_sizes(target.parent)
         return FileOperation(success=True, message="Folder created", path=str(target))
     except FileExistsError:
         raise HTTPException(status_code=409, detail="Folder already exists")
@@ -165,6 +174,8 @@ def move(req: MoveRequest) -> FileOperation:
 
     try:
         shutil.move(str(src), str(dest))
+        invalidate_sizes(src)
+        invalidate_sizes(dest)
         return FileOperation(success=True, message="File moved", path=str(dest))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -184,6 +195,7 @@ def copy(req: MoveRequest) -> FileOperation:
             shutil.copytree(str(src), str(dest), dirs_exist_ok=False)
         else:
             shutil.copy2(str(src), str(dest))
+        invalidate_sizes(dest)
         return FileOperation(success=True, message="File copied", path=str(dest))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -347,6 +359,60 @@ def download_file(path: str):
         filename=target.name,
         media_type=_get_mime_type(target),
     )
+
+
+@fs.get("/download-zip")
+def download_zip(path: str):
+    """Download a directory as a zip archive.
+
+    A NAS is mostly directories, and a browser cannot download one.
+    The archive is built into a temporary file and streamed, so a
+    large tree does not have to fit in memory.
+    """
+    try:
+        target = resolve_under_root(path)
+    except PathOutsideRoot:
+        raise HTTPException(status_code=400, detail="Path outside storage root")
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Path not found")
+    if not target.is_dir():
+        raise HTTPException(status_code=400, detail="Not a directory")
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+    tmp_path = Path(tmp.name)
+    tmp.close()
+    try:
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+            base = target.parent
+            for root, dirs, files in os.walk(target):
+                dirs.sort()
+                for name in sorted(files):
+                    full = Path(root) / name
+                    try:
+                        zf.write(full, full.relative_to(base))
+                    except OSError:
+                        # A file that vanished mid-walk, or one the
+                        # process may not read, should not lose the
+                        # whole archive.
+                        continue
+    except Exception as e:
+        tmp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"打包失败: {e}")
+
+    archive_name = f"{target.name}.zip"
+    return FileResponse(
+        str(tmp_path),
+        filename=archive_name,
+        media_type="application/zip",
+        background=BackgroundTask(_remove_file, tmp_path),
+    )
+
+
+def _remove_file(path: Path):
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 @fs.post("/upload")

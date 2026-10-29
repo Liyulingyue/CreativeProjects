@@ -135,6 +135,15 @@ export interface BrowseResult {
   total_count: number;
   dirs_count: number;
   files_count: number;
+  /** Free space on the disk holding the storage root. */
+  disk?: {
+    ok: boolean;
+    total?: number;
+    used?: number;
+    free?: number;
+    used_pct?: number;
+    detail?: string;
+  } | null;
 }
 
 export interface FileNode {
@@ -827,6 +836,21 @@ export async function fetchDigest(date: string): Promise<Digest> {
 }
 
 // ---- File Download / Upload / Content ----
+
+export async function downloadZip(path: string): Promise<void> {
+  const res = await authFetch(`${API_BASE}/fs/download-zip?path=${encodeURIComponent(path)}`);
+  if (!res.ok) throw new Error('Failed to build the archive');
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const name = (path.split(/[/\\]/).pop() || 'archive') + '.zip';
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
 
 export async function downloadFile(path: string): Promise<void> {
   const res = await authFetch(`${API_BASE}/fs/download?path=${encodeURIComponent(path)}`);
