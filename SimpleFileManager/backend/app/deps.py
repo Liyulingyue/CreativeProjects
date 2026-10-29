@@ -214,6 +214,34 @@ class LanceDBVectorStore:
              .when_not_matched_insert_all()
              .execute(rows))
 
+    def cleanup_old_versions(self, older_than_days: int = 2) -> dict:
+        """Delete the table's superseded versions.
+
+        Every write leaves the previous version of the table on disk.
+        The indexer writes on every scan, so the versions directory
+        grows without bound -- two thousand files and 240MB for four
+        books, of which the live data was a fraction. LanceDB knows
+        which versions are still reachable; this asks it to drop the
+        rest.
+
+        Versions newer than the threshold are left alone, because a
+        version that recent might still be the one a reader is using.
+        """
+        from datetime import timedelta
+
+        try:
+            stats = self._table.cleanup_old_versions(
+                older_than=timedelta(days=older_than_days)
+            )
+            return {
+                "ok": True,
+                "removed_versions": getattr(stats, "bytes_removed", None)
+                and int(stats.bytes_removed) or 0,
+                "detail": str(stats)[:200],
+            }
+        except Exception as e:
+            return {"ok": False, "detail": f"{type(e).__name__}: {str(e)[:150]}"}
+
     def search(self, query_vector: list[float], top_k: int = 5) -> list[dict]:
         if self.count() == 0:
             return []

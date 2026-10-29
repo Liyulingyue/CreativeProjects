@@ -234,6 +234,21 @@ class AutoIndexer:
             finally:
                 conn.close()
 
+    def _cleanup_vector_versions(self):
+        """Drop the vector table's superseded versions.
+
+        LanceDB needs an extra package for this; without it the versions
+        simply keep piling up, so the failure is logged and the scan
+        carries on rather than being abandoned.
+        """
+        try:
+            rag_svc = state.get_rag_service()
+            result = rag_svc.vector_store.cleanup_old_versions(older_than_days=1)
+            if not result.get("ok"):
+                log.warning("could not clean up old vector versions: %s", result.get("detail"))
+        except Exception:
+            log.warning("could not clean up old vector versions", exc_info=True)
+
     def _touch_indexed_at(self, path: str):
         """Record that a file was checked and found unchanged.
 
@@ -807,6 +822,12 @@ class AutoIndexer:
                         log.exception("indexing a file failed")
             if records:
                 self._record_files(records, indexed_hashes)
+                # Every write leaves the previous version of the table on
+                # disk, and a scan writes on every pass. Without this the
+                # versions directory grows by a full copy of the index per
+                # scan -- 240MB for four books, of which the live data was
+                # a fraction.
+                self._cleanup_vector_versions()
 
             # Phase 2 — semantic channel, resumable. Progress lives in the
             # manifest, so a file needing hours to vectorize converges over

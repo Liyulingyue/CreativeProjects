@@ -9,3 +9,6 @@ lancedb>=0.15.0
 pyarrow>=15.0.0
 pypdf>=5.0.0
 python-docx>=1.1.0
+# Lets LanceDB drop the versions it has superseded. Without it the vector
+# store keeps a full copy of the index per scan.
+pylance>=0.30.0
