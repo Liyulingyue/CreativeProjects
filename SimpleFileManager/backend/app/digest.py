@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from .deps import DATA_DIR, get_storage_root, state, resolve_reasoning_budget
+from .deps import DATA_DIR, get_storage_root, state
 
 MAX_FILES_PER_DIGEST = 40
 PREVIEW_CHARS = 400
@@ -110,8 +110,7 @@ class DigestService:
                 temperature=0.5,
                 max_tokens=state.get_settings().digest_max_tokens,
                 provider=provider,
-                reasoning_budget=resolve_reasoning_budget(
-                    provider, state.get_settings()),
+                reasoning_budget=provider.reasoning_budget,
             )
             return result.get("content")
         except Exception:

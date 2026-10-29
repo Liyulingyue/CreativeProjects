@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from ..deps import state, resolve_reasoning_budget
+from ..deps import state
 from ..llm_client import _friendly_error
 from ..search_engine import search_engine
 
@@ -168,8 +168,7 @@ def query_stream(req: QueryRequest) -> StreamingResponse:
                 rag_svc._answer_messages(req.question, context),
                 temperature=0.7,
                 provider=rag_provider,
-                reasoning_budget=resolve_reasoning_budget(
-                    rag_provider, state.get_settings()),
+                reasoning_budget=rag_provider.reasoning_budget,
             ):
                 # The generator yields (kind, payload) pairs. Forwarding only
                 # "token" silently discarded the model's reasoning channel; it

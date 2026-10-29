@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from ..deps import (
     state, get_storage_root, resolve_under_root, PathOutsideRoot,
-    validate_plan_action, resolve_reasoning_budget,
+    validate_plan_action,
 )
 from ..doc_extract import ExtractionError, extract_text
 from ..interaction import interaction
@@ -1077,7 +1077,7 @@ def agent_chat_stream(req: AgentRequest):
         # makes. A reasoning model left unbounded thinks for its whole
         # max_tokens, and on this box that is minutes per step. The
         # provider's own budget wins over the system default.
-        reasoning_budget = resolve_reasoning_budget(provider, settings)
+        reasoning_budget = provider.reasoning_budget
         # The last non-empty text the model produced, so a turn that ends
         # on a limit still answers with something instead of a bare notice.
         last_answer_text = ""

@@ -15,6 +15,7 @@ from .interaction import interaction
 from .models import (
     AppSettings, IndexStats, IndexStatus, ChatSession, ChatMessage,
     AgentPlan, PlanAction, LLMProvider, EmbeddingProvider,
+    DEFAULT_REASONING_BUDGET,
 )
 
 load_dotenv()
@@ -437,7 +438,7 @@ class ChatHistoryService:
                     api_key TEXT DEFAULT '',
                     is_main INTEGER DEFAULT 0,
                     max_tokens INTEGER,
-                    reasoning_budget INTEGER,
+                    reasoning_budget INTEGER NOT NULL DEFAULT 1024,
                     created_at INTEGER,
                     updated_at INTEGER
                 )
@@ -450,7 +451,20 @@ class ChatHistoryService:
             # thinking. Nullable, so a provider that never set one falls
             # back to the system default.
             if "reasoning_budget" not in cols:
-                conn.execute("ALTER TABLE llm_providers ADD COLUMN reasoning_budget INTEGER")
+                conn.execute(
+                    "ALTER TABLE llm_providers ADD COLUMN reasoning_budget"
+                    " INTEGER NOT NULL DEFAULT 1024"
+                )
+            else:
+                # The column was added while the budget was still a
+                # global default that a provider could decline to
+                # carry. It is per-provider now, so the rows that never
+                # set one get the default value.
+                conn.execute(
+                    "UPDATE llm_providers SET reasoning_budget = ?"
+                    " WHERE reasoning_budget IS NULL",
+                    (DEFAULT_REASONING_BUDGET,),
+                )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS chat_sessions (
                     id TEXT PRIMARY KEY,
@@ -616,7 +630,10 @@ class ChatHistoryService:
             id=provider_id, name=name, base_url=base_url, model=model,
             api_key=api_key, is_main=bool(is_main),
             max_tokens=max_tokens,
-            reasoning_budget=reasoning_budget,
+            reasoning_budget=(
+                reasoning_budget if reasoning_budget is not None
+                else DEFAULT_REASONING_BUDGET
+            ),
             created_at=now, updated_at=now
         )
 
@@ -699,7 +716,10 @@ class ChatHistoryService:
             id=pid, name=name, base_url=base_url, model=model,
             api_key=api_key or "", is_main=bool(is_main),
             max_tokens=max_tokens or None,
-            reasoning_budget=reasoning_budget,
+            reasoning_budget=(
+                reasoning_budget if reasoning_budget is not None
+                else DEFAULT_REASONING_BUDGET
+            ),
             created_at=created_at or 0, updated_at=updated_at or 0
         )
 
@@ -1324,19 +1344,6 @@ class PlanStore:
             conn.close()
 
 
-def resolve_reasoning_budget(provider, settings: AppSettings) -> Optional[int]:
-    """The thinking budget to send with a request to this provider.
-
-    A provider's own budget wins; otherwise the system default applies.
-    Both use -1 to mean "do not cap the model's thinking", and the caller
-    leaves the parameter off the request entirely in that case -- some
-    endpoints reject it.
-    """
-    if provider is not None and provider.reasoning_budget is not None:
-        return provider.reasoning_budget
-    return settings.default_reasoning_budget
-
-
 def _get_default_settings() -> AppSettings:
     return AppSettings(
         # LLM credentials live in the llm_providers table (see
@@ -1350,7 +1357,6 @@ def _get_default_settings() -> AppSettings:
         auto_index_enabled=os.getenv("AUTO_INDEX_ENABLED", "true").lower() in ("true", "1", "yes"),
         index_debounce_seconds=int(os.getenv("INDEX_DEBOUNCE_SECONDS", "10")),
         max_agent_steps=int(os.getenv("MAX_AGENT_STEPS", "8")),
-        default_reasoning_budget=int(os.getenv("DEFAULT_REASONING_BUDGET", "1024")),
         storage_path=os.getenv("STORAGE_PATH", "./data"),
         auto_digest_enabled=os.getenv("AUTO_DIGEST_ENABLED", "false").lower() in ("true", "1", "yes"),
         auto_digest_mode=os.getenv("AUTO_DIGEST_MODE", "scheduled"),
@@ -1377,14 +1383,13 @@ class AppState:
         if settings_data:
             env_defaults = _get_default_settings().model_dump()
             env_defaults.update(settings_data)
-            # The thinking budget used to be an agent-only setting. It is
-            # now the default for every provider that does not name one
-            # of its own, so carry the old value over rather than
-            # silently resetting the operator's choice.
-            legacy = settings_data.get("agent_reasoning_budget")
-            if legacy is not None and "default_reasoning_budget" not in settings_data:
-                env_defaults["default_reasoning_budget"] = legacy
+            # The thinking budget used to be one global setting, then a
+            # global default that providers could override. It now lives
+            # on the provider itself, so the old keys have nothing left
+            # to carry -- the provider rows were given the same value
+            # when the column was added.
             env_defaults.pop("agent_reasoning_budget", None)
+            env_defaults.pop("default_reasoning_budget", None)
             self._settings = AppSettings(**env_defaults)
         else:
             self._settings = _get_default_settings()

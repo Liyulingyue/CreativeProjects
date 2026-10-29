@@ -48,8 +48,8 @@ export interface LLMProvider {
   api_key: string;
   is_main: boolean;
   max_tokens: number | null;
-  /** Cap on the model's thinking, in tokens. null = follow the system default. -1 = uncapped. */
-  reasoning_budget: number | null;
+  /** Cap on the model's thinking, in tokens. -1 = uncapped. */
+  reasoning_budget: number;
   created_at: number;
   updated_at: number;
 }
@@ -107,8 +107,6 @@ export interface AppSettings {
   index_debounce_seconds: number;
   index_active_hours: string;
   max_agent_steps: number;
-  /** Default cap on the model's thinking, in tokens, for providers that do not name one. -1 = unrestricted. */
-  default_reasoning_budget: number;
   storage_path: string;
   theme: string;
   auto_digest_enabled: boolean;

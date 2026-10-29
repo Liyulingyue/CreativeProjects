@@ -83,16 +83,13 @@ const inputClass = 'w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate
  * user can always reach them, even while editing.
  */
 function ProviderRow({
-  provider, onSave, onDelete, onSetMain, canDelete, defaultBudget,
+  provider, onSave, onDelete, onSetMain, canDelete,
 }: {
   provider: LLMProvider;
   onSave: (patch: LLMProviderUpdate) => Promise<void>;
   onDelete: () => Promise<void>;
   onSetMain: () => Promise<void>;
   canDelete: boolean;
-  /** The system-wide fallback, shown as the placeholder for a provider
-   *  that does not carry a budget of its own. */
-  defaultBudget: number;
 }) {
   const { toast } = useToast();
   const [editing, setEditing] = useState<boolean>(false);
@@ -102,7 +99,9 @@ function ProviderRow({
     model: provider.model,
     api_key: provider.api_key,
     max_tokens: provider.max_tokens ?? '',
-    reasoning_budget: provider.reasoning_budget ?? '',
+    // The input hands back a string while the user types, so the draft
+    // holds either; it is turned back into a number on save.
+    reasoning_budget: provider.reasoning_budget as number | string,
   });
   const [busy, setBusy] = useState(false);
 
@@ -119,10 +118,7 @@ function ProviderRow({
         model: draft.model.trim(),
         api_key: draft.api_key,
         max_tokens: draft.max_tokens === '' ? undefined : Number(draft.max_tokens),
-        // An empty box means "follow the system default", which the
-        // server records as a null. It has to be sent as an explicit
-        // null rather than left out, or the old value would stay.
-        reasoning_budget: draft.reasoning_budget === '' ? null : Number(draft.reasoning_budget),
+        reasoning_budget: Number(draft.reasoning_budget),
       });
       setEditing(false);
     } catch (e) {
@@ -141,13 +137,13 @@ function ProviderRow({
           <input className={inputClass} placeholder="Base URL（OpenAI 兼容）" value={draft.base_url} onChange={e => setDraft({ ...draft, base_url: e.target.value })} />
           <input type="password" className={inputClass} placeholder="API Key（本地可留空）" value={draft.api_key} onChange={e => setDraft({ ...draft, api_key: e.target.value })} />
           <input type="number" className={inputClass} placeholder="最大生成 tokens（留空使用系统上限）" value={draft.max_tokens} onChange={e => setDraft({ ...draft, max_tokens: e.target.value })} min={1} />
-          <input type="number" className={inputClass} placeholder={`思考预算 tokens（留空跟随默认 ${defaultBudget}，-1 不限）`} value={draft.reasoning_budget} onChange={e => setDraft({ ...draft, reasoning_budget: e.target.value })} min={-1} />
+          <input type="number" className={inputClass} placeholder="思考预算 tokens（-1 不限）" value={draft.reasoning_budget} onChange={e => setDraft({ ...draft, reasoning_budget: e.target.value })} min={-1} />
           <div className="flex items-center gap-2">
             <button onClick={handleSave} disabled={busy}
               className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-700 disabled:opacity-40 transition-colors">
               {busy ? '保存中...' : '保存'}
             </button>
-            <button onClick={() => { setEditing(false); setDraft({ name: provider.name, base_url: provider.base_url, model: provider.model, api_key: provider.api_key, max_tokens: provider.max_tokens ?? '', reasoning_budget: provider.reasoning_budget ?? '' }); }}
+            <button onClick={() => { setEditing(false); setDraft({ name: provider.name, base_url: provider.base_url, model: provider.model, api_key: provider.api_key, max_tokens: provider.max_tokens ?? '', reasoning_budget: provider.reasoning_budget }); }}
               className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 text-xs font-medium hover:bg-slate-200 transition-colors">
               取消
             </button>
@@ -166,10 +162,14 @@ function ProviderRow({
                   max {provider.max_tokens}
                 </span>
               )}
-              {provider.reasoning_budget !== null && provider.reasoning_budget !== undefined && (
+              {provider.reasoning_budget < 0 ? (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 font-medium flex-shrink-0" title="思考预算：不限制">
+                  思考不限
+                </span>
+              ) : (
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 font-medium flex-shrink-0"
-                  title={provider.reasoning_budget < 0 ? '思考预算：不限制' : `思考预算 ${provider.reasoning_budget} tokens`}>
-                  {provider.reasoning_budget < 0 ? '思考不限' : `思考 ${provider.reasoning_budget}`}
+                  title={`思考预算 ${provider.reasoning_budget} tokens`}>
+                  思考 {provider.reasoning_budget}
                 </span>
               )}
             </div>
@@ -210,7 +210,7 @@ function ProviderRow({
 
 function AddProviderForm({ onAdded, onCancel }: { onAdded: (p: LLMProvider) => void; onCancel: () => void }) {
   const { toast } = useToast();
-  const [draft, setDraft] = useState<LLMProviderCreate>({ name: '', base_url: '', model: '', api_key: '', max_tokens: null as number | null, reasoning_budget: null as number | null });
+  const [draft, setDraft] = useState<LLMProviderCreate>({ name: '', base_url: '', model: '', api_key: '', max_tokens: null as number | null, reasoning_budget: 1024 });
   const [busy, setBusy] = useState(false);
 
   const handleAdd = async () => {
@@ -239,7 +239,7 @@ function AddProviderForm({ onAdded, onCancel }: { onAdded: (p: LLMProvider) => v
       <input className={inputClass} placeholder="Base URL（OpenAI 兼容，如 http://127.0.0.1:9010/v1）" value={draft.base_url} onChange={e => setDraft({ ...draft, base_url: e.target.value })} />
       <input type="password" className={inputClass} placeholder="API Key（本地服务可留空）" value={draft.api_key} onChange={e => setDraft({ ...draft, api_key: e.target.value })} />
       <input type="number" className={inputClass} placeholder="最大生成 tokens（留空使用系统上限）" value={draft.max_tokens ?? ''} onChange={e => setDraft({ ...draft, max_tokens: e.target.value ? Number(e.target.value) : null })} min={1} />
-      <input type="number" className={inputClass} placeholder="思考预算 tokens（留空跟随系统默认，-1 不限）" value={draft.reasoning_budget ?? ''} onChange={e => setDraft({ ...draft, reasoning_budget: e.target.value ? Number(e.target.value) : null })} min={-1} />
+      <input type="number" className={inputClass} placeholder="思考预算 tokens（-1 不限）" value={draft.reasoning_budget ?? ''} onChange={e => setDraft({ ...draft, reasoning_budget: e.target.value ? Number(e.target.value) : 1024 })} min={-1} />
       <div className="flex items-center gap-2">
         <button onClick={handleAdd} disabled={busy}
           className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-700 disabled:opacity-40 transition-colors">
@@ -553,25 +553,6 @@ export function SettingsPage() {
                   第一个被创建的 provider 自动成为 <strong className="text-slate-500">main</strong>（新对话的默认模型）。
                   聊天顶部下拉可逐条消息切换到任意一个。系统始终至少保留一个 main。
                 </p>
-                <div className="rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2.5">
-                  <div className="flex items-center gap-3">
-                    <div className="flex-1 min-w-0">
-                      <div className="text-xs font-medium text-slate-700">默认思考预算</div>
-                      <div className="text-[11px] text-slate-400 mt-0.5">
-                        模型思考的 token 上限。推理模型会一直想到 max_tokens 才开口，在这台机器上就是一步好几分钟。
-                        各 provider 可单独覆盖；留空即跟随这里。-1 = 不限制。
-                      </div>
-                    </div>
-                    <input
-                      type="number"
-                      min={-1}
-                      step={128}
-                      className={`${inputClass} w-28 flex-shrink-0`}
-                      value={settings.default_reasoning_budget}
-                      onChange={e => set({ default_reasoning_budget: Math.max(-1, Number(e.target.value)) })}
-                    />
-                  </div>
-                </div>
                 <div className="space-y-2">
                   {providersApi.providers.map(p => (
                     <ProviderRow
@@ -581,7 +562,6 @@ export function SettingsPage() {
                       onDelete={() => providersApi.remove(p.id).then(() => undefined)}
                       onSetMain={() => providersApi.setMain(p.id).then(() => undefined)}
                       canDelete={!(p.is_main && providersApi.providers.filter(x => x.is_main).length <= 1)}
-                      defaultBudget={settings.default_reasoning_budget}
                     />
                   ))}
                   {providersApi.providers.length === 0 && (
