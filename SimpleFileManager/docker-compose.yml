@@ -25,8 +25,23 @@ services:
       - AUTO_DIGEST_MODE=${AUTO_DIGEST_MODE:-scheduled}
       - AUTO_DIGEST_HOUR=${AUTO_DIGEST_HOUR:-23}
       - AUTO_DIGEST_INTERVAL_HOURS=${AUTO_DIGEST_INTERVAL_HOURS:-6}
+      # The application writes its own log, rotated, and keeps it on the
+      # mounted volume so it survives a container being replaced. Without
+      # this the only record of what happened is in `docker logs`, which
+      # goes away with the container.
+      - LOG_FILE=/data/logs/backend.log
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # The health endpoint checks the databases, the disk, the vector store
+    # and the model endpoints, so an unhealthy container is one that is
+    # actually broken rather than merely running.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5).status == 200 else 1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
 
   frontend:
@@ -35,5 +50,6 @@ services:
     ports:
       - "80:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     restart: unless-stopped

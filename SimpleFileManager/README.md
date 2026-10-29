@@ -22,6 +22,9 @@
 - [x] 上传（多文件）/ 下载
 - [x] 键盘快捷键（见下文）
 - [x] 拖拽移动
+- [x] 回收站：删除先入回收站，可还原、可清空
+- [x] 目录大小与磁盘剩余空间
+- [x] 目录打包下载（zip）
 - [ ] 收藏和标签
 
 ### 2. 智能索引
@@ -181,11 +184,26 @@ LLM_CTX=131072 ./serve.sh start        # 临时改上下文
 
 ### 运行测试
 
+测试依赖单独放在 `requirements-dev.txt` 里，装一次就能跑：
+
 ```bash
 cd backend
-source .venv/bin/activate
-python -m pytest tests/ -v         # 41 个测试
+pip install -r requirements-dev.txt
+python -m pytest tests/ -v
 ```
+
+### 备份
+
+`scripts/backup.py` 会把整个存储目录打包成 tar.gz。数据库用 SQLite 的
+backup API 取一致性快照（服务正开着时直接复制文件，得到的归档可能根本
+打不开），其余文件原样打包。
+
+```bash
+BACKUP_DIR=/mnt/backup/sfm python3 scripts/backup.py
+```
+
+默认保留最近 7 份。用 cron 定时跑即可；归档是普通 tar.gz，
+`tar xzf <归档> -C <存储根目录>` 就能还原。
 
 ## 配置说明
 
