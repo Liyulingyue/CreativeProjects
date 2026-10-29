@@ -276,7 +276,7 @@ export function FileManagerPage() {
     setConfirmDialog({
       open: true,
       title: `删除${isMulti ? `${toDelete.length} 项` : (hasFolder ? '文件夹' : '文件')}`,
-      message: `确定要删除 "${names}" 吗？${hasFolder ? '文件夹内的所有内容将被删除。' : ''}此操作不可恢复。`,
+      message: `确定要删除 "${names}" 吗？${hasFolder ? '文件夹内的所有内容将被删除。' : ''}删除的文件会移到回收站，可以随时还原。`,
       onConfirm: async () => {
         let succeeded = 0;
         let failed = 0;

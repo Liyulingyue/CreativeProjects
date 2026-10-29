@@ -53,6 +53,9 @@ class MoveRequest(BaseModel):
 
 class DeleteRequest(BaseModel):
     path: str
+    # False sends the file to the recycle bin, where it can be put back.
+    # True destroys it outright.
+    permanent: bool = False
 
 
 class SearchRequest(BaseModel):

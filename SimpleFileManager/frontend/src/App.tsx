@@ -8,6 +8,7 @@ import { SimpleChat } from './components/SimpleChat';
 import { AgentToolsPage } from './components/AgentToolsPage';
 import { OrganizerPage } from './components/OrganizerPage';
 import { DigestPage } from './components/DigestPage';
+import { TrashPage } from './components/TrashPage';
 import { SettingsPage } from './components/SettingsPage';
 import { LoginPage } from './components/LoginPage';
 import { ServiceStatus } from './components/ServiceStatus';
@@ -23,6 +24,7 @@ const NAV_ITEMS = [
   { to: '/agent-tools', label: 'Agent 能力', icon: 'code' as const },
   { to: '/organizer', label: '整理', icon: 'clipboard' as const },
   { to: '/digest', label: '日报', icon: 'newspaper' as const },
+  { to: '/trash', label: '回收站', icon: 'trash' as const },
   { to: '/settings', label: '设置', icon: 'settings' as const },
 ];
 
@@ -207,6 +209,7 @@ function App() {
               <Route path="/agent-tools" element={<AgentToolsPage />} />
               <Route path="/organizer" element={<OrganizerPage />} />
               <Route path="/digest" element={<DigestPage />} />
+              <Route path="/trash" element={<TrashPage />} />
               <Route path="/settings" element={<SettingsPage />} />
             </Routes>
           </div>

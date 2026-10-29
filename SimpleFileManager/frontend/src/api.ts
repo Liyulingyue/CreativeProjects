@@ -34,13 +34,56 @@ export async function createFolder(path: string, name: string): Promise<FileOper
   return res.json();
 }
 
-export async function deletePath(path: string): Promise<FileOperation> {
+export async function deletePath(path: string, permanent = false): Promise<FileOperation> {
   const res = await authFetch(`${API_BASE}/fs/delete`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path }),
+    body: JSON.stringify({ path, permanent }),
   });
   if (!res.ok) throw new Error('Failed to delete');
+  return res.json();
+}
+
+/** One entry in the recycle bin. */
+export interface TrashEntry {
+  id: string;
+  name: string;
+  original_path: string;
+  rel_path: string;
+  deleted_at: number;
+  deleted_at_human: string;
+  is_dir: boolean;
+  size: number;
+  incomplete?: boolean;
+}
+
+export interface TrashListing {
+  entries: TrashEntry[];
+  count: number;
+  size: number;
+}
+
+export async function fetchTrash(): Promise<TrashListing> {
+  const res = await authFetch(`${API_BASE}/fs/trash`);
+  if (!res.ok) throw new Error('Failed to fetch the recycle bin');
+  return res.json();
+}
+
+export async function restoreTrashEntry(id: string): Promise<FileOperation> {
+  const res = await authFetch(`${API_BASE}/fs/trash/${id}/restore`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to restore');
+  return res.json();
+}
+
+export async function purgeTrashEntry(id: string): Promise<FileOperation> {
+  const res = await authFetch(`${API_BASE}/fs/trash/${id}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error('Failed to delete permanently');
+  return res.json();
+}
+
+export async function emptyTrash(): Promise<FileOperation> {
+  const res = await authFetch(`${API_BASE}/fs/trash/empty`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to empty the recycle bin');
   return res.json();
 }
 

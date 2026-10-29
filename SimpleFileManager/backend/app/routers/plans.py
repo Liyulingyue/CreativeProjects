@@ -194,11 +194,15 @@ def _execute_action(action_type: str, source: str, target: str) -> str:
         src = _safe(source)
         if not src.exists():
             raise FileNotFoundError(f"Source not found: {source}")
-        if src.is_dir():
-            shutil.rmtree(src)
-        else:
-            src.unlink()
-        return f"Deleted {source}"
+        # To the bin, not to nowhere. A tidy-up plan that was approved
+        # once should not be the last chance to get a file back.
+        from ..trash import TrashError, TrashService
+
+        try:
+            TrashService(Path(get_storage_root())).trash(src)
+        except TrashError as e:
+            raise ValueError(str(e)) from e
+        return f"Deleted {source} (moved to the recycle bin)"
 
     if action_type in ("move", "rename"):
         if not source or not target:

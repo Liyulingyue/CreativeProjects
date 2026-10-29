@@ -15,6 +15,7 @@ from ..models import (
     FileOperation,
     MoveRequest,
 )
+from ..trash import TrashError, TrashService
 
 fs = APIRouter()
 
@@ -188,22 +189,97 @@ def copy(req: MoveRequest) -> FileOperation:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _trash_service() -> TrashService:
+    return TrashService(Path(get_storage_root()))
+
+
 @fs.post("/delete")
 def delete(req: DeleteRequest) -> FileOperation:
+    """Delete a file or directory.
+
+    By default it goes to the recycle bin, where it can be put back.
+    The caller has to ask for it to be destroyed outright.
+    """
     storage_path = str(get_storage_root())
     target = _safe_path(storage_path, req.path)
 
     if not target.exists():
         raise HTTPException(status_code=404, detail="Path not found")
 
+    if getattr(req, "permanent", False):
+        try:
+            if target.is_dir():
+                shutil.rmtree(str(target))
+            else:
+                target.unlink()
+            return FileOperation(success=True, message="已永久删除", path=str(target))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
     try:
-        if target.is_dir():
-            shutil.rmtree(str(target))
-        else:
-            target.unlink()
-        return FileOperation(success=True, message="Deleted", path=str(target))
+        entry = _trash_service().trash(target)
+    except TrashError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    return FileOperation(
+        success=True,
+        message="已移到回收站，可在回收站中还原",
+        path=str(target),
+    )
+
+
+@fs.get("/trash")
+def list_trash() -> dict:
+    """Everything currently in the recycle bin, newest first."""
+    svc = _trash_service()
+    entries = svc.list()
+    return {
+        "entries": entries,
+        "count": len(entries),
+        "size": sum(e.get("size", 0) for e in entries),
+    }
+
+
+@fs.post("/trash/{entry_id}/restore")
+def restore_trash(entry_id: str) -> FileOperation:
+    """Put a deleted file back where it came from."""
+    try:
+        result = _trash_service().restore(entry_id)
+    except TrashError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    message = "已还原"
+    if result.get("renamed"):
+        message = f"原位置已有同名文件，已还原为 {result['path'].split('/')[-1]}"
+    return FileOperation(success=True, message=message, path=result["path"])
+
+
+@fs.delete("/trash/{entry_id}")
+def purge_trash(entry_id: str) -> FileOperation:
+    """Destroy one entry for good."""
+    try:
+        result = _trash_service().purge(entry_id)
+    except TrashError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return FileOperation(
+        success=True, message=f"已永久删除 {result.get('name', '')}", path=""
+    )
+
+
+@fs.post("/trash/empty")
+def empty_trash() -> FileOperation:
+    """Destroy everything in the bin."""
+    try:
+        result = _trash_service().empty()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return FileOperation(
+        success=True, message=f"已清空回收站（{result.get('removed', 0)} 项）", path=""
+    )
 
 
 @fs.get("/info")
