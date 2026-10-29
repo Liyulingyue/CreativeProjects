@@ -108,6 +108,55 @@ export function ConfirmDialog({ open, title, message, confirmText = '确认', da
   );
 }
 
+interface UploadConflictDialogProps {
+  open: boolean;
+  filename: string;
+  /** What is already at the destination. */
+  existing?: { name: string; size: number; modified?: string };
+  onReplace: () => void;
+  onRename: () => void;
+  onCancel: () => void;
+}
+
+/**
+ * What to do about a name that is already taken.
+ *
+ * Replacing it is offered first because it is what the user usually
+ * means, but it is the one that destroys something, so it is styled
+ * as the dangerous one and the renamed copy is the safe default
+ * middle ground.
+ */
+export function UploadConflictDialog({ open, filename, existing, onReplace, onRename, onCancel }: UploadConflictDialogProps) {
+  const sizeText = existing?.size
+    ? (existing.size >= 1024 * 1024
+      ? `${(existing.size / 1024 / 1024).toFixed(1)} MB`
+      : `${Math.max(1, Math.round(existing.size / 1024))} KB`)
+    : '';
+  return (
+    <Dialog open={open} title="同名文件已存在" onClose={onCancel}>
+      <p className="text-sm text-slate-600 mb-1 leading-relaxed">
+        目标位置已经有 <strong className="text-slate-800">{filename}</strong>
+        {sizeText && <> （{sizeText}）</>}
+        {existing?.modified && <> · {existing.modified}</>}。
+      </p>
+      <p className="text-xs text-slate-400 mb-5">
+        覆盖会把原来的文件换掉，且无法从回收站找回来。
+      </p>
+      <div className="flex flex-wrap justify-end gap-2">
+        <button onClick={onCancel} className="px-4 py-2 rounded-lg text-sm text-slate-600 hover:bg-slate-100 transition-colors font-medium">
+          取消上传
+        </button>
+        <button onClick={onRename} className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 transition-colors">
+          换个名字上传
+        </button>
+        <button onClick={onReplace} className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition-colors">
+          覆盖原文件
+        </button>
+      </div>
+    </Dialog>
+  );
+}
+
 interface PromptDialogProps {
   open: boolean;
   title: string;

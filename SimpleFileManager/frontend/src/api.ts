@@ -866,6 +866,99 @@ export async function downloadFile(path: string): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
+/** The piece size for a chunked upload. */
+export const UPLOAD_CHUNK_SIZE = 4 * 1024 * 1024;
+
+/** What to do when the name is already taken. */
+export type OverwritePolicy = 'never' | 'replace' | 'rename';
+
+export interface UploadConflict {
+  message: string;
+  existing?: { name: string; size: number; modified?: string };
+}
+
+/** A file that is already at the destination. */
+export class UploadConflictError extends Error {
+  conflict: UploadConflict;
+  constructor(conflict: UploadConflict) {
+    super(conflict.message);
+    this.conflict = conflict;
+  }
+}
+
+/**
+ * Upload one file in pieces.
+ *
+ * The pieces are kept on the server until the file is finished, so a
+ * connection that drops part way through resumes instead of starting
+ * over -- which is the difference between a 40MB upload working on a
+ * bad connection and not.
+ */
+export async function uploadFileChunked(
+  path: string,
+  file: File,
+  onProgress?: (loaded: number, total: number) => void,
+  overwrite: OverwritePolicy = 'never',
+): Promise<{ name: string; path: string; size: number }> {
+  const total = Math.max(1, Math.ceil(file.size / UPLOAD_CHUNK_SIZE));
+  const initRes = await authFetch(
+    `${API_BASE}/fs/upload/init?path=${encodeURIComponent(path)}` +
+    `&name=${encodeURIComponent(file.name)}&size=${file.size}&total_chunks=${total}`,
+    { method: 'POST' },
+  );
+  if (!initRes.ok) throw new Error((await detailOf(initRes)) || '无法开始上传');
+  const init = await initRes.json();
+  const uploadId: string = init.upload_id;
+
+  let sent = 0;
+  for (let index = 0; index < total; index++) {
+    const start = index * UPLOAD_CHUNK_SIZE;
+    const blob = file.slice(start, Math.min(start + UPLOAD_CHUNK_SIZE, file.size));
+    const res = await authFetch(
+      `${API_BASE}/fs/upload/chunk?upload_id=${uploadId}&index=${index}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: blob },
+    );
+    if (!res.ok) {
+      // The server is still holding the pieces, so the upload can be
+      // picked up again rather than thrown away.
+      throw new Error((await detailOf(res)) || `第 ${index + 1} 块上传失败`);
+    }
+    sent += blob.size;
+    onProgress?.(sent, file.size);
+  }
+
+  const doneRes = await authFetch(
+    `${API_BASE}/fs/upload/complete?upload_id=${uploadId}&overwrite=${overwrite}`,
+    { method: 'POST' },
+  );
+  if (doneRes.status === 409) {
+    const body = await doneRes.json().catch(() => ({}));
+    const detail = body?.detail ?? {};
+    throw new UploadConflictError({
+      message: detail.message || '同名文件已存在',
+      existing: detail.existing,
+    });
+  }
+  if (!doneRes.ok) throw new Error((await detailOf(doneRes)) || '上传失败');
+  return doneRes.json();
+}
+
+async function detailOf(res: Response): Promise<string> {
+  try {
+    const body = await res.json();
+    const d = body?.detail;
+    if (typeof d === 'string') return d;
+    if (d?.message) return d.message;
+  } catch { /* the body was not json */ }
+  return '';
+}
+
+/** Throw away an upload that will not be finished, so the server
+ *  does not keep its pieces around for a day. */
+export async function abandonUpload(uploadId: string): Promise<void> {
+  await authFetch(`${API_BASE}/fs/upload?upload_id=${uploadId}`, { method: 'DELETE' }).catch(() => {});
+}
+
 export async function uploadFiles(
   path: string,
   files: FileList,

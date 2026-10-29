@@ -1,14 +1,14 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   fetchBrowse, fetchTree, createFolder, deletePath, movePath, searchFiles,
-  uploadFiles, downloadFile, downloadZip, copyPath,
+  uploadFileChunked, UploadConflictError, downloadFile, downloadZip, copyPath,
   type BrowseResult, type FileNode, type TreeNode,
 } from '../api';
 import { FileGrid, FileList, FileCompactList, Toolbar, Breadcrumb, isPreviewable, formatSize } from './FileExplorer';
 import { Sidebar } from './Sidebar';
 import { FilePreview } from './FilePreview';
 import ContextMenu from './ui/ContextMenu';
-import { ConfirmDialog, PromptDialog } from './ui/Dialog';
+import { ConfirmDialog, UploadConflictDialog, PromptDialog } from './ui/Dialog';
 import { useToast } from './ui/Toast';
 import { Icon } from './ui/Icon';
 import { useCollapse } from '../hooks/useCollapse';
@@ -83,6 +83,22 @@ export function FileManagerPage() {
   const [previewNode, setPreviewNode] = useState<FileNode | null>(null);
 
   const [confirmDialog, setConfirmDialog] = useState<{ open: boolean; title: string; message: string; onConfirm: () => void } | null>(null);
+  // An upload that stopped because a name was already taken. The whole
+  // batch waits: the answer is about how to treat a name, and it
+  // applies to the rest of the batch too.
+  // The batch that was interrupted, so it can be finished.
+  const uploadBatchRef = useRef<{
+    list: File[]; targetPath: string; done: number; failed: number;
+  } | null>(null);
+  const [uploadConflict, setUploadConflict] = useState<{
+    file: File;
+    targetPath: string;
+    existing?: { name: string; size: number; modified?: string };
+    /** Where in the batch we are, and what was already done. */
+    index: number;
+    done: number;
+    failed: number;
+  } | null>(null);
   const [promptDialog, setPromptDialog] = useState<{ open: boolean; title: string; message: string; defaultValue: string; onConfirm: (value: string) => void } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -454,23 +470,76 @@ export function FileManagerPage() {
 
   // Shared by the file picker and OS drag-and-drop: both hand us a FileList,
   // so progress, toasts and refresh stay identical.
+  // Upload one file, in pieces, and report what happened.
+  const sendOneFile = useCallback(async (file: File, targetPath: string, overwrite: 'never' | 'replace' | 'rename') => {
+    await uploadFileChunked(
+      targetPath,
+      file,
+      (loaded, total) => setUploadProgress({ loaded, total }),
+      overwrite,
+    );
+  }, []);
+
+  // Upload a batch, one file at a time. A file whose name is taken
+  // stops the batch and asks; the answer then applies to the rest of
+  // it, so one question is asked rather than one per file.
+  const runUpload = useCallback(async (
+    list: File[],
+    targetPath: string,
+    startIndex: number,
+    policy: 'never' | 'replace' | 'rename',
+    doneSoFar: number,
+    failedSoFar: number,
+  ) => {
+    const totalBytes = list.reduce((sum, f) => sum + f.size, 0);
+    let done = doneSoFar;
+    let failed = failedSoFar;
+
+    for (let i = startIndex; i < list.length; i++) {
+      const file = list[i];
+      try {
+        await sendOneFile(file, targetPath, policy);
+        done++;
+      } catch (err) {
+        if (err instanceof UploadConflictError) {
+          // The batch is kept so it can be picked up again once the
+          // user has said what to do.
+          uploadBatchRef.current = { list, targetPath, done, failed };
+          setUploadConflict({
+            file,
+            targetPath,
+            existing: err.conflict.existing,
+            index: i,
+            done,
+            failed,
+          });
+          setUploadProgress(null);
+          return;
+        }
+        failed++;
+        toast(`「${file.name}」上传失败：${err instanceof Error ? err.message : '未知错误'}`, 'error');
+      } finally {
+        setUploadProgress({ loaded: done, total: totalBytes });
+      }
+    }
+
+    uploadBatchRef.current = null;
+    const where = targetPath ? `到「${targetPath.split(/[/\\]/).pop() || '根目录'}」` : '到根目录';
+    if (done > 0) {
+      toast(`已上传 ${done} 个文件${where}${failed ? `，${failed} 个失败` : ''}`, failed ? 'info' : 'success');
+      loadBrowse(currentPath);
+      loadTree();
+    }
+    setUploadProgress(null);
+  }, [currentPath, sendOneFile]);
+
   const uploadFileList = useCallback(async (files: FileList | null | undefined, targetPath: string) => {
     if (!files || files.length === 0) return;
     const list = Array.from(files);
     const totalBytes = list.reduce((sum, f) => sum + f.size, 0);
     setUploadProgress({ loaded: 0, total: totalBytes });
-    try {
-      const result = await uploadFiles(targetPath, files, (loaded, total) => setUploadProgress({ loaded, total }));
-      const where = targetPath ? `到「${targetPath.split(/[/\\]/).pop() || '根目录'}」` : '到根目录';
-      toast(`已上传 ${result.count} 个文件${where}`, 'success');
-      loadBrowse(currentPath);
-      loadTree();
-    } catch (err) {
-      toast('上传失败: ' + (err instanceof Error ? err.message : 'Unknown error'), 'error');
-    } finally {
-      setUploadProgress(null);
-    }
-  }, [currentPath]);
+    await runUpload(list, targetPath, 0, 'never', 0, 0);
+  }, [runUpload]);
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     await uploadFileList(e.target.files, currentPath);
@@ -742,6 +811,43 @@ export function FileManagerPage() {
       )}
 
       {previewNode && <FilePreview node={previewNode} onClose={() => setPreviewNode(null)} />}
+
+      {uploadConflict && (
+        <UploadConflictDialog
+          open
+          filename={uploadConflict.file.name}
+          existing={uploadConflict.existing}
+          onCancel={() => {
+            setUploadConflict(null);
+            setUploadProgress(null);
+            loadBrowse(currentPath);
+          }}
+          onRename={() => {
+            const { file, targetPath, index, done, failed } = uploadConflict;
+            const batch = uploadBatchRef.current;
+            setUploadConflict(null);
+            void (async () => {
+              // This file first, then the rest of the batch under the
+              // same rule -- one answer, not one question per file.
+              await runUpload([file], targetPath, 0, 'rename', done, failed);
+              if (batch) {
+                await runUpload(batch.list, batch.targetPath, index + 1, 'rename', done + 1, failed);
+              }
+            })();
+          }}
+          onReplace={() => {
+            const { file, targetPath, index, done, failed } = uploadConflict;
+            const batch = uploadBatchRef.current;
+            setUploadConflict(null);
+            void (async () => {
+              await runUpload([file], targetPath, 0, 'replace', done, failed);
+              if (batch) {
+                await runUpload(batch.list, batch.targetPath, index + 1, 'replace', done + 1, failed);
+              }
+            })();
+          }}
+        />
+      )}
 
       {confirmDialog && (
         <ConfirmDialog

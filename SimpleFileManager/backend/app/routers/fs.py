@@ -1,13 +1,14 @@
 import os
 import shutil
 import tempfile
+import time
 import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, UploadFile, File
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, HTTPException, UploadFile, File, Request
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 from ..deps import state, get_storage_root, resolve_under_root, PathOutsideRoot
 from ..models import (
@@ -18,6 +19,7 @@ from ..models import (
     FileOperation,
     MoveRequest,
 )
+from .. import uploads
 from ..storage_stats import dir_size, disk_info, invalidate as invalidate_sizes
 from ..trash import TrashError, TrashService
 
@@ -347,18 +349,96 @@ def get_tree(path: Optional[str] = None, depth: int = 2) -> dict:
 
 
 @fs.get("/download")
-def download_file(path: str):
+def download_file(path: str, request: Request = None):
+    """Download a file, in parts when the client asks for them.
+
+    A range request lets a browser resume a download that was cut off
+    and lets it start playing a large file before it has all arrived.
+    Without it the whole file has to cross the wire before anything
+    happens, and the browser has to hold all of it.
+    """
     try:
         target = resolve_under_root(path)
     except PathOutsideRoot:
         raise HTTPException(status_code=400, detail="Path outside storage root")
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(
-        str(target),
-        filename=target.name,
+
+    size = target.stat().st_size
+    range_header = request.headers.get("range") if request else None
+    if not range_header:
+        return FileResponse(
+            str(target),
+            filename=target.name,
+            media_type=_get_mime_type(target),
+            headers={"Accept-Ranges": "bytes"},
+        )
+
+    start, end = _parse_range(range_header, size)
+    if start is None:
+        # An unsatisfiable range is answered with the size, so the
+        # client knows what it asked for was out of bounds.
+        return Response(
+            status_code=416,
+            headers={"Content-Range": f"bytes */{size}"},
+        )
+    length = end - start + 1
+    return StreamingResponse(
+        _range_stream(target, start, length),
+        status_code=206,
         media_type=_get_mime_type(target),
+        headers={
+            "Content-Range": f"bytes {start}-{end}/{size}",
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(length),
+            "Content-Disposition": _content_disposition(target.name),
+        },
     )
+
+
+def _range_stream(path: Path, start: int, length: int):
+    """Yield just the requested bytes of a file."""
+    with open(path, "rb") as f:
+        f.seek(start)
+        remaining = length
+        while remaining > 0:
+            chunk = f.read(min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            yield chunk
+
+
+def _content_disposition(filename: str) -> str:
+    """A Content-Disposition header that survives a non-ASCII name."""
+    from urllib.parse import quote
+
+    ascii_name = filename.encode("ascii", "ignore").decode() or "download"
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename)}"
+
+
+def _parse_range(header: str, size: int) -> tuple[Optional[int], int]:
+    """Read a byte range header. Returns (start, end), start None if bad."""
+    try:
+        spec = header.split("=", 1)[1].split(",")[0].strip()
+        first, _, last = spec.partition("-")
+        if not first:
+            # "bytes=-500" means the last 500 bytes.
+            length = int(last)
+            if length <= 0:
+                return None, 0
+            start = max(0, size - length)
+            return start, size - 1
+        start = int(first)
+        end = int(last) if last else size - 1
+    except (ValueError, IndexError):
+        return None, 0
+    if start >= size or start < 0:
+        return None, 0
+    end = min(end, size - 1)
+    if end < start:
+        return None, 0
+    return start, end
 
 
 @fs.get("/download-zip")
@@ -416,7 +496,14 @@ def _remove_file(path: Path):
 
 
 @fs.post("/upload")
-async def upload_files(path: str = "", files: list[UploadFile] = File(...)):
+async def upload_files(path: str = "", files: list[UploadFile] = File(...),
+                       overwrite: str = "never"):
+    """Upload files in one request.
+
+    Kept for small files and for clients that cannot do better. A name
+    that is already taken is refused rather than replaced, because
+    replacing it is how a day's work disappears without a word.
+    """
     try:
         target_dir = resolve_under_root(path)
     except PathOutsideRoot:
@@ -434,11 +521,92 @@ async def upload_files(path: str = "", files: list[UploadFile] = File(...)):
         dest = (target_dir / filename).resolve()
         if not dest.is_relative_to(target_dir.resolve()):
             raise HTTPException(status_code=400, detail="Upload destination outside storage root")
+        if dest.exists() and overwrite == "never":
+            st = dest.stat()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": f"{filename} 已经存在",
+                    "name": filename,
+                    "size": st.st_size,
+                    "modified": time.strftime(
+                        "%Y-%m-%d %H:%M:%S", time.localtime(st.st_mtime)
+                    ),
+                },
+            )
+        if dest.exists() and overwrite == "rename":
+            dest = uploads._free_name(target_dir, filename)
         with open(dest, "wb") as out:
             while chunk := await f.read(1024 * 1024):
                 out.write(chunk)
-        uploaded.append(filename)
+        uploaded.append(dest.name)
     return {"success": True, "uploaded": uploaded, "count": len(uploaded)}
+
+
+def _upload_manager() -> uploads.UploadManager:
+    return uploads.UploadManager(Path(get_storage_root()))
+
+
+@fs.post("/upload/init")
+def upload_init(path: str = "", name: str = "", size: int = 0, total_chunks: int = 0):
+    """Begin an upload and ask what is already at the destination."""
+    try:
+        target_dir = resolve_under_root(path)
+    except PathOutsideRoot:
+        raise HTTPException(status_code=400, detail="Path outside storage root")
+    if not target_dir.is_dir():
+        raise HTTPException(status_code=400, detail="Destination is not a directory")
+    filename = Path((name or "").replace("\\", "/")).name
+    if not filename or filename in (".", ".."):
+        raise HTTPException(status_code=400, detail="Invalid upload filename")
+    if total_chunks <= 0 or total_chunks > 1_000_000:
+        raise HTTPException(status_code=400, detail="Invalid chunk count")
+    try:
+        return _upload_manager().init(target_dir, filename, size, total_chunks)
+    except uploads.UploadError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@fs.post("/upload/chunk")
+async def upload_chunk(upload_id: str, index: int = 0, request: Request = None):
+    """Receive one piece of an upload."""
+    body = await request.body()
+    try:
+        return _upload_manager().write_chunk(upload_id, index, body)
+    except uploads.UploadError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@fs.get("/upload/status")
+def upload_status(upload_id: str):
+    """Which pieces have arrived, so a dropped client can pick up."""
+    try:
+        return _upload_manager().status(upload_id)
+    except uploads.UploadError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@fs.post("/upload/complete")
+def upload_complete(upload_id: str, overwrite: str = "never"):
+    """Put the file in place."""
+    try:
+        return _upload_manager().complete(upload_id, overwrite)
+    except uploads.UploadConflict as e:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": str(e), "existing": e.existing},
+        )
+    except uploads.UploadError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@fs.delete("/upload")
+def upload_abandon(upload_id: str):
+    """Throw away an upload that will not be finished."""
+    try:
+        return _upload_manager().abandon(upload_id)
+    except uploads.UploadError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @fs.get("/content")
