@@ -43,10 +43,18 @@ class QueryResponse(BaseModel):
 
 
 class IndexStatusResponse(BaseModel):
+    # How many documents are in the index. This is the number a user
+    # means by "已索引" -- the one that used to be the chunk count,
+    # which read as several thousand indexed files when there were
+    # four.
     indexed_count: int
+    # How many pieces those documents were broken into.
     vector_count: int
     total_chunks: int = 0
     semantic_percent: int = 0
+    # How many documents are in the keyword index but not yet in the
+    # vector one.
+    keyword_only: int = 0
 
 
 class IndexedFile(BaseModel):
@@ -206,11 +214,26 @@ def get_status() -> IndexStatusResponse:
         # Clamped: coverage above 100% means the manifest has drifted from the
         # vector store, and a number like 101% reads as a bug rather than a hint.
         percent = min(100, round(embedded * 100 / total_chunks)) if total_chunks else 0
+        # The number of documents, rather than the number of pieces they
+        # were cut into. The two are wildly different: four novels are
+        # four documents and nearly ten thousand chunks.
+        indexed_files = 0
+        keyword_files = 0
+        try:
+            from ..search_engine import search_engine
+            keyword_files = len(search_engine.indexed_file_names())
+        except Exception:
+            pass
+        try:
+            indexed_files = len(rag_svc.vector_store.list_files())
+        except Exception:
+            indexed_files = 0
         return IndexStatusResponse(
-            indexed_count=embedded,
+            indexed_count=indexed_files,
             vector_count=embedded,
             total_chunks=total_chunks,
             semantic_percent=percent,
+            keyword_only=max(0, keyword_files - indexed_files),
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

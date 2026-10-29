@@ -176,7 +176,7 @@ function StatCards({ stats, autoStatus, skippedCount, showSkipped, onToggleSkipp
       {autoStatus && (
         <div className="flex-1 basis-[calc(50%-0.25rem)] sm:basis-auto bg-slate-50 rounded-lg px-4 py-2 text-center">
           <div className="text-xl font-bold text-slate-600">{autoStatus.indexed_files}</div>
-          <div className="text-xs text-slate-500">自动清单</div>
+          <div className="text-xs text-slate-500">扫描到的文件</div>
         </div>
       )}
       {skippedCount > 0 && (
