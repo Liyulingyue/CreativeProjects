@@ -87,6 +87,41 @@ export async function emptyTrash(): Promise<FileOperation> {
   return res.json();
 }
 
+export interface BatchResult {
+  success: boolean;
+  action: string;
+  succeeded: string[];
+  failed: { path: string; error: string }[];
+  count: number;
+  failed_count: number;
+}
+
+/**
+ * Do the same thing to a lot of files in one request.
+ *
+ * The browser used to send a request per file, which for a thousand
+ * files is a thousand round trips and a thousand chances to lose
+ * track of where it got to.
+ */
+export async function batchOperation(
+  action: 'delete' | 'move' | 'copy',
+  paths: string[],
+  dest?: string,
+  overwrite: 'never' | 'replace' | 'rename' = 'never',
+): Promise<BatchResult> {
+  const res = await authFetch(`${API_BASE}/fs/batch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, paths, dest: dest ?? '', overwrite }),
+  });
+  if (!res.ok) {
+    let detail = 'Batch failed';
+    try { const body = await res.json(); if (typeof body?.detail === 'string') detail = body.detail; } catch { /* keep default */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
 export async function movePath(src: string, dest: string): Promise<FileOperation> {
   const res = await authFetch(`${API_BASE}/fs/move`, {
     method: 'POST',
@@ -852,18 +887,74 @@ export async function downloadZip(path: string): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
-export async function downloadFile(path: string): Promise<void> {
+/**
+ * Download a file.
+ *
+ * Where the browser can write straight to disk, the file is streamed
+ * there as it arrives, so a large one does not have to fit in memory.
+ * Everywhere else the response is collected and handed over as a
+ * blob, which is how it has always worked and is the only thing
+ * available.
+ */
+export async function downloadFile(
+  path: string,
+  onProgress?: (loaded: number, total: number) => void,
+): Promise<void> {
   const res = await authFetch(`${API_BASE}/fs/download?path=${encodeURIComponent(path)}`);
   if (!res.ok) throw new Error('Failed to download');
+
+  const name = path.split(/[/\\]/).pop() || 'download';
+  const total = Number(res.headers.get('content-length') || 0);
+
+  // Chromium can write the bytes to a file the user chooses as they
+  // arrive. Everything else gets the blob.
+  const picker = (window as unknown as {
+    showSaveFilePicker?: (opts: unknown) => Promise<{
+      createWritable: () => Promise<{
+        write: (data: BufferSource) => Promise<void>;
+        close: () => Promise<void>;
+        abort?: () => Promise<void>;
+      }>;
+    }>;
+  }).showSaveFilePicker;
+
+  if (picker && res.body) {
+    let handle;
+    try {
+      handle = await picker({ suggestedName: name });
+    } catch {
+      // The user closed the picker. That is an answer, not a failure.
+      return;
+    }
+    const writable = await handle.createWritable();
+    const reader = res.body.getReader();
+    let loaded = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        await writable.write(value);
+        loaded += value.byteLength;
+        onProgress?.(loaded, total);
+      }
+      await writable.close();
+    } catch (e) {
+      await writable.abort?.();
+      throw e;
+    }
+    return;
+  }
+
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.download = path.split(/[/\\]/).pop() || 'download';
+  link.download = name;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
+  onProgress?.(blob.size, blob.size);
 }
 
 /** The piece size for a chunked upload. */

@@ -1,20 +1,36 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom';
 import { Icon } from './components/ui/Icon';
 import { FileManagerPage } from './components/FileManagerPage';
-import { SearchPage } from './components/SearchPage';
-import { IndexPage } from './components/IndexPage';
-import { SimpleChat } from './components/SimpleChat';
-import { AgentToolsPage } from './components/AgentToolsPage';
-import { OrganizerPage } from './components/OrganizerPage';
-import { DigestPage } from './components/DigestPage';
-import { TrashPage } from './components/TrashPage';
-import { SettingsPage } from './components/SettingsPage';
+import { ErrorBoundary } from './components/ui/ErrorBoundary';
+
+// The pages are split apart so that opening one does not mean
+// downloading all of them. The file browser is the one that is always
+// needed, so it is the one that is not lazy.
+const SearchPage = lazy(() => import('./components/SearchPage').then(m => ({ default: m.SearchPage })));
+const IndexPage = lazy(() => import('./components/IndexPage').then(m => ({ default: m.IndexPage })));
+const SimpleChat = lazy(() => import('./components/SimpleChat').then(m => ({ default: m.SimpleChat })));
+const AgentToolsPage = lazy(() => import('./components/AgentToolsPage').then(m => ({ default: m.AgentToolsPage })));
+const OrganizerPage = lazy(() => import('./components/OrganizerPage').then(m => ({ default: m.OrganizerPage })));
+const DigestPage = lazy(() => import('./components/DigestPage').then(m => ({ default: m.DigestPage })));
+const TrashPage = lazy(() => import('./components/TrashPage').then(m => ({ default: m.TrashPage })));
+const SettingsPage = lazy(() => import('./components/SettingsPage').then(m => ({ default: m.SettingsPage })));
 import { LoginPage } from './components/LoginPage';
 import { ServiceStatus } from './components/ServiceStatus';
 import { useCollapse } from './hooks/useCollapse';
 import { checkAuthStatus, getAuthEnabled, logout, onAuthLogout, verifyToken } from './auth';
 import { fetchPlans } from './api';
+
+function PageLoading() {
+  return (
+    <div className="h-full flex items-center justify-center bg-slate-50">
+      <div className="flex items-center gap-3">
+        <div className="loading-spinner" />
+        <span className="text-slate-500 text-sm">加载中...</span>
+      </div>
+    </div>
+  );
+}
 
 const NAV_ITEMS = [
   { to: '/', label: '文件管理', icon: 'folder' as const },
@@ -201,17 +217,23 @@ function App() {
           </div>
 
           <div className="flex-1 overflow-hidden">
-            <Routes>
-              <Route path="/" element={<FileManagerPage />} />
-              <Route path="/search" element={<SearchPage />} />
-              <Route path="/index" element={<IndexPage />} />
-              <Route path="/chat" element={<SimpleChat />} />
-              <Route path="/agent-tools" element={<AgentToolsPage />} />
-              <Route path="/organizer" element={<OrganizerPage />} />
-              <Route path="/digest" element={<DigestPage />} />
-              <Route path="/trash" element={<TrashPage />} />
-              <Route path="/settings" element={<SettingsPage />} />
-            </Routes>
+            {/* One page failing to render must not take the others with
+                it, and must not leave a blank screen. */}
+            <ErrorBoundary>
+              <Suspense fallback={<PageLoading />}>
+                <Routes>
+                  <Route path="/" element={<FileManagerPage />} />
+                  <Route path="/search" element={<SearchPage />} />
+                  <Route path="/index" element={<IndexPage />} />
+                  <Route path="/chat" element={<SimpleChat />} />
+                  <Route path="/agent-tools" element={<AgentToolsPage />} />
+                  <Route path="/organizer" element={<OrganizerPage />} />
+                  <Route path="/digest" element={<DigestPage />} />
+                  <Route path="/trash" element={<TrashPage />} />
+                  <Route path="/settings" element={<SettingsPage />} />
+                </Routes>
+              </Suspense>
+            </ErrorBoundary>
           </div>
         </div>
       </div>

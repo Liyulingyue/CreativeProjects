@@ -1,9 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import {
-  fetchBrowse, fetchTree, createFolder, deletePath, movePath, searchFiles,
-  uploadFileChunked, UploadConflictError, downloadFile, downloadZip, copyPath,
-  type BrowseResult, type FileNode, type TreeNode,
-} from '../api';
+import { fetchBrowse, fetchTree, createFolder, movePath, searchFiles, uploadFileChunked, UploadConflictError, batchOperation, downloadFile, downloadZip, copyPath, type BrowseResult, type FileNode, type TreeNode } from '../api';
 import { FileGrid, FileList, FileCompactList, Toolbar, Breadcrumb, isPreviewable, formatSize } from './FileExplorer';
 import { Sidebar } from './Sidebar';
 import { FilePreview } from './FilePreview';
@@ -294,20 +290,21 @@ export function FileManagerPage() {
       title: `删除${isMulti ? `${toDelete.length} 项` : (hasFolder ? '文件夹' : '文件')}`,
       message: `确定要删除 "${names}" 吗？${hasFolder ? '文件夹内的所有内容将被删除。' : ''}删除的文件会移到回收站，可以随时还原。`,
       onConfirm: async () => {
-        let succeeded = 0;
-        let failed = 0;
-        for (const node of toDelete) {
-          try {
-            await deletePath(node.path);
-            succeeded++;
-          } catch {
-            failed++;
+        try {
+          const result = await batchOperation('delete', toDelete.map(n => n.path));
+          if (result.count > 0) {
+            toast(
+              `已删除 ${result.count} 项${result.failed_count > 0 ? `，${result.failed_count} 项失败` : ''}`,
+              result.failed_count > 0 ? 'error' : 'success',
+            );
+            if (result.failed_count > 0) {
+              toast(`失败原因：${result.failed[0].error}`, 'error');
+            }
+          } else {
+            toast('删除失败', 'error');
           }
-        }
-        if (succeeded > 0) {
-          toast(`已删除 ${succeeded} 项${failed > 0 ? `，${failed} 项失败` : ''}`, failed > 0 ? 'error' : 'success');
-        } else {
-          toast('删除失败', 'error');
+        } catch (err) {
+          toast('删除失败: ' + (err instanceof Error ? err.message : '未知错误'), 'error');
         }
         setSelectedPaths(new Set());
         setConfirmDialog(null);
@@ -328,22 +325,26 @@ export function FileManagerPage() {
         : '输入新的完整路径：',
       defaultValue: selectedPaths.size > 1 ? currentPath : firstPath,
       onConfirm: async (targetPath) => {
-        let succeeded = 0;
-        let failed = 0;
-        for (const srcPath of selectedPaths) {
-          const name = srcPath.split(/[/\\]/).pop() || '';
-          const dest = selectedPaths.size > 1 ? targetPath + '/' + name : targetPath;
-          try {
-            await movePath(srcPath, dest);
-            succeeded++;
-          } catch {
-            failed++;
+        try {
+          // Moving several things into a directory keeps their names;
+          // moving one thing means the target is the new path itself.
+          if (selectedPaths.size > 1) {
+            const result = await batchOperation('move', Array.from(selectedPaths), targetPath);
+            if (result.count > 0) {
+              toast(
+                `已移动 ${result.count} 项${result.failed_count > 0 ? `，${result.failed_count} 项失败` : ''}`,
+                result.failed_count > 0 ? 'error' : 'success',
+              );
+            } else {
+              toast('移动失败', 'error');
+            }
+          } else {
+            const srcPath = Array.from(selectedPaths)[0];
+            await movePath(srcPath, targetPath);
+            toast('已移动', 'success');
           }
-        }
-        if (succeeded > 0) {
-          toast(`已移动 ${succeeded} 项${failed > 0 ? `，${failed} 项失败` : ''}`, failed > 0 ? 'error' : 'success');
-        } else {
-          toast('移动失败', 'error');
+        } catch (err) {
+          toast('移动失败: ' + (err instanceof Error ? err.message : '未知错误'), 'error');
         }
         setSelectedPaths(new Set());
         setPromptDialog(null);

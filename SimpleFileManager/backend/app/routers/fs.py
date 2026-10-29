@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Request
+from pydantic import BaseModel
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 from ..deps import state, get_storage_root, resolve_under_root, PathOutsideRoot
@@ -205,6 +206,88 @@ def copy(req: MoveRequest) -> FileOperation:
 
 def _trash_service() -> TrashService:
     return TrashService(Path(get_storage_root()))
+
+
+class BatchRequest(BaseModel):
+    action: str                      # delete | move | copy
+    paths: list[str]
+    dest: str = ""                   # target directory, for move and copy
+    overwrite: str = "never"         # never | replace | rename, for copy
+
+
+@fs.post("/batch")
+def batch(req: BatchRequest) -> dict:
+    """Do the same thing to a lot of files, in one request.
+
+    The browser used to send a request per file, which for a thousand
+    files is a thousand round trips and a thousand chances to lose
+    track of where it got to. One request also means one decision
+    about what to do, so the whole batch is handled the same way.
+
+    Each file is reported separately: one that cannot be moved does not
+    stop the others, and the caller is told which ones failed and
+    why.
+    """
+    if req.action not in ("delete", "move", "copy"):
+        raise HTTPException(status_code=400, detail="Unknown action")
+    if not req.paths:
+        raise HTTPException(status_code=400, detail="没有要处理的文件")
+    if len(req.paths) > 5000:
+        raise HTTPException(status_code=400, detail="一次最多处理 5000 项")
+
+    storage_path = str(get_storage_root())
+    trash_svc = _trash_service()
+    succeeded: list[str] = []
+    failed: list[dict] = []
+
+    for raw in req.paths:
+        try:
+            src = _safe_path(storage_path, raw)
+        except HTTPException as e:
+            failed.append({"path": raw, "error": str(e.detail)})
+            continue
+        if not src.exists():
+            failed.append({"path": raw, "error": "文件不存在"})
+            continue
+
+        try:
+            if req.action == "delete":
+                invalidate_sizes(src)
+                trash_svc.trash(src)
+            else:
+                if not req.dest:
+                    raise ValueError("缺少目标目录")
+                dest_dir = _safe_path(storage_path, req.dest)
+                if not dest_dir.is_dir():
+                    raise ValueError("目标不是目录")
+                dest = dest_dir / src.name
+                if dest.exists() and req.action == "copy":
+                    if req.overwrite == "never":
+                        raise ValueError("目标已存在")
+                    if req.overwrite == "rename":
+                        dest = uploads._free_name(dest_dir, src.name)
+                if req.action == "move":
+                    if dest.exists():
+                        raise ValueError("目标已存在")
+                    shutil.move(str(src), str(dest))
+                else:
+                    if src.is_dir():
+                        shutil.copytree(str(src), str(dest), dirs_exist_ok=False)
+                    else:
+                        shutil.copy2(str(src), str(dest))
+                invalidate_sizes(dest)
+            succeeded.append(str(src))
+        except Exception as e:
+            failed.append({"path": raw, "error": f"{type(e).__name__}: {str(e)[:160]}"})
+
+    return {
+        "success": not failed,
+        "action": req.action,
+        "succeeded": succeeded,
+        "failed": failed,
+        "count": len(succeeded),
+        "failed_count": len(failed),
+    }
 
 
 @fs.post("/delete")
