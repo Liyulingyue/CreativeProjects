@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { cloneElement, isValidElement, useEffect, useId, useRef, useState } from 'react';
 import { fetchSettings, updateSettings, testConnections, createProvider as apiCreateProvider, createEmbeddingProvider as apiCreateEmbProvider } from '../api';
 import { changePassword, checkAuthStatus } from '../auth';
 import { useToast } from './ui/Toast';
@@ -10,10 +10,17 @@ import { useEmbeddingProviders } from '../hooks/useEmbeddingProviders';
 interface ProbeResult { ok: boolean; detail?: string; latency_ms?: number; }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  // The label is tied to the control, not merely printed above it, so
+  // clicking the text focuses the field and a screen reader announces
+  // the two together.
+  const id = useId();
+  const control = isValidElement(children)
+    ? cloneElement(children as React.ReactElement<{ id?: string }>, { id })
+    : children;
   return (
     <div>
-      <label className="block text-sm font-medium text-slate-700 mb-1">{label}</label>
-      {children}
+      <label htmlFor={id} className="block text-sm font-medium text-slate-700 mb-1">{label}</label>
+      {control}
       {hint && <div className="text-xs text-slate-400 mt-1">{hint}</div>}
     </div>
   );
@@ -357,17 +364,27 @@ function EmbeddingProviderRow({
   return (
     <div className={`rounded-lg border ${provider.is_index ? 'border-violet-300 bg-violet-50/30' : 'border-slate-200 bg-white'} p-3`}>
       {editing ? (
-        <div className="space-y-2">
+        <div className="space-y-2.5">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            <input className={inputClass} placeholder="名称（仅显示用）" value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} />
-            <input className={inputClass} placeholder="模型名称" value={draft.model} onChange={e => setDraft({ ...draft, model: e.target.value })} />
+            <ProviderField label="名称" hint="仅显示用">
+              <input className={inputClass} placeholder="如 Indexer / Search" value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} />
+            </ProviderField>
+            <ProviderField label="模型名称" hint="发给接口的 model 字段">
+              <input className={inputClass} placeholder="如 bge-m3" value={draft.model} onChange={e => setDraft({ ...draft, model: e.target.value })} />
+            </ProviderField>
           </div>
-          <input className={inputClass} placeholder="Base URL（OpenAI 兼容）" value={draft.base_url} onChange={e => setDraft({ ...draft, base_url: e.target.value })} />
+          <ProviderField label="Base URL" hint="OpenAI 兼容接口">
+            <input className={inputClass} placeholder="http://127.0.0.1:9011/v1/embeddings" value={draft.base_url} onChange={e => setDraft({ ...draft, base_url: e.target.value })} />
+          </ProviderField>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            <input className={inputClass} placeholder="维度（AUTO 或具体数字，如 768）" value={draft.dim} onChange={e => setDraft({ ...draft, dim: e.target.value })} />
-            <input type="password" className={inputClass} placeholder="API Key（本地可留空）" value={draft.api_key} onChange={e => setDraft({ ...draft, api_key: e.target.value })} />
+            <ProviderField label="维度" hint="AUTO 由服务端探测，改维度要重建索引">
+              <input className={inputClass} placeholder="AUTO 或 768" value={draft.dim} onChange={e => setDraft({ ...draft, dim: e.target.value })} />
+            </ProviderField>
+            <ProviderField label="API Key" hint="本地服务可留空">
+              <input type="password" className={inputClass} placeholder="留空" value={draft.api_key} onChange={e => setDraft({ ...draft, api_key: e.target.value })} />
+            </ProviderField>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 pt-0.5">
             <button onClick={handleSave} disabled={busy}
               className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-700 disabled:opacity-40 transition-colors">
               {busy ? '保存中...' : '保存'}
@@ -460,17 +477,27 @@ function AddEmbeddingProviderForm({ onAdded, onCancel }: { onAdded: (p: Embeddin
   };
 
   return (
-    <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50/50 p-3 space-y-2">
+    <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50/50 p-3 space-y-2.5">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-        <input className={inputClass} placeholder="名称（仅显示用，如 Indexer / Search）" value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} autoFocus />
-        <input className={inputClass} placeholder="模型名称" value={draft.model} onChange={e => setDraft({ ...draft, model: e.target.value })} />
+        <ProviderField label="名称" hint="仅显示用">
+          <input className={inputClass} placeholder="如 Indexer / Search" value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} autoFocus />
+        </ProviderField>
+        <ProviderField label="模型名称" hint="发给接口的 model 字段">
+          <input className={inputClass} placeholder="如 bge-m3" value={draft.model} onChange={e => setDraft({ ...draft, model: e.target.value })} />
+        </ProviderField>
       </div>
-      <input className={inputClass} placeholder="Base URL（OpenAI 兼容，如 http://127.0.0.1:9011/v1/embeddings）" value={draft.base_url} onChange={e => setDraft({ ...draft, base_url: e.target.value })} />
+      <ProviderField label="Base URL" hint="OpenAI 兼容接口">
+        <input className={inputClass} placeholder="http://127.0.0.1:9011/v1/embeddings" value={draft.base_url} onChange={e => setDraft({ ...draft, base_url: e.target.value })} />
+      </ProviderField>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-        <input className={inputClass} placeholder="维度（AUTO 或具体数字，如 768）" value={draft.dim} onChange={e => setDraft({ ...draft, dim: e.target.value })} />
-        <input type="password" className={inputClass} placeholder="API Key（本地可留空）" value={draft.api_key} onChange={e => setDraft({ ...draft, api_key: e.target.value })} />
+        <ProviderField label="维度" hint="AUTO 由服务端探测，改维度要重建索引">
+          <input className={inputClass} placeholder="AUTO 或 768" value={draft.dim} onChange={e => setDraft({ ...draft, dim: e.target.value })} />
+        </ProviderField>
+        <ProviderField label="API Key" hint="本地服务可留空">
+          <input type="password" className={inputClass} placeholder="留空" value={draft.api_key} onChange={e => setDraft({ ...draft, api_key: e.target.value })} />
+        </ProviderField>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 pt-0.5">
         <button onClick={handleAdd} disabled={busy}
           className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-700 disabled:opacity-40 transition-colors">
           {busy ? '创建中...' : '创建'}
