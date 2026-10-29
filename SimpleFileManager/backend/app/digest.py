@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from . import db
 from .deps import DATA_DIR, get_storage_root, state
 
 log = logging.getLogger(__name__)
@@ -26,7 +27,7 @@ class DigestService:
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.db_path, check_same_thread=False)
+        return db.connect(self.db_path)
 
     def _init_db(self):
         conn = self._get_conn()
@@ -46,7 +47,7 @@ class DigestService:
 
     def _files_indexed_today(self) -> list[str]:
         today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-        conn = sqlite3.connect(self.manifest_db_path, check_same_thread=False)
+        conn = db.connect(self.manifest_db_path)
         try:
             rows = conn.execute(
                 "SELECT path FROM file_index WHERE indexed_at >= ? ORDER BY indexed_at DESC LIMIT ?",

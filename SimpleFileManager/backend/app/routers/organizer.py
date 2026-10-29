@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException
+from .. import db
 from ..models import SnapshotRecord, FileSnapshot, FileChange, Suggestion, CompareResponse
 from ..deps import state, get_storage_root
 
@@ -19,7 +20,7 @@ class OrganizerService:
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.db_path, check_same_thread=False)
+        return db.connect(self.db_path)
 
     def _init_db(self):
         conn = self._get_conn()

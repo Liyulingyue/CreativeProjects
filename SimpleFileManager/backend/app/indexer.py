@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from . import db
 from .chunking import DEFAULT_CHUNK_SIZE, DEFAULT_OVERLAP, chunk_file
 from .interaction import interaction
 from .deps import DATA_DIR, EMBED_CHUNK_BATCH, get_storage_root, state
@@ -132,12 +133,16 @@ class AutoIndexer:
         # pause with no automatic expiry.
         self._paused_until: Optional[float] = None
         self._failed: dict[str, str] = {}
+        # The manifest is written by the scanner and read by the digest
+        # service and the API. WAL keeps the readers out of the writer's
+        # way; this lock keeps two scans from writing it at once.
+        self._db_lock = db.DatabaseLock()
         self._init_db()
 
     # ---- manifest db ----
 
     def _get_conn(self) -> sqlite3.Connection:
-        return sqlite3.connect(self._db_path, check_same_thread=False)
+        return db.connect(self._db_path)
 
     def _init_db(self):
         conn = self._get_conn()
@@ -178,11 +183,14 @@ class AutoIndexer:
         rather than deleted-and-added. Hashes are populated lazily on
         first scan after the column was added.
         """
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT path, mtime, size, content_hash FROM file_index"
-        ).fetchall()
-        conn.close()
+        with self._db_lock:
+            conn = self._get_conn()
+            try:
+                rows = conn.execute(
+                    "SELECT path, mtime, size, content_hash FROM file_index"
+                ).fetchall()
+            finally:
+                conn.close()
         return {r[0]: (r[1], r[2], r[3]) for r in rows}
 
     def _compute_hash(self, abs_path: str) -> Optional[str]:
@@ -204,13 +212,16 @@ class AutoIndexer:
             return None
 
     def _set_hash(self, path: str, content_hash: Optional[str]):
-        conn = self._get_conn()
-        conn.execute(
-            "UPDATE file_index SET content_hash = ? WHERE path = ?",
-            (content_hash, path),
-        )
-        conn.commit()
-        conn.close()
+        with self._db_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE file_index SET content_hash = ? WHERE path = ?",
+                    (content_hash, path),
+                )
+                conn.commit()
+            finally:
+                conn.close()
 
     def _rename_manifest(self, old: str, new: str):
         """Rewrite path in the manifest. PK makes this atomic.
@@ -219,13 +230,16 @@ class AutoIndexer:
         file at the new path is bit-identical to the one at the old path,
         so all the indexing work still applies.
         """
-        conn = self._get_conn()
-        conn.execute(
-            "UPDATE file_index SET path = ? WHERE path = ?",
-            (new, old),
-        )
-        conn.commit()
-        conn.close()
+        with self._db_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE file_index SET path = ? WHERE path = ?",
+                    (new, old),
+                )
+                conn.commit()
+            finally:
+                conn.close()
 
     def _backfill_hashes(self, current: dict[str, tuple[float, int]],
                           known: dict[str, tuple[float, int, Optional[str]]]):
@@ -255,19 +269,27 @@ class AutoIndexer:
             known[path] = (mtime, size, digest)
             budget -= 1
         if to_update:
-            conn = self._get_conn()
-            conn.executemany(
-                "UPDATE file_index SET content_hash = ? WHERE path = ?",
-                to_update,
-            )
-            conn.commit()
-            conn.close()
+            with self._db_lock:
+                conn = self._get_conn()
+                try:
+                    conn.executemany(
+                        "UPDATE file_index SET content_hash = ? WHERE path = ?",
+                        to_update,
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
 
     def _vector_progress(self) -> dict[str, tuple[int, int]]:
         """path -> (chunks already embedded, total chunks)."""
-        conn = self._get_conn()
-        rows = conn.execute("SELECT path, vec_done, chunk_count, chunk_sig FROM file_index").fetchall()
-        conn.close()
+        with self._db_lock:
+            conn = self._get_conn()
+            try:
+                rows = conn.execute(
+                    "SELECT path, vec_done, chunk_count, chunk_sig FROM file_index"
+                ).fetchall()
+            finally:
+                conn.close()
         return {r[0]: (r[1], r[2], r[3]) for r in rows}
 
     def _stale_chunking(self, sig: str | None) -> bool:
@@ -281,38 +303,54 @@ class AutoIndexer:
         return sig != CHUNK_SIG
 
     def _record_files(self, records: list[tuple[str, float, int, int]]):
-        conn = self._get_conn()
-        now = int(time.time())
-        conn.executemany(
-            "INSERT OR REPLACE INTO file_index (path, mtime, size, indexed_at, chunk_count, chunk_sig) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            # vec_done is not carried on a re-index: a changed file restarts its
-            # vector pass from zero.
-            [(p, m, s, now, n, CHUNK_SIG) for p, m, s, n in records]
-        )
-        conn.commit()
-        conn.close()
+        with self._db_lock:
+            conn = self._get_conn()
+            now = int(time.time())
+            try:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO file_index (path, mtime, size, indexed_at, chunk_count, chunk_sig) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    # vec_done is not carried on a re-index: a changed file restarts its
+                    # vector pass from zero.
+                    [(p, m, s, now, n, CHUNK_SIG) for p, m, s, n in records]
+                )
+                conn.commit()
+            finally:
+                conn.close()
 
     def _set_vector_progress(self, path: str, done: int):
-        conn = self._get_conn()
-        conn.execute("UPDATE file_index SET vec_done = ? WHERE path = ?", (done, path))
-        conn.commit()
-        conn.close()
+        with self._db_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE file_index SET vec_done = ? WHERE path = ?", (done, path)
+                )
+                conn.commit()
+            finally:
+                conn.close()
 
     def _reset_vector_progress(self, path: str, chunk_count: int):
-        conn = self._get_conn()
-        conn.execute(
-            "UPDATE file_index SET vec_done = 0, chunk_count = ?, chunk_sig = ? WHERE path = ?",
-            (chunk_count, CHUNK_SIG, path),
-        )
-        conn.commit()
-        conn.close()
+        with self._db_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE file_index SET vec_done = 0, chunk_count = ?, chunk_sig = ? WHERE path = ?",
+                    (chunk_count, CHUNK_SIG, path),
+                )
+                conn.commit()
+            finally:
+                conn.close()
 
     def _remove_files(self, paths: list[str]):
-        conn = self._get_conn()
-        conn.executemany("DELETE FROM file_index WHERE path = ?", [(p,) for p in paths])
-        conn.commit()
-        conn.close()
+        with self._db_lock:
+            conn = self._get_conn()
+            try:
+                conn.executemany(
+                    "DELETE FROM file_index WHERE path = ?", [(p,) for p in paths]
+                )
+                conn.commit()
+            finally:
+                conn.close()
 
     # ---- lifecycle ----
 

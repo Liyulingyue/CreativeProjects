@@ -12,6 +12,7 @@ import httpx
 from dotenv import load_dotenv
 from .chunking import chunk_file
 from .interaction import interaction
+from . import db
 from .models import (
     AppSettings, IndexStats, IndexStatus, ChatSession, ChatMessage,
     AgentPlan, PlanAction, LLMProvider, EmbeddingProvider,
@@ -424,7 +425,7 @@ class ChatHistoryService:
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.db_path, check_same_thread=False)
+        return db.connect(self.db_path)
 
     def _init_db(self):
         with self._lock:
@@ -1154,7 +1155,7 @@ class PlanStore:
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.db_path, check_same_thread=False)
+        return db.connect(self.db_path)
 
     def _init_db(self):
         with self._lock:

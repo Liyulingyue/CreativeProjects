@@ -8,6 +8,7 @@ import logging
 import sqlite3
 from pathlib import Path
 
+from . import db
 from .chunking import chunk_file
 from .deps import DATA_DIR, state
 
@@ -21,10 +22,17 @@ MAX_HITS_PER_FILE = 3
 class HybridSearchEngine:
     def __init__(self, db_path: str):
         self.db_path = db_path
+        # The keyword index is written by the indexer thread and read
+        # by the API at the same time. SQLite keeps the file consistent
+        # on its own, but the sequences that read and then write -- the
+        # one that deletes a file's rows before inserting its new ones,
+        # the one that counts rows to decide whether the index is
+        # empty -- need to be indivisible.
+        self._lock = db.DatabaseLock()
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.db_path, check_same_thread=False)
+        return db.connect(self.db_path)
 
     def _init_db(self):
         conn = self._get_conn()
@@ -54,14 +62,20 @@ class HybridSearchEngine:
         """
         name = Path(path).name
         pieces = chunk_file(content)
-        conn = self._get_conn()
-        conn.execute("DELETE FROM fts_files WHERE path = ?", (path,))
-        conn.executemany(
-            "INSERT INTO fts_files (path, name, content, chunk_idx) VALUES (?, ?, ?, ?)",
-            [(path, name, text, idx) for idx, (_, text) in enumerate(pieces)],
-        )
-        conn.commit()
-        conn.close()
+        # The delete and the insert belong to one transaction, and the
+        # whole thing belongs to the lock: a reader that sees the file
+        # with no rows at all would report it as missing.
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute("DELETE FROM fts_files WHERE path = ?", (path,))
+                conn.executemany(
+                    "INSERT INTO fts_files (path, name, content, chunk_idx) VALUES (?, ?, ?, ?)",
+                    [(path, name, text, idx) for idx, (_, text) in enumerate(pieces)],
+                )
+                conn.commit()
+            finally:
+                conn.close()
 
     def indexed_file_names(self) -> list[str]:
         """Distinct file names present in the keyword index."""
@@ -81,10 +95,13 @@ class HybridSearchEngine:
         return row[0] if row else 0
 
     def remove_file(self, path: str):
-        conn = self._get_conn()
-        conn.execute("DELETE FROM fts_files WHERE path = ?", (path,))
-        conn.commit()
-        conn.close()
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute("DELETE FROM fts_files WHERE path = ?", (path,))
+                conn.commit()
+            finally:
+                conn.close()
 
     def rename_file(self, old: str, new: str):
         """Rewrite the path column for every chunk of a renamed file.
@@ -93,16 +110,22 @@ class HybridSearchEngine:
         unchanged. Cheaper than delete-then-upsert because the FTS5
         tree isn't rebuilt.
         """
-        conn = self._get_conn()
-        conn.execute("UPDATE fts_files SET path = ? WHERE path = ?", (new, old))
-        conn.commit()
-        conn.close()
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute("UPDATE fts_files SET path = ? WHERE path = ?", (new, old))
+                conn.commit()
+            finally:
+                conn.close()
 
     def clear(self):
-        conn = self._get_conn()
-        conn.execute("DELETE FROM fts_files")
-        conn.commit()
-        conn.close()
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute("DELETE FROM fts_files")
+                conn.commit()
+            finally:
+                conn.close()
 
     def count(self) -> int:
         conn = self._get_conn()
