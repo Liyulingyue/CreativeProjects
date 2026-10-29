@@ -142,9 +142,17 @@ class EmbeddingService:
 
 
 class LanceDBVectorStore:
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, dim: Optional[int] = None):
+        """Open (or create) the vector table.
+
+        `dim` fixes the width of the vector column. Left out, it is
+        taken from the index embedding provider, or probed from the
+        model -- which needs a running embedding service. A caller that
+        knows the width can say so instead, which is what the tests do.
+        """
         import lancedb
         self.db_path = db_path
+        self.dim = dim
         self.db = lancedb.connect(db_path)
         self._table = None
         self._ensure_table()
@@ -161,8 +169,11 @@ class LanceDBVectorStore:
             # indexer-side row). "AUTO" resolves to a probe of the
             # model. Known models short-circuit the probe so a cold
             # start without network still picks a sane dim.
-            idx = state.get_chat_history().get_index_embedding_provider()
-            dim = 0
+            dim = self.dim or 0
+            if not dim:
+                idx = state.get_chat_history().get_index_embedding_provider()
+            else:
+                idx = None
             if idx is not None:
                 dim_str = idx.dim or "AUTO"
                 if dim_str != "AUTO":

@@ -1,0 +1,6 @@
+# Development-only dependencies. The runtime ones are in requirements.txt.
+-r requirements.txt
+
+# The test suite. It was not installed anywhere, so the tests could not
+# be run at all -- which is the same as having no tests.
+pytest>=8.0.0

@@ -105,6 +105,10 @@ class TrashService:
         data_dir = entry_dir / DATA_DIR_NAME
         data_dir.mkdir(parents=True)
 
+        # Read before the move: afterwards the path is gone, and a
+        # directory would record itself as a file.
+        was_dir = target.is_dir()
+
         try:
             # The file keeps its name inside the entry, so a directory
             # that is restored comes back whole rather than as a
@@ -121,7 +125,7 @@ class TrashService:
             "rel_path": str(target.relative_to(self.storage_root)),
             "deleted_at": int(time.time()),
             "deleted_at_human": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "is_dir": target.is_dir(),
+            "is_dir": was_dir,
             "size": _dir_size(data_dir / target.name),
         }
         try:
