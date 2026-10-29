@@ -453,11 +453,16 @@ class AutoIndexStatus(BaseModel):
 
 class LoginRequest(BaseModel):
     password: str
+    # Empty means the administrator, so an installation that has only
+    # ever had one password needs no change.
+    username: str = ""
 
 
 class LoginResponse(BaseModel):
     token: str
     requires_auth: bool
+    username: str = ""
+    role: str = ""
 
 
 class ChangePasswordRequest(BaseModel):

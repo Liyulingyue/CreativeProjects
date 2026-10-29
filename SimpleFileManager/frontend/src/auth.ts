@@ -73,11 +73,14 @@ export async function checkAuthStatus(): Promise<{ requires_auth: boolean; has_p
   return res.json();
 }
 
-export async function login(password: string): Promise<{ token: string; requires_auth: boolean }> {
+export async function login(
+  password: string,
+  username = '',
+): Promise<{ token: string; requires_auth: boolean; username: string; role: string }> {
   const res = await fetch('/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password }),
+    body: JSON.stringify({ password, username }),
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));

@@ -5,6 +5,7 @@ import time
 import sqlite3
 import threading
 import uuid
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Optional
 
@@ -12,6 +13,7 @@ from dotenv import load_dotenv
 from .chunking import chunk_file
 from .interaction import interaction
 from . import db
+from .users import USERS_DB_NAME
 from .versions import VERSIONS_DIR_NAME
 from .models import (
     AppSettings, IndexStats, IndexStatus, ChatSession, ChatMessage,
@@ -1152,20 +1154,125 @@ def get_storage_root() -> Path:
     return (BASE_DIR / state.get_settings().storage_path).resolve()
 
 
+class PathNotAllowed(Exception):
+    """The caller may not reach the path they asked for."""
+
+
 class PathOutsideRoot(Exception):
     pass
 
 
-def resolve_under_root(path: str) -> Path:
-    """Resolve a user/agent supplied path and guarantee it stays inside the storage root."""
+def resolve_under_root(path: str, mode: str = "read") -> Path:
+    """Resolve a supplied path and guarantee it stays inside the storage root.
+
+    Also checks that the caller may reach it. Every route that touches a
+    file goes through here, so this is where a permission is enforced
+    rather than in each route that might forget.
+
+    `mode` is "read" or "write". A write grant implies a read one.
+    """
     root = get_storage_root()
     clean = (path or "").strip()
     if clean in ("", "."):
-        return root
-    target = (root / clean).resolve()
-    if not target.is_relative_to(root):
-        raise PathOutsideRoot(path)
+        target = root
+    else:
+        target = (root / clean).resolve()
+        if not target.is_relative_to(root):
+            raise PathOutsideRoot(path)
+    check_access(target, mode)
     return target
+
+
+# The user the current request is being served for. Set by the auth
+# dependency, read by the access checks.
+_current_user: ContextVar[Optional[dict]] = ContextVar("current_user", default=None)
+
+
+def set_current_user(user: Optional[dict]):
+    """Remember who is being served, for the access checks."""
+    _current_user.set(user)
+
+
+def current_user() -> Optional[dict]:
+    """The user being served, or None when the service is open."""
+    return _current_user.get()
+
+
+def effective_permission(relative_path: str, grants: list[tuple[str, str]]) -> Optional[str]:
+    """The grant that applies to a path.
+
+    A grant on a directory covers everything under it, and the most
+    specific grant for a path is the one that counts -- so a grant on
+    "photos/2024" beats a grant on "photos".
+    """
+    rel = (relative_path or "").strip().strip("/")
+    best = None
+    best_depth = -1
+    for grant_path, permission in grants:
+        g = (grant_path or "").strip().strip("/")
+        if g == "":
+            matches = True
+        else:
+            matches = rel == g or rel.startswith(g + "/")
+        if not matches:
+            continue
+        depth = len(g)
+        if depth >= best_depth:
+            best = permission
+            best_depth = depth
+    return best
+
+
+def check_access(target: Path, mode: str = "read") -> None:
+    """Refuse a path the caller may not reach.
+
+    The administrator may reach everything, and so may anyone when the
+    service has no users set up at all -- a single-password
+    installation must keep working the way it always did.
+    """
+    user = current_user()
+    if user is None:
+        return
+    if user.get("role") == "admin":
+        return
+
+    store = state.get_user_store()
+    grants = store.permissions_for(user["id"])
+    if not grants:
+        raise PathNotAllowed("没有访问这个位置的权限")
+
+    root = get_storage_root().resolve()
+    try:
+        relative = str(Path(target).resolve().relative_to(root))
+    except ValueError:
+        raise PathNotAllowed("没有访问这个位置的权限")
+
+    permission = effective_permission(relative, grants)
+    if permission is None:
+        raise PathNotAllowed("没有访问这个位置的权限")
+    if mode == "write" and permission != "write":
+        raise PathNotAllowed("这个位置是只读的")
+
+
+def can_access(target: Path, mode: str = "read") -> bool:
+    """Whether the caller may reach a path. Never raises."""
+    try:
+        check_access(target, mode)
+        return True
+    except PathNotAllowed:
+        return False
+
+
+def visible_children(target: Path, entries: list[Path]) -> list[Path]:
+    """The entries of a directory the caller is allowed to see.
+
+    A user granted access to one folder should not see the names of
+    the others in the folder above it.
+    """
+    user = current_user()
+    if user is None or user.get("role") == "admin":
+        return entries
+    return [e for e in entries if can_access(e, "read")]
 
 
 def validate_plan_action(action: dict) -> Optional[str]:
@@ -1418,6 +1525,7 @@ class AppState:
         self._plan_store: Optional[PlanStore] = None
         self._share_store = None
         self._version_store = None
+        self._user_store = None
         self._load()
 
     def _load(self):
@@ -1797,6 +1905,14 @@ class AppState:
 
             self._version_store = VersionStore(DATA_DIR / VERSIONS_DIR_NAME)
         return self._version_store
+
+    def get_user_store(self):
+        """The users and their grants."""
+        if self._user_store is None:
+            from .users import UserStore
+
+            self._user_store = UserStore(str(DATA_DIR / USERS_DB_NAME))
+        return self._user_store
 
     def get_share_store(self):
         """The shares table.

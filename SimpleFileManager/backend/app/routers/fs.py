@@ -11,7 +11,10 @@ from fastapi import APIRouter, HTTPException, UploadFile, File, Request
 from pydantic import BaseModel
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
-from ..deps import state, get_storage_root, resolve_under_root, PathOutsideRoot
+from ..deps import (
+    state, get_storage_root, resolve_under_root, PathOutsideRoot,
+    PathNotAllowed, check_access, visible_children,
+)
 from ..models import (
     BrowseResult,
     CreateFolderRequest,
@@ -85,6 +88,9 @@ def _safe_path(base: str, target: str) -> Path:
     target_path = Path(target).resolve()
     if not target_path.is_relative_to(base_path):
         raise HTTPException(status_code=400, detail="Path outside storage root")
+    # The same permission check the other routes go through, so a path
+    # cannot be reached by going around it.
+    check_access(target_path, "read")
     return target_path
 
 
@@ -125,9 +131,15 @@ def browse(path: Optional[str] = None) -> BrowseResult:
     dirs_count = 0
     files_count = 0
 
-    for entry in sorted(target.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
-        if entry.name.startswith('.'):
-            continue
+    entries = [
+        e for e in sorted(target.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+        if not e.name.startswith('.')
+    ]
+    # A user who may reach one folder should not see the names of the
+    # others beside it.
+    entries = visible_children(target, entries)
+
+    for entry in entries:
         try:
             node = _path_to_filenode(entry)
             items.append(node)
@@ -155,6 +167,7 @@ def browse(path: Optional[str] = None) -> BrowseResult:
 def create_folder(req: CreateFolderRequest) -> FileOperation:
     storage_path = str(get_storage_root())
     target = _safe_path(storage_path, Path(req.path) / req.name)
+    check_access(target, "write")
 
     try:
         target.mkdir(parents=True, exist_ok=False)
@@ -171,6 +184,8 @@ def move(req: MoveRequest) -> FileOperation:
     storage_path = str(get_storage_root())
     src = _safe_path(storage_path, req.src)
     dest = _safe_path(storage_path, req.dest)
+    check_access(src, "write")
+    check_access(dest, "write")
 
     if not src.exists():
         raise HTTPException(status_code=404, detail="Source not found")
@@ -189,6 +204,7 @@ def copy(req: MoveRequest) -> FileOperation:
     storage_path = str(get_storage_root())
     src = _safe_path(storage_path, req.src)
     dest = _safe_path(storage_path, req.dest)
+    check_access(dest, "write")
 
     if not src.exists():
         raise HTTPException(status_code=404, detail="Source not found")
@@ -243,8 +259,13 @@ def batch(req: BatchRequest) -> dict:
     for raw in req.paths:
         try:
             src = _safe_path(storage_path, raw)
+            if req.action != "delete":
+                check_access(src, "write")
         except HTTPException as e:
             failed.append({"path": raw, "error": str(e.detail)})
+            continue
+        except PathNotAllowed as e:
+            failed.append({"path": raw, "error": str(e)})
             continue
         if not src.exists():
             failed.append({"path": raw, "error": "文件不存在"})
@@ -299,6 +320,7 @@ def delete(req: DeleteRequest) -> FileOperation:
     """
     storage_path = str(get_storage_root())
     target = _safe_path(storage_path, req.path)
+    check_access(target, "write")
 
     if not target.exists():
         raise HTTPException(status_code=404, detail="Path not found")
@@ -417,9 +439,14 @@ def get_tree(path: Optional[str] = None, depth: int = 2) -> dict:
                 return {"name": p.name, "path": str(p), "is_dir": False}
         children = []
         try:
-            for child in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
-                if child.name.startswith('.'):
-                    continue
+            entries = [
+                c for c in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+                if not c.name.startswith('.')
+            ]
+            # The tree shows the same things the listing does: only what
+            # the caller may reach.
+            entries = visible_children(p, entries)
+            for child in entries:
                 try:
                     children.append(build_tree(child, current_depth + 1))
                 except (PermissionError, OSError):
@@ -588,7 +615,7 @@ async def upload_files(path: str = "", files: list[UploadFile] = File(...),
     replacing it is how a day's work disappears without a word.
     """
     try:
-        target_dir = resolve_under_root(path)
+        target_dir = resolve_under_root(path, "write")
     except PathOutsideRoot:
         raise HTTPException(status_code=400, detail="Path outside storage root")
     if not target_dir.is_dir():
@@ -639,7 +666,7 @@ def _upload_manager() -> uploads.UploadManager:
 def upload_init(path: str = "", name: str = "", size: int = 0, total_chunks: int = 0):
     """Begin an upload and ask what is already at the destination."""
     try:
-        target_dir = resolve_under_root(path)
+        target_dir = resolve_under_root(path, "write")
     except PathOutsideRoot:
         raise HTTPException(status_code=400, detail="Path outside storage root")
     if not target_dir.is_dir():

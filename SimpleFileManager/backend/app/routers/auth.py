@@ -10,6 +10,7 @@ import hmac
 import secrets
 import time
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -17,6 +18,10 @@ from pydantic import BaseModel
 
 from ..deps import DATA_DIR, state, _load_json, _save_json
 from ..models import LoginRequest, LoginResponse, ChangePasswordRequest, AuthStatus
+
+# The account the single password became. A deployment that has one
+# password keeps one administrator, so nothing about it changes.
+ADMIN_USERNAME = "admin"
 
 auth = APIRouter()
 
@@ -66,11 +71,20 @@ def verify_password(password: str) -> bool:
     return _hash_password(password, data["salt"]) == data["password_hash"]
 
 
-def issue_token() -> str:
+def issue_token(username: str = "") -> str:
+    """Issue a session token.
+
+    The token carries the name of the user it belongs to, so a request
+    can be served as that user rather than as whoever happens to be
+    logged in.
+    """
     token = _generate_token()
     data = _load_auth()
     data.setdefault("tokens", {})
-    data["tokens"][token] = time.time() + TOKEN_TTL
+    data["tokens"][token] = {
+        "username": username,
+        "expires": time.time() + TOKEN_TTL,
+    }
     _save_auth(data)
     return token
 
@@ -82,16 +96,33 @@ def revoke_token(token: str):
 
 
 def is_valid_token(token: str) -> bool:
+    return token_user(token) is not None
+
+
+def token_user(token: str) -> Optional[str]:
+    """The user a token belongs to, or None if it is no good.
+
+    Tokens issued before there were users carry only an expiry; they
+    belong to the administrator, which is who the single password was.
+    """
     data = _load_auth()
     tokens = data.get("tokens", {})
-    expiry = tokens.get(token)
-    if not expiry:
-        return False
-    if time.time() > expiry:
+    entry = tokens.get(token)
+    if entry is None:
+        return None
+    if isinstance(entry, (int, float)):
+        # The old format: an expiry and nothing else.
+        if time.time() > entry:
+            tokens.pop(token, None)
+            _save_auth(data)
+            return None
+        return ADMIN_USERNAME
+    expires = entry.get("expires", 0)
+    if time.time() > expires:
         tokens.pop(token, None)
         _save_auth(data)
-        return False
-    return True
+        return None
+    return entry.get("username") or ADMIN_USERNAME
 
 
 def _stream_secret() -> bytes:
@@ -131,18 +162,66 @@ def verify_stream_token(path: str, token: str) -> bool:
     return hmac.compare_digest(signature, expected)
 
 
-def get_current_auth(request: Request, credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
-    """Dependency: returns token string if auth is disabled or token is valid.
-    Raises 401 if auth is enabled but token is missing/invalid.
+async def get_current_auth(request: Request, credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
+    """Dependency: the user being served, if the token is any good.
+
+    Raises 401 if auth is enabled but the token is missing or invalid.
     """
+    from ..deps import set_current_user
+
     if not is_auth_enabled():
+        set_current_user(None)
         return None
     if not credentials:
         raise HTTPException(status_code=401, detail="Not authenticated")
     token = credentials.credentials
-    if not is_valid_token(token):
+    username = token_user(token)
+    if username is None:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-    return token
+
+    user = _lookup_user(username)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    if user.get("disabled"):
+        raise HTTPException(status_code=401, detail="这个账号已被停用")
+    set_current_user(user)
+    return username
+
+
+def _single_password_matches(password: str) -> bool:
+    """Whether the password is the service's single password."""
+    try:
+        return verify_password(password)
+    except Exception:
+        return False
+
+
+def _ensure_admin(password: str) -> Optional[dict]:
+    """Turn the single password into an administrator account.
+
+    A deployment that has had one password since before there were
+    users gets an administrator called "admin" with that same password,
+    the first time anybody logs in. Nothing about it changes.
+    """
+    from ..users import ROLE_ADMIN
+
+    try:
+        store = state.get_user_store()
+        existing = store.get_by_username(ADMIN_USERNAME)
+        if existing is not None:
+            return existing
+        return store.create_user(ADMIN_USERNAME, password, role=ROLE_ADMIN)
+    except Exception:
+        return None
+
+
+def _lookup_user(username: str) -> Optional[dict]:
+    from ..deps import state
+
+    try:
+        return state.get_user_store().get_by_username(username)
+    except Exception:
+        return None
 
 
 @auth.get("/status", response_model=AuthStatus)
@@ -154,6 +233,32 @@ def auth_status():
 
 @auth.post("/login", response_model=LoginResponse)
 def login(req: LoginRequest):
+    """Log in.
+
+    The username is optional for the administrator, so an installation
+    that has only ever had one password still works the way it did.
+    """
+    username = (getattr(req, "username", "") or "").strip() or ADMIN_USERNAME
+    user = None
+    try:
+        store = state.get_user_store()
+        user = store.verify(username, req.password)
+        if user is None:
+            # The account may not exist yet -- the single password
+            # becomes the administrator on first use.
+            if not store.list_users() and _single_password_matches(req.password):
+                user = _ensure_admin(req.password)
+    except Exception:
+        user = None
+    if user is None:
+        raise HTTPException(status_code=401, detail="用户名或密码不正确")
+    token = issue_token(user["username"])
+    return LoginResponse(
+        token=token,
+        requires_auth=True,
+        username=user["username"],
+        role=user["role"],
+    )
     if not is_auth_enabled():
         return LoginResponse(token=_generate_token(), requires_auth=False)
     if not verify_password(req.password):

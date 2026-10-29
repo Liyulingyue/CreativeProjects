@@ -11,12 +11,14 @@ from .routers import fs, search, settings, rag, chat, chat_history_router, agent
 
 bearer_scheme = HTTPBearer(auto_error=False)
 from .routers.auth import is_auth_enabled, set_password, verify_stream_token
+from .deps import PathNotAllowed
 from .indexer import indexer
 from .auto_digest import auto_digest
 from .routers import providers as providers_router  # noqa: E402
 from .routers import embedding_providers as embedding_providers_router  # noqa: E402
 from .routers.shares import shares as shares_router  # noqa: E402
 from .routers.share_public import share_public as share_public_router  # noqa: E402
+from .routers.users import users as users_router  # noqa: E402
 
 # Before anything else, so the modules imported below log into the
 # configured handlers rather than the root logger's default.
@@ -62,7 +64,7 @@ app.add_middleware(
 )
 
 
-def fs_auth(request: Request, credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
+async def fs_auth(request: Request, credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
     """Authorise a file request.
 
     A media element cannot send an Authorization header, so a file can
@@ -76,7 +78,13 @@ def fs_auth(request: Request, credentials: HTTPAuthorizationCredentials = Depend
         path = request.query_params.get("path", "")
         if verify_stream_token(path, stream_token):
             return {"ok": True, "via": "stream-token"}
-    return get_current_auth(request, credentials)
+    return await get_current_auth(request, credentials)
+
+
+@app.exception_handler(PathNotAllowed)
+async def path_not_allowed_handler(request: Request, exc: PathNotAllowed):
+    """Somebody asked for something they may not reach."""
+    return JSONResponse(status_code=403, content={"detail": str(exc) or "没有访问这个位置的权限"})
 
 
 @app.middleware("http")
@@ -155,3 +163,4 @@ app.include_router(shares_router, prefix="/api/shares", tags=["shares"], depende
 # auth dependency. Everything that could make it unsafe is handled by
 # the rules on the share itself.
 app.include_router(share_public_router, prefix="/api/share", tags=["share"])
+app.include_router(users_router, prefix="/api/users", tags=["users"], dependencies=[auth_dep])

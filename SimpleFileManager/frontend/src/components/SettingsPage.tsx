@@ -6,6 +6,7 @@ import { Icon } from './ui/Icon';
 import type { AppSettings, EmbeddingProvider, EmbeddingProviderCreate, EmbeddingProviderUpdate, LLMProvider, LLMProviderCreate, LLMProviderUpdate } from '../types';
 import { useProviders } from '../hooks/useProviders';
 import { useEmbeddingProviders } from '../hooks/useEmbeddingProviders';
+import { UsersPanel } from './UsersPanel';
 
 interface ProbeResult { ok: boolean; detail?: string; latency_ms?: number; }
 
@@ -746,6 +747,20 @@ export function SettingsPage() {
                 </p>
               </div>
             </div>
+          </Card>
+
+          {/* ---- 用户与权限 ---- */}
+          <div className="flex items-center gap-3 pt-2">
+            <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">用户与权限</h2>
+            <div className="flex-1 h-px bg-slate-200" />
+          </div>
+
+          <Card icon="shield" tone="text-indigo-500" title="用户与目录权限">
+            <p className="text-xs text-slate-400 mb-3">
+              每个人有自己的账号和密码。管理员能访问全部文件；普通用户只能看到被授予的目录。
+              对某个目录的授权对它下面的所有内容都有效，最精确的那条授权算数。
+            </p>
+            <UsersPanel />
           </Card>
 
           {/* ---- 索引与自动化 ---- */}

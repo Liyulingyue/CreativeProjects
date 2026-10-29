@@ -7,6 +7,7 @@ interface LoginPageProps {
 }
 
 export function LoginPage({ onLogin }: LoginPageProps) {
+  const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -32,7 +33,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
     if (!password.trim() || loading) return;
     setLoading(true); setError(null);
     try {
-      const result = await login(password);
+      const result = await login(password, username.trim());
       setToken(result.token);
       setAuthEnabled(result.requires_auth);
       onLogin();
@@ -61,11 +62,22 @@ export function LoginPage({ onLogin }: LoginPageProps) {
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <input
+                type="text"
+                value={username}
+                onChange={e => setUsername(e.target.value)}
+                placeholder="用户名"
+                autoComplete="username"
+                className="w-full px-4 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 transition-all"
+              />
+            </div>
+            <div>
+              <input
                 type="password"
                 value={password}
                 onChange={e => setPassword(e.target.value)}
                 autoFocus
                 placeholder="密码"
+                autoComplete="current-password"
                 className="w-full px-4 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 transition-all"
               />
             </div>
