@@ -4,14 +4,16 @@ Falls back to a plain listing when the LLM is unavailable, so the digest is
 always produced.
 """
 
+import logging
 import sqlite3
 import time
-import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from .deps import DATA_DIR, get_storage_root, state
+
+log = logging.getLogger(__name__)
 
 MAX_FILES_PER_DIGEST = 40
 PREVIEW_CHARS = 400
@@ -114,7 +116,7 @@ class DigestService:
             )
             return result.get("content")
         except Exception:
-            traceback.print_exc()
+            log.exception("daily digest composition failed")
             return None
 
     def _fallback_compose(self, date: str, items: list[dict]) -> str:

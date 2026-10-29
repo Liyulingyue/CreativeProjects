@@ -5,14 +5,16 @@ Two modes:
 - interval: generate every N hours since last generation
 """
 
+import logging
 import threading
 import time
-import traceback
 from datetime import datetime, timedelta
 from typing import Optional
 
 from .deps import state
 from .digest import digest_service
+
+log = logging.getLogger(__name__)
 
 
 class AutoDigestScheduler:
@@ -36,7 +38,7 @@ class AutoDigestScheduler:
             try:
                 self._tick()
             except Exception:
-                traceback.print_exc()
+                log.exception("scheduled digest failed")
 
     def _tick(self):
         settings = state.get_settings()

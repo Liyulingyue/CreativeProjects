@@ -13,7 +13,6 @@ import os
 import sqlite3
 import threading
 import time
-import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -346,7 +345,7 @@ class AutoIndexer:
         try:
             self.scan()
         except Exception:
-            traceback.print_exc()
+            log.exception("indexer tick failed")
         finally:
             self._scan_lock.release()
             self._scan_thread = None
@@ -356,7 +355,7 @@ class AutoIndexer:
             try:
                 self._tick()
             except Exception:
-                traceback.print_exc()
+                log.exception("indexer scan failed")
 
     def pause(self, seconds: int = 0):
         """Pause indexing.
@@ -622,16 +621,16 @@ class AutoIndexer:
                         try:
                             self._rename_manifest(old, new)
                         except Exception:
-                            traceback.print_exc()
+                            log.exception("keyword indexing failed for a file")
                             continue
                         try:
                             search_engine.rename_file(old, new)
                         except Exception:
-                            traceback.print_exc()
+                            log.exception("vectorising a file failed")
                         try:
                             rag_svc.vector_store.rename_file(old, new)
                         except Exception:
-                            traceback.print_exc()
+                            log.exception("indexing a file failed")
                         # Reflect the rename in the in-memory cache so the
                         # rest of the scan sees `new` as up-to-date.
                         known.pop(old, None)
@@ -670,7 +669,7 @@ class AutoIndexer:
                         indexed += 1
                     except Exception:
                         failed += 1
-                        traceback.print_exc()
+                        log.exception("indexing a file failed")
             if records:
                 self._record_files(records)
 
@@ -716,7 +715,7 @@ class AutoIndexer:
                     try:
                         rag_svc.vector_store.delete_by_file(path)
                     except Exception:
-                        traceback.print_exc()
+                        log.exception("vectorising a file failed")
                     self._reset_vector_progress(path, total)
                     progress[path] = (0, total)
                     done = 0
@@ -757,7 +756,7 @@ class AutoIndexer:
                         self._set_vector_progress(path, new_done)
                         self._vector_partial[path] = new_done
                 except Exception:
-                    traceback.print_exc()
+                    log.exception("reading a file for indexing failed")
                 if stop_outer:
                     break
 
@@ -766,11 +765,11 @@ class AutoIndexer:
                     try:
                         rag_svc.vector_store.delete_by_file(p)
                     except Exception:
-                        traceback.print_exc()
+                        log.exception("writing the index manifest failed")
                     try:
                         search_engine.remove_file(p)
                     except Exception:
-                        traceback.print_exc()
+                        log.exception("removing a file from the index failed")
                 self._remove_files(removed)
 
             self._last_scan_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")

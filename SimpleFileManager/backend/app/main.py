@@ -1,13 +1,24 @@
 from contextlib import asynccontextmanager
 import os
-from fastapi import FastAPI, Depends
+import time
+from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from .logging_setup import setup_logging, start_request_id, request_id
 from .routers import fs, search, settings, rag, chat, chat_history_router, agent, organizer, plans, digest, auth, get_current_auth
 from .routers.auth import is_auth_enabled, set_password
 from .indexer import indexer
 from .auto_digest import auto_digest
 from .routers import providers as providers_router  # noqa: E402
 from .routers import embedding_providers as embedding_providers_router  # noqa: E402
+
+# Before anything else, so the modules imported below log into the
+# configured handlers rather than the root logger's default.
+setup_logging()
+
+import logging  # noqa: E402
+
+log = logging.getLogger(__name__)
 
 
 def _init_auth():
@@ -25,9 +36,11 @@ def _init_auth():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _init_auth()
+    log.info("starting: indexer and digest scheduler coming up")
     indexer.start()
     auto_digest.start()
     yield
+    log.info("shutting down: stopping indexer and digest scheduler")
     indexer.stop()
     auto_digest.stop()
 
@@ -42,13 +55,60 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def request_context(request: Request, call_next):
+    """Give every request an id and a line in the log.
+
+    Without this a slow request leaves no trace: the access log says
+    which URL was called but not how long it took, and nothing at all
+    links a log line to the request that produced it.
+    """
+    rid = request.headers.get("x-request-id") or None
+    start_request_id(rid)
+    started = time.monotonic()
+    try:
+        response = await call_next(request)
+    except Exception:
+        elapsed = int((time.monotonic() - started) * 1000)
+        log.exception(
+            "%s %s -> unhandled after %dms", request.method, request.url.path, elapsed
+        )
+        raise
+    elapsed = int((time.monotonic() - started) * 1000)
+    response.headers["X-Request-ID"] = request_id()
+    level = logging.WARNING if response.status_code >= 500 else logging.INFO
+    client = request.client.host if request.client else "-"
+    log.log(
+        level,
+        "%s %s %s -> %d in %dms",
+        client,
+        request.method,
+        request.url.path,
+        response.status_code,
+        elapsed,
+    )
+    return response
+
+
 # Auth router is public (no dependency)
 app.include_router(auth, prefix="/api/auth", tags=["auth"])
+
 
 # Health check is public
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "app": "SimpleFileManager", "version": "0.4.0"}
+    """Report whether the things this service depends on are actually up.
+
+    A static "ok" is worse than no endpoint at all: it looks like a
+    monitor is watching and reports green while the database is locked
+    and the disk is full.
+    """
+    from .health import check_health
+    report = check_health()
+    status = 200 if report["status"] == "ok" else 503
+    return JSONResponse(report, status_code=status)
+
 
 # All other routers require auth
 auth_dep = Depends(get_current_auth)

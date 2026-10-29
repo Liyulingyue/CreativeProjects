@@ -28,7 +28,8 @@
 # EMB_CPUSET environment variables before --start llm. Embedding model
 # choice and dim are picked up from .env (EMBEDDING_MODEL / EMBEDDING_DIM).
 #
-# Logs: logs/{backend,frontend}.log   Pids: logs/{backend,frontend,llm}.pid
+# Logs: logs/backend.log (rotated), logs/backend.console.log, logs/frontend.log
+# Pids: logs/{backend,frontend,llm}.pid
 #
 set -u
 
@@ -186,14 +187,19 @@ start_backend() {
         # backend/, so ../data keeps dev and docker on the same files.
         # Reload off: it spawns a supervisor+worker, so the recorded pid would
         # not be the process holding the port.
-        BACKEND_RELOAD=0 exec .venv/bin/python run.py
-    ) > "$LOG_DIR/backend.log" 2>&1 &
+        #
+        # The app writes its own rotated log to backend.log, and also to
+        # stdout for docker. stdout is dropped here so the two do not
+        # duplicate each other; stderr still lands in a console file,
+        # which catches whatever bypassed the logging system.
+        BACKEND_RELOAD=0 LOG_FILE="$LOG_DIR/backend.log" exec .venv/bin/python run.py
+    ) > /dev/null 2> "$LOG_DIR/backend.console.log" &
     echo $! > "$BACKEND_PID"
     if wait_for_port "$BACKEND_PORT" "$BACKEND_PID" 40; then
         c_green "  up on :$BACKEND_PORT (PID $(cat "$BACKEND_PID"))"
         return 0
     fi
-    fail_with_log "backend" "$LOG_DIR/backend.log" "$BACKEND_PID"
+    fail_with_log "backend" "$LOG_DIR/backend.console.log" "$BACKEND_PID"
 }
 
 start_frontend() {
@@ -295,7 +301,7 @@ Notes:
     FRONTEND_PORT=<n>. Backend port: BACKEND_PORT=<n> (default 8000).
   - run.py honours BACKEND_PORT and BACKEND_RELOAD=0 disables hot reload.
 
-Logs: $LOG_DIR/{backend,frontend}.log
+Logs: $LOG_DIR/backend.log (rotated), $LOG_DIR/{backend.console,frontend}.log
 Pids:  $LOG_DIR/{backend,frontend}.pid
 EOF
 }
