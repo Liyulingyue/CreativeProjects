@@ -5,7 +5,11 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./data:/data
+      # The same directory the development stack uses. The two used to
+      # point at different places -- compose at ./data, the dev server
+      # at backend/data -- so switching between them looked like
+      # losing the index and the settings.
+      - ./backend/data:/data
     environment:
       - STORAGE_PATH=/data
       - INIT_PASSWORD=${INIT_PASSWORD:-}

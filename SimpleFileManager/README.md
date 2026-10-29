@@ -89,7 +89,7 @@ docker compose up -d
 
 # 3. 访问
 # http://localhost         前端 + API
-# 数据持久化在 ./data/
+# 数据持久化在 backend/data/（与本地开发同一份）
 ```
 
 ### 方式二：本地开发
@@ -298,9 +298,9 @@ BACKUP_DIR=/mnt/backup/sfm python3 scripts/backup.py
 | `.env` | 实际配置（Docker 自动读；开发模式经 `backend/.env` 软链读取） | ❌ gitignore |
 | `.env.example` | 配置模板，含全部可用变量与默认值说明 | ✅ |
 | `backend/.env` | 指向 `../.env` 的软链，让 `python-dotenv` 在 `backend/` 下工作 | ❌ |
-| `data/.simplefilemanager/settings.json` | 设置页保存的运行时配置，优先级高于 `.env` | ❌ |
+| `backend/data/.simplefilemanager/settings.json` | 设置页保存的运行时配置，优先级高于 `.env` | ❌ |
 
-### 程序数据（全部在 `data/.simplefilemanager/`，gitignore）
+### 程序数据（全部在 `backend/data/.simplefilemanager/`，gitignore）
 
 | 文件 | 内容 | 删掉的后果 |
 |------|------|-----------|
@@ -331,7 +331,7 @@ BACKUP_DIR=/mnt/backup/sfm python3 scripts/backup.py
 
 迁移机器或重装时，只需带走：
 
-1. `data/` 整个目录（含用户文件和 `.simplefilemanager/`）
+1. `backend/data/` 整个目录（含用户文件和 `.simplefilemanager/`）
 2. `.env`（如果不想重新填 API Key）
 
 `LLMServices/models/` 可以不带走——模型文件通常单独存放或从源重新下载。
@@ -343,7 +343,7 @@ SimpleFileManager/
 ├── docker-compose.yml        # Docker 编排
 ├── run_dev.sh                # 开发栈管理（start/stop/status/restart）
 ├── .env.example              # 配置模板
-├── data/                     # 用户文件 + 程序数据（gitignore）
+├── backend/data/              # 用户文件 + 程序数据（gitignore）
 │   └── .simplefilemanager/
 │       ├── vector_db/        # LanceDB 向量库
 │       ├── search.db         # FTS5 关键词索引

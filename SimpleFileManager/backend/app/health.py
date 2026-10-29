@@ -66,8 +66,13 @@ def _check_disk(path: Path) -> dict:
 
 
 def _check_http(url: str, timeout: float = 2.0) -> dict:
-    """Reach an endpoint and see whether it answers."""
-    import httpx
+    """Reach an endpoint and see whether it answers.
+
+    The httpx2 package is the one the OpenAI SDK already pulls in, so
+    using it here means the service depends on one HTTP client rather
+    than two.
+    """
+    import httpx2 as httpx
 
     started = time.monotonic()
     try:

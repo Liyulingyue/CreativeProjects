@@ -6,8 +6,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# The pinned versions, not the ranges. A rebuild six months from now
+# with loose requirements would pick up whatever the packages have
+# become since -- lancedb alone has gone from 0.15 to 0.40.
+COPY requirements.lock .
+RUN pip install --no-cache-dir -r requirements.lock
 
 COPY . .
 

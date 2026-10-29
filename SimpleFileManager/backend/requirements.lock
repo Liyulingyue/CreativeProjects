@@ -1,0 +1,62 @@
+# Pinned versions of everything the backend depends on.
+#
+# requirements.txt says what the code needs; this says what it was
+# actually tested with. Every version there is a floor, so a rebuild
+# six months from now would pick up whatever the packages have become
+# since -- lancedb alone has gone from 0.15 to 0.40, which is twenty
+# five minor versions of a storage library.
+#
+# Install this one for a deployment:
+#
+#     pip install -r requirements.lock
+#
+# requirements-dev.txt is the same, plus the test runner.
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+certifi==2026.7.22
+click==8.5.0
+deprecation==2.1.0
+fastapi==0.143.0
+h11==0.16.0
+httpcore==1.0.9
+httpcore2==2.13.1
+httptools==0.9.0
+httpx2==2.13.1
+idna==3.20
+iniconfig==2.3.1
+jiter==0.17.0
+lancedb==0.40.0
+lance-namespace==0.13.0
+lance-namespace-urllib3-client==0.13.0
+lxml==6.1.3
+numpy==2.4.6
+openai==3.31.0
+opentelemetry-api==1.45.1
+overrides==7.7.0
+packaging==26.3
+pluggy==1.7.0
+pyarrow==26.0.0
+pydantic==2.14.1
+pydantic_core==2.50.1
+Pygments==2.21.0
+pylance==14.0.2
+pypdf==6.20.1
+pytest==9.2.0
+python-dateutil==2.9.0.post0
+python-docx==1.2.0
+python-dotenv==1.2.4
+python-multipart==0.0.32
+PyYAML==6.0.3
+six==1.17.0
+sniffio==1.3.1
+starlette==1.8.0
+tqdm==4.70.1
+truststore==0.10.5
+typing_extensions==4.16.0
+typing-inspection==0.4.4
+urllib3==2.8.0
+uvicorn==0.54.0
+uvloop==0.23.0
+watchfiles==1.3.0
+websockets==17.2

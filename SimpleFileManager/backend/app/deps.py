@@ -8,7 +8,6 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-import httpx
 from dotenv import load_dotenv
 from .chunking import chunk_file
 from .interaction import interaction
