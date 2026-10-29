@@ -77,6 +77,23 @@ function ProbeBadge({ result }: { result: ProbeResult }) {
 const inputClass = 'w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400/30 focus:border-indigo-400 transition-all';
 
 /**
+ * A labelled field for the provider forms. The main Field component is
+ * sized for a settings page, which is too tall for a row that expands
+ * in place, so this one is compact. The label is always there: a
+ * placeholder disappears the moment the field is focused, which leaves
+ * a filled-in form with nothing to tell the fields apart.
+ */
+function ProviderField({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <label className="block">
+      <span className="block text-[11px] font-medium text-slate-500 mb-1">{label}</span>
+      {children}
+      {hint && <span className="block text-[10px] text-slate-400 mt-0.5 leading-snug">{hint}</span>}
+    </label>
+  );
+}
+
+/**
  * Inline editor for one provider row. Keeps its own draft so the user
  * can cancel mid-edit without polluting the list state. The "Set as
  * main" / "Delete" actions live on the row outside the form so the
@@ -129,16 +146,30 @@ function ProviderRow({
   return (
     <div className={`rounded-lg border ${provider.is_main ? 'border-indigo-300 bg-indigo-50/30' : 'border-slate-200 bg-white'} p-3`}>
       {editing ? (
-        <div className="space-y-2">
+        <div className="space-y-2.5">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            <input className={inputClass} placeholder="名称（仅显示用）" value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} />
-            <input className={inputClass} placeholder="模型名称" value={draft.model} onChange={e => setDraft({ ...draft, model: e.target.value })} />
+            <ProviderField label="名称" hint="仅显示用">
+              <input className={inputClass} placeholder="如 Main / 350M" value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} />
+            </ProviderField>
+            <ProviderField label="模型名称" hint="发给接口的 model 字段">
+              <input className={inputClass} placeholder="如 LFM2.5-24B-A2B-Q4_K_M" value={draft.model} onChange={e => setDraft({ ...draft, model: e.target.value })} />
+            </ProviderField>
           </div>
-          <input className={inputClass} placeholder="Base URL（OpenAI 兼容）" value={draft.base_url} onChange={e => setDraft({ ...draft, base_url: e.target.value })} />
-          <input type="password" className={inputClass} placeholder="API Key（本地可留空）" value={draft.api_key} onChange={e => setDraft({ ...draft, api_key: e.target.value })} />
-          <input type="number" className={inputClass} placeholder="最大生成 tokens（留空使用系统上限）" value={draft.max_tokens} onChange={e => setDraft({ ...draft, max_tokens: e.target.value })} min={1} />
-          <input type="number" className={inputClass} placeholder="思考预算 tokens（-1 不限）" value={draft.reasoning_budget} onChange={e => setDraft({ ...draft, reasoning_budget: e.target.value })} min={-1} />
-          <div className="flex items-center gap-2">
+          <ProviderField label="Base URL" hint="OpenAI 兼容接口">
+            <input className={inputClass} placeholder="http://127.0.0.1:9010/v1" value={draft.base_url} onChange={e => setDraft({ ...draft, base_url: e.target.value })} />
+          </ProviderField>
+          <ProviderField label="API Key" hint="本地服务可留空">
+            <input type="password" className={inputClass} placeholder="留空" value={draft.api_key} onChange={e => setDraft({ ...draft, api_key: e.target.value })} />
+          </ProviderField>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <ProviderField label="最大生成 tokens" hint="留空使用系统上限">
+              <input type="number" className={inputClass} placeholder="留空" value={draft.max_tokens} onChange={e => setDraft({ ...draft, max_tokens: e.target.value })} min={1} />
+            </ProviderField>
+            <ProviderField label="思考预算" hint="模型思考的 token 上限，-1 不限">
+              <input type="number" className={inputClass} placeholder="1024" value={draft.reasoning_budget} onChange={e => setDraft({ ...draft, reasoning_budget: e.target.value })} min={-1} />
+            </ProviderField>
+          </div>
+          <div className="flex items-center gap-2 pt-0.5">
             <button onClick={handleSave} disabled={busy}
               className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-700 disabled:opacity-40 transition-colors">
               {busy ? '保存中...' : '保存'}
@@ -231,16 +262,30 @@ function AddProviderForm({ onAdded, onCancel }: { onAdded: (p: LLMProvider) => v
   };
 
   return (
-    <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50/50 p-3 space-y-2">
+    <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50/50 p-3 space-y-2.5">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-        <input className={inputClass} placeholder="名称（仅显示用，如 Main / 350M）" value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} autoFocus />
-        <input className={inputClass} placeholder="模型名称" value={draft.model} onChange={e => setDraft({ ...draft, model: e.target.value })} />
+        <ProviderField label="名称" hint="仅显示用">
+          <input className={inputClass} placeholder="如 Main / 350M" value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} autoFocus />
+        </ProviderField>
+        <ProviderField label="模型名称" hint="发给接口的 model 字段">
+          <input className={inputClass} placeholder="如 LFM2.5-24B-A2B-Q4_K_M" value={draft.model} onChange={e => setDraft({ ...draft, model: e.target.value })} />
+        </ProviderField>
       </div>
-      <input className={inputClass} placeholder="Base URL（OpenAI 兼容，如 http://127.0.0.1:9010/v1）" value={draft.base_url} onChange={e => setDraft({ ...draft, base_url: e.target.value })} />
-      <input type="password" className={inputClass} placeholder="API Key（本地服务可留空）" value={draft.api_key} onChange={e => setDraft({ ...draft, api_key: e.target.value })} />
-      <input type="number" className={inputClass} placeholder="最大生成 tokens（留空使用系统上限）" value={draft.max_tokens ?? ''} onChange={e => setDraft({ ...draft, max_tokens: e.target.value ? Number(e.target.value) : null })} min={1} />
-      <input type="number" className={inputClass} placeholder="思考预算 tokens（-1 不限）" value={draft.reasoning_budget ?? ''} onChange={e => setDraft({ ...draft, reasoning_budget: e.target.value ? Number(e.target.value) : 1024 })} min={-1} />
-      <div className="flex items-center gap-2">
+      <ProviderField label="Base URL" hint="OpenAI 兼容接口">
+        <input className={inputClass} placeholder="http://127.0.0.1:9010/v1" value={draft.base_url} onChange={e => setDraft({ ...draft, base_url: e.target.value })} />
+      </ProviderField>
+      <ProviderField label="API Key" hint="本地服务可留空">
+        <input type="password" className={inputClass} placeholder="留空" value={draft.api_key} onChange={e => setDraft({ ...draft, api_key: e.target.value })} />
+      </ProviderField>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <ProviderField label="最大生成 tokens" hint="留空使用系统上限">
+          <input type="number" className={inputClass} placeholder="留空" value={draft.max_tokens ?? ''} onChange={e => setDraft({ ...draft, max_tokens: e.target.value ? Number(e.target.value) : null })} min={1} />
+        </ProviderField>
+        <ProviderField label="思考预算" hint="模型思考的 token 上限，-1 不限">
+          <input type="number" className={inputClass} placeholder="1024" value={draft.reasoning_budget ?? ''} onChange={e => setDraft({ ...draft, reasoning_budget: e.target.value ? Number(e.target.value) : 1024 })} min={-1} />
+        </ProviderField>
+      </div>
+      <div className="flex items-center gap-2 pt-0.5">
         <button onClick={handleAdd} disabled={busy}
           className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-700 disabled:opacity-40 transition-colors">
           {busy ? '创建中...' : '创建'}
