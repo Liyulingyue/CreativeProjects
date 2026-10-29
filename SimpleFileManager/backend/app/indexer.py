@@ -101,6 +101,12 @@ MIN_INTERVAL_SECONDS = 30
 # index_interval wait would make the resume feel broken.
 YIELD_RETRY_SECONDS = 45
 
+# How many unchanged-looking files to hash per scan, to check whether
+# their contents were replaced behind the indexer's back. Hashing reads
+# the whole file, so this is bounded and the rest are checked on later
+# scans.
+VERIFY_BUDGET = 50
+
 
 class AutoIndexer:
     def __init__(self):
@@ -175,23 +181,28 @@ class AutoIndexer:
         conn.commit()
         conn.close()
 
-    def _known_files(self) -> dict[str, tuple[float, int, Optional[str]]]:
-        """path -> (mtime, size, content_hash).
+    def _known_files(self) -> dict[str, tuple[float, int, Optional[str], int]]:
+        """path -> (mtime, size, content_hash, indexed_at).
 
         content_hash is the SHA-256 of the file at last indexing, used by
         the move-detection pass to recognise that a file has been renamed
         rather than deleted-and-added. Hashes are populated lazily on
         first scan after the column was added.
+
+        indexed_at is when the file was last indexed. It is what makes a
+        file whose contents changed behind the indexer's back
+        detectable: mtime and size survive a restore, so the timestamp
+        of the inode does not.
         """
         with self._db_lock:
             conn = self._get_conn()
             try:
                 rows = conn.execute(
-                    "SELECT path, mtime, size, content_hash FROM file_index"
+                    "SELECT path, mtime, size, content_hash, indexed_at FROM file_index"
                 ).fetchall()
             finally:
                 conn.close()
-        return {r[0]: (r[1], r[2], r[3]) for r in rows}
+        return {r[0]: (r[1], r[2], r[3], r[4]) for r in rows}
 
     def _compute_hash(self, abs_path: str) -> Optional[str]:
         """SHA-256 of file content, or None on read failure.
@@ -223,6 +234,23 @@ class AutoIndexer:
             finally:
                 conn.close()
 
+    def _touch_indexed_at(self, path: str):
+        """Record that a file was checked and found unchanged.
+
+        Without this the file is hashed again on every scan, because its
+        inode timestamp is still newer than the one recorded at indexing.
+        """
+        with self._db_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE file_index SET indexed_at = ? WHERE path = ?",
+                    (int(time.time()), path),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
     def _rename_manifest(self, old: str, new: str):
         """Rewrite path in the manifest. PK makes this atomic.
 
@@ -241,8 +269,9 @@ class AutoIndexer:
             finally:
                 conn.close()
 
-    def _backfill_hashes(self, current: dict[str, tuple[float, int]],
-                          known: dict[str, tuple[float, int, Optional[str]]]):
+    def _backfill_hashes(self, current: dict[str, tuple[float, int, float]],
+                          known: dict[str, tuple[float, int, Optional[str], int]],
+                          indexing: set[str] | None = None):
         """Populate NULL content_hash entries on demand.
 
         Walks every path in `current`, computes SHA-256 if the stored hash
@@ -256,9 +285,16 @@ class AutoIndexer:
         # remainder picks up on the next pass.
         budget = 200
         to_update: list[tuple[str, str]] = []
-        for path, (mtime, size) in current.items():
+        indexing = indexing or set()
+        for path, (mtime, size, _ctime) in current.items():
             if budget <= 0:
                 break
+            if path in indexing:
+                # About to be indexed, and phase 1 writes the hash of
+                # what it indexed. Storing the current hash here would
+                # make a file whose contents had already drifted agree
+                # with itself, and the drift would never be noticed.
+                continue
             prev = known.get(path)
             if prev is not None and prev[2]:
                 continue
@@ -266,7 +302,7 @@ class AutoIndexer:
             if not digest:
                 continue
             to_update.append((digest, path))
-            known[path] = (mtime, size, digest)
+            known[path] = (mtime, size, digest, prev[3] if prev else 0)
             budget -= 1
         if to_update:
             with self._db_lock:
@@ -302,17 +338,38 @@ class AutoIndexer:
         """
         return sig != CHUNK_SIG
 
-    def _record_files(self, records: list[tuple[str, float, int, int]]):
+    def _record_files(self, records: list[tuple[str, float, int, int]],
+                      hashes: dict[str, Optional[str]] | None = None):
+        """Record that files were indexed.
+
+        The content hash is written alongside, because it has to describe
+        the contents that were just indexed. Leaving it to the next scan's
+        backfill pass would store the hash of whatever the file happens to
+        contain then, which is how a stale index stays stale: the hash
+        would agree with the file even though the index does not.
+
+        REPLACE would wipe the column outright, since it replaces the
+        whole row, so the update is spelled out.
+        """
+        hashes = hashes or {}
         with self._db_lock:
             conn = self._get_conn()
             now = int(time.time())
             try:
                 conn.executemany(
-                    "INSERT OR REPLACE INTO file_index (path, mtime, size, indexed_at, chunk_count, chunk_sig) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO file_index (path, mtime, size, indexed_at, chunk_count, chunk_sig, content_hash) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(path) DO UPDATE SET "
+                    "mtime = excluded.mtime, size = excluded.size, "
+                    "indexed_at = excluded.indexed_at, "
+                    "chunk_count = excluded.chunk_count, chunk_sig = excluded.chunk_sig, "
+                    "content_hash = excluded.content_hash",
                     # vec_done is not carried on a re-index: a changed file restarts its
                     # vector pass from zero.
-                    [(p, m, s, now, n, CHUNK_SIG) for p, m, s, n in records]
+                    [
+                        (p, m, s, now, n, CHUNK_SIG, hashes.get(p))
+                        for p, m, s, n in records
+                    ],
                 )
                 conn.commit()
             finally:
@@ -471,7 +528,7 @@ class AutoIndexer:
 
     # ---- scanning ----
 
-    def _iter_text_files(self, root: Path) -> dict[str, tuple[float, int]]:
+    def _iter_text_files(self, root: Path) -> dict[str, tuple[float, int, float]]:
         found: dict[str, tuple[float, int]] = {}
         present: set[str] = set()
         unsupported: dict[str, str] = {}
@@ -503,7 +560,11 @@ class AutoIndexer:
                         # whole library and got no hits needs to know why.
                         oversized[_display_path(entry)] = f"{stat.st_size // 1024 // 1024}MB"
                         continue
-                    found[str(entry)] = (stat.st_mtime, stat.st_size)
+                    # ctime is when the inode last changed, which is the
+                    # only cheap signal that a file's contents were
+                    # replaced without its mtime moving -- a restore from
+                    # a backup, or an rsync that preserves timestamps.
+                    found[str(entry)] = (stat.st_mtime, stat.st_size, stat.st_ctime)
                 except (PermissionError, OSError):
                     scan_complete = False
                     continue
@@ -565,14 +626,46 @@ class AutoIndexer:
             to_index = []
             changed_files = set()
             pending = 0
-            for path, (mtime, size) in current.items():
-                if path in known and known[path][0] == mtime and known[path][1] == size:
-                    continue
+            # Files that look untouched but whose inode was touched since
+            # they were last indexed. Their contents may have been
+            # replaced while their mtime and size stayed put, which is
+            # exactly what a restore from a backup or an rsync that
+            # preserves timestamps does. They are hashed to find out.
+            verify: list[str] = []
+            for path, (mtime, size, ctime) in current.items():
+                if path in known:
+                    k_mtime, k_size, k_hash, k_indexed_at = known[path]
+                    if k_mtime == mtime and k_size == size:
+                        if k_hash and ctime > k_indexed_at:
+                            verify.append(path)
+                        continue
                 changed_files.add(path)
                 if now - mtime < debounce:
                     pending += 1
                     continue
                 to_index.append(path)
+
+            # Hash the suspicious ones and re-index any whose contents
+            # really did change. The budget keeps a large library from
+            # hashing its whole tree in one pass; the rest come round on
+            # a later scan.
+            if verify:
+                budget = VERIFY_BUDGET
+                for path in verify:
+                    if budget <= 0:
+                        break
+                    budget -= 1
+                    k_hash = known[path][2]
+                    digest = self._compute_hash(path)
+                    if not digest or digest == k_hash:
+                        # The same contents: the file was only touched,
+                        # not changed. Record the newer timestamp so it
+                        # is not hashed again next scan.
+                        self._touch_indexed_at(path)
+                        continue
+                    log.info("content changed behind the index: %s", path)
+                    changed_files.add(path)
+                    to_index.append(path)
 
             # Phase 1 is driven purely by file mtime/size, so anything that
             # empties the FTS index without touching the files -- clearing the
@@ -598,7 +691,7 @@ class AutoIndexer:
             # NULL hash is the only reason a real move wouldn't be detected
             # by the pass below. Skip files whose mtime/size already match
             # known AND have a hash; they're already populated.
-            self._backfill_hashes(current, known)
+            self._backfill_hashes(current, known, set(to_index))
 
             # ---- move detection ----
             # The plain delete/add diff can't tell a rename apart from a
@@ -655,7 +748,7 @@ class AutoIndexer:
                     # new path is bit-identical so nothing changed.
                     rag_svc = state.get_rag_service()
                     for old, new in moves:
-                        old_mtime, old_size, old_hash = known[old]
+                        old_mtime, old_size, old_hash, old_indexed_at = known[old]
                         try:
                             self._rename_manifest(old, new)
                         except Exception:
@@ -672,7 +765,7 @@ class AutoIndexer:
                         # Reflect the rename in the in-memory cache so the
                         # rest of the scan sees `new` as up-to-date.
                         known.pop(old, None)
-                        known[new] = (old_mtime, old_size, old_hash)
+                        known[new] = (old_mtime, old_size, old_hash, old_indexed_at)
                     # Remove moved entries from `removed` and `to_index` so
                     # the rest of the pass treats them as unchanged.
                     removed = [p for p in removed if p not in used_old]
@@ -684,6 +777,7 @@ class AutoIndexer:
             rag_svc = state.get_rag_service()
             indexed, failed = 0, 0
             records: list[tuple[str, float, int, int]] = []
+            indexed_hashes: dict[str, Optional[str]] = {}
 
             # Phase 1 — keyword channel. Cheap and complete: FTS only needs the
             # file text, so every file becomes searchable immediately. Done
@@ -704,12 +798,15 @@ class AutoIndexer:
                             rag_svc.vector_store.delete_by_file(path)
                         stat = Path(path).stat()
                         records.append((path, stat.st_mtime, stat.st_size, len(pieces)))
+                        # The hash of what was just indexed, so the next
+                        # scan can tell whether the file still holds it.
+                        indexed_hashes[path] = self._compute_hash(path)
                         indexed += 1
                     except Exception:
                         failed += 1
                         log.exception("indexing a file failed")
             if records:
-                self._record_files(records)
+                self._record_files(records, indexed_hashes)
 
             # Phase 2 — semantic channel, resumable. Progress lives in the
             # manifest, so a file needing hours to vectorize converges over
