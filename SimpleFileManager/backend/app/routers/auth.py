@@ -6,6 +6,7 @@ Authorization: Bearer <token> header. Token is a hash of the password.
 """
 
 import hashlib
+import hmac
 import secrets
 import time
 from pathlib import Path
@@ -91,6 +92,43 @@ def is_valid_token(token: str) -> bool:
         _save_auth(data)
         return False
     return True
+
+
+def _stream_secret() -> bytes:
+    """The server's own secret, used to sign short-lived stream tokens."""
+    data = _load_auth()
+    return (data.get("salt") or "").encode()
+
+
+def issue_stream_token(path: str, ttl: int = 300) -> dict:
+    """A short-lived token that lets a media element fetch one file.
+
+    A <video> or <audio> tag cannot send an Authorization header, so
+    the file has to be reachable by URL. Putting the session token in
+    the URL would put it in the access log and in the browser's
+    history, so this issues a token instead: derived from the server's
+    secret, valid for one path, and good for a few minutes.
+    """
+    expires = int(time.time()) + ttl
+    signature = hmac.new(
+        _stream_secret(), f"{path}:{expires}".encode(), hashlib.sha256
+    ).hexdigest()
+    return {"token": f"{expires}.{signature}", "expires_at": expires}
+
+
+def verify_stream_token(path: str, token: str) -> bool:
+    """Check a stream token against the path it was issued for."""
+    try:
+        expires_s, signature = token.split(".", 1)
+        expires = int(expires_s)
+    except (ValueError, AttributeError):
+        return False
+    if expires < int(time.time()):
+        return False
+    expected = hmac.new(
+        _stream_secret(), f"{path}:{expires}".encode(), hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(signature, expected)
 
 
 def get_current_auth(request: Request, credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):

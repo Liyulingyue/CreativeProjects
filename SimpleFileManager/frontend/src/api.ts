@@ -1080,6 +1080,49 @@ export async function uploadFiles(
   });
 }
 
+/** A file rendered for reading in the browser. */
+export interface FilePreviewData {
+  name: string;
+  kind: 'text' | 'document';
+  content: string;
+  truncated: boolean;
+  /** A spreadsheet's first sheet, as a grid. */
+  rows?: string[][] | null;
+}
+
+/** The content of a document, extracted on the server. */
+export async function fetchFilePreview(path: string): Promise<FilePreviewData> {
+  const res = await authFetch(`${API_BASE}/fs/preview?path=${encodeURIComponent(path)}`);
+  if (!res.ok) {
+    let detail = '无法预览这个文件';
+    try {
+      const body = await res.json();
+      if (typeof body?.detail === 'string') detail = body.detail;
+    } catch { /* keep the default */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+/**
+ * A short-lived URL for a media file.
+ *
+ * A <video> or <audio> element cannot send an Authorization header,
+ * so the server issues a token that is good for this one file for a
+ * few minutes. The player then streams the file, rather than the
+ * browser holding all of it in memory first.
+ */
+export async function fetchStreamUrl(path: string): Promise<string> {
+  const res = await authFetch(`${API_BASE}/fs/stream-token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
+  if (!res.ok) throw new Error('无法播放这个文件');
+  const data = await res.json();
+  return data.url;
+}
+
 export interface FileContent {
   path: string;
   name: string;

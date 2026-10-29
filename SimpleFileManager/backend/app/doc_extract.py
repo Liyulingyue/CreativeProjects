@@ -17,7 +17,9 @@ log = logging.getLogger(__name__)
 
 PDF_EXTENSIONS = {".pdf"}
 DOCX_EXTENSIONS = {".docx"}
-DOCUMENT_EXTENSIONS = PDF_EXTENSIONS | DOCX_EXTENSIONS
+XLSX_EXTENSIONS = {".xlsx"}
+PPTX_EXTENSIONS = {".pptx"}
+DOCUMENT_EXTENSIONS = PDF_EXTENSIONS | DOCX_EXTENSIONS | XLSX_EXTENSIONS | PPTX_EXTENSIONS
 
 # A PDF is mostly images, so a small file can hold a lot of text. Documents get
 # a far larger ceiling than the 512KB plain-text limit.
@@ -100,6 +102,80 @@ def _extract_docx(path: Path) -> str:
     return text
 
 
+def _extract_xlsx(path: Path) -> str:
+    try:
+        import openpyxl
+    except ImportError as e:  # pragma: no cover - dependency is declared
+        raise ExtractionError("服务端未安装 XLSX 解析依赖（openpyxl）") from e
+
+    try:
+        # read_only keeps the memory cost proportional to the file
+        # rather than to the sheet, which matters for a spreadsheet
+        # somebody has been filling in for a year.
+        workbook = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
+    except Exception as e:
+        raise ExtractionError(f"XLSX 解析失败：{e}") from e
+
+    parts: list[str] = []
+    try:
+        for sheet in workbook.worksheets:
+            parts.append(f"[{sheet.title}]")
+            for row in sheet.iter_rows(values_only=True):
+                cells = ["" if c is None else str(c) for c in row]
+                # A row of empty cells is padding, not content.
+                if any(c.strip() for c in cells):
+                    parts.append("\t".join(cells))
+            parts.append("")
+    except Exception as e:
+        raise ExtractionError(f"XLSX 解析失败：{e}") from e
+    finally:
+        try:
+            workbook.close()
+        except Exception:
+            pass
+
+    text = "\n".join(parts)
+    if not text.strip():
+        raise ExtractionError("XLSX 中没有可提取的内容")
+    return text
+
+
+def _extract_pptx(path: Path) -> str:
+    try:
+        from pptx import Presentation
+    except ImportError as e:  # pragma: no cover - dependency is declared
+        raise ExtractionError("服务端未安装 PPTX 解析依赖（python-pptx）") from e
+
+    try:
+        deck = Presentation(str(path))
+    except Exception as e:
+        raise ExtractionError(f"PPTX 解析失败：{e}") from e
+
+    parts: list[str] = []
+    try:
+        for number, slide in enumerate(deck.slides, start=1):
+            parts.append(f"[第 {number} 页]")
+            for shape in slide.shapes:
+                if getattr(shape, "has_text_frame", False):
+                    for paragraph in shape.text_frame.paragraphs:
+                        line = "".join(run.text for run in paragraph.runs).strip()
+                        if line:
+                            parts.append(line)
+                if getattr(shape, "has_table", False):
+                    for row in shape.table.rows:
+                        cells = [c.text.strip() for c in row.cells]
+                        if any(cells):
+                            parts.append("\t".join(cells))
+            parts.append("")
+    except Exception as e:
+        raise ExtractionError(f"PPTX 解析失败：{e}") from e
+
+    text = "\n".join(parts)
+    if not text.strip():
+        raise ExtractionError("PPTX 中没有可提取的文字")
+    return text
+
+
 def extract_text(path: Path) -> Optional[str]:
     """Return extracted text, or None when the file is plain text.
 
@@ -122,7 +198,16 @@ def extract_text(path: Path) -> Optional[str]:
             f"文档过大（{size // 1024 // 1024}MB），上限 {MAX_DOCUMENT_BYTES // 1024 // 1024}MB"
         )
 
-    text = _extract_pdf(path) if suffix in PDF_EXTENSIONS else _extract_docx(path)
+    if suffix in PDF_EXTENSIONS:
+        text = _extract_pdf(path)
+    elif suffix in DOCX_EXTENSIONS:
+        text = _extract_docx(path)
+    elif suffix in XLSX_EXTENSIONS:
+        text = _extract_xlsx(path)
+    elif suffix in PPTX_EXTENSIONS:
+        text = _extract_pptx(path)
+    else:
+        text = _extract_docx(path)
     if len(text) > MAX_EXTRACTED_CHARS:
         text = text[:MAX_EXTRACTED_CHARS]
     return text

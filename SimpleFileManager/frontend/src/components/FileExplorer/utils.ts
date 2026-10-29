@@ -18,8 +18,25 @@ export function formatDate(dateStr: string): string {
 
 export function isPreviewable(node: FileNode): boolean {
   if (node.is_dir) return false;
-  const ext = node.extension.toLowerCase();
-  return isImageFile(node) || isTextFile(node) || ext === '.pdf';
+  return isImageFile(node) || isTextFile(node) || isDocumentFile(node) || isMediaFile(node);
+}
+
+/** Office documents the server can read. */
+export function isDocumentFile(node: FileNode): boolean {
+  return ['.docx', '.xlsx', '.pptx', '.pdf'].includes(node.extension.toLowerCase());
+}
+
+/** Audio and video the browser can play. */
+export function isMediaFile(node: FileNode): boolean {
+  return isVideoFile(node) || isAudioFile(node);
+}
+
+export function isVideoFile(node: FileNode): boolean {
+  return ['.mp4', '.webm', '.ogg', '.mkv', '.mov', '.avi'].includes(node.extension.toLowerCase());
+}
+
+export function isAudioFile(node: FileNode): boolean {
+  return ['.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg'].includes(node.extension.toLowerCase());
 }
 
 export function isImageFile(node: FileNode): boolean {

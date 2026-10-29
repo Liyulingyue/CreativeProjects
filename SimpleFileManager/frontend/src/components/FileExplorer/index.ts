@@ -3,4 +3,7 @@ export { default as FileList } from './FileList';
 export { default as FileCompactList } from './FileCompactList';
 export { Toolbar } from './Toolbar';
 export { Breadcrumb } from './Breadcrumbs';
-export { formatSize, formatDate, isPreviewable, isImageFile, isTextFile } from './utils';
+export {
+  formatSize, formatDate, isPreviewable, isImageFile, isTextFile,
+  isDocumentFile, isMediaFile, isVideoFile, isAudioFile,
+} from './utils';

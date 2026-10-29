@@ -692,6 +692,114 @@ def upload_abandon(upload_id: str):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@fs.get("/preview")
+def preview_file(path: str):
+    """A file rendered for reading in the browser.
+
+    Plain text is returned as text, a document as the text inside it,
+    and a spreadsheet as a table. The point is that a Word file or a
+    budget can be read without downloading it and without opening
+    another program.
+    """
+    try:
+        target = resolve_under_root(path)
+    except PathOutsideRoot:
+        raise HTTPException(status_code=400, detail="Path outside storage root")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    suffix = target.suffix.lower()
+    size = target.stat().st_size
+    if size > 64 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="文件太大，无法预览")
+
+    kind = "text"
+    if suffix in (".docx", ".xlsx", ".pptx", ".pdf"):
+        from ..doc_extract import ExtractionError, extract_text
+
+        try:
+            content = extract_text(target)
+        except ExtractionError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        kind = "document"
+    else:
+        try:
+            raw = target.read_bytes()[:MAX_PREVIEW_BYTES]
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        content = raw.decode("utf-8", errors="replace")
+
+    # A spreadsheet is a table, and reading it as a wall of tab-separated
+    # text loses the shape entirely.
+    rows = None
+    if suffix == ".xlsx":
+        try:
+            from ..doc_extract import _extract_xlsx
+
+            rows = _xlsx_rows(target)
+        except Exception:
+            rows = None
+
+    return {
+        "name": target.name,
+        "kind": kind,
+        "content": content,
+        "truncated": len(content) >= MAX_PREVIEW_BYTES,
+        "rows": rows,
+    }
+
+
+def _xlsx_rows(path: Path) -> list[list[str]]:
+    """The first sheet of a workbook as a grid."""
+    import openpyxl
+
+    workbook = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
+    try:
+        sheet = workbook.worksheets[0]
+        out = []
+        for row in sheet.iter_rows(values_only=True):
+            out.append(["" if c is None else str(c) for c in row])
+            if len(out) >= 200:
+                break
+        return out
+    finally:
+        try:
+            workbook.close()
+        except Exception:
+            pass
+
+
+class StreamTokenRequest(BaseModel):
+    path: str
+
+
+@fs.post("/stream-token")
+def stream_token(req: StreamTokenRequest):
+    """A short-lived URL for a media file.
+
+    A <video> tag cannot send an Authorization header. This issues a
+    token that is good for one file and a few minutes, so the player
+    can stream the file instead of the browser holding all of it.
+    """
+    try:
+        target = resolve_under_root(req.path)
+    except PathOutsideRoot:
+        raise HTTPException(status_code=400, detail="Path outside storage root")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    from ..routers.auth import issue_stream_token
+
+    issued = issue_stream_token(str(target), ttl=600)
+    from urllib.parse import quote
+
+    return {
+        "token": issued["token"],
+        "expires_at": issued["expires_at"],
+        "url": f"/api/fs/download?path={quote(req.path)}&st={issued['token']}",
+    }
+
+
 @fs.get("/content")
 def get_content(path: str, limit: int = 50000, offset: int = 0):
     """Return one slice of a text file.

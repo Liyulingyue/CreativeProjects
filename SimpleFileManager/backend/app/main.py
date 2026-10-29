@@ -2,11 +2,15 @@ from contextlib import asynccontextmanager
 import os
 import time
 from fastapi import FastAPI, Depends, Request
+from fastapi.security import HTTPAuthorizationCredentials
+from fastapi.security import HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from .logging_setup import setup_logging, start_request_id, request_id
 from .routers import fs, search, settings, rag, chat, chat_history_router, agent, organizer, plans, digest, auth, get_current_auth
-from .routers.auth import is_auth_enabled, set_password
+
+bearer_scheme = HTTPBearer(auto_error=False)
+from .routers.auth import is_auth_enabled, set_password, verify_stream_token
 from .indexer import indexer
 from .auto_digest import auto_digest
 from .routers import providers as providers_router  # noqa: E402
@@ -54,6 +58,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def fs_auth(request: Request, credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
+    """Authorise a file request.
+
+    A media element cannot send an Authorization header, so a file can
+    also be reached with a short-lived token in the URL -- one that is
+    good for a single path and a few minutes. Without this the
+    <video> and <audio> players would have to fetch the whole file
+    into memory first, which defeats the point of streaming it.
+    """
+    stream_token = request.query_params.get("st")
+    if stream_token:
+        path = request.query_params.get("path", "")
+        if verify_stream_token(path, stream_token):
+            return {"ok": True, "via": "stream-token"}
+    return get_current_auth(request, credentials)
 
 
 @app.middleware("http")
@@ -112,7 +133,7 @@ def health():
 
 # All other routers require auth
 auth_dep = Depends(get_current_auth)
-app.include_router(fs, prefix="/api/fs", tags=["fs"], dependencies=[auth_dep])
+app.include_router(fs, prefix="/api/fs", tags=["fs"], dependencies=[Depends(fs_auth)])
 app.include_router(search, prefix="/api/search", tags=["search"], dependencies=[auth_dep])
 app.include_router(settings, prefix="/api/settings", tags=["settings"], dependencies=[auth_dep])
 app.include_router(rag, prefix="/api/rag", tags=["rag"], dependencies=[auth_dep])

@@ -1,6 +1,11 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { fetchFileContent, downloadFile, type FileNode, type FileContent } from '../api';
-import { isImageFile, isTextFile, formatSize } from './FileExplorer/utils';
+import {
+  fetchFileContent, fetchFilePreview, fetchStreamUrl, downloadFile,
+  type FileNode, type FileContent, type FilePreviewData,
+} from '../api';
+import {
+  isImageFile, isTextFile, isDocumentFile, isMediaFile, isVideoFile, isAudioFile, formatSize,
+} from './FileExplorer/utils';
 import { authFetch } from '../auth';
 import { Icon } from './ui/Icon';
 
@@ -24,6 +29,10 @@ export function FilePreview({ node, onClose }: FilePreviewProps) {
   const [error, setError] = useState<string | null>(null);
   const [nextOffset, setNextOffset] = useState<number | null>(null);
   const [totalChars, setTotalChars] = useState(0);
+  // A document the server extracted, and a spreadsheet's grid.
+  const [preview, setPreview] = useState<FilePreviewData | null>(null);
+  // A URL the media player can fetch without an Authorization header.
+  const [mediaUrl, setMediaUrl] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const nextOffsetRef = useRef<number | null>(null);
@@ -54,10 +63,30 @@ export function FilePreview({ node, onClose }: FilePreviewProps) {
     setTotalChars(0);
     loadingMoreRef.current = false;
 
+    setPreview(null);
+    setMediaUrl(null);
+
     if (isTextFile(node)) {
       setLoading(true);
       loadSegment(0, false)
         .catch(e => setError(e instanceof Error ? e.message : 'Failed to load'))
+        .finally(() => setLoading(false));
+    } else if (isDocumentFile(node)) {
+      // A document is read on the server, which is the only place the
+      // libraries to read them live. A spreadsheet comes back as a
+      // grid so the shape survives.
+      setLoading(true);
+      fetchFilePreview(node.path)
+        .then(data => setPreview(data))
+        .catch(e => setError(e instanceof Error ? e.message : '无法预览'))
+        .finally(() => setLoading(false));
+    } else if (isMediaFile(node)) {
+      // The player fetches the file itself, so it needs a URL it can
+      // open without an Authorization header.
+      setLoading(true);
+      fetchStreamUrl(node.path)
+        .then(url => setMediaUrl(url))
+        .catch(e => setError(e instanceof Error ? e.message : '无法播放'))
         .finally(() => setLoading(false));
     } else if (isImageFile(node) || node.extension.toLowerCase() === '.pdf') {
       setLoading(true);
@@ -97,6 +126,9 @@ export function FilePreview({ node, onClose }: FilePreviewProps) {
   const isImg = isImageFile(node);
   const isPdf = node.extension.toLowerCase() === '.pdf';
   const isText = isTextFile(node);
+  const isDoc = isDocumentFile(node) && !isPdf;
+  const isVideo = isVideoFile(node);
+  const isAudio = isAudioFile(node);
   const loaded = content?.length ?? 0;
   const percent = totalChars > 0 ? Math.min(100, Math.round((loaded / totalChars) * 100)) : 100;
 
@@ -145,6 +177,46 @@ export function FilePreview({ node, onClose }: FilePreviewProps) {
             <iframe src={blobUrl} className="w-full h-[70vh] border-0" title={node.name} />
           )}
 
+          {!loading && !error && isDoc && preview && (
+            <div className="p-4 sm:p-6">
+              {preview.rows && preview.rows.length > 0 ? (
+                <div className="overflow-auto bg-white rounded-lg border border-slate-200">
+                  <table className="w-full text-sm border-collapse">
+                    <tbody>
+                      {preview.rows.map((row, i) => (
+                        <tr key={i} className={i === 0 ? 'bg-slate-50' : ''}>
+                          {row.map((cell, j) => (
+                            <td key={j} className="border border-slate-200 px-3 py-1.5 whitespace-nowrap">
+                              {i === 0 ? <span className="font-medium text-slate-700">{cell}</span> : cell}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <pre className="text-sm text-slate-700 whitespace-pre-wrap break-words leading-relaxed">{preview.content}</pre>
+              )}
+              {preview.truncated && (
+                <div className="mt-4 text-xs text-amber-600">内容较长，这里只显示了一部分，下载可看全文。</div>
+              )}
+            </div>
+          )}
+
+          {!loading && !error && isVideo && mediaUrl && (
+            <div className="flex items-center justify-center p-4 min-h-full bg-slate-900">
+              <video src={mediaUrl} controls className="max-w-full max-h-[70vh] rounded-lg" />
+            </div>
+          )}
+
+          {!loading && !error && isAudio && mediaUrl && (
+            <div className="flex flex-col items-center justify-center gap-4 p-8 min-h-full">
+              <Icon name="music" size={56} className="text-slate-300" />
+              <audio src={mediaUrl} controls className="w-full max-w-lg" />
+            </div>
+          )}
+
           {!loading && !error && isText && (
             <>
               <pre className="p-4 text-sm text-slate-700 font-mono whitespace-pre-wrap break-words">{content}</pre>
@@ -171,7 +243,7 @@ export function FilePreview({ node, onClose }: FilePreviewProps) {
             </>
           )}
 
-          {!loading && !error && !isImg && !isPdf && !isText && (
+          {!loading && !error && !isImg && !isPdf && !isText && !isDoc && !isVideo && !isAudio && (
             <div className="flex flex-col items-center justify-center py-16 text-slate-400">
               <Icon name="file" size={48} className="text-slate-300 mb-3" />
               <div className="text-sm font-medium text-slate-600">{node.name}</div>
