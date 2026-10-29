@@ -100,3 +100,53 @@ def test_a_root_grant_is_the_whole_storage(store):
     store.grant("", user["id"], "read")
 
     assert store.permissions_for(user["id"]) == [("", "read")]
+
+
+def test_a_token_belongs_to_the_user_it_was_issued_for(store):
+    store.create_user("家人", "family123")
+
+    store.store_token("abc", "家人", 9_999_999_999)
+
+    assert store.token_username("abc") == "家人"
+
+
+def test_an_unknown_token_belongs_to_nobody(store):
+    assert store.token_username("nope") is None
+
+
+def test_an_expired_token_is_no_good(store):
+    store.store_token("old", "家人", 1)
+
+    assert store.token_username("old") is None
+
+
+def test_a_token_can_be_thrown_away(store):
+    store.store_token("abc", "家人", 9_999_999_999)
+
+    assert store.revoke_token("abc") is True
+    assert store.token_username("abc") is None
+
+
+def test_expired_tokens_are_swept_away(store):
+    store.store_token("old", "家人", 1)
+    store.store_token("new", "家人", 9_999_999_999)
+
+    assert store.prune_tokens() >= 1
+    assert store.count_tokens() == 1
+
+
+def test_a_user_does_not_accumulate_sessions_for_ever(store):
+    for i in range(30):
+        store.store_token(f"t{i}", "家人", 9_999_999_999)
+
+    store.prune_tokens()
+
+    assert store.count_tokens() <= 20
+
+
+def test_signing_everybody_out(store):
+    store.store_token("a", "家人", 9_999_999_999)
+    store.store_token("b", "admin", 9_999_999_999)
+
+    assert store.revoke_all_tokens() == 2
+    assert store.count_tokens() == 0

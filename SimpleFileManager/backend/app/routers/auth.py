@@ -7,6 +7,7 @@ Authorization: Bearer <token> header. Token is a hash of the password.
 
 import hashlib
 import hmac
+import logging
 import secrets
 import time
 from pathlib import Path
@@ -25,19 +26,41 @@ ADMIN_USERNAME = "admin"
 
 auth = APIRouter()
 
+log = logging.getLogger(__name__)
+
 AUTH_FILE = DATA_DIR / "auth.json"
 bearer_scheme = HTTPBearer(auto_error=False)
 
 # Token expires after 7 days
 TOKEN_TTL = 7 * 24 * 3600
 
+# The password settings are read on every request, so they are kept in
+# memory and re-read only when the file has actually changed.
+_auth_cache: dict = {"mtime": None, "data": None}
+
 
 def _load_auth() -> dict:
-    return _load_json(AUTH_FILE, {"password_hash": None, "salt": None, "tokens": {}})
+    """The password settings. Read from disk only when they have changed."""
+    try:
+        mtime = AUTH_FILE.stat().st_mtime
+    except OSError:
+        mtime = None
+    if _auth_cache["data"] is not None and _auth_cache["mtime"] == mtime:
+        return _auth_cache["data"]
+    data = _load_json(AUTH_FILE, {"password_hash": None, "salt": None, "tokens": {}})
+    _auth_cache["mtime"] = mtime
+    _auth_cache["data"] = data
+    return data
 
 
 def _save_auth(data: dict):
     _save_json(AUTH_FILE, data)
+    try:
+        mtime = AUTH_FILE.stat().st_mtime
+    except OSError:
+        mtime = None
+    _auth_cache["mtime"] = mtime
+    _auth_cache["data"] = data
 
 
 def _hash_password(password: str, salt: str) -> str:
@@ -55,6 +78,14 @@ def is_auth_enabled() -> bool:
 
 
 def set_password(password: str):
+    """Set the service's password.
+
+    There used to be one password in a file, and later an administrator
+    account in the database, and the two drifted apart -- changing the
+    password updated the file while the login checked the account, so
+    the change was reported as done and then did nothing. Both are
+    written now, and they are the same password.
+    """
     salt = secrets.token_hex(16)
     data = {
         "password_hash": _hash_password(password, salt),
@@ -62,6 +93,23 @@ def set_password(password: str):
         "tokens": {},
     }
     _save_auth(data)
+
+    # The administrator account is what the login actually checks.
+    from ..users import ROLE_ADMIN
+
+    try:
+        store = state.get_user_store()
+        admin = store.get_by_username(ADMIN_USERNAME)
+        if admin is not None:
+            store.set_password(admin["id"], password)
+        else:
+            store.create_user(ADMIN_USERNAME, password, role=ROLE_ADMIN)
+    except Exception:
+        log.exception("could not update the administrator account")
+
+    # Everyone who was signed in is signed out: the password they were
+    # holding a session for is not the password any more.
+    state.get_user_store().revoke_all_tokens()
 
 
 def verify_password(password: str) -> bool:
@@ -79,20 +127,55 @@ def issue_token(username: str = "") -> str:
     logged in.
     """
     token = _generate_token()
-    data = _load_auth()
-    data.setdefault("tokens", {})
-    data["tokens"][token] = {
-        "username": username,
-        "expires": time.time() + TOKEN_TTL,
-    }
-    _save_auth(data)
+    store = state.get_user_store()
+    store.prune_tokens()
+    store.store_token(token, username or ADMIN_USERNAME, time.time() + TOKEN_TTL)
     return token
 
 
 def revoke_token(token: str):
+    state.get_user_store().revoke_token(token)
+
+
+_tokens_migrated = False
+
+
+def migrate_tokens() -> int:
+    """Move the tokens from the old JSON file into the table.
+
+    Before there were accounts, the sessions lived in auth.json --
+    a file that was read whole on every request and written whole on
+    every login. It held hundreds of them, so the cost was real, and
+    two people logging in at the same moment could lose one of the
+    two sessions. The table is faster and cannot lose an update.
+    """
+    global _tokens_migrated
+    if _tokens_migrated:
+        return 0
+    _tokens_migrated = True
+
     data = _load_auth()
-    data.get("tokens", {}).pop(token, None)
+    tokens = data.get("tokens") or {}
+    if not tokens:
+        return 0
+
+    store = state.get_user_store()
+    now = time.time()
+    moved = 0
+    for token, entry in tokens.items():
+        if isinstance(entry, (int, float)):
+            expires, username = float(entry), ADMIN_USERNAME
+        else:
+            expires = float(entry.get("expires", 0) or 0)
+            username = entry.get("username") or ADMIN_USERNAME
+        if expires > now:
+            store.store_token(token, username, expires)
+            moved += 1
+    data["tokens"] = {}
     _save_auth(data)
+    if moved:
+        log.info("moved %d session tokens into the database", moved)
+    return moved
 
 
 def is_valid_token(token: str) -> bool:
@@ -105,6 +188,14 @@ def token_user(token: str) -> Optional[str]:
     Tokens issued before there were users carry only an expiry; they
     belong to the administrator, which is who the single password was.
     """
+    store = state.get_user_store()
+
+    username = store.token_username(token)
+    if username is not None:
+        return username
+
+    # Not in the table. It may still be one of the tokens the old JSON
+    # file held, from before tokens were kept in the database.
     data = _load_auth()
     tokens = data.get("tokens", {})
     entry = tokens.get(token)
@@ -259,12 +350,6 @@ def login(req: LoginRequest):
         username=user["username"],
         role=user["role"],
     )
-    if not is_auth_enabled():
-        return LoginResponse(token=_generate_token(), requires_auth=False)
-    if not verify_password(req.password):
-        raise HTTPException(status_code=401, detail="密码错误")
-    token = issue_token()
-    return LoginResponse(token=token, requires_auth=True)
 
 
 @auth.get("/verify")

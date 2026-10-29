@@ -181,20 +181,25 @@ start_backend() {
         c_red "  Backend will refuse to start. Edit .env and add one of them."
         return 1
     fi
-    (
-        cd "$BACKEND_DIR" || exit 1
-        # .env lives at the repo root; deps.py resolves STORAGE_PATH relative to
-        # backend/, so ../data keeps dev and docker on the same files.
-        # Reload off: it spawns a supervisor+worker, so the recorded pid would
-        # not be the process holding the port.
-        #
-        # The app writes its own rotated log to backend.log, and also to
-        # stdout for docker. stdout is dropped here so the two do not
-        # duplicate each other; stderr still lands in a console file,
-        # which catches whatever bypassed the logging system.
-        BACKEND_RELOAD=0 LOG_FILE="$LOG_DIR/backend.log" exec .venv/bin/python run.py
-    ) > /dev/null 2> "$LOG_DIR/backend.console.log" &
+    # .env lives at the repo root; deps.py resolves STORAGE_PATH relative to
+    # backend/, so ../data keeps dev and docker on the same files.
+    # Reload off: it spawns a supervisor+worker, so the recorded pid would
+    # not be the process holding the port.
+    #
+    # The app writes its own rotated log to backend.log, and also to
+    # stdout for docker. stdout is dropped here so the two do not
+    # duplicate each other; stderr still lands in a console file,
+    # which catches whatever bypassed the logging system.
+    #
+    # setsid puts the service in a session of its own, so closing the
+    # terminal that started it does not take it down with it. A NAS
+    # that stops when the shell that launched it goes is not a NAS.
+    setsid bash -c '
+        cd "$1" || exit 1
+        BACKEND_RELOAD=0 LOG_FILE="$2" exec .venv/bin/python run.py
+    ' _ "$BACKEND_DIR" "$LOG_DIR/backend.log" > /dev/null 2> "$LOG_DIR/backend.console.log" &
     echo $! > "$BACKEND_PID"
+    disown 2>/dev/null || true
     if wait_for_port "$BACKEND_PORT" "$BACKEND_PID" 40; then
         c_green "  up on :$BACKEND_PORT (PID $(cat "$BACKEND_PID"))"
         return 0
@@ -220,11 +225,12 @@ start_frontend() {
         c_red "  Run: cd frontend && npm install"
         return 1
     fi
-    (
-        cd "$FRONTEND_DIR" || exit 1
+    setsid bash -c '
+        cd "$1" || exit 1
         exec ./node_modules/.bin/vite
-    ) > "$LOG_DIR/frontend.log" 2>&1 &
+    ' _ "$FRONTEND_DIR" > "$LOG_DIR/frontend.log" 2>&1 &
     echo $! > "$FRONTEND_PID"
+    disown 2>/dev/null || true
     if wait_for_port "$FRONTEND_PORT" "$FRONTEND_PID" 40; then
         c_green "  up on :$FRONTEND_PORT (PID $(cat "$FRONTEND_PID"))"
         return 0

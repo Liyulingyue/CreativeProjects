@@ -44,6 +44,10 @@ def _init_auth():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _init_auth()
+    # The sessions from the old JSON file move into the database once.
+    from .routers.auth import migrate_tokens
+
+    migrate_tokens()
     log.info("starting: indexer and digest scheduler coming up")
     indexer.start()
     auto_digest.start()

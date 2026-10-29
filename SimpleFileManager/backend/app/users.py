@@ -63,6 +63,19 @@ CREATE TABLE IF NOT EXISTS acl (
 )
 """
 
+# Session tokens. They used to live in a JSON file that was read whole
+# on every request and rewritten whole on every login -- which on a
+# service that is polled all day grew into a real cost, and a lost
+# update could throw away a token somebody was holding.
+CREATE_TOKENS = """
+CREATE TABLE IF NOT EXISTS tokens (
+    token TEXT PRIMARY KEY,
+    username TEXT NOT NULL,
+    expires REAL NOT NULL,
+    created_at REAL NOT NULL
+)
+"""
+
 
 def hash_password(password: str, salt: str) -> str:
     return hashlib.pbkdf2_hmac(
@@ -80,6 +93,7 @@ class UserStore:
             conn = self._get_conn()
             conn.execute(CREATE_USERS)
             conn.execute(CREATE_ACL)
+            conn.execute(CREATE_TOKENS)
             conn.commit()
             conn.close()
 
@@ -283,6 +297,100 @@ class UserStore:
     def permissions_for(self, user_id: str) -> list[tuple[str, str]]:
         """The grants of one user, as (path, permission) pairs."""
         return [(g["path"], g["permission"]) for g in self.list_grants(user_id)]
+
+    # ---- session tokens ----
+
+    def store_token(self, token: str, username: str, expires: float) -> None:
+        """Remember a session token."""
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO tokens (token, username, expires, created_at)"
+                    " VALUES (?, ?, ?, ?)",
+                    (token, username, float(expires), time.time()),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def token_username(self, token: str) -> Optional[str]:
+        """The user a token belongs to, or None if it is expired or unknown."""
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT username, expires FROM tokens WHERE token = ?", (token,)
+                ).fetchone()
+            finally:
+                conn.close()
+        if row is None:
+            return None
+        if time.time() > row[1]:
+            self.revoke_token(token)
+            return None
+        return row[0]
+
+    def revoke_token(self, token: str) -> bool:
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute("DELETE FROM tokens WHERE token = ?", (token,))
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    def prune_tokens(self, keep_per_user: int = 20) -> int:
+        """Drop the tokens that have expired, and any beyond the newest few.
+
+        A browser that logs in again and again -- or a script that
+        forgets to sign out -- would otherwise leave the table growing
+        for as long as the service runs.
+        """
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute("DELETE FROM tokens WHERE expires < ?", (time.time(),))
+                removed = cur.rowcount
+                rows = conn.execute(
+                    "SELECT token, username FROM tokens ORDER BY created_at DESC"
+                ).fetchall()
+                seen: dict = {}
+                doomed = []
+                for token, username in rows:
+                    count = seen.get(username, 0)
+                    if count >= keep_per_user:
+                        doomed.append((token,))
+                    else:
+                        seen[username] = count + 1
+                if doomed:
+                    conn.executemany("DELETE FROM tokens WHERE token = ?", doomed)
+                    removed += len(doomed)
+                conn.commit()
+                return removed
+            finally:
+                conn.close()
+
+    def count_tokens(self) -> int:
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute("SELECT COUNT(*) FROM tokens").fetchone()
+            finally:
+                conn.close()
+        return int(row[0]) if row else 0
+
+    def revoke_all_tokens(self) -> int:
+        """Sign everybody out. Used when the password changes."""
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute("DELETE FROM tokens")
+                conn.commit()
+                return cur.rowcount
+            finally:
+                conn.close()
 
     # ---- internals ----
 
