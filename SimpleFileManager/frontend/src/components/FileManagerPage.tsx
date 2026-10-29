@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { collectDroppedFiles, relDirFromWebkitPath, type DroppedFile } from '../dropFiles';
 import { fetchBrowse, fetchTree, createFolder, movePath, searchFiles, uploadFileChunked, UploadConflictError, batchOperation, downloadFile, downloadZip, copyPath, type BrowseResult, type FileNode, type TreeNode } from '../api';
 import { FileGrid, FileList, FileCompactList, Toolbar, Breadcrumb, isPreviewable, formatSize } from './FileExplorer';
 import { Sidebar } from './Sidebar';
@@ -90,10 +91,11 @@ export function FileManagerPage() {
   // applies to the rest of the batch too.
   // The batch that was interrupted, so it can be finished.
   const uploadBatchRef = useRef<{
-    list: File[]; targetPath: string; done: number; failed: number;
+    list: DroppedFile[]; targetPath: string; done: number; failed: number;
   } | null>(null);
   const [uploadConflict, setUploadConflict] = useState<{
-    file: File;
+    /** The whole entry, so the folder it came from is kept. */
+    entry: DroppedFile;
     targetPath: string;
     existing?: { name: string; size: number; modified?: string };
     /** Where in the batch we are, and what was already done. */
@@ -104,6 +106,10 @@ export function FileManagerPage() {
   const [promptDialog, setPromptDialog] = useState<{ open: boolean; title: string; message: string; defaultValue: string; onConfirm: (value: string) => void } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // A second input that picks a folder rather than files. Browsers
+  // spell this differently and some of them do not have it, so the
+  // button hides itself when it is not available.
+  const dirInputRef = useRef<HTMLInputElement>(null);
 
   const loadBrowse = useCallback(async (path?: string) => {
     setIsLoading(true);
@@ -222,7 +228,7 @@ export function FileManagerPage() {
     // files dragged in from the OS are uploaded here.
     if (isExternalFileDrag(e)) {
       setExternalDrag(false);
-      await uploadFileList(e.dataTransfer.files, targetFolder);
+      await uploadDrop(e.dataTransfer, targetFolder);
       return;
     }
 
@@ -475,15 +481,25 @@ export function FileManagerPage() {
     fileInputRef.current?.click();
   };
 
+  const handleUploadFolderClick = () => {
+    dirInputRef.current?.click();
+  };
+
   // Shared by the file picker and OS drag-and-drop: both hand us a FileList,
   // so progress, toasts and refresh stay identical.
   // Upload one file, in pieces, and report what happened.
-  const sendOneFile = useCallback(async (file: File, targetPath: string, overwrite: 'never' | 'replace' | 'rename') => {
+  const sendOneFile = useCallback(async (
+    file: File,
+    targetPath: string,
+    overwrite: 'never' | 'replace' | 'rename',
+    relDir = '',
+  ) => {
     await uploadFileChunked(
       targetPath,
       file,
       (loaded, total) => setUploadProgress({ loaded, total }),
       overwrite,
+      relDir,
     );
   }, []);
 
@@ -491,21 +507,21 @@ export function FileManagerPage() {
   // stops the batch and asks; the answer then applies to the rest of
   // it, so one question is asked rather than one per file.
   const runUpload = useCallback(async (
-    list: File[],
+    list: DroppedFile[],
     targetPath: string,
     startIndex: number,
     policy: 'never' | 'replace' | 'rename',
     doneSoFar: number,
     failedSoFar: number,
   ) => {
-    const totalBytes = list.reduce((sum, f) => sum + f.size, 0);
+    const totalBytes = list.reduce((sum, f) => sum + f.file.size, 0);
     let done = doneSoFar;
     let failed = failedSoFar;
 
     for (let i = startIndex; i < list.length; i++) {
-      const file = list[i];
+      const { file, relDir } = list[i];
       try {
-        await sendOneFile(file, targetPath, policy);
+        await sendOneFile(file, targetPath, policy, relDir);
         done++;
       } catch (err) {
         if (err instanceof UploadConflictError) {
@@ -513,7 +529,7 @@ export function FileManagerPage() {
           // user has said what to do.
           uploadBatchRef.current = { list, targetPath, done, failed };
           setUploadConflict({
-            file,
+            entry: list[i],
             targetPath,
             existing: err.conflict.existing,
             index: i,
@@ -542,8 +558,22 @@ export function FileManagerPage() {
 
   const uploadFileList = useCallback(async (files: FileList | null | undefined, targetPath: string) => {
     if (!files || files.length === 0) return;
-    const list = Array.from(files);
-    const totalBytes = list.reduce((sum, f) => sum + f.size, 0);
+    const list: DroppedFile[] = Array.from(files).map(file => ({
+      file,
+      relDir: relDirFromWebkitPath((file as File & { webkitRelativePath?: string }).webkitRelativePath || ''),
+      depth: 0,
+    }));
+    const totalBytes = list.reduce((sum, f) => sum + f.file.size, 0);
+    setUploadProgress({ loaded: 0, total: totalBytes });
+    await runUpload(list, targetPath, 0, 'never', 0, 0);
+  }, [runUpload]);
+
+  // A drop may hold folders. The tree behind it is read first, so the
+  // folder arrives with its shape instead of as one empty file.
+  const uploadDrop = useCallback(async (dataTransfer: DataTransfer, targetPath: string) => {
+    const list = await collectDroppedFiles(dataTransfer);
+    if (!list.length) return;
+    const totalBytes = list.reduce((sum, f) => sum + f.file.size, 0);
     setUploadProgress({ loaded: 0, total: totalBytes });
     await runUpload(list, targetPath, 0, 'never', 0, 0);
   }, [runUpload]);
@@ -660,6 +690,16 @@ export function FileManagerPage() {
   return (
     <div className="flex flex-col h-full overflow-hidden">
       <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleUpload} />
+      <input
+        ref={dirInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        // Non-standard, but it is how every browser that can pick a
+        // folder spells picking a folder.
+        {...{ webkitdirectory: '', directory: '' }}
+        onChange={handleUpload}
+      />
       <Toolbar
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
@@ -669,6 +709,7 @@ export function FileManagerPage() {
         onDelete={() => handleDelete()}
         onMove={handleMove}
         onUpload={handleUploadClick}
+        onUploadFolder={handleUploadFolderClick}
         onDownload={() => handleDownload()}
         onCopy={handleCopy}
         onPaste={handlePaste}
@@ -719,7 +760,7 @@ export function FileManagerPage() {
             e.preventDefault();
             dragDepthRef.current = 0;
             setExternalDrag(false);
-            uploadFileList(e.dataTransfer.files, currentPath);
+            uploadDrop(e.dataTransfer, currentPath);
           }}
         >
           {externalDrag && (() => {
@@ -843,7 +884,7 @@ export function FileManagerPage() {
       {uploadConflict && (
         <UploadConflictDialog
           open
-          filename={uploadConflict.file.name}
+          filename={uploadConflict.entry.file.name}
           existing={uploadConflict.existing}
           onCancel={() => {
             setUploadConflict(null);
@@ -851,24 +892,24 @@ export function FileManagerPage() {
             loadBrowse(currentPath);
           }}
           onRename={() => {
-            const { file, targetPath, index, done, failed } = uploadConflict;
+            const { entry, targetPath, index, done, failed } = uploadConflict;
             const batch = uploadBatchRef.current;
             setUploadConflict(null);
             void (async () => {
               // This file first, then the rest of the batch under the
               // same rule -- one answer, not one question per file.
-              await runUpload([file], targetPath, 0, 'rename', done, failed);
+              await runUpload([entry], targetPath, 0, 'rename', done, failed);
               if (batch) {
                 await runUpload(batch.list, batch.targetPath, index + 1, 'rename', done + 1, failed);
               }
             })();
           }}
           onReplace={() => {
-            const { file, targetPath, index, done, failed } = uploadConflict;
+            const { entry, targetPath, index, done, failed } = uploadConflict;
             const batch = uploadBatchRef.current;
             setUploadConflict(null);
             void (async () => {
-              await runUpload([file], targetPath, 0, 'replace', done, failed);
+              await runUpload([entry], targetPath, 0, 'replace', done, failed);
               if (batch) {
                 await runUpload(batch.list, batch.targetPath, index + 1, 'replace', done + 1, failed);
               }

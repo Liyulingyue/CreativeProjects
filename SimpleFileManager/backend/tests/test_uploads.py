@@ -171,3 +171,40 @@ def test_a_piece_out_of_range_is_refused(manager):
         svc.write_chunk(meta["upload_id"], 5, b"x")
     with pytest.raises(UploadError):
         svc.write_chunk(meta["upload_id"], -1, b"x")
+
+
+def test_a_dropped_folder_keeps_its_shape(tmp_path):
+    """A folder dropped on the browser arrives as files below it."""
+    from app.uploads import UploadManager
+
+    manager = UploadManager(str(tmp_path / "staging"))
+    target = tmp_path / "target"
+    target.mkdir()
+
+    info = manager.init(target, "a.txt", 4, 1, rel_dir="照片/2024")
+
+    assert info["rel_dir"] == "照片/2024"
+    assert (target / "照片" / "2024").is_dir()
+
+
+def test_a_dropped_folder_cannot_climb_out(tmp_path):
+    from app.uploads import UploadError, UploadManager
+
+    manager = UploadManager(str(tmp_path / "staging"))
+    target = tmp_path / "target"
+    target.mkdir()
+
+    with pytest.raises(UploadError):
+        manager.init(target, "a.txt", 4, 1, rel_dir="../../etc")
+
+
+def test_the_name_in_a_dropped_folder_is_just_the_name(tmp_path):
+    from app.uploads import UploadManager
+
+    manager = UploadManager(str(tmp_path / "staging"))
+    target = tmp_path / "target"
+    target.mkdir()
+
+    info = manager.init(target, "a.txt", 4, 1, rel_dir="sub")
+    assert info["name"] == "a.txt"
+    assert info["target_dir"].endswith("/target/sub")

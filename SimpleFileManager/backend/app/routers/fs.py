@@ -663,8 +663,13 @@ def _upload_manager() -> uploads.UploadManager:
 
 
 @fs.post("/upload/init")
-def upload_init(path: str = "", name: str = "", size: int = 0, total_chunks: int = 0):
-    """Begin an upload and ask what is already at the destination."""
+def upload_init(path: str = "", name: str = "", size: int = 0, total_chunks: int = 0, rel_dir: str = ""):
+    """Begin an upload and ask what is already at the destination.
+
+    `rel_dir` is where inside `path` the file goes -- the inside of a
+    folder that was dropped onto the browser, so the shape of that
+    folder survives the trip.
+    """
     try:
         target_dir = resolve_under_root(path, "write")
     except PathOutsideRoot:
@@ -677,7 +682,14 @@ def upload_init(path: str = "", name: str = "", size: int = 0, total_chunks: int
     if total_chunks <= 0 or total_chunks > 1_000_000:
         raise HTTPException(status_code=400, detail="Invalid chunk count")
     try:
-        return _upload_manager().init(target_dir, filename, size, total_chunks)
+        sub = uploads.safe_subdir(target_dir, rel_dir)
+    except uploads.UploadError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    # The file's own destination decides the permission, not the folder
+    # it was dropped into -- a read-only subfolder stays read-only.
+    check_access(sub / filename, "write")
+    try:
+        return _upload_manager().init(target_dir, filename, size, total_chunks, rel_dir)
     except uploads.UploadError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

@@ -9,6 +9,7 @@ interface ToolbarProps {
   onDelete: () => void;
   onMove: () => void;
   onUpload: () => void;
+  onUploadFolder: () => void;
   onDownload: () => void;
   onCopy: () => void;
   onPaste: () => void;
@@ -25,7 +26,7 @@ const btnDanger = `${btnBase} text-slate-500 hover:bg-red-50 hover:text-red-600`
 
 export function Toolbar({
   searchQuery, onSearchChange, onSearch, onRefresh, onNewFolder,
-  onDelete, onMove, onUpload, onDownload, onCopy, onPaste,
+  onDelete, onMove, onUpload, onUploadFolder, onDownload, onCopy, onPaste,
   hasSelection, selectionCount, clipboardHasContent, viewMode, onViewModeChange,
 }: ToolbarProps) {
   return (
@@ -70,7 +71,8 @@ export function Toolbar({
 
       {/* Actions */}
       <button onClick={onRefresh} className={btnGhost} title="刷新"><Icon name="refresh" size={18} /></button>
-      <button onClick={onUpload} className={btnGhost} title="上传"><Icon name="upload" size={18} /></button>
+      <button onClick={onUpload} className={btnGhost} title="上传文件"><Icon name="upload" size={18} /></button>
+      <button onClick={onUploadFolder} className={btnGhost} title="上传整个文件夹"><Icon name="folder" size={18} /></button>
       <button
         onClick={onNewFolder}
         className="flex items-center gap-1.5 px-2.5 sm:px-3 py-2.5 sm:py-1.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 transition-colors"

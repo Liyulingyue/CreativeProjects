@@ -21,7 +21,7 @@ import { LoginPage } from './components/LoginPage';
 import { ServiceStatus } from './components/ServiceStatus';
 import { useCollapse } from './hooks/useCollapse';
 import { checkAuthStatus, getAuthEnabled, logout, onAuthLogout, verifyToken } from './auth';
-import { fetchPlans } from './api';
+import { fetchCurrentUser, fetchPlans, type CurrentUser } from './api';
 
 function PageLoading() {
   return (
@@ -53,6 +53,9 @@ function App() {
   const [authed, setAuthed] = useState(false);
   const [authChecking, setAuthChecking] = useState(true);
   const [pendingPlanCount, setPendingPlanCount] = useState(0);
+  // Who is signed in. The sidebar says so, so on a shared machine it
+  // is obvious whose files are on the screen.
+  const [me, setMe] = useState<CurrentUser | null>(null);
 
   const loadPendingPlans = () => {
     fetchPlans('pending')
@@ -61,6 +64,7 @@ function App() {
   };
 
   useEffect(() => { loadPendingPlans(); }, []);
+  useEffect(() => { fetchCurrentUser().then(setMe).catch(() => {}); }, []);
   useEffect(() => {
     const id = setInterval(loadPendingPlans, 15000);
     return () => clearInterval(id);
@@ -201,6 +205,17 @@ function App() {
           </nav>
 
           <div className={`border-t border-slate-100 ${navCollapsed ? 'px-2 py-3' : 'px-3 py-3'}`}>
+            {me?.authenticated && !navCollapsed && (
+              <div className="flex items-center gap-2 px-3 pb-2 pt-1">
+                <div className="w-6 h-6 rounded-full bg-slate-200 text-slate-600 flex items-center justify-center text-[11px] font-semibold flex-shrink-0">
+                  {me.username.slice(0, 1).toUpperCase()}
+                </div>
+                <div className="min-w-0">
+                  <div className="text-xs font-medium text-slate-700 truncate">{me.username}</div>
+                  <div className="text-[10px] text-slate-400">{me.is_admin ? '管理员' : '普通用户'}</div>
+                </div>
+              </div>
+            )}
             {getAuthEnabled() && (
               <button
                 onClick={handleLogout}

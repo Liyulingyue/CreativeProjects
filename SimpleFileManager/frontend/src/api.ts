@@ -990,11 +990,13 @@ export async function uploadFileChunked(
   file: File,
   onProgress?: (loaded: number, total: number) => void,
   overwrite: OverwritePolicy = 'never',
+  relDir = '',
 ): Promise<{ name: string; path: string; size: number }> {
   const total = Math.max(1, Math.ceil(file.size / UPLOAD_CHUNK_SIZE));
   const initRes = await authFetch(
     `${API_BASE}/fs/upload/init?path=${encodeURIComponent(path)}` +
-    `&name=${encodeURIComponent(file.name)}&size=${file.size}&total_chunks=${total}`,
+    `&name=${encodeURIComponent(file.name)}&size=${file.size}&total_chunks=${total}` +
+    (relDir ? `&rel_dir=${encodeURIComponent(relDir)}` : ''),
     { method: 'POST' },
   );
   if (!initRes.ok) throw new Error((await detailOf(initRes)) || '无法开始上传');
@@ -1096,6 +1098,20 @@ export interface Share {
   expired: boolean;
   used_up: boolean;
   active: boolean;
+}
+
+/** Who the current session belongs to. */
+export interface CurrentUser {
+  username: string;
+  role: string;
+  is_admin: boolean;
+  authenticated: boolean;
+}
+
+export async function fetchCurrentUser(): Promise<CurrentUser> {
+  const res = await authFetch(`${API_BASE}/users/me`);
+  if (!res.ok) return { username: '', role: '', is_admin: true, authenticated: false };
+  return res.json();
 }
 
 /** One earlier version of a file. */

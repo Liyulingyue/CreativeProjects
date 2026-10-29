@@ -42,9 +42,28 @@ STALE_UPLOAD_SECONDS = 24 * 3600
 DEFAULT_CHUNK_SIZE = 4 * 1024 * 1024
 
 
+def safe_subdir(target_dir: Path, rel_dir: str) -> Path:
+    """Resolve a directory below `target_dir`.
+
+    A dropped folder keeps its shape, so the client says where inside
+    the target a file belongs. That is a path from the client and it
+    cannot be trusted to stay inside, so every part is checked before
+    it is joined.
+    """
+    if not rel_dir:
+        return target_dir
+    parts = []
+    for part in rel_dir.replace("\\", "/").split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            raise UploadError("不能上传到目标目录之外")
+        parts.append(part)
+    return target_dir.joinpath(*parts)
+
+
 class UploadError(Exception):
     """An upload could not go ahead."""
-
 
 class UploadConflict(UploadError):
     """The name is already taken.
@@ -106,18 +125,35 @@ class UploadManager:
 
     # ---- operations ----
 
-    def init(self, target_dir: Path, name: str, size: int, total_chunks: int) -> dict:
+    def init(
+        self,
+        target_dir: Path,
+        name: str,
+        size: int,
+        total_chunks: int,
+        rel_dir: str = "",
+    ) -> dict:
         """Start an upload and report what is already at the destination.
 
         Nothing is written to the destination yet. The caller asks the
         user what to do about a name that is taken, and comes back with
         the answer.
+
+        `rel_dir` is a directory below `target_dir` -- the inside of a
+        dropped folder, for instance. It is created if missing, and it
+        cannot climb out of the target.
         """
         self._sweep_stale()
         self.root.mkdir(parents=True, exist_ok=True)
 
         target_dir = Path(target_dir)
-        dest = target_dir / name
+        sub = safe_subdir(target_dir, rel_dir)
+        if rel_dir:
+            try:
+                sub.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                raise UploadError(f"无法创建目录 {rel_dir}: {e}") from e
+        dest = sub / name
         existing = None
         if dest.exists():
             st = dest.stat()
@@ -132,7 +168,8 @@ class UploadManager:
         meta = {
             "id": upload_id,
             "name": name,
-            "target_dir": str(target_dir),
+            "target_dir": str(sub),
+            "rel_dir": rel_dir,
             "size": int(size),
             "total_chunks": int(total_chunks),
             "created_at": int(time.time()),
