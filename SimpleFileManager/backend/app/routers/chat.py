@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from ..deps import state
+from ..deps import state, resolve_reasoning_budget
 from ..llm_client import chat_completion
 
 chat = APIRouter()
@@ -48,6 +48,7 @@ def chat_query(req: ChatRequest) -> ChatResponse:
             ],
             temperature=0.7,
             provider=provider,
+            reasoning_budget=resolve_reasoning_budget(provider, state.get_settings()),
         )
         return ChatResponse(
             response=result.get("content", ""),

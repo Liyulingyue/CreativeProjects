@@ -1,7 +1,7 @@
 import time
 from fastapi import APIRouter
 from pydantic import BaseModel
-from ..deps import state
+from ..deps import state, resolve_reasoning_budget
 from ..indexer import indexer
 from ..models import AppSettings, IndexStats, IndexStatus, AutoIndexStatus
 
@@ -124,6 +124,8 @@ def _probe_llm() -> tuple[bool, str]:
             # only the first token is needed to prove the server answers
             max_tokens=8,
             provider=provider,
+            reasoning_budget=resolve_reasoning_budget(
+                provider, state.get_settings()),
         )
         content = (result.get("content") or "").strip()
         return True, content[:60] or "ok"

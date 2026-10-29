@@ -19,7 +19,10 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from ..deps import state, get_storage_root, resolve_under_root, PathOutsideRoot, validate_plan_action
+from ..deps import (
+    state, get_storage_root, resolve_under_root, PathOutsideRoot,
+    validate_plan_action, resolve_reasoning_budget,
+)
 from ..doc_extract import ExtractionError, extract_text
 from ..interaction import interaction
 from ..llm_client import chat_completion, chat_completion_stream, _friendly_error
@@ -1072,8 +1075,9 @@ def agent_chat_stream(req: AgentRequest):
         max_steps = settings.max_agent_steps
         # Token budget for the model's thinking, on every call this turn
         # makes. A reasoning model left unbounded thinks for its whole
-        # max_tokens, and on this box that is minutes per step.
-        reasoning_budget = settings.agent_reasoning_budget
+        # max_tokens, and on this box that is minutes per step. The
+        # provider's own budget wins over the system default.
+        reasoning_budget = resolve_reasoning_budget(provider, settings)
         # The last non-empty text the model produced, so a turn that ends
         # on a limit still answers with something instead of a bare notice.
         last_answer_text = ""

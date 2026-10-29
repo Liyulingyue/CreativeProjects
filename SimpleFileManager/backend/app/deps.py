@@ -27,6 +27,10 @@ DATA_DIR = ROOT_DIR / ".simplefilemanager"
 DATA_DIR.mkdir(exist_ok=True)
 
 SETTINGS_FILE = DATA_DIR / "settings.json"
+
+# Marker for "the caller did not mention this field", so a nullable
+# column can still be cleared explicitly.
+_UNSET = object()
 INDEX_STATS_FILE = DATA_DIR / "index_stats.json"
 
 # Chunks per embedding call. Deliberately small: a batch is uninterruptible,
@@ -433,6 +437,7 @@ class ChatHistoryService:
                     api_key TEXT DEFAULT '',
                     is_main INTEGER DEFAULT 0,
                     max_tokens INTEGER,
+                    reasoning_budget INTEGER,
                     created_at INTEGER,
                     updated_at INTEGER
                 )
@@ -441,6 +446,11 @@ class ChatHistoryService:
             cols = [r[1] for r in conn.execute("PRAGMA table_info(llm_providers)")]
             if "max_tokens" not in cols:
                 conn.execute("ALTER TABLE llm_providers ADD COLUMN max_tokens INTEGER")
+            # reasoning_budget: the per-provider cap on the model's
+            # thinking. Nullable, so a provider that never set one falls
+            # back to the system default.
+            if "reasoning_budget" not in cols:
+                conn.execute("ALTER TABLE llm_providers ADD COLUMN reasoning_budget INTEGER")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS chat_sessions (
                     id TEXT PRIMARY KEY,
@@ -549,7 +559,7 @@ class ChatHistoryService:
             # badge, not to jump the row to the top.
             rows = conn.execute(
                 "SELECT id, name, base_url, model, api_key, is_main, max_tokens,"
-                " created_at, updated_at"
+                " reasoning_budget, created_at, updated_at"
                 " FROM llm_providers ORDER BY created_at ASC"
             ).fetchall()
             conn.close()
@@ -560,7 +570,7 @@ class ChatHistoryService:
             conn = self._get_conn()
             row = conn.execute(
                 "SELECT id, name, base_url, model, api_key, is_main, max_tokens,"
-                " created_at, updated_at"
+                " reasoning_budget, created_at, updated_at"
                 " FROM llm_providers WHERE id = ?",
                 (provider_id,),
             ).fetchone()
@@ -572,7 +582,7 @@ class ChatHistoryService:
             conn = self._get_conn()
             row = conn.execute(
                 "SELECT id, name, base_url, model, api_key, is_main, max_tokens,"
-                " created_at, updated_at"
+                " reasoning_budget, created_at, updated_at"
                 " FROM llm_providers WHERE is_main = 1 LIMIT 1"
             ).fetchone()
             conn.close()
@@ -580,7 +590,8 @@ class ChatHistoryService:
 
     def create_provider(self, name: str, base_url: str, model: str,
                         api_key: str = "",
-                        max_tokens: Optional[int] = None) -> LLMProvider:
+                        max_tokens: Optional[int] = None,
+                        reasoning_budget: Optional[int] = None) -> LLMProvider:
         provider_id = uuid.uuid4().hex
         now = int(time.time() * 1000)
         with self._lock:
@@ -594,10 +605,10 @@ class ChatHistoryService:
             is_main = 0 if existing_main else 1
             conn.execute(
                 "INSERT INTO llm_providers (id, name, base_url, model, api_key,"
-                " is_main, max_tokens, created_at, updated_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " is_main, max_tokens, reasoning_budget, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (provider_id, name, base_url, model, api_key,
-                 is_main, max_tokens, now, now)
+                 is_main, max_tokens, reasoning_budget, now, now)
             )
             conn.commit()
             conn.close()
@@ -605,6 +616,7 @@ class ChatHistoryService:
             id=provider_id, name=name, base_url=base_url, model=model,
             api_key=api_key, is_main=bool(is_main),
             max_tokens=max_tokens,
+            reasoning_budget=reasoning_budget,
             created_at=now, updated_at=now
         )
 
@@ -614,7 +626,8 @@ class ChatHistoryService:
                          model: Optional[str] = None,
                          api_key: Optional[str] = None,
                          is_main: Optional[bool] = None,
-                         max_tokens: Optional[int] = None
+                         max_tokens: Optional[int] = None,
+                         reasoning_budget: Any = _UNSET
                          ) -> Optional[LLMProvider]:
         with self._lock:
             conn = self._get_conn()
@@ -636,6 +649,11 @@ class ChatHistoryService:
                 fields.append("api_key = ?"); values.append(api_key)
             if max_tokens is not None:
                 fields.append("max_tokens = ?"); values.append(max_tokens)
+            if reasoning_budget is not _UNSET:
+                # Distinct from "leave it alone": the operator can put a
+                # provider back on the system default by clearing the
+                # field, which is a null rather than an omission.
+                fields.append("reasoning_budget = ?"); values.append(reasoning_budget)
             if is_main is True:
                 # Promote this row and demote everyone else. Both halves
                 # run in the same lock so an external query between the
@@ -676,11 +694,12 @@ class ChatHistoryService:
 
     def _row_to_provider(self, row) -> LLMProvider:
         (pid, name, base_url, model, api_key, is_main, max_tokens,
-         created_at, updated_at) = row
+         reasoning_budget, created_at, updated_at) = row
         return LLMProvider(
             id=pid, name=name, base_url=base_url, model=model,
             api_key=api_key or "", is_main=bool(is_main),
             max_tokens=max_tokens or None,
+            reasoning_budget=reasoning_budget,
             created_at=created_at or 0, updated_at=updated_at or 0
         )
 
@@ -1305,6 +1324,19 @@ class PlanStore:
             conn.close()
 
 
+def resolve_reasoning_budget(provider, settings: AppSettings) -> Optional[int]:
+    """The thinking budget to send with a request to this provider.
+
+    A provider's own budget wins; otherwise the system default applies.
+    Both use -1 to mean "do not cap the model's thinking", and the caller
+    leaves the parameter off the request entirely in that case -- some
+    endpoints reject it.
+    """
+    if provider is not None and provider.reasoning_budget is not None:
+        return provider.reasoning_budget
+    return settings.default_reasoning_budget
+
+
 def _get_default_settings() -> AppSettings:
     return AppSettings(
         # LLM credentials live in the llm_providers table (see
@@ -1318,7 +1350,7 @@ def _get_default_settings() -> AppSettings:
         auto_index_enabled=os.getenv("AUTO_INDEX_ENABLED", "true").lower() in ("true", "1", "yes"),
         index_debounce_seconds=int(os.getenv("INDEX_DEBOUNCE_SECONDS", "10")),
         max_agent_steps=int(os.getenv("MAX_AGENT_STEPS", "8")),
-        agent_reasoning_budget=int(os.getenv("AGENT_REASONING_BUDGET", "1024")),
+        default_reasoning_budget=int(os.getenv("DEFAULT_REASONING_BUDGET", "1024")),
         storage_path=os.getenv("STORAGE_PATH", "./data"),
         auto_digest_enabled=os.getenv("AUTO_DIGEST_ENABLED", "false").lower() in ("true", "1", "yes"),
         auto_digest_mode=os.getenv("AUTO_DIGEST_MODE", "scheduled"),
@@ -1345,6 +1377,14 @@ class AppState:
         if settings_data:
             env_defaults = _get_default_settings().model_dump()
             env_defaults.update(settings_data)
+            # The thinking budget used to be an agent-only setting. It is
+            # now the default for every provider that does not name one
+            # of its own, so carry the old value over rather than
+            # silently resetting the operator's choice.
+            legacy = settings_data.get("agent_reasoning_budget")
+            if legacy is not None and "default_reasoning_budget" not in settings_data:
+                env_defaults["default_reasoning_budget"] = legacy
+            env_defaults.pop("agent_reasoning_budget", None)
             self._settings = AppSettings(**env_defaults)
         else:
             self._settings = _get_default_settings()

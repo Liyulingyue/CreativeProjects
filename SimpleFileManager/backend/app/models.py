@@ -80,17 +80,21 @@ class AppSettings(BaseModel):
     # run. May wrap past midnight (23:00-07:00).
     index_active_hours: str = "all"
     max_agent_steps: int = 8
-    # Token budget for the model's thinking, per request.
+    # Default cap on the model's thinking, in tokens, for every LLM call
+    # that does not name a provider of its own.
     #
-    # A reasoning model is free to think for its whole max_tokens before it
+    # A reasoning model is free to think for the whole max_tokens before it
     # does anything useful. On this box that is minutes of generation per
     # step: one turn spent 10k tokens of thinking and 13 minutes, and the
     # budget that actually mattered was the thinking, not the clock -- the
     # same question with a 256-token thinking budget ran seven times
     # faster and still called its tools.
     #
+    # A provider may override this -- the 350M and the 24B want different
+    # allowances -- so this is the fallback, not the only setting.
+    #
     # -1 leaves the model's thinking unrestricted.
-    agent_reasoning_budget: int = 1024
+    default_reasoning_budget: int = 1024
     storage_path: str = "./data"
     theme: str = "light"
     auto_digest_enabled: bool = False
@@ -152,6 +156,12 @@ class LLMProvider(BaseModel):
     effective limit is min(provider.max_tokens, system_max_tokens) so
     the provider cap never exceeds the system ceiling but can tighten
     it further. When null the system ceiling applies by itself.
+
+    `reasoning_budget` is an optional per-provider cap on the model's
+    thinking, in tokens. It is a property of the model rather than of
+    the app -- a 24B on CPU needs a different allowance than a 350M --
+    so each provider can carry its own. Null means "use the system
+    default"; -1 means the model's thinking is not capped at all.
     """
     id: str
     name: str
@@ -160,6 +170,7 @@ class LLMProvider(BaseModel):
     api_key: str = ""
     is_main: bool = False
     max_tokens: Optional[int] = None
+    reasoning_budget: Optional[int] = None
     created_at: int = 0
     updated_at: int = 0
 
@@ -170,6 +181,7 @@ class LLMProviderCreate(BaseModel):
     model: str
     api_key: str = ""
     max_tokens: Optional[int] = None
+    reasoning_budget: Optional[int] = None
 
 
 class LLMProviderUpdate(BaseModel):
@@ -181,6 +193,7 @@ class LLMProviderUpdate(BaseModel):
     # the rest of the table in the same transaction.
     is_main: Optional[bool] = None
     max_tokens: Optional[int] = None
+    reasoning_budget: Optional[int] = None
 
 
 class EmbeddingProvider(BaseModel):

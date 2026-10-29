@@ -37,6 +37,7 @@ def create_provider(req: LLMProviderCreate) -> LLMProvider:
     return state.get_chat_history().create_provider(
         req.name.strip(), req.base_url.strip(), req.model.strip(), req.api_key,
         max_tokens=req.max_tokens,
+        reasoning_budget=req.reasoning_budget,
     )
 
 
@@ -56,6 +57,14 @@ def update_provider(provider_id: str, req: LLMProviderUpdate) -> LLMProvider:
             conn.close()
         if others_main == 0:
             raise HTTPException(status_code=400, detail="至少要有一个 main provider；先在另一个上设 main")
+    # A provider that names no thinking budget follows the system
+    # default, and the operator can put it back on the default by
+    # clearing the field -- which arrives as an explicit null. Leaving
+    # the field out of the request means "leave it as it is", so the
+    # two are told apart by which fields the client actually sent.
+    extra = {}
+    if "reasoning_budget" in req.model_fields_set:
+        extra["reasoning_budget"] = req.reasoning_budget
     result = state.get_chat_history().update_provider(
         provider_id,
         name=req.name,
@@ -64,6 +73,7 @@ def update_provider(provider_id: str, req: LLMProviderUpdate) -> LLMProvider:
         api_key=req.api_key,
         is_main=req.is_main,
         max_tokens=req.max_tokens,
+        **extra,
     )
     if result is None:
         raise HTTPException(status_code=404, detail="provider 不存在")
