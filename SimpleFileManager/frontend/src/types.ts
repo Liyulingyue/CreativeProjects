@@ -105,8 +105,8 @@ export interface AppSettings {
   index_debounce_seconds: number;
   index_active_hours: string;
   max_agent_steps: number;
-  /** Wall-clock ceiling for one agent turn, in seconds. 0 disables it. */
-  agent_time_budget_seconds: number;
+  /** Token budget for the model's thinking per request. -1 = unrestricted. */
+  agent_reasoning_budget: number;
   storage_path: string;
   theme: string;
   auto_digest_enabled: boolean;

@@ -686,9 +686,9 @@ export function SettingsPage() {
                   <input type="number" min={1} className={inputClass} value={settings.max_agent_steps}
                     onChange={e => set({ max_agent_steps: Number(e.target.value) })} />
                 </Field>
-                <Field label="Agent 时间预算" hint="秒，0=不限">
-                  <input type="number" min={0} step={30} className={inputClass} value={settings.agent_time_budget_seconds}
-                    onChange={e => set({ agent_time_budget_seconds: Math.max(0, Number(e.target.value)) })} />
+                <Field label="Agent 思考预算" hint="tokens，-1=不限">
+                  <input type="number" min={-1} step={128} className={inputClass} value={settings.agent_reasoning_budget}
+                    onChange={e => set({ agent_reasoning_budget: Math.max(-1, Number(e.target.value)) })} />
                 </Field>
                 <Field label="上下文窗口" hint="tokens">
                   <input type="number" min={2000} step={1000} className={inputClass} value={settings.max_context_tokens}

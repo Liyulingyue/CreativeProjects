@@ -101,6 +101,7 @@ def chat_completion(
     tools: Optional[list[dict]] = None,
     temperature: float = 0.7,
     max_tokens: Optional[int] = None,
+    reasoning_budget: Optional[int] = None,
     provider=None,
 ) -> dict:
     """Send a chat completion request. Returns the raw choice message dict.
@@ -128,6 +129,11 @@ def chat_completion(
     }
     if tools:
         kwargs["tools"] = tools
+    if reasoning_budget is not None and reasoning_budget >= 0:
+        # llama-server's token budget for thinking. Without it a reasoning
+        # model is free to think for the whole max_tokens, and on this box
+        # that is minutes of generation before it does anything useful.
+        kwargs["extra_body"] = {"reasoning_budget": reasoning_budget}
     resp = _with_retry(client.chat.completions.create, **kwargs)
     choice = resp.choices[0]
     message = choice.message
@@ -209,6 +215,7 @@ def chat_completion_stream(
     tools: Optional[list[dict]] = None,
     temperature: float = 0.7,
     max_tokens: Optional[int] = None,
+    reasoning_budget: Optional[int] = None,
     provider=None,
 ) -> Iterator[tuple[str, object]]:
     """Stream a chat completion.
@@ -249,6 +256,9 @@ def chat_completion_stream(
     }
     if tools:
         kwargs["tools"] = tools
+    if reasoning_budget is not None and reasoning_budget >= 0:
+        # See chat_completion: a token budget for the model's thinking.
+        kwargs["extra_body"] = {"reasoning_budget": reasoning_budget}
     stream = _with_retry(client.chat.completions.create, **kwargs)
 
     calls: dict[int, dict] = {}

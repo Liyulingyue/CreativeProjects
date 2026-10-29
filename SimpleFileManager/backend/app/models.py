@@ -80,17 +80,17 @@ class AppSettings(BaseModel):
     # run. May wrap past midnight (23:00-07:00).
     index_active_hours: str = "all"
     max_agent_steps: int = 8
-    # Wall-clock ceiling for one agent turn, in seconds.
+    # Token budget for the model's thinking, per request.
     #
-    # max_agent_steps counts turns, not time, and on this hardware a turn
-    # is not a fixed cost: a 24B on CPU prefills new tokens at ~24ms each
-    # and generates at ~4.7 tok/s, so one step can take a second or ten
-    # minutes depending on how much the model decided to think. A step
-    # limit alone let a single question run for thirteen minutes.
+    # A reasoning model is free to think for its whole max_tokens before it
+    # does anything useful. On this box that is minutes of generation per
+    # step: one turn spent 10k tokens of thinking and 13 minutes, and the
+    # budget that actually mattered was the thinking, not the clock -- the
+    # same question with a 256-token thinking budget ran seven times
+    # faster and still called its tools.
     #
-    # The turn stops when it hits this and answers with what it has. Zero
-    # disables the ceiling.
-    agent_time_budget_seconds: int = 180
+    # -1 leaves the model's thinking unrestricted.
+    agent_reasoning_budget: int = 1024
     storage_path: str = "./data"
     theme: str = "light"
     auto_digest_enabled: bool = False

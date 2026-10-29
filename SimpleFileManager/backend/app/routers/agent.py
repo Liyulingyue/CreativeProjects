@@ -278,7 +278,16 @@ SYSTEM_PROMPT = """你是 NASMind 的文件治理 Agent，负责帮助用户分�
   换算——手算中文单位极易出错，把 2.5 MB 写成「2.5 亿」这类错误很常见。
 - 如果某个说法在工具返回的内容里找不到依据，就明确说「工具返回的内容中没有
   依据」，而不是补一个像样的答案。
-- 不确定时坦白不确定，比给出一个听起来合理但错误的答案有用得多。"""
+- 不确定时坦白不确定，比给出一个听起来合理但错误的答案有用得多。
+
+【凡是问原文，必须先把原文取回来】
+判词、诗句、回目名、人物对白、情节原文，这类问题的答案必须是检索到的原文。
+凭记忆写出一段引文就是编造——哪怕它听着很像真的（"宁绮绮金钗子，秀似东珠"
+这种半通不通的句子就是编出来的）。先用 search_content 找到原文，再引用。
+
+【检索连续无果，结论是「资料里没有」，不是「换个词再搜一次」】
+同一个东西换了三种说法都搜不到，说明资料里没有它。这时候直接回答「资料中没有
+这个内容」，并说明你搜过哪些词。反复改写查询词只是在消耗步数，不会带来新结果。"""
 
 
 # Keywords that strongly suggest the user wants a file-system action.
@@ -315,6 +324,56 @@ _SUBMISSION_CLAIM_VERBS = ["提交", "已生成", "生成", "创建", "plan", "s
 # A long hex run next to a plan reference is the signature of that, and it
 # shows up even in replies that never use a claim verb.
 _FABRICATED_ID_RE = re.compile(r"\b[0-9a-f]{24,}\b")
+
+
+def _drop_dangling_tool_calls(messages: list[dict]) -> list[dict]:
+    """Remove tool calls that never got a reply, and replies with no call.
+
+    A turn that stops part way through a step leaves the conversation
+    with an assistant message carrying more tool calls than there are
+    tool replies after it. Chat templates refuse to render that, so the
+    final answer pass -- which is exactly the pass an early stop needs --
+    would fail on the turn that stopped.
+    """
+    called: set[str] = set()
+    for m in messages:
+        for tc in m.get("tool_calls") or []:
+            called.add(tc.get("id"))
+    out = []
+    for i, m in enumerate(messages):
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            answered = set()
+            for n in messages[i + 1:]:
+                if n.get("role") != "tool":
+                    break
+                answered.add(n.get("tool_call_id"))
+            kept = [tc for tc in m["tool_calls"] if tc.get("id") in answered]
+            if not kept:
+                continue
+            if len(kept) != len(m["tool_calls"]):
+                m = {**m, "tool_calls": kept}
+        elif m.get("role") == "tool" and m.get("tool_call_id") not in called:
+            continue
+        out.append(m)
+    return out
+
+
+def _found_nothing(result: dict) -> bool:
+    """True when a tool call came back with nothing to show.
+
+    The tools report their findings under different keys -- matches,
+    results, items -- and a search that found nothing is the signal that
+    the thing being searched for is not there.
+    """
+    if not result.get("success", True):
+        return False
+    for key in ("matches", "results", "items"):
+        if key in result:
+            return not result[key]
+    total = result.get("total")
+    if isinstance(total, int):
+        return total == 0
+    return False
 
 
 def _claims_submitted_plan(text: str) -> bool:
@@ -1011,19 +1070,33 @@ def agent_chat_stream(req: AgentRequest):
         steps_used = 0
         settings = state.get_settings()
         max_steps = settings.max_agent_steps
-        # Wall-clock ceiling for the turn. A step limit counts steps, but a
-        # step here is not a fixed cost -- it is however long the model
-        # decides to think. See the note on the setting.
-        time_budget = settings.agent_time_budget_seconds
+        # Token budget for the model's thinking, on every call this turn
+        # makes. A reasoning model left unbounded thinks for its whole
+        # max_tokens, and on this box that is minutes per step.
+        reasoning_budget = settings.agent_reasoning_budget
         # The last non-empty text the model produced, so a turn that ends
         # on a limit still answers with something instead of a bare notice.
         last_answer_text = ""
+        # What the turn ends up saying. Assigned on every path out of the
+        # loop, including the ones that break out of it early.
+        final_text = ""
         # Why the loop stopped early, if it did.
         stop_reason: str = ""
         # Tool call signatures, for spotting a model that is going in
         # circles: the same call with the same arguments three times over
         # is not a search that is refining itself.
         call_signatures: list[str] = []
+        # The same tool, several times in a row, each time with nothing
+        # to show. A model that searches for something that is not there
+        # will keep phrasing the query differently -- "垂杨柳", "倒拔",
+        # "林黛玉 倒拔垂杨柳 第五回" -- and each phrasing counts as a new
+        # call, so comparing arguments exactly never catches it. The
+        # signal is not the wording but the emptiness.
+        barren_tool: str = ""
+        barren_count = 0
+        # Set when the turn stopped because the searches came up empty,
+        # as opposed to the same call repeating verbatim.
+        barren_stop = False
         emitted: list[str] = []  # streamed text, kept for session history
         turn_complete = False
         # Accumulated across steps: the model reasons again after each tool
@@ -1051,12 +1124,6 @@ def agent_chat_stream(req: AgentRequest):
 
         try:
             for _ in range(max_steps):
-                # Stop on the clock before starting more work. A turn that
-                # has already spent its budget should answer, not dig in.
-                if time_budget and (time.monotonic() - t0) > time_budget:
-                    stop_reason = "time"
-                    yield sse("step", {"step": steps_used, "of": max_steps, "stopped": "time"})
-                    break
                 steps_used += 1
                 yield sse("step", {
                     "step": steps_used,
@@ -1071,7 +1138,10 @@ def agent_chat_stream(req: AgentRequest):
                 # the turn calls tools; the 350M picks them unreliably.
                 # The chat UI warns the user about this in the provider
                 # dropdown's tooltip.
-                for kind, payload in chat_completion_stream(all_messages, tools=TOOLS, provider=provider):
+                for kind, payload in chat_completion_stream(
+                    all_messages, tools=TOOLS, provider=provider,
+                    reasoning_budget=reasoning_budget,
+                ):
                     # First LLM text byte — reasoning chunk or answer chunk,
                     # whichever arrives first. Tool calls are structured, not
                     # text, so they don't qualify as "first token" in the
@@ -1098,24 +1168,6 @@ def agent_chat_stream(req: AgentRequest):
                         yield sse("token", {"text": payload})
                     elif kind == "tool_call":
                         tool_calls.append(payload)
-
-                    # The budget has to be enforced here, not only between
-                    # steps. A single generation can run for minutes on
-                    # this box -- the model is free to think for 4000
-                    # tokens before it emits a word -- so a check that
-                    # only ran between steps would let one step blow
-                    # through the whole allowance.
-                    if time_budget and (time.monotonic() - t0) > time_budget:
-                        stop_reason = "time"
-                        break
-                if stop_reason:
-                    # The stream was cut short. Whatever came out is what
-                    # there is; the turn ends and reports it.
-                    final_text = turn_text or last_answer_text
-                    if turn_text.strip():
-                        last_answer_text = turn_text.strip()
-                    all_messages.append({"role": "assistant", "content": final_text})
-                    break
 
                 if tool_calls:
                     all_messages.append({
@@ -1160,6 +1212,12 @@ def agent_chat_stream(req: AgentRequest):
                                 result = execute_tool(name, arguments)
                                 if name == "submit_plan" and result.get("success"):
                                     plan_ids.append(result.get("plan_id", ""))
+                            if _found_nothing(result):
+                                barren_count = barren_count + 1 if barren_tool == name else 1
+                                barren_tool = name
+                            else:
+                                barren_tool = ""
+                                barren_count = 0
                         tool_results.append({"tool": name, "result": result})
                         yield sse("tool", {"tool": name, "args": args_for_display, "result": result})
                         all_messages.append({
@@ -1169,9 +1227,19 @@ def agent_chat_stream(req: AgentRequest):
                         })
                         if stuck:
                             break
+                        if barren_count >= 3:
+                            # Three searches in a row with nothing to show.
+                            # The thing being looked for is not there, and
+                            # rephrasing the query will not change that.
+                            # Stop and make the model say what it found.
+                            barren_stop = True
+                            stuck = True
+                            break
                     if stuck:
-                        stop_reason = "loop"
-                        yield sse("step", {"step": steps_used, "of": max_steps, "stopped": "loop"})
+                        stop_reason = "empty" if barren_stop else "loop"
+                        yield sse("step", {
+                            "step": steps_used, "of": max_steps, "stopped": stop_reason,
+                        })
                         break
                     continue
 
@@ -1230,11 +1298,11 @@ def agent_chat_stream(req: AgentRequest):
                 # The step budget ran out. Whatever the model managed to
                 # say is still an answer -- replacing it with a notice
                 # threw away the work and left the user with nothing but
-                # a complaint about the limit.
-                notice = "已达到单次任务的最大步数限制，请查看已收集的信息或换个更简单的请求。"
-                final_text = f"{last_answer_text}\n\n（{notice}）" if last_answer_text else notice
-                yield sse("token", {"text": final_text})
-                all_messages.append({"role": "assistant", "content": final_text})
+                # a complaint about the limit. The model still gets one
+                # pass with the tools taken away, so the turn ends with
+                # an answer rather than with an apology.
+                stop_reason = "steps"
+                final_text = last_answer_text
 
             if stop_reason:
                 # An early stop still has to answer. The model may never
@@ -1242,48 +1310,44 @@ def agent_chat_stream(req: AgentRequest):
                 # turn calling tools -- so ask it for one more, with what
                 # it already has in hand.
                 reason_text = {
-                    "time": f"已用完本次任务的时间预算（{time_budget} 秒）",
                     "loop": "反复调用同一个工具，已停止继续尝试",
+                    "empty": "连续多次检索都没有结果，已停止继续搜索",
+                    "steps": "已达到单次任务的最大步数限制",
                 }.get(stop_reason, "已停止")
                 body = last_answer_text or final_text
-                if not body.strip():
-                    # The model spent the turn on tools and thinking and
-                    # never wrote an answer. Give it one more pass with
-                    # the tools taken away, so it has to answer with what
-                    # it already has. The pass is not on the clock: the
-                    # answer is the point of the turn.
-                    #
-                    # The prefill is cheap -- the prompt cache still holds
-                    # everything up to the last tool result, so only the
-                    # new instruction is evaluated. max_tokens caps the
-                    # answer, reasoning included, so it cannot wander.
-                    followup = (
-                        "不要再调用工具。请根据已经收集到的信息直接回答用户的问题；"
-                        "如果确实找不到答案，就说明你查了什么、为什么没有结论。"
-                    )
-                    all_messages.append({"role": "user", "content": followup})
-                    # The answer pass gets its own window. It is the one
-                    # part of the turn that must not be cut short -- it is
-                    # the answer -- but it is still bounded, or a turn
-                    # that blew its research budget could go on for
-                    # minutes more.
-                    answer_deadline = t0 + (time_budget * 1.5 if time_budget else 0)
-                    try:
-                        for kind, payload in chat_completion_stream(
-                            all_messages, tools=[], provider=provider, max_tokens=2048
-                        ):
-                            if kind == "token":
-                                final_text += payload
-                            if answer_deadline and time.monotonic() > answer_deadline:
-                                break
-                    except Exception as e:
-                        log.warning("final answer pass failed: %s", e)
-                    if final_text.strip():
-                        final_text = final_text.strip()
-                    else:
-                        final_text = f"（{reason_text}。模型没有给出可展示的回答，请查看下面的工具调用记录。）"
-                else:
+                # The turn was cut short, so the model has not answered.
+                # Give it one more pass with the tools taken away and let
+                # it state what it actually found. Without this it ends
+                # the turn mid-sentence, or worse, ends it having said
+                # nothing at all.
+                #
+                # The prefill is cheap -- the prompt cache still holds
+                # everything up to the last tool result, so only the new
+                # instruction is evaluated. max_tokens caps the answer,
+                # reasoning included, so it cannot wander.
+                followup = (
+                    "不要再调用工具。请根据已经收集到的信息直接回答用户的问题；"
+                    "如果检索始终没有结果，请明确说明该内容在资料中不存在，"
+                    "不要编造章节、回数或出处。"
+                )
+                all_messages.append({"role": "user", "content": followup})
+                answered = ""
+                try:
+                    for kind, payload in chat_completion_stream(
+                        _drop_dangling_tool_calls(all_messages), tools=[], provider=provider,
+                        max_tokens=2048, reasoning_budget=reasoning_budget,
+                    ):
+                        if kind == "token":
+                            answered += payload
+                except Exception as e:
+                    log.warning("final answer pass failed: %s", e)
+                answered = answered.strip()
+                if answered:
+                    final_text = f"{body}\n\n{answered}" if body.strip() else answered
+                elif body.strip():
                     final_text = f"{body}\n\n（{reason_text}。上面的内容是停止前已经得到的结果。）"
+                else:
+                    final_text = f"（{reason_text}。模型没有给出可展示的回答，请查看下面的工具调用记录。）"
                 yield sse("token", {"text": ""})
                 all_messages.append({"role": "assistant", "content": final_text})
 
