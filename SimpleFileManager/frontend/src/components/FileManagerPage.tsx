@@ -6,6 +6,7 @@ import { FilePreview } from './FilePreview';
 import ContextMenu from './ui/ContextMenu';
 import { ConfirmDialog, UploadConflictDialog, PromptDialog } from './ui/Dialog';
 import { ShareDialog } from './ShareDialog';
+import { VersionHistory } from './VersionHistory';
 import { useToast } from './ui/Toast';
 import { Icon } from './ui/Icon';
 import { useCollapse } from '../hooks/useCollapse';
@@ -82,6 +83,8 @@ export function FileManagerPage() {
   const [confirmDialog, setConfirmDialog] = useState<{ open: boolean; title: string; message: string; onConfirm: () => void } | null>(null);
   // The file a share is being made for.
   const [shareTarget, setShareTarget] = useState<FileNode | null>(null);
+  // The file whose history is being looked at.
+  const [versionTarget, setVersionTarget] = useState<FileNode | null>(null);
   // An upload that stopped because a name was already taken. The whole
   // batch waits: the answer is about how to treat a name, and it
   // applies to the rest of the batch too.
@@ -809,6 +812,7 @@ export function FileManagerPage() {
             { label: '复制', icon: 'copy', onClick: () => { setSelectedPaths(new Set([contextMenu.node.path])); setClipboard([contextMenu.node.path]); clipboardRef.current = [contextMenu.node.path]; toast('已复制到剪贴板', 'info'); } },
             { label: '重命名', icon: 'edit', onClick: () => handleRename(contextMenu.node) },
             { label: '分享', icon: 'share', onClick: () => setShareTarget(contextMenu.node) },
+            { label: '历史版本', icon: 'clock', onClick: () => setVersionTarget(contextMenu.node) },
             { label: '删除', icon: 'trash', danger: true, onClick: () => handleDelete(contextMenu.node) },
           ]}
           onClose={() => setContextMenu(null)}
@@ -816,6 +820,15 @@ export function FileManagerPage() {
       )}
 
       {previewNode && <FilePreview node={previewNode} onClose={() => setPreviewNode(null)} />}
+
+      {versionTarget && !versionTarget.is_dir && (
+        <VersionHistory
+          path={versionTarget.path}
+          name={versionTarget.name}
+          onClose={() => setVersionTarget(null)}
+          onRestored={() => { loadBrowse(currentPath); toast('已还原到该版本', 'success'); }}
+        />
+      )}
 
       {shareTarget && (
         <ShareDialog

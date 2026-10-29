@@ -604,6 +604,11 @@ async def upload_files(path: str = "", files: list[UploadFile] = File(...),
         dest = (target_dir / filename).resolve()
         if not dest.is_relative_to(target_dir.resolve()):
             raise HTTPException(status_code=400, detail="Upload destination outside storage root")
+        if dest.exists() and overwrite in ("replace", "rename"):
+            # What is there now is kept, so replacing it can be undone.
+            from ..deps import state
+
+            state.get_version_store().snapshot(dest, note="被上传的新文件覆盖")
         if dest.exists() and overwrite == "never":
             st = dest.stat()
             raise HTTPException(
@@ -798,6 +803,42 @@ def stream_token(req: StreamTokenRequest):
         "expires_at": issued["expires_at"],
         "url": f"/api/fs/download?path={quote(req.path)}&st={issued['token']}",
     }
+
+
+@fs.get("/versions")
+def list_versions(path: str):
+    """What this file used to contain."""
+    try:
+        target = resolve_under_root(path)
+    except PathOutsideRoot:
+        raise HTTPException(status_code=400, detail="Path outside storage root")
+    store = state.get_version_store()
+    return {"path": str(target), "versions": store.list(target)}
+
+
+@fs.post("/versions/{version_id}/restore")
+def restore_version(version_id: int, path: str = ""):
+    """Put a version back."""
+    from ..versions import VersionError
+
+    try:
+        target = resolve_under_root(path) if path else None
+    except PathOutsideRoot:
+        raise HTTPException(status_code=400, detail="Path outside storage root")
+    try:
+        result = state.get_version_store().restore(version_id, target)
+    except VersionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    invalidate_sizes(Path(result["path"]))
+    return result
+
+
+@fs.delete("/versions/{version_id}")
+def delete_version(version_id: int):
+    """Throw a version away."""
+    if not state.get_version_store().delete(version_id):
+        raise HTTPException(status_code=404, detail="找不到这个版本")
+    return {"success": True}
 
 
 @fs.get("/content")

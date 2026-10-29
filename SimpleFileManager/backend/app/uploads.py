@@ -197,6 +197,11 @@ class UploadManager:
             raise UploadError(f"还有 {len(missing)} 个分片没有上传")
 
         dest = target_dir / name
+        if dest.exists() and overwrite in ("replace", "rename"):
+            # What is there now is kept, so replacing it can be undone.
+            from .deps import state
+
+            state.get_version_store().snapshot(dest, note="被上传的新文件覆盖")
         if dest.exists():
             if overwrite == "never":
                 st = dest.stat()

@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from .chunking import chunk_file
 from .interaction import interaction
 from . import db
+from .versions import VERSIONS_DIR_NAME
 from .models import (
     AppSettings, IndexStats, IndexStatus, ChatSession, ChatMessage,
     AgentPlan, PlanAction, LLMProvider, EmbeddingProvider,
@@ -1416,6 +1417,7 @@ class AppState:
         self._chat_history: Optional[ChatHistoryService] = None
         self._plan_store: Optional[PlanStore] = None
         self._share_store = None
+        self._version_store = None
         self._load()
 
     def _load(self):
@@ -1787,6 +1789,14 @@ class AppState:
             db_path = str(DATA_DIR / "plans.db")
             self._plan_store = PlanStore(db_path)
         return self._plan_store
+
+    def get_version_store(self):
+        """The history of what files used to contain."""
+        if self._version_store is None:
+            from .versions import VersionStore
+
+            self._version_store = VersionStore(DATA_DIR / VERSIONS_DIR_NAME)
+        return self._version_store
 
     def get_share_store(self):
         """The shares table.

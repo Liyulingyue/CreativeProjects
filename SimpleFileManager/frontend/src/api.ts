@@ -1098,6 +1098,37 @@ export interface Share {
   active: boolean;
 }
 
+/** One earlier version of a file. */
+export interface FileVersion {
+  id: number;
+  size: number;
+  created_at: number;
+  note: string;
+  human: string;
+}
+
+export async function fetchVersions(path: string): Promise<{ path: string; versions: FileVersion[] }> {
+  const res = await authFetch(`${API_BASE}/fs/versions?path=${encodeURIComponent(path)}`);
+  if (!res.ok) throw new Error('读取历史版本失败');
+  return res.json();
+}
+
+export async function restoreVersion(id: number, path?: string): Promise<{ path: string; size: number }> {
+  const q = path ? `?path=${encodeURIComponent(path)}` : '';
+  const res = await authFetch(`${API_BASE}/fs/versions/${id}/restore${q}`, { method: 'POST' });
+  if (!res.ok) {
+    let detail = '还原失败';
+    try { const body = await res.json(); if (typeof body?.detail === 'string') detail = body.detail; } catch { /* keep default */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+export async function deleteVersion(id: number): Promise<void> {
+  const res = await authFetch(`${API_BASE}/fs/versions/${id}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error('删除版本失败');
+}
+
 /** Make a file or directory reachable by link. */
 export async function createShare(
   path: string,
