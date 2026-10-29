@@ -15,6 +15,8 @@ from .indexer import indexer
 from .auto_digest import auto_digest
 from .routers import providers as providers_router  # noqa: E402
 from .routers import embedding_providers as embedding_providers_router  # noqa: E402
+from .routers.shares import shares as shares_router  # noqa: E402
+from .routers.share_public import share_public as share_public_router  # noqa: E402
 
 # Before anything else, so the modules imported below log into the
 # configured handlers rather than the root logger's default.
@@ -146,3 +148,10 @@ app.include_router(agent, prefix="/api/agent", tags=["agent"], dependencies=[aut
 app.include_router(organizer, prefix="/api/organizer", tags=["organizer"], dependencies=[auth_dep])
 app.include_router(plans, tags=["plans"], dependencies=[auth_dep])
 app.include_router(digest, tags=["digest"], dependencies=[auth_dep])
+app.include_router(shares_router, prefix="/api/shares", tags=["shares"], dependencies=[auth_dep])
+
+# The public side of a share. It has to be reachable without a login
+# -- that is the point of a share -- so it is mounted without the
+# auth dependency. Everything that could make it unsafe is handled by
+# the rules on the share itself.
+app.include_router(share_public_router, prefix="/api/share", tags=["share"])

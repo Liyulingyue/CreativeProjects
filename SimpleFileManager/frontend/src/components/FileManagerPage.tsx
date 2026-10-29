@@ -5,6 +5,7 @@ import { Sidebar } from './Sidebar';
 import { FilePreview } from './FilePreview';
 import ContextMenu from './ui/ContextMenu';
 import { ConfirmDialog, UploadConflictDialog, PromptDialog } from './ui/Dialog';
+import { ShareDialog } from './ShareDialog';
 import { useToast } from './ui/Toast';
 import { Icon } from './ui/Icon';
 import { useCollapse } from '../hooks/useCollapse';
@@ -79,6 +80,8 @@ export function FileManagerPage() {
   const [previewNode, setPreviewNode] = useState<FileNode | null>(null);
 
   const [confirmDialog, setConfirmDialog] = useState<{ open: boolean; title: string; message: string; onConfirm: () => void } | null>(null);
+  // The file a share is being made for.
+  const [shareTarget, setShareTarget] = useState<FileNode | null>(null);
   // An upload that stopped because a name was already taken. The whole
   // batch waits: the answer is about how to treat a name, and it
   // applies to the rest of the batch too.
@@ -805,6 +808,7 @@ export function FileManagerPage() {
             { label: '下载', icon: 'download', onClick: () => handleDownload(contextMenu.node) },
             { label: '复制', icon: 'copy', onClick: () => { setSelectedPaths(new Set([contextMenu.node.path])); setClipboard([contextMenu.node.path]); clipboardRef.current = [contextMenu.node.path]; toast('已复制到剪贴板', 'info'); } },
             { label: '重命名', icon: 'edit', onClick: () => handleRename(contextMenu.node) },
+            { label: '分享', icon: 'share', onClick: () => setShareTarget(contextMenu.node) },
             { label: '删除', icon: 'trash', danger: true, onClick: () => handleDelete(contextMenu.node) },
           ]}
           onClose={() => setContextMenu(null)}
@@ -812,6 +816,16 @@ export function FileManagerPage() {
       )}
 
       {previewNode && <FilePreview node={previewNode} onClose={() => setPreviewNode(null)} />}
+
+      {shareTarget && (
+        <ShareDialog
+          path={shareTarget.path}
+          name={shareTarget.name}
+          isDir={shareTarget.is_dir}
+          onClose={() => setShareTarget(null)}
+          onCreated={() => toast('共享链接已创建，可在「共享链接」页管理', 'success')}
+        />
+      )}
 
       {uploadConflict && (
         <UploadConflictDialog

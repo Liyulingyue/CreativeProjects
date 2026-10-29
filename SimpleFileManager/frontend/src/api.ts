@@ -1080,6 +1080,115 @@ export async function uploadFiles(
   });
 }
 
+export interface Share {
+  id: string;
+  path?: string;
+  name: string;
+  is_dir: boolean;
+  size: number;
+  created_at: number;
+  expires_at: number;
+  has_password: boolean;
+  max_downloads: number;
+  downloads: number;
+  last_access: number;
+  revoked: boolean;
+  expired: boolean;
+  used_up: boolean;
+  active: boolean;
+}
+
+/** Make a file or directory reachable by link. */
+export async function createShare(
+  path: string,
+  expiryDays: number,
+  password = '',
+  maxDownloads = 0,
+): Promise<Share> {
+  const res = await authFetch(`${API_BASE}/shares`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, expiry_days: expiryDays, password, max_downloads: maxDownloads }),
+  });
+  if (!res.ok) {
+    let detail = '创建分享失败';
+    try { const body = await res.json(); if (typeof body?.detail === 'string') detail = body.detail; } catch { /* keep default */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+export async function fetchShares(): Promise<{ shares: Share[]; count: number }> {
+  const res = await authFetch(`${API_BASE}/shares`);
+  if (!res.ok) throw new Error('加载分享列表失败');
+  return res.json();
+}
+
+export async function revokeShare(id: string): Promise<void> {
+  const res = await authFetch(`${API_BASE}/shares/${id}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error('停止分享失败');
+}
+
+export async function setShareExpiry(id: string, expiryDays: number): Promise<void> {
+  const res = await authFetch(`${API_BASE}/shares/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expiry_days: expiryDays }),
+  });
+  if (!res.ok) throw new Error('修改有效期失败');
+}
+
+/** What a visitor sees when they open a share link. */
+export interface PublicShareInfo {
+  name: string;
+  is_dir: boolean;
+  size: number;
+  has_password: boolean;
+  expires_at: number;
+  downloads: number;
+  max_downloads: number;
+  locked: boolean;
+}
+
+/**
+ * The public side of a share.
+ *
+ * These calls carry no token on purpose: the point of a share is that
+ * someone without a login can open it.
+ */
+export async function fetchPublicShare(id: string): Promise<PublicShareInfo> {
+  const res = await fetch(`${API_BASE}/share/${encodeURIComponent(id)}`);
+  if (!res.ok) {
+    let detail = '链接无效';
+    try { const body = await res.json(); if (typeof body?.detail === 'string') detail = body.detail; } catch { /* keep default */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+export async function unlockPublicShare(id: string, password: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/share/${encodeURIComponent(id)}/unlock`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
+  if (!res.ok) {
+    let detail = '密码不正确';
+    try { const body = await res.json(); if (typeof body?.detail === 'string') detail = body.detail; } catch { /* keep default */ }
+    throw new Error(detail);
+  }
+}
+
+export async function fetchPublicShareListing(id: string): Promise<{
+  name: string;
+  items: { name: string; is_dir: boolean; size: number; modified: string }[];
+  count: number;
+}> {
+  const res = await fetch(`${API_BASE}/share/${encodeURIComponent(id)}/list`);
+  if (!res.ok) throw new Error('无法读取目录');
+  return res.json();
+}
+
 /** A file rendered for reading in the browser. */
 export interface FilePreviewData {
   name: string;

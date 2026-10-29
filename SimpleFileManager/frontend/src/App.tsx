@@ -15,6 +15,8 @@ const OrganizerPage = lazy(() => import('./components/OrganizerPage').then(m => 
 const DigestPage = lazy(() => import('./components/DigestPage').then(m => ({ default: m.DigestPage })));
 const TrashPage = lazy(() => import('./components/TrashPage').then(m => ({ default: m.TrashPage })));
 const SettingsPage = lazy(() => import('./components/SettingsPage').then(m => ({ default: m.SettingsPage })));
+const SharesPage = lazy(() => import('./components/SharesPage').then(m => ({ default: m.SharesPage })));
+const PublicSharePage = lazy(() => import('./components/PublicSharePage').then(m => ({ default: m.PublicSharePage })));
 import { LoginPage } from './components/LoginPage';
 import { ServiceStatus } from './components/ServiceStatus';
 import { useCollapse } from './hooks/useCollapse';
@@ -41,6 +43,7 @@ const NAV_ITEMS = [
   { to: '/organizer', label: '整理', icon: 'clipboard' as const },
   { to: '/digest', label: '日报', icon: 'newspaper' as const },
   { to: '/trash', label: '回收站', icon: 'trash' as const },
+  { to: '/shares', label: '共享链接', icon: 'share' as const },
   { to: '/settings', label: '设置', icon: 'settings' as const },
 ];
 
@@ -102,8 +105,26 @@ function App() {
     );
   }
 
-  if (!authed) {
+  // A shared link is meant to be opened by somebody with no login, so
+  // that route sits outside the check. It shows one thing and nothing
+  // else -- a visitor should not be able to tell what else this NAS
+  // holds.
+  const isPublicShare = window.location.pathname.startsWith('/s/');
+
+  if (!authed && !isPublicShare) {
     return <LoginPage onLogin={() => setAuthed(true)} />;
+  }
+
+  if (isPublicShare) {
+    return (
+      <BrowserRouter>
+        <Suspense fallback={<PageLoading />}>
+          <Routes>
+            <Route path="/s/:id" element={<PublicSharePage />} />
+          </Routes>
+        </Suspense>
+      </BrowserRouter>
+    );
   }
 
   return (
@@ -230,6 +251,7 @@ function App() {
                   <Route path="/organizer" element={<OrganizerPage />} />
                   <Route path="/digest" element={<DigestPage />} />
                   <Route path="/trash" element={<TrashPage />} />
+                  <Route path="/shares" element={<SharesPage />} />
                   <Route path="/settings" element={<SettingsPage />} />
                 </Routes>
               </Suspense>

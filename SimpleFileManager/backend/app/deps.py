@@ -1415,6 +1415,7 @@ class AppState:
         self._rag_service: Optional[RAGService] = None
         self._chat_history: Optional[ChatHistoryService] = None
         self._plan_store: Optional[PlanStore] = None
+        self._share_store = None
         self._load()
 
     def _load(self):
@@ -1786,6 +1787,20 @@ class AppState:
             db_path = str(DATA_DIR / "plans.db")
             self._plan_store = PlanStore(db_path)
         return self._plan_store
+
+    def get_share_store(self):
+        """The shares table.
+
+        Shares live in their own database rather than alongside the
+        plans, because their lifetime is different: a plan is part of
+        a conversation, a share outlives it and may still be open
+        months later.
+        """
+        if self._share_store is None:
+            from .shares import ShareStore
+
+            self._share_store = ShareStore(str(DATA_DIR / "shares.db"))
+        return self._share_store
 
 
 state = AppState()
