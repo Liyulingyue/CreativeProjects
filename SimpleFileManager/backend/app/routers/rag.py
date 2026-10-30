@@ -1,11 +1,12 @@
 import json
+from pathlib import Path
 from typing import Iterator, Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from ..deps import state
+from ..deps import state, can_access, get_storage_root
 from ..llm_client import _friendly_error
 from ..search_engine import search_engine
 
@@ -239,11 +240,25 @@ def get_status() -> IndexStatusResponse:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _indexed_file_is_readable(file_path: str) -> bool:
+    """Whether an indexed document is one the caller may open."""
+    if not file_path:
+        return False
+    target = Path(file_path)
+    if not target.is_absolute():
+        target = get_storage_root() / file_path
+    return can_access(target, "read")
+
+
 @rag.get("/files", response_model=IndexedFilesResponse)
 def get_indexed_files():
     try:
         rag_svc = state.get_rag_service()
         files = rag_svc.vector_store.list_files()
+
+        # The index covers the whole machine. A person sees only the
+        # documents they are allowed to open.
+        files = [f for f in files if _indexed_file_is_readable(f.get("file_path", ""))]
 
         # Join in the indexer's progress so the UI can show how much of each
         # document has actually been embedded, not just how many chunks exist.

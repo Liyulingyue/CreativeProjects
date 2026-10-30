@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from ..deps import (
     state, get_storage_root, resolve_under_root, PathOutsideRoot,
-    validate_plan_action,
+    PathNotAllowed, can_access, validate_plan_action,
 )
 from ..doc_extract import ExtractionError, extract_text
 from ..interaction import interaction
@@ -464,6 +464,8 @@ def tool_list_directory(path: str) -> dict:
         target = resolve_under_root(path)
     except PathOutsideRoot:
         return {"success": False, "error": f"Path outside storage root: {path}"}
+    except PathNotAllowed:
+        return {"success": False, "error": "你没有访问这个位置的权限"}
     if not target.exists():
         return {"success": False, "error": f"Directory not found: {path}"}
     if not target.is_dir():
@@ -472,6 +474,11 @@ def tool_list_directory(path: str) -> dict:
     try:
         for entry in sorted(target.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
             if entry.name.startswith(".") or ".simplefilemanager" in entry.parts:
+                continue
+            # The directory is reachable, but what is inside it is not
+            # necessarily all reachable -- a person granted one folder
+            # should not learn the names of the folders beside it.
+            if not can_access(entry, "read"):
                 continue
             try:
                 stat = entry.stat()
@@ -497,6 +504,8 @@ def tool_read_file(path: str, limit: int = 4000, offset: int = 0) -> dict:
         target = resolve_under_root(path)
     except PathOutsideRoot:
         return {"success": False, "error": f"Path outside storage root: {path}"}
+    except PathNotAllowed:
+        return {"success": False, "error": "你没有访问这个文件的权限"}
     if not target.exists() or not target.is_file():
         return {"success": False, "error": f"File not found: {path}"}
 
@@ -566,6 +575,10 @@ def tool_find_files(pattern: str) -> dict:
                 continue
             if regex.search(entry.name):
                 try:
+                    # The whole tree is walked, so what comes back is
+                    # filtered by what this person may open.
+                    if not can_access(entry, "read"):
+                        continue
                     matches.append({
                         "name": entry.name,
                         "path": _rel(entry),
@@ -589,6 +602,8 @@ def tool_search_content(pattern: str, path: str = "") -> dict:
         base = resolve_under_root(path)
     except PathOutsideRoot:
         return {"success": False, "error": f"Path outside storage root: {path}"}
+    except PathNotAllowed:
+        return {"success": False, "error": "你没有访问这个位置的权限"}
     if not base.exists():
         return {"success": False, "error": f"Directory not found: {path}"}
     matches = []
@@ -599,6 +614,8 @@ def tool_search_content(pattern: str, path: str = "") -> dict:
             if not entry.is_file() or entry.stat().st_size > 1024 * 1024:
                 continue
             try:
+                if not can_access(entry, "read"):
+                    continue
                 with open(entry, "r", encoding="utf-8", errors="ignore") as f:
                     for line_no, line in enumerate(f, 1):
                         if regex.search(line):
@@ -731,6 +748,30 @@ def tool_submit_plan(title: str, summary: str = "", actions: Optional[list[dict]
             "message": "Plan submitted. It will be executed only after the user approves it."}
 
 
+def _result_is_readable(result: dict) -> bool:
+    """Whether a search result points at something the caller may open."""
+    path = result.get("path") or ""
+    if not path:
+        return False
+    target = Path(path)
+    if not target.is_absolute():
+        target = get_storage_root() / path
+    return can_access(target, "read")
+
+
+def _indexed_name_is_readable(name: str) -> bool:
+    """Whether a file name in the index is one the caller may open."""
+    try:
+        for entry in get_storage_root().rglob(name):
+            if ".simplefilemanager" in entry.parts:
+                continue
+            if can_access(entry, "read"):
+                return True
+    except (OSError, ValueError):
+        return False
+    return False
+
+
 def tool_semantic_search(query: str, path: str = "", top_k: int = 5) -> dict:
     """Meaning-based retrieval over the indexed corpus.
 
@@ -755,6 +796,7 @@ def tool_semantic_search(query: str, path: str = "", top_k: int = 5) -> dict:
         candidates = [
             name for name in search_engine.indexed_file_names()
             if name and (name in query or Path(name).stem in query)
+            and _indexed_name_is_readable(name)
         ]
         if len(candidates) == 1:
             inferred = candidates[0]
@@ -767,7 +809,18 @@ def tool_semantic_search(query: str, path: str = "", top_k: int = 5) -> dict:
     except Exception as e:
         return {"success": False, "error": f"semantic_search failed: {e}"}
 
-    items = result.get("results", [])[:top_k]
+    # The index holds every document on the machine, including the ones
+    # this person may not open. What comes back is filtered to what they
+    # may, and the count is raised so the model still gets a full set of
+    # passages to work with.
+    reachable = [r for r in result.get("results", []) if _result_is_readable(r)]
+    if len(reachable) < len(result.get("results", [])):
+        try:
+            more = search_engine.hybrid_search(query, top_k=top_k * 3, path_filter=needle)
+            reachable = [r for r in more.get("results", []) if _result_is_readable(r)]
+        except Exception:
+            pass
+    items = reachable[:top_k]
 
     if not items:
         return {

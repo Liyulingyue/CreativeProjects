@@ -1263,6 +1263,17 @@ def can_access(target: Path, mode: str = "read") -> bool:
         return False
 
 
+def filter_accessible(paths: list, mode: str = "read") -> list:
+    """Keep only the paths the caller may reach.
+
+    Search results and directory listings are produced from the whole
+    corpus, and the corpus holds everything -- including what one
+    person may not open. So they are filtered here, at the one place
+    that knows who is asking.
+    """
+    return [p for p in paths if can_access(Path(p), mode)]
+
+
 def visible_children(target: Path, entries: list[Path]) -> list[Path]:
     """The entries of a directory the caller is allowed to see.
 

@@ -85,7 +85,12 @@ def _get_mime_type(path: Path) -> str:
 
 def _safe_path(base: str, target: str) -> Path:
     base_path = Path(base).resolve()
-    target_path = Path(target).resolve()
+    raw = Path(target)
+    # A relative path is taken from the storage root, not from
+    # wherever the server happens to be running from -- the two are not
+    # the same place, and a path that worked in one did not in the
+    # other.
+    target_path = (raw.resolve() if raw.is_absolute() else (base_path / raw).resolve())
     if not target_path.is_relative_to(base_path):
         raise HTTPException(status_code=400, detail="Path outside storage root")
     # The same permission check the other routes go through, so a path

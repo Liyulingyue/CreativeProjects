@@ -1,11 +1,12 @@
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from ..interaction import interaction
-from ..deps import state
+from ..deps import state, can_access, get_storage_root
 from ..models import FileNode, SearchResult
 from ..search_engine import search_engine
 
@@ -39,10 +40,31 @@ def hybrid_search(
     if mode not in ("hybrid", "keyword", "semantic"):
         raise HTTPException(status_code=400, detail=f"Unknown search mode: {mode}")
     payload = search_engine.hybrid_search(query, top_k, path_filter, mode)
+
+    # The index holds every document on the machine. What this person
+    # may not open does not come back to them -- and the count is
+    # adjusted so the page does not show a total they never got.
+    payload["results"] = _readable_results(payload.get("results", []))
+    payload["total"] = len(payload["results"])
     # The engine returns counts, not the mode; echo the requested one so the UI
     # does not have to trust its own local state to label the active channel.
     payload["mode"] = mode
     return HybridSearchResponse(**payload)
+
+
+def _readable_results(results: list) -> list:
+    """The search results this person may open."""
+    keep = []
+    for r in results:
+        path = r.get("path") or ""
+        if not path:
+            continue
+        target = Path(path)
+        if not target.is_absolute():
+            target = get_storage_root() / path
+        if can_access(target, "read"):
+            keep.append(r)
+    return keep
 
 
 def _get_mime_type(path: Path) -> str:
@@ -60,13 +82,16 @@ def _get_mime_type(path: Path) -> str:
 
 def _path_to_filenode(path: Path) -> FileNode:
     stat = path.stat()
+    # A Path has no strftime; the times come off the stat.
+    stamp = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%dT%H:%M:%S")
+    created = datetime.fromtimestamp(stat.st_ctime).strftime("%Y-%m-%dT%H:%M:%S")
     return FileNode(
         name=path.name,
         path=str(path),
         is_dir=path.is_dir(),
         size=stat.st_size if path.is_file() else 0,
-        modified=path.strftime("%Y-%m-%dT%H:%M:%S"),
-        created=path.strftime("%Y-%m-%dT%H:%M:%S"),
+        modified=stamp,
+        created=created,
         extension=path.suffix.lower(),
         mime_type=_get_mime_type(path),
     )
@@ -89,6 +114,10 @@ def search_files(q: str, path: Optional[str] = None, limit: int = 50) -> SearchR
     for entry in search_root.rglob("*"):
         try:
             if query_lower in entry.name.lower():
+                # The name of a file this person may not open is not
+                # theirs to learn.
+                if not can_access(entry, "read"):
+                    continue
                 results.append(_path_to_filenode(entry))
                 if len(results) >= limit:
                     break
@@ -115,6 +144,8 @@ def suggest(q: str, limit: int = 10) -> list[str]:
     for entry in search_root.rglob("*"):
         try:
             if query_lower in entry.name.lower():
+                if not can_access(entry, "read"):
+                    continue
                 suggestions.add(entry.name)
                 if len(suggestions) >= limit:
                     break
