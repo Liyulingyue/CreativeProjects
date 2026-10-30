@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import { fetchDuplicates, scanForDuplicates, type DuplicateGroup } from '../api';
+import {
+  cleanDuplicates, fetchDuplicates, scanForDuplicates, type DuplicateGroup,
+} from '../api';
 import { Icon } from './ui/Icon';
 
 function formatSize(bytes: number): string {
@@ -29,6 +31,7 @@ export function DuplicatesPage() {
   const [wasted, setWasted] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [cleaning, setCleaning] = useState('');
   const [message, setMessage] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -57,6 +60,28 @@ export function DuplicatesPage() {
       setMessage(e instanceof Error ? e.message : '扫描失败');
     } finally {
       setBusy(false);
+    }
+  };
+
+  // One copy is kept and the rest go to the recycle bin -- the bin,
+  // not nowhere, so this can be undone.
+  const clean = async (group: DuplicateGroup) => {
+    if (!window.confirm(
+      `这组有 ${group.copies} 份相同的文件。\n\n` +
+      `保留一份，其余 ${group.copies - 1} 份放进回收站（可以随时还原）。\n\n继续？`
+    )) return;
+    setCleaning(group.hash); setMessage(null);
+    try {
+      const result = await cleanDuplicates(group.hash);
+      setMessage(
+        `已保留 ${result.kept.split('/').pop()}，${result.trashed.length} 份进了回收站，` +
+        `腾出 ${formatSize(result.wasted)}`
+      );
+      await load();
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : '清理失败');
+    } finally {
+      setCleaning('');
     }
   };
 
@@ -119,6 +144,13 @@ export function DuplicatesPage() {
                 <span className="text-xs font-medium text-amber-600">
                   多占 {formatSize(group.wasted)}
                 </span>
+                <button
+                  onClick={() => clean(group)}
+                  disabled={cleaning === group.hash}
+                  className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-600 text-xs font-medium hover:bg-slate-200 disabled:opacity-50 transition-colors flex-shrink-0"
+                >
+                  {cleaning === group.hash ? '清理中...' : '保留一份，其余进回收站'}
+                </button>
               </div>
               <div className="divide-y divide-slate-100">
                 {group.files.map(file => (

@@ -87,3 +87,51 @@ def test_a_file_without_a_hash_is_not_in_the_answer(finder):
     _index(finder, "b.txt", 2000, None)
 
     assert finder.find()["count"] == 0
+
+
+def test_the_extra_copies_go_to_the_recycle_bin(finder):
+    """Not to nowhere -- to the bin, so a mistake can be undone."""
+    from app.trash import trash_root
+
+    root = finder.storage_root
+    (root / "a.txt").write_bytes(b"x" * 2000)
+    (root / "b.txt").write_bytes(b"x" * 2000)
+    (root / "c.txt").write_bytes(b"x" * 2000)
+    _index(finder, "a.txt", 2000, "abc")
+    _index(finder, "b.txt", 2000, "abc")
+    _index(finder, "c.txt", 2000, "abc")
+
+    out = finder.clean("abc")
+
+    assert len(out["trashed"]) == 2
+    assert (root / "a.txt").exists()
+    assert not (root / "b.txt").exists()
+    assert not (root / "c.txt").exists()
+    # And it is in the bin.
+    assert trash_root(root).exists()
+    assert len(list(trash_root(root).iterdir())) == 2
+
+
+def test_the_copy_that_is_named_is_the_one_kept(finder):
+    root = finder.storage_root
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (root / name).write_bytes(b"x" * 2000)
+        _index(finder, name, 2000, "abc")
+
+    out = finder.clean("abc", keep="c.txt")
+
+    assert out["kept"].endswith("c.txt")
+    assert (root / "c.txt").exists()
+    assert not (root / "a.txt").exists()
+
+
+def test_nothing_is_thrown_away_that_cannot_be_found_again(finder):
+    root = finder.storage_root
+    for name in ("a.txt", "b.txt"):
+        (root / name).write_bytes(b"x" * 2000)
+        _index(finder, name, 2000, "abc")
+
+    out = finder.clean("abc")
+
+    assert out["failed"] == []
+    assert out["wasted"] == 2000

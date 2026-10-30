@@ -105,6 +105,69 @@ class DuplicateFinder:
             "total_wasted": wasted,
         }
 
+    def clean(self, digest: str, keep: str = "") -> dict:
+        """Put the extra copies in the recycle bin.
+
+        One copy is kept and the rest go to the bin -- the bin, not
+        nowhere, so a mistake here is a thing that can be undone. The
+        copy kept is the one named, or else the oldest, which is
+        usually the one that was there first and might be the one
+        something else refers to.
+
+        Only files the caller may write to are touched. A duplicate
+        somebody else keeps is not this person's to throw away.
+        """
+        from .deps import check_access
+        from .trash import TrashError, TrashService
+
+        entries = self._hashes().get(digest)
+        if not entries or len(entries) < 2:
+            raise ValueError("没有找到这组重复文件")
+
+        candidates = []
+        for path, size in entries:
+            target = self.storage_root / path
+            try:
+                check_access(target, "write")
+            except Exception:
+                continue
+            candidates.append((path, size, target))
+        if len(candidates) < 2:
+            raise ValueError("你没有权限处理这组重复文件")
+
+        if keep:
+            kept = next((c for c in candidates if c[0] == keep), None)
+            if kept is None:
+                raise ValueError("要保留的文件不在这一组里")
+        else:
+            # The oldest is kept: it is the one that was there first.
+            kept = min(
+                candidates,
+                key=lambda c: (c[2].stat().st_mtime if c[2].exists() else 0, c[0]),
+            )
+
+        bin_service = TrashService(self.storage_root)
+        trashed = []
+        failed = []
+        for path, size, target in candidates:
+            if target == kept[2]:
+                continue
+            try:
+                bin_service.trash(target)
+                trashed.append(path)
+            except (TrashError, OSError) as e:
+                failed.append({"path": path, "error": str(e)})
+
+        return {
+            "kept": kept[0],
+            "trashed": trashed,
+            "failed": failed,
+            "wasted": sum(
+                size for path, size, _ in candidates
+                if path != kept[0] and path in set(trashed)
+            ),
+        }
+
     def scan_for_duplicates(self, budget: int = 2000) -> dict:
         """Work out the hashes of files that do not have one yet.
 

@@ -85,6 +85,23 @@ export async function fetchDuplicates(): Promise<DuplicateListing> {
   return res.json();
 }
 
+export interface DuplicateCleanResult {
+  kept: string;
+  trashed: string[];
+  failed: { path: string; error: string }[];
+  wasted: number;
+}
+
+export async function cleanDuplicates(hash: string, keep = ''): Promise<DuplicateCleanResult> {
+  const res = await authFetch(
+    `${API_BASE}/fs/duplicates/${encodeURIComponent(hash)}/clean` +
+    (keep ? `?keep=${encodeURIComponent(keep)}` : ''),
+    { method: 'POST' },
+  );
+  if (!res.ok) throw new Error('Failed to clean up the duplicates');
+  return res.json();
+}
+
 export async function scanForDuplicates(): Promise<{ hashed: number; remaining: number }> {
   const res = await authFetch(`${API_BASE}/fs/duplicates/scan`, { method: 'POST' });
   if (!res.ok) throw new Error('Failed to scan');

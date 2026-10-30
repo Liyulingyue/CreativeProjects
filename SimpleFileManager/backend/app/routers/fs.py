@@ -888,6 +888,22 @@ def scan_for_duplicates() -> dict:
     return DuplicateFinder().scan_for_duplicates()
 
 
+@fs.post("/duplicates/{digest}/clean")
+def clean_duplicates(digest: str, keep: str = "") -> dict:
+    """Put the extra copies of a file in the recycle bin.
+
+    One copy is kept -- the one named, or else the oldest -- and the
+    rest go to the bin rather than nowhere, so a mistake here is a
+    thing that can be undone.
+    """
+    from ..duplicates import DuplicateFinder
+
+    try:
+        return DuplicateFinder().clean(digest, keep=keep)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @fs.get("/versions")
 def list_versions(path: str):
     """What this file used to contain."""
