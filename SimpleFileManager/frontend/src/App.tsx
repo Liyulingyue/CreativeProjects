@@ -34,6 +34,12 @@ function PageLoading() {
   );
 }
 
+// The pages that are the administrator's business: they look at the
+// whole machine. The index page is not one of them -- it shows what
+// has been indexed, which a person is entitled to know about their
+// own files -- but rebuilding it from there is the administrator's.
+const ADMIN_ONLY = new Set(['/organizer', '/digest']);
+
 const NAV_ITEMS = [
   { to: '/', label: '文件管理', icon: 'folder' as const },
   { to: '/search', label: '搜索', icon: 'search' as const },
@@ -179,7 +185,11 @@ function App() {
           )}
 
           <nav className={`flex-1 overflow-y-auto py-3 ${navCollapsed ? 'px-2' : 'px-3'} space-y-0.5`}>
-            {NAV_ITEMS.map(item => (
+            {NAV_ITEMS.filter(item =>
+              // An ordinary person's menu does not offer pages that
+              // would only be refused.
+              !ADMIN_ONLY.has(item.to) || me?.is_admin !== false
+            ).map(item => (
               <NavLink
                 key={item.to}
                 to={item.to}

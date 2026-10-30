@@ -6,8 +6,9 @@ import hashlib
 from pathlib import Path
 from typing import Optional
 from datetime import datetime, timedelta
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from .. import db
+from .auth import require_admin
 from ..models import SnapshotRecord, FileSnapshot, FileChange, Suggestion, CompareResponse
 from ..deps import state, get_storage_root
 
@@ -314,7 +315,7 @@ def get_organizer_service() -> OrganizerService:
 
 
 @organizer.post("/snapshot")
-def take_snapshot():
+def take_snapshot(_admin=Depends(require_admin)):
     root_path = str(get_storage_root())
 
     svc = get_organizer_service()
@@ -322,19 +323,19 @@ def take_snapshot():
 
 
 @organizer.get("/snapshots")
-def list_snapshots(limit: int = 30):
+def list_snapshots(limit: int = 30, _admin=Depends(require_admin)):
     svc = get_organizer_service()
     return {"snapshots": svc.list_snapshots(limit)}
 
 
 @organizer.get("/compare")
-def compare_snapshots(date_from: str, date_to: str):
+def compare_snapshots(date_from: str, date_to: str, _admin=Depends(require_admin)):
     svc = get_organizer_service()
     return svc.compare_snapshots(date_from, date_to)
 
 
 @organizer.get("/latest")
-def get_latest():
+def get_latest(_admin=Depends(require_admin)):
     svc = get_organizer_service()
     snap = svc.get_latest_snapshot()
     if not snap:
@@ -343,7 +344,7 @@ def get_latest():
 
 
 @organizer.delete("/snapshots")
-def cleanup_snapshots(keep_days: int = 30):
+def cleanup_snapshots(keep_days: int = 30, _admin=Depends(require_admin)):
     svc = get_organizer_service()
     svc.delete_old_snapshots(keep_days)
     return {"success": True}

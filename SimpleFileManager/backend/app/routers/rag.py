@@ -2,11 +2,12 @@ import json
 from pathlib import Path
 from typing import Iterator, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..deps import state, can_access, get_storage_root
+from .auth import require_admin
 from ..llm_client import _friendly_error
 from ..search_engine import search_engine
 
@@ -76,7 +77,7 @@ class IndexedFilesResponse(BaseModel):
 
 
 @rag.post("/index")
-def index_file(req: IndexRequest) -> dict:
+def index_file(req: IndexRequest, _admin=Depends(require_admin)) -> dict:
     try:
         rag_svc = state.get_rag_service()
         rag_svc.index_file(req.file_path, req.content)
@@ -87,7 +88,7 @@ def index_file(req: IndexRequest) -> dict:
 
 
 @rag.post("/index_batch")
-def index_files(req: IndexBatchRequest) -> dict:
+def index_files(req: IndexBatchRequest, _admin=Depends(require_admin)) -> dict:
     try:
         rag_svc = state.get_rag_service()
         rag_svc.index_files(req.files)
