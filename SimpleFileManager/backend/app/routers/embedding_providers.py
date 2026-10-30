@@ -10,21 +10,22 @@ Endpoints:
 """
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from ..deps import state
+from .auth import require_admin
 from ..models import EmbeddingProvider, EmbeddingProviderCreate, EmbeddingProviderUpdate
 
 router = APIRouter(tags=["embedding_providers"])
 
 
 @router.get("", response_model=list[EmbeddingProvider])
-def list_embedding_providers() -> list[EmbeddingProvider]:
+def list_embedding_providers(_admin=Depends(require_admin)) -> list[EmbeddingProvider]:
     return state.get_chat_history().list_embedding_providers()
 
 
 @router.post("", response_model=EmbeddingProvider, status_code=201)
-def create_embedding_provider(req: EmbeddingProviderCreate) -> EmbeddingProvider:
+def create_embedding_provider(req: EmbeddingProviderCreate, _admin=Depends(require_admin)) -> EmbeddingProvider:
     if not req.name.strip() or not req.base_url.strip() or not req.model.strip():
         raise HTTPException(status_code=400, detail="name / base_url / model 不能为空")
     return state.get_chat_history().create_embedding_provider(
@@ -38,7 +39,7 @@ def create_embedding_provider(req: EmbeddingProviderCreate) -> EmbeddingProvider
 
 @router.patch("/{provider_id}", response_model=EmbeddingProvider)
 def update_embedding_provider(
-    provider_id: str, req: EmbeddingProviderUpdate,
+    provider_id: str, req: EmbeddingProviderUpdate, _admin=Depends(require_admin),
 ) -> EmbeddingProvider:
     chat_svc = state.get_chat_history()
     # Refuse to demote the only is_index. is_search is allowed to be
@@ -83,7 +84,7 @@ def update_embedding_provider(
 
 
 @router.delete("/{provider_id}")
-def delete_embedding_provider(provider_id: str) -> dict:
+def delete_embedding_provider(provider_id: str, _admin=Depends(require_admin)) -> dict:
     chat_svc = state.get_chat_history()
     target = chat_svc.get_embedding_provider(provider_id)
     if target is None:

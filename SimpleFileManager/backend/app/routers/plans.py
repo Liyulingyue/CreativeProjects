@@ -11,7 +11,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
-from ..deps import state, resolve_under_root, PathOutsideRoot, validate_plan_action, get_storage_root
+from ..deps import state, resolve_under_root, PathOutsideRoot, PathNotAllowed, validate_plan_action, get_storage_root, session_owner
 from ..models import AgentPlan, CreatePlanRequest
 
 plans = APIRouter(prefix="/api/plans", tags=["plans"])
@@ -50,6 +50,7 @@ def create_plan(req: CreatePlanRequest) -> AgentPlan:
         summary=req.summary,
         source=req.source,
         actions=[a.model_dump() for a in req.actions],
+        owner=session_owner(),
     )
 
 
@@ -177,7 +178,7 @@ def _execute_action(action_type: str, source: str, target: str) -> str:
     if action_type == "create_folder":
         if not target:
             raise ValueError("create_folder requires target_path")
-        dest = _safe(target)
+        dest = _safe(target, "write")
         # Idempotent: a re-run of a partially-failed plan would otherwise
         # fail this action because the folder survived the first attempt.
         if dest.is_dir():
@@ -191,7 +192,7 @@ def _execute_action(action_type: str, source: str, target: str) -> str:
         if not source:
             raise ValueError("delete requires source_path")
         source = _resolve_existing_source(source)
-        src = _safe(source)
+        src = _safe(source, "write")
         if not src.exists():
             raise FileNotFoundError(f"Source not found: {source}")
         # To the bin, not to nowhere. A tidy-up plan that was approved
@@ -208,8 +209,8 @@ def _execute_action(action_type: str, source: str, target: str) -> str:
         if not source or not target:
             raise ValueError(f"{action_type} requires source_path and target_path")
         source = _resolve_existing_source(source)
-        src = _safe(source)
-        dest = _safe(target)
+        src = _safe(source, "write")
+        dest = _safe(target, "write")
         if not src.exists():
             raise FileNotFoundError(f"Source not found: {source}")
         if dest.exists():
@@ -221,8 +222,17 @@ def _execute_action(action_type: str, source: str, target: str) -> str:
     raise ValueError(f"Unknown action_type: {action_type}")
 
 
-def _safe(path: str) -> Path:
+def _safe(path: str, mode: str = "read") -> Path:
+    """A path inside the storage root that the caller may reach.
+
+    A plan is a set of file operations somebody asked for and
+    somebody else approved. Before it touches anything, the paths are
+    checked against the person running it -- a plan must not be a way
+    around what a person is allowed to do.
+    """
     try:
-        return resolve_under_root(path)
+        return resolve_under_root(path, mode)
     except PathOutsideRoot:
         raise ValueError(f"Path outside storage root: {path}")
+    except PathNotAllowed as e:
+        raise ValueError(str(e) or "没有访问这个位置的权限")

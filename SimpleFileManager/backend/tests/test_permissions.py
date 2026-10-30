@@ -247,3 +247,120 @@ def test_a_stream_token_is_not_good_for_ever(people):
     import time
 
     assert expires <= time.time() + 61
+
+
+def test_the_service_settings_are_the_administrators_business(people):
+    """A person with a folder of their own does not change the service."""
+    token = _login(client, "other", "other1234")
+
+    assert client.post("/api/settings", json={"index_interval": 60},
+                        headers={"Authorization": f"Bearer {token}"}).status_code == 403
+    assert client.get("/api/providers",
+                      headers={"Authorization": f"Bearer {token}"}).status_code == 403
+    assert client.post("/api/settings/auto_index/pause", json={"paused": True},
+                       headers={"Authorization": f"Bearer {token}"}).status_code == 403
+
+
+def test_the_administrator_can_change_the_settings(people):
+    token = _login(client, "boss", "boss1234")
+
+    assert client.post("/api/settings", json={"index_interval": 300},
+                        headers={"Authorization": f"Bearer {token}"}).status_code == 200
+    assert client.get("/api/providers",
+                      headers={"Authorization": f"Bearer {token}"}).status_code == 200
+
+
+def test_a_plan_cannot_do_what_the_person_asking_it_may_not_do(people):
+    """A plan moves real files, so it is checked before it is made."""
+    _make("我的/笔记.txt")
+    _make("别人的/机密.txt")
+    token = _login(client, "other", "other1234")
+
+    made = client.post(
+        "/api/plans",
+        json={
+            "title": "偷一个文件",
+            "summary": "",
+            "source": "agent",
+            "actions": [{
+                "action_type": "move",
+                "source_path": "别人的/机密.txt",
+                "target_path": "我的/偷来的.txt",
+                "reason": "",
+            }],
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert made.status_code == 403
+
+
+def test_a_plan_for_your_own_folder_is_allowed(people):
+    _make("我的/笔记.txt")
+    token = _login(client, "other", "other1234")
+
+    made = client.post(
+        "/api/plans",
+        json={
+            "title": "整理",
+            "summary": "",
+            "source": "agent",
+            "actions": [{
+                "action_type": "create_folder",
+                "source_path": "",
+                "target_path": "我的/新文件夹",
+                "reason": "",
+            }],
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert made.status_code == 200
+
+
+def test_a_plan_is_yours_to_see(people):
+    token = _login(client, "other", "other1234")
+    made = client.post(
+        "/api/plans",
+        json={
+            "title": "我的计划",
+            "summary": "",
+            "source": "agent",
+            "actions": [{
+                "action_type": "create_folder",
+                "source_path": "",
+                "target_path": "我的/新文件夹",
+                "reason": "",
+            }],
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    pid = made.json()["id"]
+
+    # It is in their list.
+    listed = client.get("/api/plans", headers={"Authorization": f"Bearer {token}"})
+    assert pid in [p["id"] for p in listed.json()["plans"]]
+
+    # Somebody else's is not.
+    other = people["other"]["id"]
+    assert other is not None
+    admin = _login(client, "boss", "boss1234")
+    admin_plan = client.post(
+        "/api/plans",
+        json={
+            "title": "管理员的计划",
+            "summary": "",
+            "source": "agent",
+            "actions": [{
+                "action_type": "create_folder",
+                "source_path": "",
+                "target_path": "我的/管理员建的",
+                "reason": "",
+            }],
+        },
+        headers={"Authorization": f"Bearer {admin}"},
+    )
+    admin_pid = admin_plan.json()["id"]
+
+    assert client.get(f"/api/plans/{admin_pid}",
+                      headers={"Authorization": f"Bearer {token}"}).status_code == 404

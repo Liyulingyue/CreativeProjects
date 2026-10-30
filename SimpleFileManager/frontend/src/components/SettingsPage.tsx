@@ -6,6 +6,7 @@ import { Icon } from './ui/Icon';
 import type { AppSettings, EmbeddingProvider, EmbeddingProviderCreate, EmbeddingProviderUpdate, LLMProvider, LLMProviderCreate, LLMProviderUpdate } from '../types';
 import { useProviders } from '../hooks/useProviders';
 import { useEmbeddingProviders } from '../hooks/useEmbeddingProviders';
+import { fetchCurrentUser } from '../api';
 import { UsersPanel } from './UsersPanel';
 
 interface ProbeResult { ok: boolean; detail?: string; latency_ms?: number; }
@@ -525,6 +526,13 @@ export function SettingsPage() {
   const [showAddProvider, setShowAddProvider] = useState(false);
   const providersApi = useProviders();
   const embProvidersApi = useEmbeddingProviders();
+  // The service's own settings are the administrator's business. When
+  // somebody else opens this page they are told so, rather than being
+  // shown a form whose every button is refused.
+  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
+  useEffect(() => {
+    fetchCurrentUser().then(u => setIsAdmin(u.is_admin)).catch(() => setIsAdmin(false));
+  }, []);
   const [showAddEmbProvider, setShowAddEmbProvider] = useState(false);
   // Snapshot of the settings as loaded from the server, so the save
   // handler can tell which fields actually changed since page open. The
@@ -602,6 +610,12 @@ export function SettingsPage() {
       <div className="flex-1 overflow-y-auto p-4 sm:p-6">
         <div className="space-y-4">
 
+          {isAdmin === false ? (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              只有管理员可以修改服务设置。你可以在这里改自己的密码。
+            </div>
+          ) : (
+          <>
           {/* ---- 模型服务 ---- */}
           <div className="flex items-center gap-3">
             <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">模型服务</h2>
@@ -837,6 +851,9 @@ export function SettingsPage() {
               )}
             </div>
           </Card>
+
+          </>
+          )}
 
           {/* ---- 安全 ---- */}
           <div className="flex items-center gap-3 pt-2">

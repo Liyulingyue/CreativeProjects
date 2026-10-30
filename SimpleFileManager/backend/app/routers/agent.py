@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from ..deps import (
     state, get_storage_root, resolve_under_root, PathOutsideRoot,
-    PathNotAllowed, can_access, validate_plan_action,
+    PathNotAllowed, can_access, validate_plan_action, session_owner,
 )
 from ..doc_extract import ExtractionError, extract_text
 from ..interaction import interaction
@@ -732,6 +732,23 @@ def tool_submit_plan(title: str, summary: str = "", actions: Optional[list[dict]
                         f"find_files) to get the real path before submitting a plan."
                     )}
 
+        # A plan moves real files, so the paths it names are checked
+        # against the person asking for it. A plan that cannot be
+        # carried out is refused here rather than failing one action at
+        # a time later.
+        for label, path in (("source_path", source), ("target_path", target)):
+            if not path:
+                continue
+            try:
+                resolve_under_root(path, "write")
+            except PathNotAllowed:
+                return {"success": False, "error": (
+                    f"You may not write to {label} '{path}'. A plan cannot do "
+                    f"what you are not allowed to do."
+                )}
+            except PathOutsideRoot:
+                return {"success": False, "error": f"Path outside storage root: {path}"}
+
         cleaned.append({
             "action_type": action_type,
             "source_path": source,
@@ -743,6 +760,7 @@ def tool_submit_plan(title: str, summary: str = "", actions: Optional[list[dict]
         summary=summary,
         source="agent",
         actions=cleaned,
+        owner=session_owner(),
     )
     return {"success": True, "plan_id": plan.id, "title": plan.title, "action_count": len(plan.actions),
             "message": "Plan submitted. It will be executed only after the user approves it."}

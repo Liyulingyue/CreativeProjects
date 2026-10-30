@@ -279,6 +279,26 @@ async def get_current_auth(request: Request, credentials: HTTPAuthorizationCrede
     return username
 
 
+async def require_admin(request: Request, credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
+    """Dependency: the administrator, or nobody.
+
+    Where the files live, which models the service talks to and the
+    keys it uses to talk to them are the administrator's business. A
+    person with their own folder does not get to change them.
+    """
+    from ..deps import current_user
+
+    await get_current_auth(request, credentials)
+    user = current_user()
+    if user is None:
+        # No accounts at all: there is nobody to ask, and an
+        # installation with a single password keeps working as it did.
+        return None
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="只有管理员可以做这个操作")
+    return user
+
+
 def _single_password_matches(password: str) -> bool:
     """Whether the password is the service's single password."""
     try:

@@ -17,21 +17,22 @@ the is_main singleton is safe.
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from ..deps import state
+from .auth import require_admin
 from ..models import LLMProvider, LLMProviderCreate, LLMProviderUpdate
 
 router = APIRouter(tags=["providers"])
 
 
 @router.get("", response_model=list[LLMProvider])
-def list_providers() -> list[LLMProvider]:
+def list_providers(_admin=Depends(require_admin)) -> list[LLMProvider]:
     return state.get_chat_history().list_providers()
 
 
 @router.post("", response_model=LLMProvider, status_code=201)
-def create_provider(req: LLMProviderCreate) -> LLMProvider:
+def create_provider(req: LLMProviderCreate, _admin=Depends(require_admin)) -> LLMProvider:
     if not req.name.strip() or not req.base_url.strip() or not req.model.strip():
         raise HTTPException(status_code=400, detail="name / base_url / model 不能为空")
     return state.get_chat_history().create_provider(
@@ -42,7 +43,7 @@ def create_provider(req: LLMProviderCreate) -> LLMProvider:
 
 
 @router.patch("/{provider_id}", response_model=LLMProvider)
-def update_provider(provider_id: str, req: LLMProviderUpdate) -> LLMProvider:
+def update_provider(provider_id: str, req: LLMProviderUpdate, _admin=Depends(require_admin)) -> LLMProvider:
     # Reject demoting the only main — leaves the system with no default
     # for new sessions. The router layer is the right place to catch
     # this because the service layer doesn't know "is the last main?".
@@ -81,7 +82,7 @@ def update_provider(provider_id: str, req: LLMProviderUpdate) -> LLMProvider:
 
 
 @router.delete("/{provider_id}")
-def delete_provider(provider_id: str) -> dict:
+def delete_provider(provider_id: str, _admin=Depends(require_admin)) -> dict:
     svc = state.get_chat_history()
     # Reject deleting the only main; same reason as the PATCH demote
     # above (no default would be left).
@@ -102,7 +103,7 @@ def delete_provider(provider_id: str) -> dict:
 
 
 @router.post("/{provider_id}/set_main", response_model=LLMProvider)
-def set_main(provider_id: str) -> LLMProvider:
+def set_main(provider_id: str, _admin=Depends(require_admin)) -> LLMProvider:
     """Convenience endpoint for the \"Set as main\" button in the UI.
 
     Equivalent to PATCH {is_main: true} but reads better as a verb and

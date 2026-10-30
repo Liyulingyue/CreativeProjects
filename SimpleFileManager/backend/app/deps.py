@@ -1224,6 +1224,25 @@ def current_user() -> Optional[dict]:
     return _current_user.get()
 
 
+def _plan_visible_to(owner: str) -> bool:
+    """Whether the person asking may see this plan.
+
+    A plan moves real files. It is the person's, and only the
+    administrator may approve somebody else's.
+    """
+    user = current_user()
+    if user is None:
+        # No accounts: the service is open, and so are the plans.
+        return True
+    if user.get("role") == "admin":
+        return True
+    if not owner:
+        # A plan from before there were accounts belongs to the
+        # administrator, which is who the single password was.
+        return False
+    return owner == str(user.get("id") or "") or owner == str(user.get("username") or "")
+
+
 def session_owner() -> str:
     """Who the current request belongs to, for recording on a session."""
     user = current_user()
@@ -1380,9 +1399,16 @@ class PlanStore:
                     source TEXT DEFAULT 'agent',
                     created_at INTEGER,
                     decided_at INTEGER,
-                    executed_at INTEGER
+                    executed_at INTEGER,
+                    -- Whose plan this is. A plan moves real files, so it
+                    -- is the person's, and only the administrator may
+                    -- approve somebody else's.
+                    owner TEXT DEFAULT ''
                 )
             """)
+            plan_cols = {r[1] for r in conn.execute("PRAGMA table_info(plans)")}
+            if "owner" not in plan_cols:
+                conn.execute("ALTER TABLE plans ADD COLUMN owner TEXT DEFAULT ''")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS plan_actions (
                     id TEXT PRIMARY KEY,
@@ -1415,14 +1441,14 @@ class PlanStore:
             conn.commit()
             conn.close()
 
-    def create_plan(self, title: str, summary: str, source: str, actions: list[dict]) -> AgentPlan:
+    def create_plan(self, title: str, summary: str, source: str, actions: list[dict], owner: str = "") -> AgentPlan:
         with self._lock:
             plan_id = uuid.uuid4().hex
             now = int(time.time() * 1000)
             conn = self._get_conn()
             conn.execute(
-                "INSERT INTO plans (id, title, summary, status, source, created_at) VALUES (?, ?, ?, 'pending', ?, ?)",
-                (plan_id, title, summary, source, now)
+                "INSERT INTO plans (id, title, summary, status, source, created_at, owner) VALUES (?, ?, ?, 'pending', ?, ?, ?)",
+                (plan_id, title, summary, source, now, owner or "")
             )
             action_models = []
             for pos, a in enumerate(actions):
@@ -1447,7 +1473,7 @@ class PlanStore:
         )
 
     def _row_to_plan(self, conn: sqlite3.Connection, row) -> AgentPlan:
-        plan_id, title, summary, status, source, created_at, decided_at, executed_at = row
+        plan_id, title, summary, status, source, created_at, decided_at, executed_at, owner = row
         action_rows = conn.execute(
             "SELECT id, action_type, source_path, target_path, reason, status, result FROM plan_actions WHERE plan_id = ? ORDER BY position ASC",
             (plan_id,)
@@ -1467,15 +1493,19 @@ class PlanStore:
             conn = self._get_conn()
             if status:
                 rows = conn.execute(
-                    "SELECT id, title, summary, status, source, created_at, decided_at, executed_at FROM plans WHERE status = ? ORDER BY created_at DESC LIMIT ?",
+                    "SELECT id, title, summary, status, source, created_at, decided_at, executed_at, owner FROM plans WHERE status = ? ORDER BY created_at DESC LIMIT ?",
                     (status, limit)
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT id, title, summary, status, source, created_at, decided_at, executed_at FROM plans ORDER BY created_at DESC LIMIT ?",
+                    "SELECT id, title, summary, status, source, created_at, decided_at, executed_at, owner FROM plans ORDER BY created_at DESC LIMIT ?",
                     (limit,)
                 ).fetchall()
-            plans = [self._row_to_plan(conn, r) for r in rows]
+            plans = [
+                self._row_to_plan(conn, r)
+                for r in rows
+                if _plan_visible_to(r[8])
+            ]
             conn.close()
         return plans
 
@@ -1483,10 +1513,13 @@ class PlanStore:
         with self._lock:
             conn = self._get_conn()
             row = conn.execute(
-                "SELECT id, title, summary, status, source, created_at, decided_at, executed_at FROM plans WHERE id = ?",
+                "SELECT id, title, summary, status, source, created_at, decided_at, executed_at, owner FROM plans WHERE id = ?",
                 (plan_id,)
             ).fetchone()
             if not row:
+                conn.close()
+                return None
+            if not _plan_visible_to(row[8]):
                 conn.close()
                 return None
             plan = self._row_to_plan(conn, row)

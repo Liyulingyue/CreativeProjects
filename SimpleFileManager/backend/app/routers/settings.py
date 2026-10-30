@@ -1,7 +1,8 @@
 import time
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from ..deps import state
+from .auth import require_admin
 from ..indexer import indexer
 from ..models import AppSettings, IndexStats, IndexStatus, AutoIndexStatus
 
@@ -17,7 +18,7 @@ def get_settings() -> AppSettings:
 
 
 @settings.post("")
-def update_settings(updates: dict) -> AppSettings:
+def update_settings(updates: dict, _admin=Depends(require_admin)) -> AppSettings:
     return state.update_settings(updates)
 
 
@@ -47,20 +48,20 @@ class PauseRequest(BaseModel):
 
 
 @settings.post("/auto_index/pause")
-def pause_auto_index(req: PauseRequest) -> dict:
+def pause_auto_index(req: PauseRequest, _admin=Depends(require_admin)) -> dict:
     """Pause indexing. seconds=0 pauses until resumed manually."""
     remaining = indexer.pause(req.seconds)
     return {"paused": True, "seconds": remaining, "indefinite": remaining < 0}
 
 
 @settings.post("/auto_index/resume")
-def resume_auto_index() -> dict:
+def resume_auto_index(_admin=Depends(require_admin)) -> dict:
     indexer.resume()
     return {"paused": False, "seconds": 0, "indefinite": False}
 
 
 @settings.post("/auto_index/run")
-def run_auto_index_now() -> dict:
+def run_auto_index_now(_admin=Depends(require_admin)) -> dict:
     """Kick off a scan without waiting for it.
 
     scan() is synchronous and a cold corpus can take minutes; running it inline
