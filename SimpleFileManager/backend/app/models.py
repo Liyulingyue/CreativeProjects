@@ -454,6 +454,9 @@ class AutoIndexStatus(BaseModel):
     paused_indefinitely: bool = False
     active_hours: str = "all"
     in_active_hours: bool = True
+    # Whether the kernel is telling us about changes instead of us
+    # having to look. None when it could not be started here.
+    watcher: Optional[dict] = None
 
 
 # ---- Auth ----

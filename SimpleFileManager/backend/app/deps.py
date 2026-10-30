@@ -1635,6 +1635,7 @@ class AppState:
         self._share_store = None
         self._version_store = None
         self._user_store = None
+        self._upload_log = None
         self._favorite_store = None
         self._load()
 
@@ -2031,6 +2032,19 @@ class AppState:
 
             self._user_store = UserStore(str(DATA_DIR / USERS_DB_NAME))
         return self._user_store
+
+    def get_upload_log(self):
+        """The append-only record of uploads.
+
+        It is not part of the index and not a property of a file: it
+        is an event log, and a file that arrived some other way simply
+        has no event.
+        """
+        if self._upload_log is None:
+            from .upload_log import UploadLog
+
+            self._upload_log = UploadLog(str(DATA_DIR / "upload_log.db"))
+        return self._upload_log
 
     def get_share_store(self):
         """The shares table.

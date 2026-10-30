@@ -159,6 +159,16 @@ export interface AutoIndexStatus {
   paused_indefinitely: boolean;
   active_hours: string;
   in_active_hours: boolean;
+  watcher?: {
+    watching: boolean;
+    filesystem: string;
+    directories: number;
+    events: number;
+    overflows: number;
+    degraded: boolean;
+    error: string | null;
+    since: number | null;
+  } | null;
 }
 
 export type PlanActionType = 'move' | 'rename' | 'create_folder' | 'delete';

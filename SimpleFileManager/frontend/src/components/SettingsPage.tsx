@@ -8,6 +8,7 @@ import { useProviders } from '../hooks/useProviders';
 import { useEmbeddingProviders } from '../hooks/useEmbeddingProviders';
 import { fetchCurrentUser } from '../api';
 import { UsersPanel } from './UsersPanel';
+import { UploadLogPanel } from './UploadLogPanel';
 
 interface ProbeResult { ok: boolean; detail?: string; latency_ms?: number; }
 
@@ -771,10 +772,15 @@ export function SettingsPage() {
 
           <Card icon="shield" tone="text-indigo-500" title="用户与目录权限">
             <p className="text-xs text-slate-400 mb-3">
-              每个人有自己的账号和密码。管理员能访问全部文件；普通用户只能看到被授予的目录。
-              对某个目录的授权对它下面的所有内容都有效，最精确的那条授权算数。
+              每个人有自己的账号和密码。默认情况下大家都能查看和修改全部文件；
+              对某个目录设置限制后，它下面的所有内容都跟着受限，最精确的那条算数。
+              管理员不受任何限制，所以总有办法改回来。
             </p>
             <UsersPanel />
+          </Card>
+
+          <Card icon="upload" tone="text-sky-500" title="上传记录">
+            <UploadLogPanel />
           </Card>
 
           {/* ---- 索引与自动化 ---- */}

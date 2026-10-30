@@ -20,6 +20,7 @@ from .routers import embedding_providers as embedding_providers_router  # noqa: 
 from .routers.shares import shares as shares_router  # noqa: E402
 from .routers.share_public import share_public as share_public_router  # noqa: E402
 from .routers.users import users as users_router  # noqa: E402
+from .routers.upload_log import upload_log as upload_log_router  # noqa: E402
 from .routers.thumbnails import thumbnails  # noqa: E402
 from .routers.favorites import favorites as favorites_router  # noqa: E402
 
@@ -193,3 +194,4 @@ app.include_router(favorites_router, dependencies=[auth_dep])
 # the rules on the share itself.
 app.include_router(share_public_router, prefix="/api/share", tags=["share"])
 app.include_router(users_router, prefix="/api/users", tags=["users"], dependencies=[auth_dep])
+app.include_router(upload_log_router, prefix="/api/uploads", tags=["uploads"], dependencies=[auth_dep])

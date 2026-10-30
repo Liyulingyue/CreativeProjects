@@ -68,7 +68,11 @@ def _in_active_hours(window: str, now: Optional[datetime] = None) -> bool:
 
 
 def _is_hidden(entry: Path) -> bool:
-    return ".simplefilemanager" in entry.parts or entry.name.startswith(".")
+    # Any hidden component, not just the last one. `.trash` and
+    # `.uploads` hold deleted and half-written files; indexing them
+    # would make a deleted file still findable, and put partial
+    # uploads in the results.
+    return any(part.startswith(".") for part in entry.parts)
 
 TEXT_EXTENSIONS = {
     ".txt", ".md", ".markdown", ".rst", ".log",
@@ -95,7 +99,11 @@ EMBED_CHUNKS_PER_PASS = 48
 # Stored alongside each file so a change to the chunking parameters invalidates
 # prior progress instead of silently disagreeing with it.
 CHUNK_SIG = f"{DEFAULT_CHUNK_SIZE}-{DEFAULT_OVERLAP}"
-TICK_SECONDS = 5
+# How often the indexer looks at the clock. With the watcher running
+# this is how soon a change is noticed; without it, the interval in
+# the settings decides, and this only decides how often that check is
+# made.
+TICK_SECONDS = 2
 MIN_INTERVAL_SECONDS = 30
 # After standing down for the user, retry this soon once they go idle. A full
 # index_interval wait would make the resume feel broken.
@@ -139,6 +147,20 @@ class AutoIndexer:
         # pause with no automatic expiry.
         self._paused_until: Optional[float] = None
         self._failed: dict[str, str] = {}
+        # When a scan cannot enumerate the tree confidently it suppresses
+        # deletions. Rather than wait out the whole interval for a scan
+        # that can, note when to try again.
+        self._retry_scan_at: Optional[float] = None
+        # The watcher that notices changes without being asked. It is
+        # best-effort: if it cannot run here, the periodic scan below
+        # does the work on its own.
+        self._watcher = None
+        self._watched_changes = 0
+        # Absolute paths the kernel has told us are complete (written and
+        # closed, or moved in whole). The scan may index these without
+        # waiting out index_debounce_seconds, which exists only to avoid
+        # reading a file that is still being written.
+        self._ready_paths: set[str] = set()
         # The manifest is written by the scanner and read by the digest
         # service and the API. WAL keeps the readers out of the writer's
         # way; this lock keeps two scans from writing it at once.
@@ -432,9 +454,77 @@ class AutoIndexer:
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, name="auto-indexer", daemon=True)
         self._thread.start()
+        self._start_watcher()
+
+    def _start_watcher(self):
+        """Start noticing changes, if this machine can tell us about them.
+
+        The watcher does not index anything. It only says "something
+        changed", and the scan below does the work exactly as it always
+        did -- so a change is noticed in a second or two rather than
+        whenever the next scan happens to be.
+        """
+        from .watcher import StorageWatcher
+
+        try:
+            watcher = StorageWatcher(
+                get_storage_root(),
+                on_change=self._on_watched_change,
+                on_overflow=self._on_watch_overflow,
+            )
+        except Exception:
+            log.exception("could not set up the file watcher")
+            return
+        try:
+            if watcher.start():
+                self._watcher = watcher
+        except Exception:
+            log.exception("the file watcher failed to start")
+
+    def _on_watched_change(self, paths: set[str], ready: set[str]):
+        """Something changed. Note it, and let the next tick pick it up."""
+        self._watched_changes += len(paths)
+        if ready:
+            root = get_storage_root()
+            self._ready_paths.update(str(root / rel) for rel in ready)
+        # The scan decides whether to run; this only makes sure it does
+        # not wait out the interval for something it already knows
+        # about.
+        self._last_scan_ts = 0.0
+        self._retry_scan_at = None
+
+    def _on_watch_overflow(self):
+        """Too many changes at once; the details were dropped.
+
+        The only safe answer is to look at everything again, so the
+        next scan is a full one.
+        """
+        self._last_scan_ts = 0.0
+        self._continue_pending = True
+
+    def watch_status(self) -> dict:
+        """What the watcher is doing, for the health check."""
+        if self._watcher is None:
+            return {
+                "watching": False,
+                "filesystem": "unknown",
+                "directories": 0,
+                "events": 0,
+                "overflows": 0,
+                "degraded": False,
+                "error": "没有在监视文件变化（用定时扫描）",
+                "since": None,
+            }
+        return self._watcher.status()
 
     def stop(self):
         self._stop_event.set()
+        if self._watcher is not None:
+            try:
+                self._watcher.stop()
+            except Exception:
+                log.exception("the file watcher failed to stop")
+            self._watcher = None
 
     @property
     def is_scanning(self) -> bool:
@@ -525,12 +615,26 @@ class AutoIndexer:
         # only EMBED_CHUNKS_PER_PASS chunks per pass, gating on it capped
         # indexing at 16 chunks / 5 min, which put a full-text corpus weeks out.
         # Interaction yielding is handled separately and still applies.
-        if self._continue_pending:
+        if self._pending_changes > 0:
+            # The last pass saw a file it deferred because it was still
+            # inside the debounce window. Scanning again sooner than the
+            # window cannot help -- the file cannot be eligible before it
+            # -- so wait it out rather than walking the tree every tick.
+            # A watcher event resets _last_scan_ts to 0, so a genuinely
+            # complete file is still picked up at once.
+            debounce = max(0, state.get_settings().index_debounce_seconds)
+            if time.time() - self._last_scan_ts < debounce:
+                return
+        elif self._continue_pending:
             if interaction.is_busy():
                 return
         elif self._yielded_for_interaction:
             if interaction.is_busy() or time.time() - self._last_scan_ts < YIELD_RETRY_SECONDS:
                 return
+        elif self._retry_scan_at is not None and time.time() >= self._retry_scan_at:
+            # A previous walk was incomplete and held deletions back;
+            # it is time to try again.
+            pass
         elif time.time() - self._last_scan_ts < interval:
             return
         self._last_scan_ts = time.time()
@@ -580,6 +684,13 @@ class AutoIndexer:
                     # replaced without its mtime moving -- a restore from
                     # a backup, or an rsync that preserves timestamps.
                     found[str(entry)] = (stat.st_mtime, stat.st_size, stat.st_ctime)
+                except FileNotFoundError:
+                    # It was deleted between being listed and being
+                    # stat'd. That is not an incomplete enumeration --
+                    # the file really is gone, and its removal has to be
+                    # recorded, or a stale row stays in the index until
+                    # the interval comes round again.
+                    continue
                 except (PermissionError, OSError):
                     scan_complete = False
                     continue
@@ -623,6 +734,11 @@ class AutoIndexer:
         root = get_storage_root()
         debounce = max(0, state.get_settings().index_debounce_seconds)
         now = time.time()
+        # Consume the completions the watcher has reported. A file the
+        # writer has closed is not still being written, so the debounce
+        # -- whose only job is to guess that -- need not hold it back.
+        ready = self._ready_paths
+        self._ready_paths = set()
 
         state.set_indexing(True, 0.0, str(root))
         try:
@@ -655,7 +771,7 @@ class AutoIndexer:
                             verify.append(path)
                         continue
                 changed_files.add(path)
-                if now - mtime < debounce:
+                if now - mtime < debounce and path not in ready:
                     pending += 1
                     continue
                 to_index.append(path)
@@ -696,6 +812,13 @@ class AutoIndexer:
             removed = (
                 [p for p in known if p not in self._present_paths]
                 if self._last_enumeration_complete else []
+            )
+            # An incomplete walk means deletions were held back. Try
+            # again soon rather than leaving them until the interval.
+            self._retry_scan_at = (
+                time.time() + 10
+                if not self._last_enumeration_complete and known
+                else None
             )
 
             # ---- hash backfill ----
@@ -804,6 +927,12 @@ class AutoIndexer:
                     if not content:
                         continue
                     try:
+                        # The stat comes first. It is cheap, and doing
+                        # it after the keyword write left a row in the
+                        # keyword index for a file that vanished in
+                        # between -- a row the manifest never knew about,
+                        # so no later scan could ever remove it.
+                        stat = Path(path).stat()
                         pieces = chunk_file(content)
                         search_engine.upsert_file(path, content)
                         if path in changed_files:
@@ -811,12 +940,19 @@ class AutoIndexer:
                             # succeeded. If FTS fails, leave the prior semantic
                             # index intact and retry the whole changed file.
                             rag_svc.vector_store.delete_by_file(path)
-                        stat = Path(path).stat()
                         records.append((path, stat.st_mtime, stat.st_size, len(pieces)))
                         # The hash of what was just indexed, so the next
                         # scan can tell whether the file still holds it.
                         indexed_hashes[path] = self._compute_hash(path)
                         indexed += 1
+                    except FileNotFoundError:
+                        # Gone while being indexed. Whatever part of it
+                        # did reach the keyword index has to go too.
+                        try:
+                            search_engine.remove_file(path)
+                        except Exception:
+                            log.exception("removing a vanished file from the index failed")
+                        continue
                     except Exception:
                         failed += 1
                         log.exception("indexing a file failed")
@@ -835,11 +971,19 @@ class AutoIndexer:
             # half-done or re-embedded from zero. Driven off every known file,
             # not just this pass's, so earlier passes resume correctly.
             progress = self._vector_progress()
+            # Only files the manifest knows about. A file that is on
+            # disk but not yet recorded -- the keyword pass deferred it
+            # because it might still be being written -- has no row to
+            # hold progress, so `_set_vector_progress` would update
+            # nothing and it would be re-embedded on every scan, for ever.
+            # It gets its row when the keyword pass reaches it, and the
+            # vector pass picks it up from the next scan.
             pending_vectors = [
                 p for p in current
-                if self._stale_chunking(progress.get(p, (0, 0, None))[2])
-                or (progress.get(p, (0, 1, None))[0] < progress.get(p, (0, 1, None))[1]
-                    and progress.get(p, (0, 0, None))[1] > 0)
+                if p in progress and (
+                    self._stale_chunking(progress[p][2])
+                    or (progress[p][0] < progress[p][1] and progress[p][1] > 0)
+                )
             ]
             self._pending_vector_files = len(pending_vectors)
 

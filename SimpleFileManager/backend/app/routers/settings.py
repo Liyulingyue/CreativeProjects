@@ -40,7 +40,9 @@ def get_index_status() -> IndexStatus:
 
 @settings.get("/auto_index_status")
 def get_auto_index_status() -> AutoIndexStatus:
-    return indexer.status()
+    status = indexer.status()
+    status.watcher = indexer.watch_status()
+    return status
 
 
 class PauseRequest(BaseModel):

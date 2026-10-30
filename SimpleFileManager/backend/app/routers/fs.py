@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 from ..deps import (
     state, get_storage_root, resolve_under_root, PathOutsideRoot,
-    PathNotAllowed, check_access, visible_children,
+    PathNotAllowed, check_access, visible_children, current_user,
 )
 from ..models import (
     BrowseResult,
@@ -663,8 +663,6 @@ async def upload_files(path: str = "", files: list[UploadFile] = File(...),
             raise HTTPException(status_code=400, detail="Upload destination outside storage root")
         if dest.exists() and overwrite in ("replace", "rename"):
             # What is there now is kept, so replacing it can be undone.
-            from ..deps import state
-
             state.get_version_store().snapshot(dest, note="被上传的新文件覆盖")
         if dest.exists() and overwrite == "never":
             st = dest.stat()
@@ -685,6 +683,17 @@ async def upload_files(path: str = "", files: list[UploadFile] = File(...),
             while chunk := await f.read(1024 * 1024):
                 out.write(chunk)
         uploaded.append(dest.name)
+        try:
+            state.get_upload_log().record(
+                path=str(dest),
+                size=dest.stat().st_size,
+                name=dest.name,
+                user=current_user(),
+            )
+        except Exception:
+            # The file is on disk and the upload succeeded; a log that
+            # cannot be written must not turn that into a failure.
+            pass
     return {"success": True, "uploaded": uploaded, "count": len(uploaded)}
 
 
@@ -747,7 +756,17 @@ def upload_status(upload_id: str):
 def upload_complete(upload_id: str, overwrite: str = "never"):
     """Put the file in place."""
     try:
-        return _upload_manager().complete(upload_id, overwrite)
+        result = _upload_manager().complete(upload_id, overwrite)
+        try:
+            state.get_upload_log().record(
+                path=str(result.get("path", "")),
+                size=int(result.get("size", 0) or 0),
+                name=str(result.get("name", "")),
+                user=current_user(),
+            )
+        except Exception:
+            pass
+        return result
     except uploads.UploadConflict as e:
         raise HTTPException(
             status_code=409,

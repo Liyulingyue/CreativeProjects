@@ -313,6 +313,14 @@ export function IndexPage() {
                     · 已为交互让路
                   </span>
                 )}
+                {autoStatus.watcher?.watching && (
+                  <span
+                    className={`ml-1 ${autoStatus.watcher.degraded ? 'text-amber-600' : 'text-emerald-600'}`}
+                    title={`内核实时监听 ${autoStatus.watcher.filesystem}，${autoStatus.watcher.directories} 个目录；文件变化即时入索引`}
+                  >
+                    · 实时监听
+                  </span>
+                )}
               </span>
               {skipped && skipped.partial_vector && skipped.partial_vector.length > 0 && (
                 <span className="text-xs text-indigo-600 truncate" title={skipped.partial_vector.map(p => `${p.path} ${p.done}/${p.total}`).join('\n')}>
@@ -384,6 +392,14 @@ export function IndexPage() {
             <div className="flex items-center gap-2 min-w-0">
               <span className="text-xs text-slate-500 truncate flex-1 min-w-0">
                 自动索引{autoStatus.enabled ? ` · 每 ${autoStatus.interval}s${autoStatus.last_scan_time ? ` · 上次 ${formatScanTime(autoStatus.last_scan_time)}` : ''}${autoStatus.pending_changes > 0 ? ` · ${autoStatus.pending_changes} 待处理` : ''}` : '（已关闭）'}
+                {autoStatus.watcher?.watching && (
+                  <span
+                    className={`ml-1 ${autoStatus.watcher.degraded ? 'text-amber-600' : 'text-emerald-600'}`}
+                    title={`内核实时监听 ${autoStatus.watcher.filesystem}，${autoStatus.watcher.directories} 个目录`}
+                  >
+                    · 实时监听
+                  </span>
+                )}
               </span>
               <button onClick={handleToggleAuto} disabled={isToggling}
                 className={`relative w-10 h-[22px] rounded-full transition-colors disabled:opacity-50 flex-shrink-0
