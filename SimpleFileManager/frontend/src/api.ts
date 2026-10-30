@@ -875,9 +875,26 @@ export async function fetchDigest(date: string): Promise<Digest> {
 export async function downloadZip(path: string): Promise<void> {
   const res = await authFetch(`${API_BASE}/fs/download-zip?path=${encodeURIComponent(path)}`);
   if (!res.ok) throw new Error('Failed to build the archive');
+  const name = (path.split(/[/\\]/).pop() || 'archive') + '.zip';
+
+  // A directory can be very large, and the browser's own download
+  // machinery writes it to disk as it arrives rather than asking the
+  // machine to hold all of it in memory first.
+  try {
+    const url = await fetchStreamUrl(path, 1800, true);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    return;
+  } catch {
+    // No token, no download. The blob is the last resort.
+  }
+
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
-  const name = (path.split(/[/\\]/).pop() || 'archive') + '.zip';
   const link = document.createElement('a');
   link.href = url;
   link.download = name;
@@ -943,6 +960,24 @@ export async function downloadFile(
       throw e;
     }
     return;
+  }
+
+  // Without the file picker the browser has to be handed the bytes.
+  // Collecting them into a blob means a two-gigabyte file needs two
+  // gigabytes of memory, which on a NAS is the wrong machine to ask
+  // that of. So the browser's own download machinery is given a link
+  // instead, and it writes the file to disk as the bytes arrive.
+  try {
+    const url = await fetchStreamUrl(path, 1800);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    return;
+  } catch {
+    // No token, no download. The blob is the last resort.
   }
 
   const blob = await res.blob();
@@ -1268,11 +1303,11 @@ export async function fetchFilePreview(path: string): Promise<FilePreviewData> {
  * few minutes. The player then streams the file, rather than the
  * browser holding all of it in memory first.
  */
-export async function fetchStreamUrl(path: string): Promise<string> {
+export async function fetchStreamUrl(path: string, ttl = 600, archive = false): Promise<string> {
   const res = await authFetch(`${API_BASE}/fs/stream-token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path }),
+    body: JSON.stringify({ path, ttl, archive }),
   });
   if (!res.ok) throw new Error('无法播放这个文件');
   const data = await res.json();

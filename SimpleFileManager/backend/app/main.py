@@ -11,7 +11,7 @@ from .routers import fs, search, settings, rag, chat, chat_history_router, agent
 
 bearer_scheme = HTTPBearer(auto_error=False)
 from .routers.auth import is_auth_enabled, set_password, verify_stream_token
-from .deps import PathNotAllowed
+from .deps import PathNotAllowed, resolve_under_root
 from .indexer import indexer
 from .auto_digest import auto_digest
 from .routers import providers as providers_router  # noqa: E402
@@ -80,7 +80,14 @@ async def fs_auth(request: Request, credentials: HTTPAuthorizationCredentials = 
     stream_token = request.query_params.get("st")
     if stream_token:
         path = request.query_params.get("path", "")
-        if verify_stream_token(path, stream_token):
+        # The token is signed over the resolved path, so it is checked
+        # against the resolved path too -- a relative path and the same
+        # file named in full are one thing here.
+        try:
+            target = resolve_under_root(path)
+        except Exception:
+            target = None
+        if target is not None and verify_stream_token(str(target), stream_token):
             return {"ok": True, "via": "stream-token"}
     return await get_current_auth(request, credentials)
 

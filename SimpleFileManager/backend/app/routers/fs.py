@@ -820,32 +820,51 @@ def _xlsx_rows(path: Path) -> list[list[str]]:
 
 class StreamTokenRequest(BaseModel):
     path: str
+    # How long the token is good for. A player asks for minutes; a
+    # download over a slow line asks for longer.
+    ttl: int = 600
+    # A directory is packed into an archive rather than served, so a
+    # token for one opens the archive and not the directory.
+    archive: bool = False
+
+
+# A token is a key to one file. It is not a session and it does not
+# grant anything else, but it should not outlive its welcome either.
+MAX_STREAM_TOKEN_TTL = 3600
 
 
 @fs.post("/stream-token")
 def stream_token(req: StreamTokenRequest):
     """A short-lived URL for a media file.
 
-    A <video> tag cannot send an Authorization header. This issues a
-    token that is good for one file and a few minutes, so the player
-    can stream the file instead of the browser holding all of it.
+    A <video> tag cannot send an Authorization header, and neither can
+    the browser's own download machinery. This issues a token that is
+    good for one file and a while, so the file can be streamed instead
+    of the browser holding all of it in memory.
     """
     try:
         target = resolve_under_root(req.path)
     except PathOutsideRoot:
         raise HTTPException(status_code=400, detail="Path outside storage root")
-    if not target.exists() or not target.is_file():
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    if req.archive:
+        if not target.is_dir():
+            raise HTTPException(status_code=400, detail="Not a directory")
+    elif not target.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
     from ..routers.auth import issue_stream_token
 
-    issued = issue_stream_token(str(target), ttl=600)
+    ttl = max(60, min(int(req.ttl or 600), MAX_STREAM_TOKEN_TTL))
+    issued = issue_stream_token(str(target), ttl=ttl)
     from urllib.parse import quote
 
+    endpoint = "download-zip" if req.archive else "download"
     return {
         "token": issued["token"],
         "expires_at": issued["expires_at"],
-        "url": f"/api/fs/download?path={quote(req.path)}&st={issued['token']}",
+        "url": f"/api/fs/{endpoint}?path={quote(req.path)}&st={issued['token']}",
     }
 
 

@@ -193,3 +193,57 @@ def test_the_agent_cannot_find_a_file_it_may_not_reach(people):
 
     assert out["success"] is True
     assert out["matches"] == []
+
+
+def test_a_stream_token_opens_the_file_it_was_issued_for(people):
+    """A media element cannot send an Authorization header."""
+    _make("我的/笔记.txt", "内容")
+    token = _login(client, "boss", "boss1234")
+
+    issued = client.post(
+        "/api/fs/stream-token",
+        json={"path": "我的/笔记.txt"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert issued.status_code == 200
+    url = issued.json()["url"]
+
+    res = client.get(url)
+
+    assert res.status_code == 200
+    assert res.content == "内容".encode()
+
+
+def test_a_stream_token_does_not_open_another_file(people):
+    _make("我的/笔记.txt", "内容")
+    _make("别人的/机密.txt", "机密")
+    token = _login(client, "boss", "boss1234")
+
+    issued = client.post(
+        "/api/fs/stream-token",
+        json={"path": "我的/笔记.txt"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    token_value = issued.json()["token"]
+
+    from urllib.parse import quote
+
+    url = f"/api/fs/download?path={quote('别人的/机密.txt')}&st={quote(token_value)}"
+
+    assert client.get(url).status_code == 401
+
+
+def test_a_stream_token_is_not_good_for_ever(people):
+    """A token is a key to one file, and it runs out."""
+    _make("我的/笔记.txt", "内容")
+    token = _login(client, "boss", "boss1234")
+
+    issued = client.post(
+        "/api/fs/stream-token",
+        json={"path": "我的/笔记.txt", "ttl": 60},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    expires = issued.json()["expires_at"]
+    import time
+
+    assert expires <= time.time() + 61
