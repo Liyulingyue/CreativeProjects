@@ -202,3 +202,17 @@ export interface AgentPlan {
   decided_at: number | null;
   executed_at: number | null;
 }
+
+export interface Skill {
+  id: string;
+  label: string;
+  description: string;
+  instruction?: string;
+  enabled: boolean;
+  builtin: boolean;
+}
+
+export interface SkillsState {
+  master: boolean;
+  skills: Skill[];
+}

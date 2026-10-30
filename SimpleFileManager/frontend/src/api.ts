@@ -1242,6 +1242,55 @@ export async function fetchCurrentUser(): Promise<CurrentUser> {
   return res.json();
 }
 
+// ---- Skills ----
+
+import type { Skill, SkillsState } from './types';
+
+export async function fetchSkills(): Promise<SkillsState> {
+  const res = await authFetch(`${API_BASE}/skills`);
+  if (!res.ok) throw new Error('加载技能失败');
+  return res.json();
+}
+
+export async function setSkillsMaster(enabled: boolean): Promise<{ master: boolean }> {
+  const res = await authFetch(`${API_BASE}/skills/master`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) throw new Error('更新技能总开关失败');
+  return res.json();
+}
+
+export async function toggleSkill(skillId: string, enabled: boolean): Promise<{ id: string; enabled: boolean }> {
+  const res = await authFetch(`${API_BASE}/skills/${skillId}/toggle`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) throw new Error('更新技能失败');
+  return res.json();
+}
+
+export async function addSkill(input: { id: string; label: string; instruction: string; description?: string }): Promise<Skill> {
+  const res = await authFetch(`${API_BASE}/skills`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const b = await res.json().catch(() => ({}));
+    throw new Error(typeof b?.detail === 'string' ? b.detail : '添加技能失败');
+  }
+  return res.json();
+}
+
+export async function removeSkill(skillId: string): Promise<void> {
+  const res = await authFetch(`${API_BASE}/skills/${skillId}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error('删除技能失败');
+}
+
+
 /** One earlier version of a file. */
 export interface FileVersion {
   id: number;

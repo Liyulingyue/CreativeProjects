@@ -23,6 +23,7 @@ from .routers.users import users as users_router  # noqa: E402
 from .routers.upload_log import upload_log as upload_log_router  # noqa: E402
 from .routers.thumbnails import thumbnails  # noqa: E402
 from .routers.favorites import favorites as favorites_router  # noqa: E402
+from .routers.skills import skills_router  # noqa: E402
 
 # Before anything else, so the modules imported below log into the
 # configured handlers rather than the root logger's default.
@@ -173,6 +174,7 @@ app.include_router(fs, prefix="/api/fs", tags=["fs"], dependencies=[Depends(fs_a
 # element cannot send a header, so the key is in the URL. It is not the
 # fs_auth dependency, because that would open the files as well.
 app.include_router(thumbnails)
+app.include_router(skills_router, prefix="/api/skills", tags=["skills"], dependencies=[auth_dep])
 app.include_router(search, prefix="/api/search", tags=["search"], dependencies=[auth_dep])
 app.include_router(settings, prefix="/api/settings", tags=["settings"], dependencies=[auth_dep])
 app.include_router(rag, prefix="/api/rag", tags=["rag"], dependencies=[auth_dep])
