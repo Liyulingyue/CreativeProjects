@@ -36,6 +36,10 @@ class BrowseResult(BaseModel):
     # Free space on the disk holding the storage root, so the browser
     # can say when the disk is nearly full.
     disk: Optional[dict] = None
+    # A key for the little pictures of this folder. A picture element
+    # cannot send an Authorization header, so the key is in the URL --
+    # and it opens the pictures of this folder and nothing else.
+    thumbnail_token: Optional[str] = None
 
 
 class FileOperation(BaseModel):

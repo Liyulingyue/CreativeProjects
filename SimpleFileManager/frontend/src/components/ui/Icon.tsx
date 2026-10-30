@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { FileNode } from '../../api';
 
 const PATHS: Record<string, ReactNode> = {
@@ -132,11 +132,43 @@ const FILE_ICON_MAP: Record<string, { icon: string; color: string }> = {
   '.apk': { icon: 'hardDrive', color: 'text-slate-600' },
 };
 
-export function FileIcon({ node, size = 18 }: { node: FileNode; size?: number }) {
+export function FileIcon({ node, size = 18, thumbnail = false, token }: { node: FileNode; size?: number; thumbnail?: boolean; token?: string | null }) {
   if (node.is_dir) {
     return <Icon name="folder" size={size} className="text-amber-500" />;
   }
   const ext = node.extension.toLowerCase();
   const meta = FILE_ICON_MAP[ext] || { icon: 'file', color: 'text-slate-400' };
+
+  if (thumbnail && IMAGE_EXTENSIONS.has(ext)) {
+    return <Thumbnail node={node} meta={meta} size={size} token={token} />;
+  }
   return <Icon name={meta.icon} size={size} className={meta.color} />;
+}
+
+const IMAGE_EXTENSIONS = new Set([
+  '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tif', '.tiff',
+]);
+
+/**
+ * A little picture of a big one.
+ *
+ * The server makes it once and keeps it. If there is not one -- the
+ * file is not a picture, or the server cannot make one -- the icon is
+ * shown as it always was.
+ */
+function Thumbnail({ node, meta, size, token }: { node: FileNode; meta: { icon: string; color: string }; size: number; token?: string | null }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return <Icon name={meta.icon} size={size} className={meta.color} />;
+  }
+  return (
+    <img
+      src={`/api/thumbnails?path=${encodeURIComponent(node.path)}&size=256${token ? `&tt=${encodeURIComponent(token)}` : ''}`}
+      alt=""
+      loading="lazy"
+      onError={() => setFailed(true)}
+      style={{ width: size, height: size }}
+      className="rounded object-cover"
+    />
+  );
 }

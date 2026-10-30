@@ -19,6 +19,7 @@ from .routers import embedding_providers as embedding_providers_router  # noqa: 
 from .routers.shares import shares as shares_router  # noqa: E402
 from .routers.share_public import share_public as share_public_router  # noqa: E402
 from .routers.users import users as users_router  # noqa: E402
+from .routers.thumbnails import thumbnails  # noqa: E402
 
 # Before anything else, so the modules imported below log into the
 # configured handlers rather than the root logger's default.
@@ -155,6 +156,10 @@ def health():
 # All other routers require auth
 auth_dep = Depends(get_current_auth)
 app.include_router(fs, prefix="/api/fs", tags=["fs"], dependencies=[Depends(fs_auth)])
+# The little pictures have their own way of being asked for: a picture
+# element cannot send a header, so the key is in the URL. It is not the
+# fs_auth dependency, because that would open the files as well.
+app.include_router(thumbnails)
 app.include_router(search, prefix="/api/search", tags=["search"], dependencies=[auth_dep])
 app.include_router(settings, prefix="/api/settings", tags=["settings"], dependencies=[auth_dep])
 app.include_router(rag, prefix="/api/rag", tags=["rag"], dependencies=[auth_dep])

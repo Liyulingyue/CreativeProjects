@@ -157,10 +157,15 @@ def browse(path: Optional[str] = None) -> BrowseResult:
 
     parent = str(target.parent) if target != Path(storage_path) else None
 
+    # A key for the little pictures of this folder, so the browser can
+    # show them without sending a header with every one.
+    from .thumbnails import issue_directory_token
+
     return BrowseResult(
         current_path=str(target),
         parent_path=parent,
         items=items,
+        thumbnail_token=issue_directory_token(str(target))["token"],
         total_count=len(items),
         dirs_count=dirs_count,
         files_count=files_count,
@@ -866,6 +871,30 @@ def stream_token(req: StreamTokenRequest):
         "expires_at": issued["expires_at"],
         "url": f"/api/fs/{endpoint}?path={quote(req.path)}&st={issued['token']}",
     }
+
+
+@fs.get("/thumbnail")
+def thumbnail(path: str, size: int = 256):
+    """A little picture of a big one.
+
+    Made once and kept, so scrolling a folder of photographs does not
+    make the machine work hard. A file that is not a picture gets a
+    404, and the browser shows the icon it would have shown anyway.
+    """
+    from ..thumbnails import DEFAULT_SIZE, ThumbnailStore
+
+    try:
+        target = resolve_under_root(path)
+    except PathOutsideRoot:
+        raise HTTPException(status_code=400, detail="Path outside storage root")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    size = max(32, min(int(size or DEFAULT_SIZE), 1024))
+    data = ThumbnailStore(get_storage_root()).get(target, size)
+    if not data:
+        raise HTTPException(status_code=404, detail="No thumbnail")
+    return Response(content=data, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
 
 
 @fs.get("/duplicates")

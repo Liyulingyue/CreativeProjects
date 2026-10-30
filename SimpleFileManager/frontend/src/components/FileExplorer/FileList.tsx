@@ -5,6 +5,8 @@ import { FileIcon, Icon } from '../ui/Icon';
 
 interface FileListProps {
   items: FileNode[];
+  /** A key for the little pictures of this folder. */
+  thumbnailToken?: string | null;
   selectedPaths: Set<string>;
   onSelect: (node: FileNode, e: MouseEvent) => void;
   onDoubleClick: (node: FileNode) => void;
@@ -21,7 +23,7 @@ interface FileListProps {
 }
 
 export default function FileList({
-  items, selectedPaths, onSelect, onDoubleClick, onContextMenu,
+  items, thumbnailToken, selectedPaths, onSelect, onDoubleClick, onContextMenu,
   onDragStart, onDrop, onRename, onDelete, onDownload, dragOverFolder, setDragOverFolder,
   onBack, hasParent
 }: FileListProps) {
@@ -106,7 +108,7 @@ export default function FileList({
                 : 'border-transparent hover:bg-slate-50'
             }`}
           >
-            <div className="w-9 flex items-center"><FileIcon node={file} size={20} /></div>
+            <div className="w-9 flex items-center justify-center"><FileIcon node={file} size={20} thumbnail token={thumbnailToken} /></div>
             <div className="flex-1 text-sm text-slate-700 truncate min-w-0">{file.name}</div>
             <div className="w-24 text-xs text-slate-500 text-right hidden sm:block">{formatSize(file.size)}</div>
             <div className="w-36 text-xs text-slate-400 text-right hidden md:block">{formatDate(file.modified)}</div>

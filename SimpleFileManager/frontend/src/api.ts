@@ -230,6 +230,12 @@ export interface BrowseResult {
     used_pct?: number;
     detail?: string;
   } | null;
+  /**
+   * A key for the little pictures of this folder. A picture element
+   * cannot send an Authorization header, so the key is in the URL --
+   * and it opens the pictures of this folder and nothing else.
+   */
+  thumbnail_token?: string | null;
 }
 
 export interface FileNode {

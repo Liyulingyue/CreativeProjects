@@ -5,6 +5,8 @@ import { FileIcon, Icon } from '../ui/Icon';
 
 interface FileGridProps {
   items: FileNode[];
+  /** A key for the little pictures of this folder. */
+  thumbnailToken?: string | null;
   selectedPaths: Set<string>;
   onSelect: (node: FileNode, e: MouseEvent) => void;
   onDoubleClick: (node: FileNode) => void;
@@ -26,7 +28,7 @@ interface FileGridProps {
 }
 
 export default function FileGrid({
-  items, selectedPaths, onSelect, onDoubleClick, onContextMenu,
+  items, thumbnailToken, selectedPaths, onSelect, onDoubleClick, onContextMenu,
   onDragStart, onDrop, onRename, onDelete, onDownload, dragOverFolder, setDragOverFolder,
   isCreatingFolder, newFolderName, setNewFolderName, onCreateFolder, onCancelCreateFolder,
   onBack, hasParent
@@ -137,7 +139,7 @@ export default function FileGrid({
             }`}
           >
             <div className="mb-1.5 transition-transform duration-200 group-hover:scale-110">
-              <FileIcon node={file} size={40} />
+              <FileIcon node={file} size={40} thumbnail token={thumbnailToken} />
             </div>
             <span className="text-xs text-slate-800 truncate w-full text-center px-1" title={file.name}>
               {file.name}

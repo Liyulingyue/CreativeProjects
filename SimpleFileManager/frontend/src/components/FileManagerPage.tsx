@@ -658,6 +658,7 @@ export function FileManagerPage() {
           <>
             <FileGrid
               {...props}
+              thumbnailToken={browseResult?.thumbnail_token}
               isCreatingFolder={isCreatingFolder}
               newFolderName={newFolderName}
               setNewFolderName={setNewFolderName}
@@ -673,7 +674,7 @@ export function FileManagerPage() {
       case 'list':
         return (
           <>
-            <FileList {...props} />
+            <FileList {...props} thumbnailToken={browseResult?.thumbnail_token} />
             <LoadMoreSentinel hasMore={hasMore} shown={visibleItems.length} total={allItems.length} onLoadMore={() => setVisibleCount(c => c + PAGE_SIZE)} />
           </>
         );
