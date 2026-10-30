@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Icon } from './ui/Icon';
 
-interface Grant {
+interface Restriction {
   path: string;
-  permission: 'read' | 'write';
+  restriction: 'none' | 'read';
 }
 
 interface Account {
@@ -12,7 +12,7 @@ interface Account {
   role: 'admin' | 'user';
   disabled: boolean;
   created_at: number;
-  grants: Grant[];
+  restrictions: Restriction[];
 }
 
 interface UsersState {
@@ -21,12 +21,17 @@ interface UsersState {
 }
 
 /**
- * The accounts and what each may reach.
+ * The accounts, and the folders that are not for everybody.
  *
- * A grant on a folder covers everything under it, and the most
- * specific grant for a path is the one that counts -- so a grant on
- * "photos/2024" beats a grant on "photos". The administrator is not
- * subject to any of this, so there is always a way back in.
+ * This is one household's machine: everybody has a key to the same
+ * house, and everybody can put things in it and look at what is there.
+ * A folder becomes private only when somebody says so, and this is
+ * where they say it. A restriction on a folder covers everything under
+ * it, and the most specific one for a path is the one that counts --
+ * so a restriction on "photos/2024" beats one on "photos".
+ *
+ * The administrator is not subject to any of this, so there is always
+ * a way back in.
  */
 export function UsersPanel() {
   const [state, setState] = useState<UsersState | null>(null);
@@ -35,9 +40,9 @@ export function UsersPanel() {
   const [busy, setBusy] = useState(false);
 
   const [newUser, setNewUser] = useState({ username: '', password: '', role: 'user' });
-  const [grantFor, setGrantFor] = useState<Account | null>(null);
-  const [grantPath, setGrantPath] = useState('');
-  const [grantPerm, setGrantPerm] = useState<'read' | 'write'>('read');
+  const [restrictFor, setRestrictFor] = useState<Account | null>(null);
+  const [restrictPath, setRestrictPath] = useState('');
+  const [restrictKind, setRestrictKind] = useState<'none' | 'read'>('none');
 
   const load = useCallback(async () => {
     try {
@@ -102,30 +107,33 @@ export function UsersPanel() {
     }
   };
 
-  const addGrant = async () => {
-    if (!grantFor) return;
+  const addRestriction = async () => {
+    if (!restrictFor) return;
     setMessage(null);
     try {
-      await call('/api/users/grants', 'POST', {
-        path: grantPath.trim(),
-        user_id: grantFor.id,
-        permission: grantPerm,
+      await call('/api/users/restrictions', 'POST', {
+        path: restrictPath.trim(),
+        user_id: restrictFor.id,
+        restriction: restrictKind,
       });
-      setGrantPath('');
-      setGrantFor(null);
+      setRestrictPath('');
+      setRestrictFor(null);
       await load();
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : '授权失败');
+      setMessage(e instanceof Error ? e.message : '设置失败');
     }
   };
 
-  const removeGrant = async (account: Account, grant: Grant) => {
+  const removeRestriction = async (account: Account, restriction: Restriction) => {
     setMessage(null);
     try {
-      await call(`/api/users/grants?path=${encodeURIComponent(grant.path)}&user_id=${account.id}`, 'DELETE');
+      await call(
+        `/api/users/restrictions?path=${encodeURIComponent(restriction.path)}&user_id=${account.id}`,
+        'DELETE',
+      );
       await load();
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : '撤销失败');
+      setMessage(e instanceof Error ? e.message : '解除失败');
     }
   };
 
@@ -169,56 +177,58 @@ export function UsersPanel() {
                   <div className="text-[11px] text-slate-400 mt-1.5">管理员可以访问全部文件</div>
                 ) : (
                   <div className="mt-2 space-y-1.5">
-                    {account.grants.length === 0 && (
-                      <div className="text-[11px] text-amber-600">还没有任何权限，看不到任何文件</div>
+                    {account.restrictions.length === 0 && (
+                      <div className="text-[11px] text-slate-400">
+                        能访问全部文件，和其他人一样
+                      </div>
                     )}
-                    {account.grants.map(grant => (
-                      <div key={`${grant.path}-${grant.permission}`}
+                    {account.restrictions.map(restriction => (
+                      <div key={`${restriction.path}-${restriction.restriction}`}
                         className="flex items-center gap-2 text-xs">
                         <Icon name="folder" size={13} className="text-slate-400 flex-shrink-0" />
                         <span className="text-slate-600 truncate">
-                          {grant.path || '根目录'}
+                          {restriction.path || '根目录'}
                         </span>
                         <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium flex-shrink-0 ${
-                          grant.permission === 'write'
-                            ? 'bg-amber-100 text-amber-700'
+                          restriction.restriction === 'none'
+                            ? 'bg-red-100 text-red-700'
                             : 'bg-slate-100 text-slate-600'
                         }`}>
-                          {grant.permission === 'write' ? '可读写' : '只读'}
+                          {restriction.restriction === 'none' ? '看不到' : '只读'}
                         </span>
-                        <button onClick={() => removeGrant(account, grant)}
-                          className="text-red-400 hover:text-red-600 text-[11px] ml-auto flex-shrink-0">
-                          撤销
+                        <button onClick={() => removeRestriction(account, restriction)}
+                          className="text-indigo-500 hover:text-indigo-700 text-[11px] ml-auto flex-shrink-0">
+                          解除
                         </button>
                       </div>
                     ))}
-                    {grantFor?.id === account.id ? (
+                    {restrictFor?.id === account.id ? (
                       <div className="flex items-center gap-2 pt-1 flex-wrap">
                         <input
-                          value={grantPath}
-                          onChange={e => setGrantPath(e.target.value)}
-                          onKeyDown={e => { if (e.key === 'Enter') addGrant(); }}
-                          placeholder="目录路径，留空=根目录"
+                          value={restrictPath}
+                          onChange={e => setRestrictPath(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') addRestriction(); }}
+                          placeholder="目录路径"
                           className="flex-1 min-w-[10rem] px-2.5 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-400/30"
                         />
-                        <select value={grantPerm} onChange={e => setGrantPerm(e.target.value as 'read' | 'write')}
+                        <select value={restrictKind} onChange={e => setRestrictKind(e.target.value as 'none' | 'read')}
                           className="px-2 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-xs">
+                          <option value="none">看不到</option>
                           <option value="read">只读</option>
-                          <option value="write">可读写</option>
                         </select>
-                        <button onClick={addGrant}
+                        <button onClick={addRestriction}
                           className="px-2.5 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-700 transition-colors">
-                          添加
+                          设置
                         </button>
-                        <button onClick={() => setGrantFor(null)}
+                        <button onClick={() => setRestrictFor(null)}
                           className="px-2 py-1.5 rounded-lg text-slate-500 text-xs hover:bg-slate-100 transition-colors">
                           取消
                         </button>
                       </div>
                     ) : (
-                      <button onClick={() => { setGrantFor(account); setGrantPath(''); }}
+                      <button onClick={() => { setRestrictFor(account); setRestrictPath(''); }}
                         className="text-[11px] text-indigo-600 hover:underline">
-                        + 授予目录权限
+                        + 把某个目录设为私密
                       </button>
                     )}
                   </div>
@@ -247,7 +257,8 @@ export function UsersPanel() {
               </button>
             </div>
             <div className="text-[11px] text-slate-400">
-              管理员可以访问全部文件；普通用户只能看到被授予的目录
+              默认所有人都能看、能传，和一家人共用一个柜子一样。
+              某个人的私密目录，在这里单独设。
             </div>
           </div>
         </>

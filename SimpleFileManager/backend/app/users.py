@@ -41,6 +41,12 @@ PERMISSIONS = (PERM_READ, PERM_WRITE)
 # A grant on write implies read.
 PERMISSION_RANK = {PERM_READ: 1, PERM_WRITE: 2}
 
+# What a person may be kept out of. "none" means they cannot see the
+# folder at all; "read" means they can look but not change it.
+RESTRICT_NONE = "none"
+RESTRICT_READ = "read"
+RESTRICTIONS = (RESTRICT_NONE, RESTRICT_READ)
+
 CREATE_USERS = """
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
@@ -53,11 +59,21 @@ CREATE TABLE IF NOT EXISTS users (
 )
 """
 
-CREATE_ACL = """
-CREATE TABLE IF NOT EXISTS acl (
+# Who may not reach what.
+#
+# This used to be a list of grants: a path nobody could open until
+# somebody was given it. That is the wrong way round for a machine a
+# family shares -- everybody has a key to the same house, and a folder
+# is private only when somebody says so. So the list is now a list of
+# exceptions, and a path with no exception on it is open to everybody.
+#
+# "none" means the person cannot see the path at all. "read" means
+# they can look at it but not change it.
+CREATE_RESTRICTIONS = """
+CREATE TABLE IF NOT EXISTS restrictions (
     path TEXT NOT NULL,
     user_id TEXT NOT NULL,
-    permission TEXT NOT NULL,
+    restriction TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     PRIMARY KEY (path, user_id)
 )
@@ -92,8 +108,9 @@ class UserStore:
         with self._lock:
             conn = self._get_conn()
             conn.execute(CREATE_USERS)
-            conn.execute(CREATE_ACL)
+            conn.execute(CREATE_RESTRICTIONS)
             conn.execute(CREATE_TOKENS)
+            self._migrate_grants_to_restrictions(conn)
             conn.commit()
             conn.close()
 
@@ -224,7 +241,7 @@ class UserStore:
             conn = self._get_conn()
             try:
                 cur = conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
-                conn.execute("DELETE FROM acl WHERE user_id = ?", (user_id,))
+                conn.execute("DELETE FROM restrictions WHERE user_id = ?", (user_id,))
                 conn.commit()
                 return cur.rowcount > 0
             finally:
@@ -243,60 +260,100 @@ class UserStore:
 
     # ---- grants ----
 
-    def grant(self, path: str, user_id: str, permission: str) -> dict:
-        if permission not in PERMISSIONS:
-            raise UserError("未知权限")
+    def restrict(self, path: str, user_id: str, restriction: str) -> dict:
+        """Keep somebody out of a folder.
+
+        A folder on a machine a family shares is open to everybody
+        until somebody says otherwise. This is the saying otherwise.
+        """
+        if restriction not in RESTRICTIONS:
+            raise UserError("未知的限制类型")
         path = (path or "").strip().strip("/")
         with self._lock:
             conn = self._get_conn()
             try:
                 conn.execute(
-                    "INSERT INTO acl (path, user_id, permission, created_at)"
+                    "INSERT INTO restrictions (path, user_id, restriction, created_at)"
                     " VALUES (?, ?, ?, ?)"
-                    " ON CONFLICT(path, user_id) DO UPDATE SET permission = excluded.permission",
-                    (path, user_id, permission, int(time.time())),
+                    " ON CONFLICT(path, user_id) DO UPDATE SET restriction = excluded.restriction",
+                    (path, user_id, restriction, int(time.time())),
                 )
                 conn.commit()
             finally:
                 conn.close()
-        return {"path": path, "user_id": user_id, "permission": permission}
+        return {"path": path, "user_id": user_id, "restriction": restriction}
 
-    def revoke(self, path: str, user_id: str) -> bool:
+    def lift(self, path: str, user_id: str) -> bool:
+        """Let somebody back in."""
+        path = (path or "").strip().strip("/")
         with self._lock:
             conn = self._get_conn()
             try:
                 cur = conn.execute(
-                    "DELETE FROM acl WHERE path = ? AND user_id = ?", (path, user_id)
+                    "DELETE FROM restrictions WHERE path = ? AND user_id = ?", (path, user_id)
                 )
                 conn.commit()
                 return cur.rowcount > 0
             finally:
                 conn.close()
 
-    def list_grants(self, user_id: Optional[str] = None) -> list[dict]:
+    def list_restrictions(self, user_id: Optional[str] = None) -> list[dict]:
         with self._lock:
             conn = self._get_conn()
             try:
                 if user_id:
                     rows = conn.execute(
-                        "SELECT path, user_id, permission, created_at FROM acl"
+                        "SELECT path, user_id, restriction, created_at FROM restrictions"
                         " WHERE user_id = ? ORDER BY path",
                         (user_id,),
                     ).fetchall()
                 else:
                     rows = conn.execute(
-                        "SELECT path, user_id, permission, created_at FROM acl ORDER BY path"
+                        "SELECT path, user_id, restriction, created_at FROM restrictions"
+                        " ORDER BY path"
                     ).fetchall()
             finally:
                 conn.close()
         return [
-            {"path": r[0], "user_id": r[1], "permission": r[2], "created_at": r[3]}
+            {"path": r[0], "user_id": r[1], "restriction": r[2], "created_at": r[3]}
             for r in rows
         ]
 
-    def permissions_for(self, user_id: str) -> list[tuple[str, str]]:
-        """The grants of one user, as (path, permission) pairs."""
-        return [(g["path"], g["permission"]) for g in self.list_grants(user_id)]
+    def restrictions_for(self, user_id: str) -> list[tuple[str, str]]:
+        """What one person may not reach, as (path, restriction) pairs."""
+        return [(r["path"], r["restriction"]) for r in self.list_restrictions(user_id)]
+
+    def _migrate_grants_to_restrictions(self, conn: sqlite3.Connection) -> None:
+        """Turn the old list of grants into the new list of exceptions.
+
+        A grant said "this folder is closed, and here is the key".
+        The new list says "this folder is open, and here is who is shut
+        out". So a grant to one person becomes a restriction on
+        everybody else -- the same rule, said the other way round.
+        """
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        if "acl" not in tables:
+            return
+        rows = conn.execute("SELECT path, user_id, permission FROM acl").fetchall()
+        if not rows:
+            return
+        everyone = [r[0] for r in conn.execute("SELECT id FROM users")]
+        now = int(time.time())
+        for path, granted_to, _permission in rows:
+            for user_id in everyone:
+                if user_id == granted_to:
+                    continue
+                conn.execute(
+                    "INSERT OR IGNORE INTO restrictions (path, user_id, restriction, created_at)"
+                    " VALUES (?, ?, 'none', ?)",
+                    (path, user_id, now),
+                )
+        conn.commit()
+        log.info(
+            "moved %d folder grants into the new list of exceptions", len(rows)
+        )
 
     # ---- session tokens ----
 

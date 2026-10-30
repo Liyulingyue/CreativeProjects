@@ -48,58 +48,92 @@ def test_a_disabled_user_cannot_log_in(store):
     assert store.verify("家人", "family123") is None
 
 
-def test_the_most_specific_grant_wins():
-    from app.deps import effective_permission
+def test_the_most_specific_restriction_wins():
+    from app.deps import effective_restriction
 
-    grants = [("", "read"), ("photos", "write"), ("photos/2024", "read")]
+    restrictions = [("", "read"), ("photos", "none"), ("photos/2024", "read")]
 
-    # A grant on a folder covers everything under it.
-    assert effective_permission("photos", grants) == "write"
-    assert effective_permission("photos/x.jpg", grants) == "write"
-    # The more specific grant beats the broader one.
-    assert effective_permission("photos/2024", grants) == "read"
-    assert effective_permission("photos/2024/x.jpg", grants) == "read"
-    # The root grant covers everything it has no closer claim on.
-    assert effective_permission("documents", grants) == "read"
-    # Nothing at all.
-    assert effective_permission("anything", []) is None
-
-
-def test_a_grant_below_the_root_does_not_leak_upwards():
-    from app.deps import effective_permission
-
-    grants = [("photos", "write")]
-    assert effective_permission("documents/a.pdf", grants) is None
+    # A restriction on a folder covers everything under it.
+    assert effective_restriction("photos", restrictions) == "none"
+    assert effective_restriction("photos/x.jpg", restrictions) == "none"
+    # The more specific one beats the broader one.
+    assert effective_restriction("photos/2024", restrictions) == "read"
+    assert effective_restriction("photos/2024/x.jpg", restrictions) == "read"
+    # The root restriction covers everything it has no closer claim on.
+    assert effective_restriction("documents", restrictions) == "read"
+    # Nothing at all means open.
+    assert effective_restriction("anything", []) is None
 
 
-def test_grants_are_stored_and_removed(store):
+def test_a_restriction_below_the_root_does_not_leak_upwards():
+    from app.deps import effective_restriction
+
+    restrictions = [("photos", "none")]
+    assert effective_restriction("documents/a.pdf", restrictions) is None
+
+
+def test_restrictions_are_stored_and_removed(store):
     user = store.create_user("家人", "family123")
 
-    store.grant("photos", user["id"], "write")
-    assert store.permissions_for(user["id"]) == [("photos", "write")]
+    store.restrict("photos", user["id"], "none")
+    assert store.restrictions_for(user["id"]) == [("photos", "none")]
 
-    store.grant("photos/2024", user["id"], "read")
-    assert len(store.permissions_for(user["id"])) == 2
+    store.restrict("photos/2024", user["id"], "read")
+    assert len(store.restrictions_for(user["id"])) == 2
 
-    store.revoke("photos/2024", user["id"])
-    assert store.permissions_for(user["id"]) == [("photos", "write")]
+    store.lift("photos/2024", user["id"])
+    assert store.restrictions_for(user["id"]) == [("photos", "none")]
 
 
-def test_deleting_a_user_takes_its_grants_with_it(store):
+def test_deleting_a_user_takes_its_restrictions_with_it(store):
     user = store.create_user("家人", "family123")
-    store.grant("photos", user["id"], "write")
+    store.restrict("photos", user["id"], "none")
 
     store.delete_user(user["id"])
 
     assert store.get_user(user["id"]) is None
-    assert store.list_grants(user["id"]) == []
+    assert store.list_restrictions(user["id"]) == []
 
 
-def test_a_root_grant_is_the_whole_storage(store):
+def test_a_root_restriction_is_the_whole_storage(store):
     user = store.create_user("家人", "family123")
-    store.grant("", user["id"], "read")
+    store.restrict("", user["id"], "none")
 
-    assert store.permissions_for(user["id"]) == [("", "read")]
+    assert store.restrictions_for(user["id"]) == [("", "none")]
+
+
+def test_the_old_list_of_grants_becomes_a_list_of_exceptions(store):
+    """A grant said "this folder is shut, and here is the key".
+
+    The new list says "this folder is open, and here is who is shut
+    out". The same rule, said the other way round.
+    """
+    import sqlite3
+
+    key = store.create_user("持钥匙的人", "key1234")
+    everyone_else = store.create_user("其他人", "other1234")
+
+    # A folder that only the person with the key could open.
+    conn = sqlite3.connect(store.db_path)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS acl (path TEXT, user_id TEXT, permission TEXT,"
+        " created_at INTEGER)"
+    )
+    conn.execute(
+        "INSERT INTO acl (path, user_id, permission, created_at) VALUES (?, ?, ?, 0)",
+        ("photos", key["id"], "write"),
+    )
+    conn.commit()
+    conn.close()
+
+    store._migrate_grants_to_restrictions(
+        sqlite3.connect(store.db_path)
+    )
+
+    # The person with the key is not shut out...
+    assert store.restrictions_for(key["id"]) == []
+    # ...and everybody else is.
+    assert store.restrictions_for(everyone_else["id"]) == [("photos", "none")]
 
 
 def test_a_token_belongs_to_the_user_it_was_issued_for(store):

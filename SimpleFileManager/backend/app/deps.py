@@ -1271,18 +1271,22 @@ def _session_visible_to(owner: str) -> bool:
     return owner == str(user.get("id") or "") or owner == str(user.get("username") or "")
 
 
-def effective_permission(relative_path: str, grants: list[tuple[str, str]]) -> Optional[str]:
-    """The grant that applies to a path.
+def effective_restriction(
+    relative_path: str, restrictions: list[tuple[str, str]]
+) -> Optional[str]:
+    """The exception that applies to a path, if there is one.
 
-    A grant on a directory covers everything under it, and the most
-    specific grant for a path is the one that counts -- so a grant on
-    "photos/2024" beats a grant on "photos".
+    A restriction on a directory covers everything under it, and the
+    most specific one for a path is the one that counts -- so a
+    restriction on "photos/2024" beats one on "photos". No restriction
+    at all means the path is open, which is how a machine a family
+    shares is meant to work.
     """
     rel = (relative_path or "").strip().strip("/")
     best = None
     best_depth = -1
-    for grant_path, permission in grants:
-        g = (grant_path or "").strip().strip("/")
+    for restricted_path, restriction in restrictions:
+        g = (restricted_path or "").strip().strip("/")
         if g == "":
             matches = True
         else:
@@ -1291,7 +1295,7 @@ def effective_permission(relative_path: str, grants: list[tuple[str, str]]) -> O
             continue
         depth = len(g)
         if depth >= best_depth:
-            best = permission
+            best = restriction
             best_depth = depth
     return best
 
@@ -1299,8 +1303,15 @@ def effective_permission(relative_path: str, grants: list[tuple[str, str]]) -> O
 def check_access(target: Path, mode: str = "read") -> None:
     """Refuse a path the caller may not reach.
 
-    The administrator may reach everything, and so may anyone when the
-    service has no users set up at all -- a single-password
+    This used to be a list of grants, so a path was shut until
+    somebody was given the key. On a machine a family shares that is
+    the wrong way round: everybody has a key to the same house, and a
+    folder is private only when somebody says so. So the list is a
+    list of exceptions, and a path nobody has been shut out of is
+    open to everybody.
+
+    The administrator may reach everything, and so may anyone when
+    the service has no users set up at all -- a single-password
     installation must keep working the way it always did.
     """
     user = current_user()
@@ -1309,21 +1320,21 @@ def check_access(target: Path, mode: str = "read") -> None:
     if user.get("role") == "admin":
         return
 
-    store = state.get_user_store()
-    grants = store.permissions_for(user["id"])
-    if not grants:
-        raise PathNotAllowed("没有访问这个位置的权限")
-
     root = get_storage_root().resolve()
     try:
         relative = str(Path(target).resolve().relative_to(root))
     except ValueError:
         raise PathNotAllowed("没有访问这个位置的权限")
 
-    permission = effective_permission(relative, grants)
-    if permission is None:
+    store = state.get_user_store()
+    restriction = effective_restriction(
+        relative, store.restrictions_for(user["id"])
+    )
+    if restriction is None:
+        return
+    if restriction == "none":
         raise PathNotAllowed("没有访问这个位置的权限")
-    if mode == "write" and permission != "write":
+    if mode == "write":
         raise PathNotAllowed("这个位置是只读的")
 
 
