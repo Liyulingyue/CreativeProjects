@@ -1,12 +1,19 @@
 from typing import Optional
 from fastapi import APIRouter, HTTPException
-from ..deps import state
+from ..deps import state, session_owner
 from ..models import ChatSession, ChatMessage, ChatHistoryResponse, CreateSessionRequest, AddMessageRequest, UpdateTitleRequest
 
 chat_history_router = APIRouter(tags=["chat_history"])
 
 
 def _require_session(session_id: str):
+    """One of this person's conversations.
+
+    A conversation belongs to the person who started it. Asking for
+    somebody else's is answered as though it were not there, rather
+    than as though it were forbidden -- there is no reason to tell a
+    stranger that a conversation exists.
+    """
     session = state.get_chat_history().get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -28,7 +35,7 @@ def get_sessions(session_type: Optional[str] = None):
 def create_session(req: CreateSessionRequest):
     """Create a new chat session"""
     chat_svc = state.get_chat_history()
-    return chat_svc.create_session(req.session_type)
+    return chat_svc.create_session(req.session_type, owner=session_owner())
 
 
 @chat_history_router.get("/sessions/{session_id}", response_model=ChatSession)

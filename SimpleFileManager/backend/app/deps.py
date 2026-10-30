@@ -514,9 +514,19 @@ class ChatHistoryService:
                     session_type TEXT DEFAULT 'chat',
                     updated_at INTEGER,
                     provider_id TEXT,
+                    -- Whose conversation this is. A session used to belong
+                    -- to whoever happened to ask, which on a machine with
+                    -- more than one person meant everybody could read
+                    -- everybody's questions.
+                    owner TEXT DEFAULT '',
                     FOREIGN KEY (provider_id) REFERENCES llm_providers(id) ON DELETE SET NULL
                 )
             """)
+            # A table that already exists does not get the new column
+            # from CREATE TABLE, so it is added here.
+            columns = {r[1] for r in conn.execute("PRAGMA table_info(chat_sessions)")}
+            if "owner" not in columns:
+                conn.execute("ALTER TABLE chat_sessions ADD COLUMN owner TEXT DEFAULT ''")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS chat_messages (
                     id TEXT PRIMARY KEY,
@@ -765,7 +775,7 @@ class ChatHistoryService:
             created_at=created_at or 0, updated_at=updated_at or 0
         )
 
-    def create_session(self, session_type: str = "chat") -> ChatSession:
+    def create_session(self, session_type: str = "chat", owner: str = "") -> ChatSession:
         with self._lock:
             session_id = uuid.uuid4().hex
             now = int(time.time() * 1000)
@@ -778,33 +788,41 @@ class ChatHistoryService:
             ).fetchone()
             main_id = main[0] if main else None
             conn.execute(
-                "INSERT INTO chat_sessions (id, title, session_type, updated_at, provider_id)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (session_id, "", session_type, now, main_id)
+                "INSERT INTO chat_sessions (id, title, session_type, updated_at, provider_id, owner)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, "", session_type, now, main_id, owner or "")
             )
             conn.commit()
             conn.close()
         return ChatSession(id=session_id, title="", messages=[], updated_at=now,
                           session_type=session_type, provider_id=main_id)
 
-    def get_sessions(self, session_type: Optional[str] = None) -> list[ChatSession]:
+    def get_sessions(self, session_type: Optional[str] = None, owner: Optional[str] = None) -> list[ChatSession]:
+        """The conversations, newest first.
+
+        `owner` is who is asking. A person sees their own; the
+        administrator sees everybody's. `owner` of None means everybody.
+        """
         with self._lock:
             conn = self._get_conn()
+            where = []
+            params: list = []
             if session_type:
-                rows = conn.execute(
-                    "SELECT id, title, session_type, updated_at, provider_id"
-                    " FROM chat_sessions WHERE session_type = ? ORDER BY updated_at DESC",
-                    (session_type,)
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT id, title, session_type, updated_at, provider_id"
-                    " FROM chat_sessions ORDER BY updated_at DESC"
-                ).fetchall()
+                where.append("session_type = ?")
+                params.append(session_type)
+            clause = (" WHERE " + " AND ".join(where)) if where else ""
+            rows = conn.execute(
+                "SELECT id, title, session_type, updated_at, provider_id, owner"
+                f" FROM chat_sessions{clause} ORDER BY updated_at DESC",
+                tuple(params),
+            ).fetchall()
 
             sessions = []
             for row in rows:
-                session_id, title, sess_type, updated_at, provider_id = row
+                session_id, title, sess_type, updated_at, provider_id, owner = row
+                # A conversation belongs to the person who started it.
+                if not _session_visible_to(owner):
+                    continue
                 messages = self._get_messages(conn, session_id)
                 sessions.append(ChatSession(
                     id=session_id,
@@ -866,16 +884,24 @@ class ChatHistoryService:
         return messages
 
     def get_session(self, session_id: str) -> Optional[ChatSession]:
+        """One conversation, and everything said in it.
+
+        `owner` is who is asking: a person may open their own, and the
+        administrator may open anybody's.
+        """
         with self._lock:
             conn = self._get_conn()
             row = conn.execute(
-                "SELECT id, title, session_type, updated_at FROM chat_sessions WHERE id = ?",
+                "SELECT id, title, session_type, updated_at, owner FROM chat_sessions WHERE id = ?",
                 (session_id,)
             ).fetchone()
             if not row:
                 conn.close()
                 return None
-            session_id, title, sess_type, updated_at = row
+            session_id, title, sess_type, updated_at, owner = row
+            if not _session_visible_to(owner):
+                conn.close()
+                return None
             messages = self._get_messages(conn, session_id)
             conn.close()
         return ChatSession(
@@ -1196,6 +1222,34 @@ def set_current_user(user: Optional[dict]):
 def current_user() -> Optional[dict]:
     """The user being served, or None when the service is open."""
     return _current_user.get()
+
+
+def session_owner() -> str:
+    """Who the current request belongs to, for recording on a session."""
+    user = current_user()
+    if user is None:
+        return ""
+    return str(user.get("id") or user.get("username") or "")
+
+
+def _session_visible_to(owner: str) -> bool:
+    """Whether the person asking may see this conversation.
+
+    A conversation belongs to the person who started it. The
+    administrator may see anybody's, and nobody else may see anybody's
+    but their own. When no accounts exist the service is open, and the
+    conversations are too.
+    """
+    user = current_user()
+    if user is None:
+        return True
+    if user.get("role") == "admin":
+        return True
+    if not owner:
+        # A conversation from before there were accounts belongs to
+        # the administrator, which is who the single password was.
+        return False
+    return owner == str(user.get("id") or "") or owner == str(user.get("username") or "")
 
 
 def effective_permission(relative_path: str, grants: list[tuple[str, str]]) -> Optional[str]:
