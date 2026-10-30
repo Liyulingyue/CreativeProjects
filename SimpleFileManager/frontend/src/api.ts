@@ -57,6 +57,39 @@ export interface TrashEntry {
   incomplete?: boolean;
 }
 
+/** A file somebody starred. */
+export interface Favorite {
+  path: string;
+  name: string;
+  is_dir: boolean;
+  size: number;
+  modified: number;
+  created_at: number;
+}
+
+export async function fetchFavorites(): Promise<{ favorites: Favorite[]; count: number }> {
+  const res = await authFetch(`${API_BASE}/favorites`);
+  if (!res.ok) throw new Error('Failed to fetch the favorites');
+  return res.json();
+}
+
+export async function addFavorite(path: string, name = '', isDir = false): Promise<void> {
+  const res = await authFetch(`${API_BASE}/favorites`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, name, is_dir: isDir }),
+  });
+  if (!res.ok) throw new Error('收藏失败');
+}
+
+export async function removeFavorite(path: string): Promise<void> {
+  const res = await authFetch(
+    `${API_BASE}/favorites?path=${encodeURIComponent(path)}`,
+    { method: 'DELETE' },
+  );
+  if (!res.ok) throw new Error('取消收藏失败');
+}
+
 /** One file that is on the machine more than once. */
 export interface DuplicateFile {
   path: string;
@@ -236,6 +269,8 @@ export interface BrowseResult {
    * and it opens the pictures of this folder and nothing else.
    */
   thumbnail_token?: string | null;
+  /** Which of these files the person has starred. */
+  favorite_paths?: string[];
 }
 
 export interface FileNode {

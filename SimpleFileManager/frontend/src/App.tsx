@@ -15,6 +15,7 @@ const OrganizerPage = lazy(() => import('./components/OrganizerPage').then(m => 
 const DigestPage = lazy(() => import('./components/DigestPage').then(m => ({ default: m.DigestPage })));
 const TrashPage = lazy(() => import('./components/TrashPage').then(m => ({ default: m.TrashPage })));
 const DuplicatesPage = lazy(() => import('./components/DuplicatesPage').then(m => ({ default: m.DuplicatesPage })));
+const FavoritesPage = lazy(() => import('./components/FavoritesPage').then(m => ({ default: m.FavoritesPage })));
 const SettingsPage = lazy(() => import('./components/SettingsPage').then(m => ({ default: m.SettingsPage })));
 const SharesPage = lazy(() => import('./components/SharesPage').then(m => ({ default: m.SharesPage })));
 const PublicSharePage = lazy(() => import('./components/PublicSharePage').then(m => ({ default: m.PublicSharePage })));
@@ -50,6 +51,7 @@ const NAV_ITEMS = [
   { to: '/organizer', label: '整理', icon: 'clipboard' as const },
   { to: '/digest', label: '日报', icon: 'newspaper' as const },
   { to: '/trash', label: '回收站', icon: 'trash' as const },
+  { to: '/favorites', label: '我的收藏', icon: 'star' as const },
   { to: '/duplicates', label: '重复文件', icon: 'copy' as const },
   { to: '/shares', label: '共享链接', icon: 'share' as const },
   { to: '/settings', label: '设置', icon: 'settings' as const },
@@ -279,6 +281,7 @@ function App() {
                   <Route path="/digest" element={<DigestPage />} />
                   <Route path="/trash" element={<TrashPage />} />
                   <Route path="/duplicates" element={<DuplicatesPage />} />
+                  <Route path="/favorites" element={<FavoritesPage />} />
                   <Route path="/shares" element={<SharesPage />} />
                   <Route path="/settings" element={<SettingsPage />} />
                 </Routes>

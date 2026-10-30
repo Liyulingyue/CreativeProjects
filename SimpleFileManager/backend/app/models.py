@@ -40,6 +40,9 @@ class BrowseResult(BaseModel):
     # cannot send an Authorization header, so the key is in the URL --
     # and it opens the pictures of this folder and nothing else.
     thumbnail_token: Optional[str] = None
+    # Which of these files the person has starred, so the browser
+    # knows without asking again.
+    favorite_paths: list[str] = []
 
 
 class FileOperation(BaseModel):

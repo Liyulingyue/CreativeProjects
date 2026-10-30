@@ -161,11 +161,31 @@ def browse(path: Optional[str] = None) -> BrowseResult:
     # show them without sending a header with every one.
     from .thumbnails import issue_directory_token
 
+    # Which of these the person has starred. Sent with the listing so
+    # the stars are right without a second question.
+    favorite_paths = []
+    try:
+        from ..deps import current_user
+
+        user = current_user()
+        if user is not None:
+            starred = state.get_favorite_store().paths_for(
+                str(user.get("id") or user.get("username") or "")
+            )
+            root_path = get_storage_root()
+            favorite_paths = [
+                i.path for i in items
+                if str(Path(i.path).relative_to(root_path)) in starred
+            ]
+    except Exception:
+        favorite_paths = []
+
     return BrowseResult(
         current_path=str(target),
         parent_path=parent,
         items=items,
         thumbnail_token=issue_directory_token(str(target))["token"],
+        favorite_paths=favorite_paths,
         total_count=len(items),
         dirs_count=dirs_count,
         files_count=files_count,

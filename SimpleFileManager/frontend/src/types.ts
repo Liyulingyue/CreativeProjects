@@ -31,6 +31,8 @@ export interface BrowseResult {
    * and it opens the pictures of this folder and nothing else.
    */
   thumbnail_token?: string | null;
+  /** Which of these files the person has starred. */
+  favorite_paths?: string[];
 }
 
 export interface FileOperation {

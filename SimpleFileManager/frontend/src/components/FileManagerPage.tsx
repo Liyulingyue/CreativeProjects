@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { collectDroppedFiles, relDirFromWebkitPath, type DroppedFile } from '../dropFiles';
 import { useUploadQueue } from '../hooks/useUploadQueue';
-import { fetchBrowse, fetchTree, createFolder, movePath, searchFiles, uploadFileChunked, UploadConflictError, batchOperation, downloadFile, downloadZip, copyPath, type BrowseResult, type FileNode, type TreeNode } from '../api';
+import { addFavorite, fetchBrowse, fetchTree, createFolder, movePath, removeFavorite, searchFiles, uploadFileChunked, UploadConflictError, batchOperation, downloadFile, downloadZip, copyPath, type BrowseResult, type FileNode, type TreeNode } from '../api';
 import { FileGrid, FileList, FileCompactList, Toolbar, Breadcrumb, isPreviewable, formatSize } from './FileExplorer';
 import { Sidebar } from './Sidebar';
 import { FilePreview } from './FilePreview';
@@ -89,6 +89,9 @@ export function FileManagerPage() {
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; node: FileNode } | null>(null);
   const [previewNode, setPreviewNode] = useState<FileNode | null>(null);
+  // The files this person starred. Kept as a set of paths so the
+  // right-click menu can say whether a file is already one.
+  const [favoritePaths, setFavoritePaths] = useState<Set<string>>(new Set());
 
   const [confirmDialog, setConfirmDialog] = useState<{ open: boolean; title: string; message: string; onConfirm: () => void } | null>(null);
   // The file a share is being made for.
@@ -128,6 +131,7 @@ export function FileManagerPage() {
       const result = await fetchBrowse(path);
       setBrowseResult(result);
       setCurrentPath(result.current_path);
+      setFavoritePaths(new Set(result.favorite_paths ?? []));
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Unknown error');
     } finally {
@@ -283,6 +287,28 @@ export function FileManagerPage() {
       toast('搜索失败: ' + (err instanceof Error ? err.message : 'Unknown error'), 'error');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const isFavorite = (path: string) => favoritePaths.has(path);
+
+  const toggleFavorite = async (node: FileNode) => {
+    try {
+      if (favoritePaths.has(node.path)) {
+        await removeFavorite(node.path);
+        setFavoritePaths(prev => {
+          const next = new Set(prev);
+          next.delete(node.path);
+          return next;
+        });
+        toast('已取消收藏', 'info');
+      } else {
+        await addFavorite(node.path, node.name, node.is_dir);
+        setFavoritePaths(prev => new Set(prev).add(node.path));
+        toast('已收藏', 'success');
+      }
+    } catch (err) {
+      toast(err instanceof Error ? err.message : '操作失败', 'error');
     }
   };
 
@@ -932,6 +958,11 @@ export function FileManagerPage() {
             { label: '重命名', icon: 'edit', onClick: () => handleRename(contextMenu.node) },
             { label: '分享', icon: 'share', onClick: () => setShareTarget(contextMenu.node) },
             { label: '历史版本', icon: 'clock', onClick: () => setVersionTarget(contextMenu.node) },
+            {
+              label: isFavorite(contextMenu.node.path) ? '取消收藏' : '收藏',
+              icon: 'star',
+              onClick: () => toggleFavorite(contextMenu.node),
+            },
             { label: '删除', icon: 'trash', danger: true, onClick: () => handleDelete(contextMenu.node) },
           ]}
           onClose={() => setContextMenu(null)}

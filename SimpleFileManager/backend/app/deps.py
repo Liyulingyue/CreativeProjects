@@ -1635,6 +1635,7 @@ class AppState:
         self._share_store = None
         self._version_store = None
         self._user_store = None
+        self._favorite_store = None
         self._load()
 
     def _load(self):
@@ -2014,6 +2015,14 @@ class AppState:
 
             self._version_store = VersionStore(DATA_DIR / VERSIONS_DIR_NAME)
         return self._version_store
+
+    def get_favorite_store(self):
+        """The files somebody wants to keep an eye on."""
+        if self._favorite_store is None:
+            from .favorites import FAVORITES_DB_NAME, FavoriteStore
+
+            self._favorite_store = FavoriteStore(str(DATA_DIR / FAVORITES_DB_NAME))
+        return self._favorite_store
 
     def get_user_store(self):
         """The users and their grants."""
