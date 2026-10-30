@@ -17,6 +17,8 @@ export interface DroppedFile {
   relDir: string;
   /** How deep in the tree it was, for progress messages. */
   depth: number;
+  /** A name of its own, so the queue can keep track of one file. */
+  id: string;
 }
 
 interface Entry {
@@ -74,7 +76,7 @@ async function walk(
   if (entry.isFile) {
     try {
       const file = await readFile(entry as FileEntry);
-      out.push({ file, relDir, depth });
+      out.push({ file, relDir, depth, id: `${relDir}/${file.name}:${file.size}` });
     } catch {
       // A file the browser will not open (it was moved while we were
       // reading the tree) is skipped rather than failing the whole drop.
@@ -119,7 +121,7 @@ export async function collectDroppedFiles(dataTransfer: DataTransfer): Promise<D
   }
 
   for (const file of Array.from(dataTransfer.files ?? [])) {
-    out.push({ file, relDir: '', depth: 0 });
+    out.push({ file, relDir: '', depth: 0, id: `${file.name}:${file.size}:${file.lastModified}` });
   }
   return out;
 }

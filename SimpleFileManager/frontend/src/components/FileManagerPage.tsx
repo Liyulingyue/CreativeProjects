@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { collectDroppedFiles, relDirFromWebkitPath, type DroppedFile } from '../dropFiles';
+import { useUploadQueue } from '../hooks/useUploadQueue';
 import { fetchBrowse, fetchTree, createFolder, movePath, searchFiles, uploadFileChunked, UploadConflictError, batchOperation, downloadFile, downloadZip, copyPath, type BrowseResult, type FileNode, type TreeNode } from '../api';
 import { FileGrid, FileList, FileCompactList, Toolbar, Breadcrumb, isPreviewable, formatSize } from './FileExplorer';
 import { Sidebar } from './Sidebar';
@@ -62,7 +63,15 @@ export function FileManagerPage() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const { collapsed: treeCollapsed, toggle: toggleTree } = useCollapse('sfm.treeCollapsed');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-  const [uploadProgress, setUploadProgress] = useState<{ loaded: number; total: number } | null>(null);
+  // The uploads, one line each, and the button that stops them.
+  const queue = useUploadQueue();
+  // These four do not change from one render to the next, and the
+  // upload loop is built out of them -- taking the whole queue object
+  // would rebuild the loop on every line of progress.
+  const {
+    update: updateQueue, setAll: setAllQueue,
+    isCancelled: uploadsCancelled, signal: uploadSignal,
+  } = queue;
   const [clipboard, setClipboard] = useState<string[]>([]);
   const clipboardHasContent = clipboard.length > 0;
   const clipboardRef = useRef<string[]>([]);
@@ -493,15 +502,19 @@ export function FileManagerPage() {
     targetPath: string,
     overwrite: 'never' | 'replace' | 'rename',
     relDir = '',
+    queueId = '',
   ) => {
     await uploadFileChunked(
       targetPath,
       file,
-      (loaded, total) => setUploadProgress({ loaded, total }),
+      (loaded) => {
+        if (queueId) updateQueue(queueId, { loaded });
+      },
       overwrite,
       relDir,
+      uploadSignal(),
     );
-  }, []);
+  }, [updateQueue, uploadSignal]);
 
   // Upload a batch, one file at a time. A file whose name is taken
   // stops the batch and asks; the answer then applies to the rest of
@@ -514,15 +527,21 @@ export function FileManagerPage() {
     doneSoFar: number,
     failedSoFar: number,
   ) => {
-    const totalBytes = list.reduce((sum, f) => sum + f.file.size, 0);
     let done = doneSoFar;
     let failed = failedSoFar;
 
     for (let i = startIndex; i < list.length; i++) {
       const { file, relDir } = list[i];
+      const queueId = list[i].id;
+      if (uploadsCancelled()) {
+        setAllQueue('cancelled');
+        return;
+      }
+      updateQueue(queueId, { status: 'uploading', loaded: 0 });
       try {
-        await sendOneFile(file, targetPath, policy, relDir);
+        await sendOneFile(file, targetPath, policy, relDir, queueId);
         done++;
+        updateQueue(queueId, { status: 'done', loaded: file.size });
       } catch (err) {
         if (err instanceof UploadConflictError) {
           // The batch is kept so it can be picked up again once the
@@ -536,13 +555,19 @@ export function FileManagerPage() {
             done,
             failed,
           });
-          setUploadProgress(null);
+          updateQueue(queueId, { status: 'waiting' });
+          return;
+        }
+        if (uploadsCancelled()) {
+          updateQueue(queueId, { status: 'cancelled' });
           return;
         }
         failed++;
+        updateQueue(queueId, {
+          status: 'failed',
+          error: err instanceof Error ? err.message : '未知错误',
+        });
         toast(`「${file.name}」上传失败：${err instanceof Error ? err.message : '未知错误'}`, 'error');
-      } finally {
-        setUploadProgress({ loaded: done, total: totalBytes });
       }
     }
 
@@ -553,30 +578,31 @@ export function FileManagerPage() {
       loadBrowse(currentPath);
       loadTree();
     }
-    setUploadProgress(null);
-  }, [currentPath, sendOneFile]);
+  }, [currentPath, sendOneFile, updateQueue, setAllQueue, uploadsCancelled]);
 
   const uploadFileList = useCallback(async (files: FileList | null | undefined, targetPath: string) => {
     if (!files || files.length === 0) return;
-    const list: DroppedFile[] = Array.from(files).map(file => ({
-      file,
-      relDir: relDirFromWebkitPath((file as File & { webkitRelativePath?: string }).webkitRelativePath || ''),
-      depth: 0,
-    }));
-    const totalBytes = list.reduce((sum, f) => sum + f.file.size, 0);
-    setUploadProgress({ loaded: 0, total: totalBytes });
+    const list: DroppedFile[] = Array.from(files).map(file => {
+      const relDir = relDirFromWebkitPath((file as File & { webkitRelativePath?: string }).webkitRelativePath || '');
+      return {
+        file,
+        relDir,
+        depth: 0,
+        id: `${relDir}/${file.name}:${file.size}:${file.lastModified}`,
+      };
+    });
+    queue.start(list.map(f => ({ id: f.id, name: f.file.name, size: f.file.size })));
     await runUpload(list, targetPath, 0, 'never', 0, 0);
-  }, [runUpload]);
+  }, [runUpload, queue]);
 
   // A drop may hold folders. The tree behind it is read first, so the
   // folder arrives with its shape instead of as one empty file.
   const uploadDrop = useCallback(async (dataTransfer: DataTransfer, targetPath: string) => {
     const list = await collectDroppedFiles(dataTransfer);
     if (!list.length) return;
-    const totalBytes = list.reduce((sum, f) => sum + f.file.size, 0);
-    setUploadProgress({ loaded: 0, total: totalBytes });
+    queue.start(list.map(f => ({ id: f.id, name: f.file.name, size: f.file.size })));
     await runUpload(list, targetPath, 0, 'never', 0, 0);
-  }, [runUpload]);
+  }, [runUpload, queue]);
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     await uploadFileList(e.target.files, currentPath);
@@ -800,18 +826,69 @@ export function FileManagerPage() {
               <Breadcrumb path={currentPath} onNavigate={handleNavigate} />
             </div>
           </div>
-          {uploadProgress && (
-            <div className="px-4 py-2 bg-indigo-50 border-b border-indigo-100 flex-shrink-0">
-              <div className="flex items-center justify-between text-xs text-indigo-700 mb-1">
-                <span>正在上传 {uploadProgress.total > 0 ? formatSize(uploadProgress.loaded) + ' / ' + formatSize(uploadProgress.total) : ''}</span>
-                <span>{uploadProgress.total > 0 ? Math.round((uploadProgress.loaded / uploadProgress.total) * 100) : 0}%</span>
+          {queue.items.length > 0 && (
+            <div className="border-b border-slate-200 bg-slate-50 flex-shrink-0">
+              <div className="flex items-center gap-3 px-4 py-2">
+                <Icon name="upload" size={15} className="text-indigo-500 flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs text-slate-700">
+                    {queue.totals.done} / {queue.totals.total} 个文件
+                    {queue.totals.failed > 0 && ` · ${queue.totals.failed} 个失败`}
+                    {queue.totals.size > 0 && ` · ${formatSize(queue.totals.bytes)} / ${formatSize(queue.totals.size)}`}
+                  </div>
+                </div>
+                {queue.isUploading && (
+                  <button onClick={queue.cancel}
+                    className="px-2.5 py-1 rounded-lg text-slate-600 text-xs font-medium hover:bg-slate-200 transition-colors flex-shrink-0">
+                    停止
+                  </button>
+                )}
+                <button onClick={() => queue.setOpen(o => !o)}
+                  className="px-2.5 py-1 rounded-lg text-slate-600 text-xs font-medium hover:bg-slate-200 transition-colors flex-shrink-0">
+                  {queue.open ? '收起' : '详情'}
+                </button>
+                {!queue.isUploading && (
+                  <button onClick={queue.reset}
+                    className="px-2.5 py-1 rounded-lg text-slate-600 text-xs font-medium hover:bg-slate-200 transition-colors flex-shrink-0">
+                    清除
+                  </button>
+                )}
               </div>
-              <div className="h-1.5 bg-indigo-100 rounded-full overflow-hidden">
+
+              <div className="h-1 bg-slate-200 overflow-hidden">
                 <div
-                  className="h-full bg-indigo-600 rounded-full transition-all duration-200"
-                  style={{ width: `${uploadProgress.total > 0 ? (uploadProgress.loaded / uploadProgress.total) * 100 : 0}%` }}
+                  className="h-full bg-indigo-500 transition-all duration-200"
+                  style={{ width: `${queue.totals.size > 0 ? (queue.totals.bytes / queue.totals.size) * 100 : 0}%` }}
                 />
               </div>
+
+              {queue.open && (
+                <div className="max-h-56 overflow-y-auto border-t border-slate-200 bg-white">
+                  {queue.items.map(item => (
+                    <div key={item.id} className="flex items-center gap-2 px-4 py-1.5 border-b border-slate-100 last:border-b-0">
+                      <Icon
+                        name={item.status === 'done' ? 'check' : item.status === 'failed' ? 'alert' : item.status === 'cancelled' ? 'close' : 'upload'}
+                        size={13}
+                        className={
+                          item.status === 'done' ? 'text-emerald-500'
+                            : item.status === 'failed' ? 'text-red-500'
+                            : item.status === 'cancelled' ? 'text-slate-400'
+                            : 'text-indigo-400'
+                        }
+                      />
+                      <span className="text-xs text-slate-700 truncate flex-1" title={item.name}>
+                        {item.name}
+                      </span>
+                      {item.error && <span className="text-[10px] text-red-500 truncate max-w-[10rem]">{item.error}</span>}
+                      <span className="text-[10px] text-slate-400 flex-shrink-0">
+                        {item.status === 'uploading'
+                          ? `${formatSize(item.loaded)} / ${formatSize(item.size)}`
+                          : formatSize(item.size)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
           {isLoading ? (
@@ -889,7 +966,7 @@ export function FileManagerPage() {
           existing={uploadConflict.existing}
           onCancel={() => {
             setUploadConflict(null);
-            setUploadProgress(null);
+            queue.setAll('cancelled');
             loadBrowse(currentPath);
           }}
           onRename={() => {

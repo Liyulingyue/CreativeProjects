@@ -5,7 +5,8 @@ from fastapi import FastAPI, Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.security import HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from starlette.requests import ClientDisconnect
 from .logging_setup import setup_logging, start_request_id, request_id
 from .routers import fs, search, settings, rag, chat, chat_history_router, agent, organizer, plans, digest, auth, get_current_auth
 
@@ -112,6 +113,16 @@ async def request_context(request: Request, call_next):
     started = time.monotonic()
     try:
         response = await call_next(request)
+    except ClientDisconnect:
+        # The client went away mid-request. Somebody pressed stop on
+        # an upload, or closed the page. That is an answer, not a
+        # failure, and it does not deserve a stack trace.
+        elapsed = int((time.monotonic() - started) * 1000)
+        log.info(
+            "%s %s -> client went away after %dms",
+            request.method, request.url.path, elapsed,
+        )
+        return Response(status_code=499)
     except Exception:
         elapsed = int((time.monotonic() - started) * 1000)
         log.exception(

@@ -1083,13 +1083,14 @@ export async function uploadFileChunked(
   onProgress?: (loaded: number, total: number) => void,
   overwrite: OverwritePolicy = 'never',
   relDir = '',
+  signal?: AbortSignal,
 ): Promise<{ name: string; path: string; size: number }> {
   const total = Math.max(1, Math.ceil(file.size / UPLOAD_CHUNK_SIZE));
   const initRes = await authFetch(
     `${API_BASE}/fs/upload/init?path=${encodeURIComponent(path)}` +
     `&name=${encodeURIComponent(file.name)}&size=${file.size}&total_chunks=${total}` +
     (relDir ? `&rel_dir=${encodeURIComponent(relDir)}` : ''),
-    { method: 'POST' },
+    { method: 'POST', signal },
   );
   if (!initRes.ok) throw new Error((await detailOf(initRes)) || '无法开始上传');
   const init = await initRes.json();
@@ -1101,7 +1102,7 @@ export async function uploadFileChunked(
     const blob = file.slice(start, Math.min(start + UPLOAD_CHUNK_SIZE, file.size));
     const res = await authFetch(
       `${API_BASE}/fs/upload/chunk?upload_id=${uploadId}&index=${index}`,
-      { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: blob },
+      { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: blob, signal },
     );
     if (!res.ok) {
       // The server is still holding the pieces, so the upload can be
@@ -1114,7 +1115,7 @@ export async function uploadFileChunked(
 
   const doneRes = await authFetch(
     `${API_BASE}/fs/upload/complete?upload_id=${uploadId}&overwrite=${overwrite}`,
-    { method: 'POST' },
+    { method: 'POST', signal },
   );
   if (doneRes.status === 409) {
     const body = await doneRes.json().catch(() => ({}));
