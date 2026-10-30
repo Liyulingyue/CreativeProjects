@@ -136,18 +136,53 @@ def unlock(share_id: str, req: UnlockRequest, response: Response):
     return {"ok": True}
 
 
+def _inside(share_root: Path, relative: str) -> Path:
+    """A path inside the shared folder, or nothing.
+
+    The visitor names a file by where it is under the folder they were
+    given. That name comes from outside, so it is checked against the
+    folder before it is used: no climbing out, no absolute paths, no
+    following a symlink out of the tree.
+    """
+    relative = (relative or "").strip().strip("/")
+    if not relative:
+        return share_root
+    parts = []
+    for part in relative.replace("\\", "/").split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            raise HTTPException(status_code=400, detail="无效的路径")
+        parts.append(part)
+    candidate = share_root.joinpath(*parts)
+    try:
+        resolved = candidate.resolve()
+        if not resolved.is_relative_to(share_root.resolve()):
+            raise HTTPException(status_code=400, detail="无效的路径")
+    except OSError:
+        raise HTTPException(status_code=404, detail="文件不存在")
+    return resolved
+
+
 @share_public.get("/{share_id}/list")
 def share_list(share_id: str, request: Request):
-    """The contents of a shared directory."""
+    """The contents of a shared directory, or of a folder inside it."""
     share, target = _resolve(share_id)
     if not share["is_dir"]:
         raise HTTPException(status_code=400, detail="这不是一个文件夹")
     if not _is_unlocked(request, share):
         raise HTTPException(status_code=401, detail="需要密码")
 
+    relative = request.query_params.get("path", "")
+    here = _inside(target, relative)
+    if not here.exists():
+        raise HTTPException(status_code=404, detail="文件不存在")
+    if not here.is_dir():
+        raise HTTPException(status_code=400, detail="这不是一个文件夹")
+
     items = []
     try:
-        for entry in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+        for entry in sorted(here.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
             if entry.name.startswith("."):
                 continue
             try:
@@ -163,7 +198,12 @@ def share_list(share_id: str, request: Request):
     except OSError as e:
         raise HTTPException(status_code=500, detail=str(e))
     _store().note_access(share_id)
-    return {"name": share["name"], "items": items, "count": len(items)}
+    return {
+        "name": share["name"],
+        "path": relative,
+        "items": items,
+        "count": len(items),
+    }
 
 
 @share_public.get("/{share_id}/download")
@@ -173,13 +213,18 @@ def share_download(share_id: str, request: Request):
     if not _is_unlocked(request, share):
         raise HTTPException(status_code=401, detail="需要密码")
 
-    # A file inside a shared directory may be asked for by name.
+    # A file inside a shared directory may be asked for by name, and
+    # by where it is under the folder -- a subfolder is somewhere a
+    # visitor can go.
     name = request.query_params.get("name")
-    if name:
+    relative = request.query_params.get("path", "")
+    if name and not relative:
         if "/" in name or "\\" in name or name.startswith("."):
             raise HTTPException(status_code=400, detail="无效的文件名")
-        candidate = (target / name).resolve()
-        if not candidate.is_relative_to(target.resolve()) or not candidate.is_file():
+        relative = name
+    if relative:
+        candidate = _inside(target, relative)
+        if not candidate.is_file():
             raise HTTPException(status_code=404, detail="文件不存在")
         target = candidate
 

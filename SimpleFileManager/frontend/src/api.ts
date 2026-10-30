@@ -1261,12 +1261,14 @@ export async function unlockPublicShare(id: string, password: string): Promise<v
   }
 }
 
-export async function fetchPublicShareListing(id: string): Promise<{
+export async function fetchPublicShareListing(id: string, path = ''): Promise<{
   name: string;
+  path: string;
   items: { name: string; is_dir: boolean; size: number; modified: string }[];
   count: number;
 }> {
-  const res = await fetch(`${API_BASE}/share/${encodeURIComponent(id)}/list`);
+  const query = path ? `?path=${encodeURIComponent(path)}` : '';
+  const res = await fetch(`${API_BASE}/share/${encodeURIComponent(id)}/list${query}`);
   if (!res.ok) throw new Error('无法读取目录');
   return res.json();
 }

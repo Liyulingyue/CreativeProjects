@@ -34,6 +34,9 @@ export function PublicSharePage() {
   const { id = '' } = useParams();
   const [info, setInfo] = useState<PublicShareInfo | null>(null);
   const [items, setItems] = useState<ListingItem[] | null>(null);
+  // Where in the shared folder we are. A shared folder can have
+  // folders inside it, and a visitor should be able to go into them.
+  const [inside, setInside] = useState<string[]>([]);
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -45,13 +48,26 @@ export function PublicSharePage() {
       const data = await fetchPublicShare(id);
       setInfo(data);
       if (!data.locked && data.is_dir) {
-        const listing = await fetchPublicShareListing(id);
-        setItems(listing.items);
+        await openFolder(inside);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : '链接无效');
     } finally {
       setLoading(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  // The folder we are looking at, by its parts.
+  const here = inside.join('/');
+
+  const openFolder = useCallback(async (parts: string[]) => {
+    try {
+      const listing = await fetchPublicShareListing(id, parts.join('/'));
+      setItems(listing.items);
+      setInside(parts);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '无法读取目录');
     }
   }, [id]);
 
@@ -72,7 +88,9 @@ export function PublicSharePage() {
 
   const downloadUrl = (name?: string) => {
     const base = `/api/share/${encodeURIComponent(id)}/download`;
-    return name ? `${base}?name=${encodeURIComponent(name)}` : base;
+    if (!name) return base;
+    const relative = here ? `${here}/${name}` : name;
+    return `${base}?path=${encodeURIComponent(relative)}`;
   };
 
   return (
@@ -120,6 +138,19 @@ export function PublicSharePage() {
               </div>
             ) : info?.is_dir ? (
               <>
+                {inside.length > 0 && (
+                  <div className="flex items-center gap-1 text-xs mb-3 flex-wrap">
+                    <button onClick={() => openFolder([])}
+                      className="text-indigo-600 hover:underline">{info?.name}</button>
+                    {inside.map((part, i) => (
+                      <span key={i} className="flex items-center gap-1">
+                        <Icon name="chevronRight" size={12} className="text-slate-300" />
+                        <button onClick={() => openFolder(inside.slice(0, i + 1))}
+                          className="text-indigo-600 hover:underline">{part}</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <div className="text-xs text-slate-400 mb-3">共 {items?.length ?? 0} 项</div>
                 <div className="border border-slate-200 rounded-lg overflow-hidden">
                   {(items ?? []).map(item => (
@@ -128,7 +159,14 @@ export function PublicSharePage() {
                       <Icon name={item.is_dir ? 'folder' : 'file'} size={18}
                         className={item.is_dir ? 'text-amber-500' : 'text-slate-400'} />
                       <div className="flex-1 min-w-0">
-                        <div className="text-sm text-slate-700 truncate">{item.name}</div>
+                        {item.is_dir ? (
+                          <button onClick={() => openFolder([...inside, item.name])}
+                            className="text-sm text-slate-700 truncate hover:text-indigo-600 hover:underline text-left block w-full">
+                            {item.name}
+                          </button>
+                        ) : (
+                          <div className="text-sm text-slate-700 truncate">{item.name}</div>
+                        )}
                         <div className="text-[11px] text-slate-400">
                           {item.is_dir ? '文件夹' : formatSize(item.size)} · {item.modified}
                         </div>
