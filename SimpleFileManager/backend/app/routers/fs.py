@@ -868,6 +868,26 @@ def stream_token(req: StreamTokenRequest):
     }
 
 
+@fs.get("/duplicates")
+def find_duplicates(limit: int = 200) -> dict:
+    """The files that are on the machine more than once.
+
+    The names do not have to match -- a photo off the phone and off
+    the laptop are the same photo. They are found by what is in them.
+    """
+    from ..duplicates import DuplicateFinder
+
+    return DuplicateFinder().find(limit=limit)
+
+
+@fs.post("/duplicates/scan")
+def scan_for_duplicates() -> dict:
+    """Work out the hashes of files that do not have one yet."""
+    from ..duplicates import DuplicateFinder
+
+    return DuplicateFinder().scan_for_duplicates()
+
+
 @fs.get("/versions")
 def list_versions(path: str):
     """What this file used to contain."""

@@ -57,6 +57,40 @@ export interface TrashEntry {
   incomplete?: boolean;
 }
 
+/** One file that is on the machine more than once. */
+export interface DuplicateFile {
+  path: string;
+  name: string;
+  size: number;
+}
+
+/** A group of files whose contents are identical. */
+export interface DuplicateGroup {
+  hash: string;
+  size: number;
+  copies: number;
+  wasted: number;
+  files: DuplicateFile[];
+}
+
+export interface DuplicateListing {
+  groups: DuplicateGroup[];
+  count: number;
+  wasted: number;
+}
+
+export async function fetchDuplicates(): Promise<DuplicateListing> {
+  const res = await authFetch(`${API_BASE}/fs/duplicates`);
+  if (!res.ok) throw new Error('Failed to find the duplicates');
+  return res.json();
+}
+
+export async function scanForDuplicates(): Promise<{ hashed: number; remaining: number }> {
+  const res = await authFetch(`${API_BASE}/fs/duplicates/scan`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to scan');
+  return res.json();
+}
+
 export interface TrashListing {
   entries: TrashEntry[];
   count: number;
