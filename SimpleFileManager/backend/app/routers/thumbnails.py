@@ -100,12 +100,10 @@ async def get_thumbnail(
         if not verify_directory_token(str(target), tt):
             raise HTTPException(status_code=401, detail="Not authorized")
     else:
-        # No key: the session has to say so.
         from ..routers.auth import get_current_auth
-
         await get_current_auth(request, credentials)
-        if not can_access(target, "read"):
-            raise HTTPException(status_code=403, detail="没有访问这个位置的权限")
+    if not can_access(target, "read"):
+        raise HTTPException(status_code=403, detail="没有访问这个位置的权限")
 
     size = max(32, min(int(size or DEFAULT_SIZE), 1024))
     data = ThumbnailStore(get_storage_root()).get(target, size)

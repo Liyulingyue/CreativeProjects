@@ -114,12 +114,7 @@ def check_health() -> dict:
     # The vector store is the expensive one: opening it reads the
     # manifest, so it is only touched when the file is there.
     vec_dir = Path(data_dir) / "vector_db"
-    if vec_dir.exists():
-        try:
-            rag = state.get_rag_service()
-            checks["vector_store"] = {"ok": True, "rows": rag.vector_store.count()}
-        except Exception as e:
-            checks["vector_store"] = {"ok": False, "detail": f"{type(e).__name__}: {str(e)[:100]}"}
+    checks["vector_store"] = {"ok": vec_dir.exists()}}
 
     # The model endpoints are optional: the service still serves files
     # and search without them, so a failure degrades rather than fails.

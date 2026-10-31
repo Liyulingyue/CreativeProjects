@@ -21,7 +21,7 @@ export type { ChatMessage, ChatSession };
 export interface ToolActivity {
   kind: 'reasoning' | 'tool';
   tool?: string;
-  status?: 'running' | 'done';
+  status?: 'running' | 'done' | 'cancelled';
   args?: Record<string, unknown>;
   result?: unknown;
   text?: string;
@@ -43,6 +43,7 @@ function stringify(value: unknown): string {
 function ToolCallRow({ activity }: { activity: ToolActivity }) {
   const [open, setOpen] = useState(false);
   const running = activity.status === 'running';
+  const cancelled = activity.status === 'cancelled';
   const argEntries = activity.args ? Object.entries(activity.args) : [];
 
   return (
@@ -54,6 +55,8 @@ function ToolCallRow({ activity }: { activity: ToolActivity }) {
       >
         {running ? (
           <div className="w-2.5 h-2.5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+        ) : cancelled ? (
+          <Icon name="xCircle" size={13} className="text-slate-400 flex-shrink-0" />
         ) : (
           <Icon name="checkCircle" size={13} className="text-green-600 flex-shrink-0" />
         )}
@@ -276,6 +279,7 @@ function ReasoningBlock({ text }: { text: string }) {
 function ToolTraceLine({ activity }: { activity: ToolActivity }) {
   const [open, setOpen] = useState(false);
   const running = activity.status === 'running';
+  const cancelled = activity.status === 'cancelled';
   const args = activity.args ? Object.entries(activity.args) : [];
 
   return (
@@ -287,6 +291,8 @@ function ToolTraceLine({ activity }: { activity: ToolActivity }) {
       >
         {running ? (
           <div className="w-2.5 h-2.5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+        ) : cancelled ? (
+          <Icon name="xCircle" size={12} className="text-slate-400 flex-shrink-0" />
         ) : (
           <Icon name="checkCircle" size={12} className="text-green-600 flex-shrink-0" />
         )}

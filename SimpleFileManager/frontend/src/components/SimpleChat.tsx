@@ -17,7 +17,7 @@ const EXAMPLE_PROMPTS = [
 interface ToolActivityItem {
   kind: 'reasoning' | 'tool';
   tool?: string;
-  status?: 'running' | 'done';
+  status?: 'running' | 'done' | 'cancelled';
   args?: Record<string, unknown>;
   result?: unknown;
   text?: string;
@@ -261,7 +261,7 @@ export function SimpleChat() {
       }
     } finally {
       abortRef.current = null;
-      updateTrace(sessionId, prev => prev.map(t => (t.status === 'running' ? { ...t, status: 'done' as const } : t)));
+      updateTrace(sessionId, prev => prev.map(t => (t.status === 'running' ? { ...t, status: 'cancelled' as const } : t)));
       setIsLoading(false);
       setCurrentStep(undefined);
     }
@@ -337,14 +337,15 @@ export function SimpleChat() {
     setProviderId(session?.provider_id ?? null);
   }, [currentSessionId, sessions]);
 
-  // If the providers list finishes loading and the dropdown is still
-  // sitting on its initial null, snap it to the main so the user
-  // sees the actual model name on the empty state.
+  // Snap to the main provider once on first load so the empty state
+  // shows the actual model name. A deliberate user choice (null) is
+  // never overridden.
   useEffect(() => {
     if (providerId === null && providersApi.main && !currentSessionId) {
       setProviderId(providersApi.main.id);
     }
-  }, [providerId, providersApi.main, currentSessionId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="h-full">

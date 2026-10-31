@@ -1638,6 +1638,7 @@ class AppState:
         self._user_store = None
         self._upload_log = None
         self._favorite_store = None
+        self._service_lock = __import__("threading").Lock()
         self._load()
 
     def _load(self):
@@ -1935,23 +1936,26 @@ class AppState:
 
     def get_rag_service(self) -> RAGService:
         if self._rag_service is None:
-            # Indexer is the is_index=1 row. The RAG service is what
-            # the indexer runs on, so it shares that endpoint. When no
-            # provider is configured the user gets a friendly error
-            # from the RAG query endpoint instead of a 500.
-            idx = self.get_chat_history().get_index_embedding_provider()
-            if idx is None:
-                raise RuntimeError(
-                    "没有可用的 embedding provider；请到 /settings 添加"
+            with self._service_lock:
+                if self._rag_service is not None:
+                    return self._rag_service
+                # Indexer is the is_index=1 row. The RAG service is what
+                # the indexer runs on, so it shares that endpoint. When no
+                # provider is configured the user gets a friendly error
+                # from the RAG query endpoint instead of a 500.
+                idx = self.get_chat_history().get_index_embedding_provider()
+                if idx is None:
+                    raise RuntimeError(
+                        "没有可用的 embedding provider；请到 /settings 添加"
+                    )
+                embedding_svc = EmbeddingService(
+                    api_key=idx.api_key, base_url=idx.base_url, model=idx.model,
                 )
-            embedding_svc = EmbeddingService(
-                api_key=idx.api_key, base_url=idx.base_url, model=idx.model,
-            )
-            db_path = str(DATA_DIR / "vector_db")
-            self._rag_service = RAGService(
-                embedding_service=embedding_svc,
-                db_path=db_path,
-            )
+                db_path = str(DATA_DIR / "vector_db")
+                self._rag_service = RAGService(
+                    embedding_service=embedding_svc,
+                    db_path=db_path,
+                )
         return self._rag_service
 
     def get_search_embedding_service(self) -> EmbeddingService:

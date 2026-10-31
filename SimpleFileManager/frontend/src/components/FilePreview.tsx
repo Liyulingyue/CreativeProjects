@@ -24,6 +24,7 @@ function formatChars(n: number): string {
 export function FilePreview({ node, onClose }: FilePreviewProps) {
   const [content, setContent] = useState<string | null>(null);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const blobUrlRef = useRef<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -92,12 +93,12 @@ export function FilePreview({ node, onClose }: FilePreviewProps) {
       setLoading(true);
       authFetch(`/api/fs/download?path=${encodeURIComponent(node.path)}`)
         .then(res => res.blob())
-        .then(blob => { setBlobUrl(URL.createObjectURL(blob)); })
+        .then(blob => { blobUrlRef.current = URL.createObjectURL(blob); setBlobUrl(blobUrlRef.current); })
         .catch(e => setError(e instanceof Error ? e.message : 'Failed to load'))
         .finally(() => setLoading(false));
     }
 
-    return () => { if (blobUrl) URL.revokeObjectURL(blobUrl); };
+    return () => { if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current); };
   }, [node.path, node, loadSegment]);
 
   const loadMore = useCallback(async () => {
