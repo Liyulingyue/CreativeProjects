@@ -6,6 +6,9 @@ import { useChatSessions } from '../hooks/useChatSessions';
 import { useProviders } from '../hooks/useProviders';
 import { ChatLayout } from './ui/ChatLayout';
 import { Icon } from './ui/Icon';
+import { useToast } from './ui/Toast';
+
+const { toast } = useToast();
 
 const EXAMPLE_PROMPTS = [
   '这个目录里有哪些文件？',
@@ -105,7 +108,14 @@ export function SimpleChat() {
 
   const handleSendMessage = async (content: string) => {
     let sessionId = currentSessionId;
-    if (!sessionId) sessionId = await createSession();
+    if (!sessionId) {
+      try {
+        sessionId = await createSession();
+      } catch (e) {
+        toast(e instanceof Error ? e.message : '创建会话失败', 'error');
+        return;
+      }
+    }
     await addMessage(sessionId, { role: 'user', content });
 
     setIsLoading(true);

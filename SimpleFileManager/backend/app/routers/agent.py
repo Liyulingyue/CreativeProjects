@@ -1197,12 +1197,11 @@ def agent_chat_stream(req: AgentRequest):
         if provider is None:
             yield sse("error", {"message": "没有可用的 LLM provider；请到 /settings 添加"})
             return
-        if req.provider_id:
-            # Persist the override so subsequent turns in this session
-            # keep using the chosen provider. Done before the loop so
-            # the row write is visible to parallel readers (e.g. the
-            # sidebar session loader).
-            chat_svc.update_session_provider(session_id, provider.id)
+        # Defer persisting the override until the first token arrives.
+        # If the stream fails immediately (provider down), the session
+        # keeps its original provider instead of being stuck.
+        _override_pending = req.provider_id is not None
+        if _override_pending:
             session.provider_id = provider.id
         all_messages = session.build_messages()
 
@@ -1299,6 +1298,9 @@ def agent_chat_stream(req: AgentRequest):
                     # regardless of whether it's a scratchpad chunk or the
                     # final answer — so TTFT should reflect that.
                     if first_token_at is None and kind in ("reasoning", "token"):
+                        if _override_pending:
+                            chat_svc.update_session_provider(session_id, provider.id)
+                            _override_pending = False
                         first_token_at = time.monotonic()
                     if kind == "reasoning":
                         all_reasoning += payload
