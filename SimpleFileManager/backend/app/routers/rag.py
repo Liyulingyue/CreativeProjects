@@ -133,10 +133,9 @@ def query(req: QueryRequest) -> QueryResponse:
     interaction.mark_active()
     try:
         rag_svc = state.get_rag_service()
-        # Patch the question embedding to use the search embedder so the
-        # RAG-service's own embed call does not queue behind the indexer.
-        rag_svc.embedding_service = state.get_search_embedding_service()
-        result = rag_svc.query(req.question, top_k=req.top_k)
+        # Use the search embedder without mutating the shared singleton.
+        search_svc = state.get_search_embedding_service()
+        result = rag_svc.query(req.question, top_k=req.top_k, embedder=search_svc)
         return QueryResponse(**result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -160,8 +159,9 @@ def query_stream(req: QueryRequest) -> StreamingResponse:
     def generate() -> Iterator[str]:
         try:
             rag_svc = state.get_rag_service()
+            search_svc = state.get_search_embedding_service()
             yield sse("meta", {"status": "searching"})
-            results, context = rag_svc._retrieve_for_answer(req.question, top_k=req.top_k)
+            results, context = rag_svc._retrieve_for_answer(req.question, top_k=req.top_k, embedder=search_svc)
 
             if not results:
                 yield sse("done", {"answer": "没有找到相关文件来回答这个问题。", "sources": []})

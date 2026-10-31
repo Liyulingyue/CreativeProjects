@@ -402,7 +402,7 @@ class RAGService:
             vectors = self.embedding_service.embed([r["content"] for r in batch])
             self.vector_store.add_many(vectors, batch)
 
-    def _retrieve_for_answer(self, question: str, top_k: int) -> tuple[list[dict], str]:
+    def _retrieve_for_answer(self, question: str, top_k: int, embedder=None) -> tuple[list[dict], str]:
         """Retrieve passages and build the grounding prompt.
 
         Split out from query() so the streaming variant can emit tokens without
@@ -410,7 +410,8 @@ class RAGService:
         """
         # Embeds the question and calls the LLM: same interaction path as chat.
         interaction.mark_active()
-        query_vector = self.embedding_service.embed([question])[0]
+        emb = embedder or self.embedding_service
+        query_vector = emb.embed([question])[0]
         results = self.vector_store.search(query_vector, top_k=top_k)
 
         context_parts = []
@@ -432,8 +433,8 @@ class RAGService:
             {"role": "user", "content": prompt},
         ]
 
-    def query(self, question: str, top_k: int = 3) -> dict:
-        results, context = self._retrieve_for_answer(question, top_k)
+    def query(self, question: str, top_k: int = 3, embedder=None) -> dict:
+        results, context = self._retrieve_for_answer(question, top_k, embedder=embedder)
 
         if not results:
             return {"answer": "没有找到相关文件来回答这个问题。", "sources": []}
