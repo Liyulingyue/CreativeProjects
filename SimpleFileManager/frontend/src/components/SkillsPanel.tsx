@@ -31,7 +31,11 @@ export function SkillsPanel() {
     try {
       setState(await fetchSkills());
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : '加载失败');
+      if (e instanceof Error && e.message.includes('403')) {
+        setMessage('只有管理员可以管理技能');
+      } else {
+        setMessage(e instanceof Error ? e.message : '加载失败');
+      }
     } finally {
       setLoading(false);
     }
@@ -93,8 +97,13 @@ export function SkillsPanel() {
   };
 
   const onAdd = async () => {
-    if (!newSkill.id.trim() || !newSkill.label.trim() || !newSkill.instruction.trim()) {
+    const id = newSkill.id.trim();
+    if (!id || !newSkill.label.trim() || !newSkill.instruction.trim()) {
       setMessage('请填写技能 ID、名称和指令');
+      return;
+    }
+    if (!/^[a-z][a-z0-9_]{1,63}$/.test(id)) {
+      setMessage('技能 ID 须以小写字母开头，仅含小写字母、数字、下划线，2-64 个字符');
       return;
     }
     setBusy(true);

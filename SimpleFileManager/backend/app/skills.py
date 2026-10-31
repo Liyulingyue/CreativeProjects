@@ -344,12 +344,25 @@ TOOL_HANDLERS: dict[str, Any] = {
 }
 
 
+MAX_TOOL_RESULT_CHARS = 4000
+
+
+def _trim_tool_result(result: dict) -> dict:
+    """Keep tool results bounded so a large result does not blow the
+    model's context window."""
+    text = json.dumps(result, ensure_ascii=False)
+    if len(text) > MAX_TOOL_RESULT_CHARS:
+        return {"success": result.get("success", False), "truncated": True,
+                "data": text[:MAX_TOOL_RESULT_CHARS]}
+    return result
+
+
 def execute_tool(name: str, arguments: dict) -> dict:
     handler = TOOL_HANDLERS.get(name)
     if handler is None:
         return {"error": f"未知工具: {name}"}
     try:
-        return handler(**arguments)
+        return _trim_tool_result(handler(**arguments))
     except TypeError as e:
         return {"error": f"参数错误: {e}"}
     except Exception as e:
@@ -368,6 +381,7 @@ class SkillRegistry:
         self._master: bool = False
         self._overrides: dict[str, bool] = {}
         self._tool_overrides: dict[str, bool] = {}
+        self._lock = __import__("threading").Lock()
         self._load()
 
     def _path(self) -> Path:
@@ -387,15 +401,16 @@ class SkillRegistry:
                 pass
 
     def _save(self):
-        self._path().write_text(
-            json.dumps(
-                {"custom": self._custom, "master": self._master,
-                 "enabled": self._overrides, "tools": self._tool_overrides},
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+        with self._lock:
+            self._path().write_text(
+                json.dumps(
+                    {"custom": self._custom, "master": self._master,
+                     "enabled": self._overrides, "tools": self._tool_overrides},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
 
     @property
     def master_enabled(self) -> bool:
