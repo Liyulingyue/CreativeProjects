@@ -129,6 +129,7 @@ class StorageWatcher:
         self._error: Optional[str] = None
         self._started_at = 0.0
         self._degraded = False
+        self._dir_cache: list[Path] | None = None
 
     # ---- whether this can work here at all ----
 
@@ -238,8 +239,13 @@ class StorageWatcher:
     def _join(directory: str, name: str) -> str:
         return os.path.join(directory, name) if directory else name
 
-    def _directories(self) -> list[Path]:
-        """Every directory in the tree, the root first."""
+    def _directories(self, force: bool = False) -> list[Path]:
+        """Every directory in the tree, the root first.
+
+        Result is cached because every event triggers a sync, and a full
+        walk on each one stalls the watcher thread on large trees."""
+        if not force and self._dir_cache is not None:
+            return self._dir_cache
         found = [self.root]
         try:
             for base, dirs, _files in os.walk(self.root):
@@ -250,6 +256,7 @@ class StorageWatcher:
                     found.append(base_path / name)
         except OSError:
             pass
+        self._dir_cache = found
         return found
 
     def _sync_watches(self, mark_ready: bool = False) -> set[str]:
@@ -301,6 +308,9 @@ class StorageWatcher:
         for wd in list(self._watches):
             if wd not in seen:
                 self._watches.pop(wd, None)
+
+        if new_dirs:
+            self._dir_cache = None
 
         ready: set[str] = set()
         if mark_ready:

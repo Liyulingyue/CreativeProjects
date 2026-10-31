@@ -217,9 +217,19 @@ def token_user(token: str) -> Optional[str]:
 
 
 def _stream_secret() -> bytes:
-    """The server's own secret, used to sign short-lived stream tokens."""
+    """The server's own secret, used to sign short-lived stream tokens.
+
+    Generated once at first use and persisted in auth.json — separate
+    from the password salt, so a leaked salt does not let an attacker
+    forge stream tokens."""
+    import secrets as _secrets
     data = _load_auth()
-    return (data.get("salt") or "").encode()
+    secret = data.get("stream_secret")
+    if not secret:
+        secret = _secrets.token_hex(32)
+        data["stream_secret"] = secret
+        _save_auth(data)
+    return secret.encode()
 
 
 def issue_stream_token(path: str, ttl: int = 300) -> dict:

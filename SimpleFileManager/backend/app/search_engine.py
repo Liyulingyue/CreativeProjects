@@ -19,6 +19,25 @@ log = logging.getLogger(__name__)
 MAX_HITS_PER_FILE = 3
 
 
+def _path_matches_filter(file_path: str, path_filter: str) -> bool:
+    """Check whether file_path is at or under path_filter.
+
+    Uses Path.is_relative_to so "/a" matches "/a/file.txt" but not "/ab/file.txt".
+    Falls back to substring on the name for bare filenames."""
+    try:
+        if not file_path:
+            return False
+        fp = Path(file_path)
+        # If the filter looks like a directory path (contains / or starts with .),
+        # use proper relative-path matching.
+        if "/" in path_filter or path_filter.startswith("."):
+            return fp.is_relative_to(path_filter)
+        # Bare name: match the filename portion.
+        return fp.name == path_filter or path_filter in fp.name
+    except (ValueError, TypeError):
+        return False
+
+
 class HybridSearchEngine:
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -175,7 +194,7 @@ class HybridSearchEngine:
             for path, name, chunk_idx, preview, text_len, rank in rows
         ]
         if path_filter:
-            out = [r for r in out if path_filter in r["path"] or path_filter in r["name"]]
+            out = [r for r in out if _path_matches_filter(r["path"], path_filter)]
         return out[:top_k]
 
     def vector_search(self, query: str, top_k: int = 10, path_filter: str = "") -> list[dict]:
@@ -204,7 +223,7 @@ class HybridSearchEngine:
                 for r in results
             ]
             if path_filter:
-                out = [r for r in out if path_filter in r["path"] or path_filter in r["name"]]
+                out = [r for r in out if _path_matches_filter(r["path"], path_filter)]
             return out[:top_k]
         except Exception as e:
             log.warning("vector search failed (%s: %s); keyword results still returned", type(e).__name__, e)

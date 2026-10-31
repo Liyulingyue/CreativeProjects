@@ -1084,6 +1084,26 @@ class Session:
 
 
 sessions: dict[str, Session] = {}
+_session_used: dict[str, float] = {}  # session_id -> last access timestamp
+_SESSION_TTL_SECONDS = 3600  # drop idle sessions after an hour
+
+
+def _touch(session_id: str):
+    """Mark a session as recently used."""
+    import time as _time
+    _session_used[session_id] = _time.time()
+
+
+def _evict_idle_sessions():
+    """Drop sessions that have been idle past the TTL. Runs before every
+    new chat turn so memory cannot grow without bound."""
+    import time as _time
+    now = _time.time()
+    expired = [sid for sid, last in _session_used.items()
+               if now - last > _SESSION_TTL_SECONDS]
+    for sid in expired:
+        sessions.pop(sid, None)
+        _session_used.pop(sid, None)
 
 
 def _restore_session(session_id: str) -> Session:
@@ -1093,7 +1113,9 @@ def _restore_session(session_id: str) -> Session:
     rebuild the agent's LLM context from the most recent turns there.
     """
     if session_id in sessions:
+        _touch(session_id)
         return sessions[session_id]
+    _evict_idle_sessions()
     session = Session()
     try:
         chat_session = state.get_chat_history().get_session(session_id)
@@ -1110,6 +1132,7 @@ def _restore_session(session_id: str) -> Session:
     except Exception:
         pass
     sessions[session_id] = session
+    _touch(session_id)
     return session
 
 
