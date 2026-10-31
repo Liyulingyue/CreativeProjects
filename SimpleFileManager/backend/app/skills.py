@@ -117,6 +117,19 @@ BASE_TOOLS = [TOOL_SEARCH, TOOL_LIST_DIR, TOOL_READ_FILE, TOOL_WRITE_FILE]
 ATOMIC_TOOLS = [TOOL_MOVE_FILE, TOOL_DELETE_FILE, TOOL_CREATE_DIR, TOOL_FILE_INFO]
 ALL_TOOLS = BASE_TOOLS + ATOMIC_TOOLS
 
+# Human-facing metadata for the settings UI and safety labeling.
+TOOL_META: dict[str, dict] = {
+    "search_files":  {"label": "搜索文件",    "description": "按关键词搜索文件名或内容", "danger": "safe"},
+    "list_directory": {"label": "列出目录",   "description": "查看目录结构",           "danger": "safe"},
+    "read_file":     {"label": "读取文件",    "description": "读取文本文件内容",        "danger": "safe"},
+    "write_file":    {"label": "写入文件",    "description": "创建或覆盖文件",          "danger": "low"},
+    "move_file":     {"label": "移动/重命名", "description": "移动或重命名文件",        "danger": "medium"},
+    "delete_file":   {"label": "删除文件",    "description": "移入回收站",             "danger": "high"},
+    "create_directory": {"label": "创建目录", "description": "新建文件夹",             "danger": "low"},
+    "file_info":     {"label": "文件信息",    "description": "查看大小、修改时间等",    "danger": "safe"},
+}
+ALL_TOOL_NAMES = [t["function"]["name"] for t in ALL_TOOLS]
+
 # ---------------------------------------------------------------------------
 # Built-in skills
 # ---------------------------------------------------------------------------
@@ -313,6 +326,7 @@ class SkillRegistry:
         self._custom: dict[str, dict] = {}
         self._master: bool = False
         self._overrides: dict[str, bool] = {}
+        self._tool_overrides: dict[str, bool] = {}
         self._load()
 
     def _path(self) -> Path:
@@ -327,13 +341,15 @@ class SkillRegistry:
                 self._custom = data.get("custom", {})
                 self._master = data.get("master", False)
                 self._overrides = data.get("enabled", {})
+                self._tool_overrides = data.get("tools", {})
             except Exception:
                 pass
 
     def _save(self):
         self._path().write_text(
             json.dumps(
-                {"custom": self._custom, "master": self._master, "enabled": self._overrides},
+                {"custom": self._custom, "master": self._master,
+                 "enabled": self._overrides, "tools": self._tool_overrides},
                 ensure_ascii=False,
                 indent=2,
             ),
@@ -392,6 +408,34 @@ class SkillRegistry:
             self._save()
             return True
         return False
+    def all_tool_states(self) -> list[dict]:
+        result = []
+        base_names = {t["function"]["name"] for t in BASE_TOOLS}
+        for t in ALL_TOOLS:
+            name = t["function"]["name"]
+            meta = TOOL_META.get(name, {})
+            enabled = self._tool_overrides.get(name, name in base_names)
+            result.append({
+                "name": name,
+                "label": meta.get("label", name),
+                "description": meta.get("description", ""),
+                "danger": meta.get("danger", "safe"),
+                "enabled": enabled,
+                "builtin_base": name in base_names,
+            })
+        return result
+
+    def set_tool_enabled(self, tool_name: str, enabled: bool):
+        if tool_name not in ALL_TOOL_NAMES:
+            raise ValueError(f"未知工具: {tool_name}")
+        self._tool_overrides[tool_name] = bool(enabled)
+        self._save()
+
+    def set_all_tools(self, enabled: bool):
+        for name in ALL_TOOL_NAMES:
+            self._tool_overrides[name] = enabled
+        self._save()
+
 
     def get_active_instructions(self) -> str:
         if not self._master:
@@ -405,17 +449,17 @@ class SkillRegistry:
         return "可用的技能:\n\n" + "\n\n".join(parts) + "\n\n根据用户的请求选择合适的方法，并用工具完成。"
 
     def get_active_tools(self) -> list[dict]:
-        """Base tools always; atomic tools only when any skill is active."""
-        has_active_skill = self._master and any(s["enabled"] for s in self.all_skills())
-        tool_list = list(ALL_TOOLS) if has_active_skill else list(BASE_TOOLS)
-        seen: set[str] = set()
-        unique: list[dict] = []
-        for t in tool_list:
+        """Master off → no tools. Master on → individually toggled tools."""
+        if not self._master:
+            return []
+        base_names = {t["function"]["name"] for t in BASE_TOOLS}
+        result: list[dict] = []
+        for t in ALL_TOOLS:
             name = t["function"]["name"]
-            if name not in seen:
-                seen.add(name)
-                unique.append(t)
-        return unique
+            enabled = self._tool_overrides.get(name, name in base_names)
+            if enabled:
+                result.append(t)
+        return result
 
 
 _registry = SkillRegistry()

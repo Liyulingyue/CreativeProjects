@@ -1290,6 +1290,26 @@ export async function removeSkill(skillId: string): Promise<void> {
   if (!res.ok) throw new Error('删除技能失败');
 }
 
+export async function toggleTool(toolName: string, enabled: boolean): Promise<{ name: string; enabled: boolean }> {
+  const res = await authFetch(`${API_BASE}/skills/tools/${toolName}/toggle`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) throw new Error('更新工具失败');
+  return res.json();
+}
+
+export async function toggleAllTools(enabled: boolean): Promise<{ all_enabled: boolean }> {
+  const res = await authFetch(`${API_BASE}/skills/tools/all`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) throw new Error('更新工具失败');
+  return res.json();
+}
+
 
 /** One earlier version of a file. */
 export interface FileVersion {

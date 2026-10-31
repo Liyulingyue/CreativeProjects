@@ -29,6 +29,7 @@ def test_master_on_with_active_skill_exposes_atomic_tools():
     reg = get_skill_registry()
     reg.set_master(True)
     reg.set_enabled("organize", True)
+    reg.set_all_tools(True)
     names = {t["function"]["name"] for t in reg.get_active_tools()}
     for t in ATOMIC_TOOLS:
         assert t["function"]["name"] in names
@@ -36,11 +37,47 @@ def test_master_on_with_active_skill_exposes_atomic_tools():
 
 def test_base_tools_always_present():
     reg = get_skill_registry()
-    for master in (False, True):
-        reg.set_master(master)
-        names = {t["function"]["name"] for t in reg.get_active_tools()}
-        for t in BASE_TOOLS:
-            assert t["function"]["name"] in names
+    reg.set_master(True)
+    names = {t["function"]["name"] for t in reg.get_active_tools()}
+    for t in BASE_TOOLS:
+        assert t["function"]["name"] in names
+    reg.set_master(False)
+
+
+def test_per_tool_toggle():
+    reg = get_skill_registry()
+    reg.set_master(True)
+    reg.set_tool_enabled("delete_file", True)
+    names = {t["function"]["name"] for t in reg.get_active_tools()}
+    assert "delete_file" in names
+    reg.set_tool_enabled("delete_file", False)
+    names = {t["function"]["name"] for t in reg.get_active_tools()}
+    assert "delete_file" not in names
+
+
+def test_set_all_tools():
+    reg = get_skill_registry()
+    reg.set_master(True)
+    reg.set_all_tools(False)
+    names = {t["function"]["name"] for t in reg.get_active_tools()}
+    assert names == set()
+    reg.set_all_tools(True)
+    names = {t["function"]["name"] for t in reg.get_active_tools()}
+    from app.skills import ALL_TOOL_NAMES
+    assert names == set(ALL_TOOL_NAMES)
+
+
+def test_master_off_ignores_tool_toggles():
+    reg = get_skill_registry()
+    reg.set_master(False)
+    reg.set_all_tools(True)
+    assert reg.get_active_tools() == []
+
+
+def test_unknown_tool_rejected():
+    reg = get_skill_registry()
+    with pytest.raises(ValueError):
+        reg.set_tool_enabled("no_such_tool", True)
 
 
 def test_instruction_injected_when_active():
@@ -173,4 +210,37 @@ class TestSkillManagementAPI:
 
     def test_remove_builtin_is_rejected(self):
         res = client.delete("/api/skills/organize")
+        assert res.status_code == 404
+    def test_list_tools_included(self):
+        res = client.get("/api/skills")
+        body = res.json()
+        assert "tools" in body
+        names = {t["name"] for t in body["tools"]}
+        assert "search_files" in names
+        assert "delete_file" in names
+
+    def test_toggle_tool(self):
+        # Master must be on for tools to be active
+        client.patch("/api/skills/master", json={"enabled": True})
+        res = client.patch("/api/skills/tools/delete_file/toggle", json={"enabled": True})
+        assert res.status_code == 200
+        assert res.json()["enabled"] is True
+        # Reset
+        client.patch("/api/skills/tools/delete_file/toggle", json={"enabled": False})
+        client.patch("/api/skills/master", json={"enabled": False})
+
+    def test_toggle_all_tools(self):
+        client.patch("/api/skills/master", json={"enabled": True})
+        res = client.patch("/api/skills/tools/all", json={"enabled": False})
+        assert res.status_code == 200
+        assert res.json()["all_enabled"] is False
+        # Now list should show all disabled
+        body = client.get("/api/skills").json()
+        assert all(not t["enabled"] for t in body["tools"])
+        # Reset
+        client.patch("/api/skills/tools/all", json={"enabled": True})
+        client.patch("/api/skills/master", json={"enabled": False})
+
+    def test_toggle_unknown_tool(self):
+        res = client.patch("/api/skills/tools/no_such_tool/toggle", json={"enabled": True})
         assert res.status_code == 404

@@ -212,7 +212,17 @@ export interface Skill {
   builtin: boolean;
 }
 
+export interface ToolState {
+  name: string;
+  label: string;
+  description: string;
+  danger: 'safe' | 'low' | 'medium' | 'high';
+  enabled: boolean;
+  builtin_base: boolean;
+}
+
 export interface SkillsState {
   master: boolean;
   skills: Skill[];
+  tools: ToolState[];
 }
