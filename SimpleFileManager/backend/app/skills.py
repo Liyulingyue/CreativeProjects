@@ -18,6 +18,7 @@ those powers.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -376,13 +377,16 @@ def _trim_tool_result(result: dict) -> dict:
 def execute_tool(name: str, arguments: dict) -> dict:
     handler = TOOL_HANDLERS.get(name)
     if handler is None:
-        return {"error": f"未知工具: {name}"}
+        return {"success": False, "error": f"未知工具: {name}"}
     try:
-        return _trim_tool_result(handler(**arguments))
+        result = _trim_tool_result(handler(**arguments))
+        if "success" not in result:
+            result["success"] = True
+        return result
     except TypeError as e:
-        return {"error": f"参数错误: {e}"}
+        return {"success": False, "error": f"参数错误: {e}"}
     except Exception as e:
-        return {"error": str(e)}
+        return {"success": False, "error": str(e)}
 
 # ---------------------------------------------------------------------------
 # Skill registry
@@ -397,7 +401,7 @@ class SkillRegistry:
         self._master: bool = False
         self._overrides: dict[str, bool] = {}
         self._tool_overrides: dict[str, bool] = {}
-        self._lock = __import__("threading").Lock()
+        self._lock = threading.Lock()
         self._load()
 
     def _path(self) -> Path:

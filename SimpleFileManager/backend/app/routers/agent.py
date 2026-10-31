@@ -239,8 +239,7 @@ SYSTEM_PROMPT = """你是 NASMind 的文件治理 Agent，负责帮助用户分�
 - search_content: 按内容正则搜索文件
 - semantic_search: 按含义检索已索引的段落，理解大文件时优先用它
 
-你唯一可以提交变更的方式是 submit_plan 工具：它会把一份操作计划提交给用户审批，
-在你提交计划后用户需要手动批准，计划才会被执行。你无法直接修改、移动或删除任何文件。
+{MUTATION_POLICY}
 
 工作流程：
 1. 先用只读工具充分了解文件系统的现状（目录结构、文件内容）
@@ -1017,22 +1016,21 @@ class Session:
         # response". The stripped prompt hack is gone.
         system_text = SYSTEM_PROMPT
         reg = get_skill_registry()
-        if reg.master_enabled:
-            # Skills on: the model may be able to mutate files directly,
-            # so replace the "submit_plan only" restriction with a note
-            # that some mutations are allowed when the matching tool exists.
-            _read_only_only = (
-                "你唯一可以提交变更的方式是 submit_plan 工具："
-                "它会把一份操作计划提交给用户审批，"
-                "在你提交计划后用户需要手动批准，计划才会被执行。"
-                "你无法直接修改、移动或删除任何文件。"
-            )
-            _skills_mutate = (
-                "你可以通过可用的工具直接操作文件（如写入、移动、删除）。"
-                "对于有破坏性的操作（如删除回收站外的文件），"
-                "仍然应该先提交 submit_plan 供用户确认。"
-            )
-            system_text = system_text.replace(_read_only_only, _skills_mutate)
+        _read_only_policy = (
+            "你唯一可以提交变更的方式是 submit_plan 工具："
+            "它会把一份操作计划提交给用户审批，"
+            "在你提交计划后用户需要手动批准，计划才会被执行。"
+            "你无法直接修改、移动或删除任何文件。"
+        )
+        _skills_policy = (
+            "你可以通过可用的工具直接操作文件（如写入、移动、删除）。"
+            "对于有破坏性的操作（如删除回收站外的文件），"
+            "仍然应该先提交 submit_plan 供用户确认。"
+        )
+        system_text = system_text.replace(
+            "{MUTATION_POLICY}",
+            _skills_policy if reg.master_enabled else _read_only_policy,
+        )
         skill_instr = reg.get_active_instructions()
         if skill_instr:
             system_text = system_text + "\n\n" + skill_instr
@@ -1086,6 +1084,7 @@ class Session:
 sessions: dict[str, Session] = {}
 _session_used: dict[str, float] = {}  # session_id -> last access timestamp
 _SESSION_TTL_SECONDS = 3600  # drop idle sessions after an hour
+_MAX_SESSIONS = 500  # hard cap regardless of activity
 
 
 def _touch(session_id: str):
@@ -1095,8 +1094,9 @@ def _touch(session_id: str):
 
 
 def _evict_idle_sessions():
-    """Drop sessions that have been idle past the TTL. Runs before every
-    new chat turn so memory cannot grow without bound."""
+    """Drop sessions that have been idle past the TTL, and enforce a hard
+    cap on total sessions. Runs before every new chat turn so memory
+    cannot grow without bound."""
     import time as _time
     now = _time.time()
     expired = [sid for sid, last in _session_used.items()
@@ -1104,6 +1104,12 @@ def _evict_idle_sessions():
     for sid in expired:
         sessions.pop(sid, None)
         _session_used.pop(sid, None)
+    # Hard cap: if still over limit, evict the least-recently-used.
+    if len(sessions) > _MAX_SESSIONS:
+        lru = sorted(_session_used, key=_session_used.get)
+        for sid in lru[:len(sessions) - _MAX_SESSIONS]:
+            sessions.pop(sid, None)
+            _session_used.pop(sid, None)
 
 
 def _restore_session(session_id: str) -> Session:

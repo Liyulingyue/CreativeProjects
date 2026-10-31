@@ -33,7 +33,7 @@ def _path_matches_filter(file_path: str, path_filter: str) -> bool:
         if "/" in path_filter or path_filter.startswith("."):
             return fp.is_relative_to(path_filter)
         # Bare name: match the filename portion.
-        return fp.name == path_filter or path_filter in fp.name
+        return fp.name == path_filter
     except (ValueError, TypeError):
         return False
 

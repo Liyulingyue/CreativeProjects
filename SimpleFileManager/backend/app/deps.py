@@ -262,16 +262,19 @@ class LanceDBVectorStore:
         return [{"score": 1.0 - r.get("_distance", 0), **r} for r in results]
 
     def delete_by_file(self, file_path: str):
-        """Delete all chunks for a path. Uses Python-side filtering instead
-        of SQL string interpolation — the path is user-controlled and could
-        contain characters that break a WHERE clause."""
+        """Delete all chunks for a path. Uses Python-side filtering — the
+        path is user-controlled and could contain SQL-dangerous
+        characters. IDs are SHA-256 hex (server-controlled) so the
+        final WHERE clause is safe."""
+        import re as _re
         try:
             rows = self._table.to_arrow().to_pylist()
         except Exception:
             return
         ids = [r["id"] for r in rows if r.get("file_path") == file_path]
-        if ids:
-            self._table.delete(" OR ".join(f"id = '{i}'" for i in ids))
+        valid = [i for i in ids if _re.fullmatch(r"[a-f0-9]+#[0-9]+", i)]
+        if valid:
+            self._table.delete(" OR ".join(f"id = '{i}'" for i in valid))
 
     def rename_file(self, old: str, new: str):
         """Rewrite the file_path column for every chunk of a renamed file.

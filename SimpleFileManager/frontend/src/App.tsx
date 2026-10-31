@@ -192,7 +192,7 @@ function App() {
             {NAV_ITEMS.filter(item =>
               // An ordinary person's menu does not offer pages that
               // would only be refused.
-              !ADMIN_ONLY.has(item.to) || me?.is_admin !== false
+              !ADMIN_ONLY.has(item.to) || me?.is_admin === true
             ).map(item => (
               <NavLink
                 key={item.to}
