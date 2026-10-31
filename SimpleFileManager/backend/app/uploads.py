@@ -184,7 +184,7 @@ class UploadManager:
             raise UploadError("分片序号超出范围")
         return self._dir(upload_id) / f"{index:06d}.part"
 
-    MAX_CHUNK_BYTES = 16 * 1024 * 1024  # 16 MB per chunk
+    MAX_CHUNK_BYTES = int(os.environ.get("MAX_CHUNK_BYTES", str(16 * 1024 * 1024)))
 
     def write_chunk(self, upload_id: str, index: int, data: bytes) -> dict:
         """Store one piece. Writing the same piece twice is fine."""
