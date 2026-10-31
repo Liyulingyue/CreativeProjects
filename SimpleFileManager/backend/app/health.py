@@ -114,7 +114,7 @@ def check_health() -> dict:
     # The vector store is the expensive one: opening it reads the
     # manifest, so it is only touched when the file is there.
     vec_dir = Path(data_dir) / "vector_db"
-    checks["vector_store"] = {"ok": vec_dir.exists()}}
+    checks["vector_store"] = {"ok": vec_dir.exists()}
 
     # The model endpoints are optional: the service still serves files
     # and search without them, so a failure degrades rather than fails.
