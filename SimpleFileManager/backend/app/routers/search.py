@@ -3,7 +3,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from ..interaction import interaction
 from ..deps import state, can_access, get_storage_root
@@ -26,7 +26,7 @@ class HybridSearchResponse(BaseModel):
 @search.post("/hybrid", response_model=HybridSearchResponse)
 def hybrid_search(
     query: str,
-    top_k: int = 10,
+    top_k: int = Query(10, ge=1, le=100),
     mode: str = "hybrid",
     path_filter: str = "",
 ) -> HybridSearchResponse:
@@ -132,7 +132,7 @@ def search_files(q: str, path: Optional[str] = None, limit: int = 50) -> SearchR
 
 
 @search.get("/suggest")
-def suggest(q: str, limit: int = 10) -> list[str]:
+def suggest(q: str, limit: int = Query(10, ge=1, le=50)) -> list[str]:
     storage_path = state.get_settings().storage_path
     if not q or len(q) < 1:
         return []

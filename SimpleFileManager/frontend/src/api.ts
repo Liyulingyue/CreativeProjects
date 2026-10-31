@@ -882,7 +882,7 @@ export async function streamRagQuery(
         else if (event === 'done') answer = payload.answer || answer;
         else if (event === 'error') throw new Error(payload.message);
       } catch (e) {
-        if (e instanceof Error && /模型|连接|请求/.test(e.message)) throw e;
+        if (e instanceof Error) throw e;
       }
     }
   }

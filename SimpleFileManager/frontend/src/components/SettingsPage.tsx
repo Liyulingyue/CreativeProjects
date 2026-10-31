@@ -140,14 +140,15 @@ function ProviderRow({
     }
     setBusy(true);
     try {
-      await onSave({
+      const payload: Parameters<typeof onSave>[0] = {
         name: draft.name.trim(),
         base_url: draft.base_url.trim(),
         model: draft.model.trim(),
         api_key: draft.api_key,
-        max_tokens: draft.max_tokens === '' ? undefined : Number(draft.max_tokens),
-        reasoning_budget: Number(draft.reasoning_budget),
-      });
+      };
+      if (draft.max_tokens !== '') payload.max_tokens = Number(draft.max_tokens);
+      if (draft.reasoning_budget !== '') payload.reasoning_budget = Number(draft.reasoning_budget);
+      await onSave(payload);
       setEditing(false);
     } catch (e) {
       toast(e instanceof Error ? e.message : '保存失败', 'error');

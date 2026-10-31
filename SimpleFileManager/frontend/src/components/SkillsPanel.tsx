@@ -26,6 +26,7 @@ export function SkillsPanel() {
 
   const [showAdd, setShowAdd] = useState(false);
   const [newSkill, setNewSkill] = useState({ id: '', label: '', instruction: '', description: '' });
+  const [masterBusy, setMasterBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -44,7 +45,7 @@ export function SkillsPanel() {
   useEffect(() => { load(); }, [load]);
 
   const onToggleMaster = async (enabled: boolean) => {
-    setBusy(true);
+    setMasterBusy(true);
     setMessage(null);
     try {
       const r = await setSkillsMaster(enabled);
@@ -53,7 +54,7 @@ export function SkillsPanel() {
     } catch (e) {
       setMessage(e instanceof Error ? e.message : '操作失败');
     } finally {
-      setBusy(false);
+      setMasterBusy(false);
     }
   };
 
@@ -155,7 +156,7 @@ export function SkillsPanel() {
           </div>
           <button
             onClick={() => onToggleMaster(!state?.master)}
-            disabled={busy}
+            disabled={masterBusy}
             className={`relative inline-flex h-6 w-11 flex-shrink-0 rounded-full transition-colors ${
               state?.master ? 'bg-indigo-600' : 'bg-slate-300'
             } disabled:opacity-50`}
