@@ -26,6 +26,7 @@ from ..deps import (
 from ..doc_extract import ExtractionError, extract_text
 from ..interaction import interaction
 from ..llm_client import chat_completion, chat_completion_stream, _friendly_error
+from ..skills import get_skill_registry, execute_tool as execute_skill_tool
 
 log = logging.getLogger(__name__)
 
@@ -894,9 +895,21 @@ def execute_tool(name: str, arguments: dict) -> dict:
             return tool_semantic_search(**arguments)
         if name == "submit_plan":
             return tool_submit_plan(**arguments)
-        return {"success": False, "error": f"Unknown tool: {name}"}
+        # Skills tools (only reachable when skills are enabled — the tool
+        # list sent to the model is gated by the registry).
+        return execute_skill_tool(name, arguments)
     except TypeError as e:
         return {"success": False, "error": f"Invalid arguments for {name}: {e}"}
+
+
+def _merge_tools(agent_tools: list[dict], skill_tools: list[dict]) -> list[dict]:
+    """Agent read-only tools plus the skills tools it does not already have."""
+    names = {t["function"]["name"] for t in agent_tools}
+    merged = list(agent_tools)
+    for t in skill_tools:
+        if t["function"]["name"] not in names:
+            merged.append(t)
+    return merged
 
 
 # ---- LLM plumbing ----
@@ -1002,7 +1015,28 @@ class Session:
         # surfaces the quality tradeoff in a tooltip, so the operator-
         # facing answer is now: "you picked a 350M, expect a 350M-grade
         # response". The stripped prompt hack is gone.
-        msgs = [{"role": "system", "content": SYSTEM_PROMPT}]
+        system_text = SYSTEM_PROMPT
+        reg = get_skill_registry()
+        if reg.master_enabled:
+            # Skills on: the model may be able to mutate files directly,
+            # so replace the "submit_plan only" restriction with a note
+            # that some mutations are allowed when the matching tool exists.
+            _read_only_only = (
+                "你唯一可以提交变更的方式是 submit_plan 工具："
+                "它会把一份操作计划提交给用户审批，"
+                "在你提交计划后用户需要手动批准，计划才会被执行。"
+                "你无法直接修改、移动或删除任何文件。"
+            )
+            _skills_mutate = (
+                "你可以通过可用的工具直接操作文件（如写入、移动、删除）。"
+                "对于有破坏性的操作（如删除回收站外的文件），"
+                "仍然应该先提交 submit_plan 供用户确认。"
+            )
+            system_text = system_text.replace(_read_only_only, _skills_mutate)
+        skill_instr = reg.get_active_instructions()
+        if skill_instr:
+            system_text = system_text + "\n\n" + skill_instr
+        msgs = [{"role": "system", "content": system_text}]
         if self.memory:
             msgs.append({"role": "system", "content": f"【历史工作记忆（早期对话摘要）】\n{self.memory}"})
         # No sliding window here. A window that drops the oldest message each
@@ -1213,8 +1247,14 @@ def agent_chat_stream(req: AgentRequest):
                 # the turn calls tools; the 350M picks them unreliably.
                 # The chat UI warns the user about this in the provider
                 # dropdown's tooltip.
+                # The agent always has its own read-only tools plus
+                # submit_plan. When skills are enabled, the skills tools
+                # are added on top — and the per-tool toggles decide which.
+                active_tools = list(TOOLS)
+                if get_skill_registry().master_enabled:
+                    active_tools = _merge_tools(active_tools, get_skill_registry().get_active_tools())
                 for kind, payload in chat_completion_stream(
-                    all_messages, tools=TOOLS, provider=provider,
+                    all_messages, tools=active_tools, provider=provider,
                     reasoning_budget=reasoning_budget,
                 ):
                     # First LLM text byte — reasoning chunk or answer chunk,
