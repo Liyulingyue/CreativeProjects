@@ -500,6 +500,7 @@ def tool_list_directory(path: str) -> dict:
 
 
 def tool_read_file(path: str, limit: int = 4000, offset: int = 0) -> dict:
+    limit = min(max(limit, 1), 200000)
     try:
         target = resolve_under_root(path)
     except PathOutsideRoot:
@@ -563,6 +564,8 @@ def tool_read_file(path: str, limit: int = 4000, offset: int = 0) -> dict:
 
 
 def tool_find_files(pattern: str) -> dict:
+    if len(pattern) > 200:
+        return {"success": False, "error": "正则表达式过长（上限 200 字符）"}
     try:
         regex = re.compile(pattern)
     except re.error as e:
@@ -594,6 +597,8 @@ def tool_find_files(pattern: str) -> dict:
 
 
 def tool_search_content(pattern: str, path: str = "") -> dict:
+    if len(pattern) > 200:
+        return {"success": False, "error": "正则表达式过长（上限 200 字符）"}
     try:
         regex = re.compile(pattern)
     except re.error as e:

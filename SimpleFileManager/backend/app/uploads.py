@@ -184,8 +184,12 @@ class UploadManager:
             raise UploadError("分片序号超出范围")
         return self._dir(upload_id) / f"{index:06d}.part"
 
+    MAX_CHUNK_BYTES = 16 * 1024 * 1024  # 16 MB per chunk
+
     def write_chunk(self, upload_id: str, index: int, data: bytes) -> dict:
         """Store one piece. Writing the same piece twice is fine."""
+        if len(data) > self.MAX_CHUNK_BYTES:
+            raise UploadError(f"块大小超过 {self.MAX_CHUNK_BYTES // 1024 // 1024} MB")
         path = self.chunk_path(upload_id, index)
         # Written to a temporary name and moved into place, so a chunk
         # that is half-written is not mistaken for one that arrived.

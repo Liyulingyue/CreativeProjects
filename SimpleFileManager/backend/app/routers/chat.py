@@ -91,10 +91,11 @@ def _run_tool_loop(messages: list[dict], tools: list[dict], provider,
                 "content": json.dumps(tool_result, ensure_ascii=False),
             })
 
-    # Budget of rounds exhausted: ask for a final answer
+    # Budget of rounds exhausted: ask for a final answer. No tools —
+    # the model must answer with text, not attempt another tool call.
     result = chat_completion(
         messages=messages,
-        tools=tools,
+        tools=[],
         provider=provider,
         reasoning_budget=reasoning_budget,
     )

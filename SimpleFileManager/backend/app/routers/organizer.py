@@ -45,7 +45,7 @@ class OrganizerService:
         files = []
         try:
             for entry in Path(root_path).rglob("*"):
-                if ".simplefilemanager" in str(entry):
+                if ".simplefilemanager" in entry.parts:
                     continue
                 try:
                     stat = entry.stat()

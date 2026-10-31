@@ -50,7 +50,7 @@ EMBED_CHUNK_BATCH = 12
 EMBEDDING_DIM_MAP = {
     "text-embedding-3-small": 1536,
     "text-embedding-3-large": 3072,
-    "text-embedding-ada-002": 1538,
+    "text-embedding-ada-002": 1536,
 }
 
 
