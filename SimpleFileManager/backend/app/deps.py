@@ -262,11 +262,16 @@ class LanceDBVectorStore:
         return [{"score": 1.0 - r.get("_distance", 0), **r} for r in results]
 
     def delete_by_file(self, file_path: str):
-        # SQL string literals are single-quoted; double quotes delimit
-        # identifiers, which made lancedb read the path as a column name and
-        # silently skip the delete — leaving a removed file searchable.
-        escaped = file_path.replace("'", "''")
-        self._table.delete(f"file_path = '{escaped}'")
+        """Delete all chunks for a path. Uses Python-side filtering instead
+        of SQL string interpolation — the path is user-controlled and could
+        contain characters that break a WHERE clause."""
+        try:
+            rows = self._table.to_arrow().to_pylist()
+        except Exception:
+            return
+        ids = [r["id"] for r in rows if r.get("file_path") == file_path]
+        if ids:
+            self._table.delete(" OR ".join(f"id = '{i}'" for i in ids))
 
     def rename_file(self, old: str, new: str):
         """Rewrite the file_path column for every chunk of a renamed file.
@@ -284,8 +289,6 @@ class LanceDBVectorStore:
         each passage twice. Rewriting the id keeps the key consistent
         with the path it encodes.
         """
-        old_esc = old.replace("'", "''")
-        new_esc = new.replace("'", "''")
         try:
             rows = (self._table.to_arrow()
                     .select(["id", "file_path", "content", "chunk_idx", "vector"])
@@ -294,14 +297,9 @@ class LanceDBVectorStore:
             rows = []
         moved = [r for r in rows if r.get("file_path") == old]
         if not moved:
-            self._table.update(
-                where=f"file_path = '{old_esc}'",
-                values={"file_path": new},
-            )
             return
         # Re-key and re-insert. The vectors travel with the rows, so this
         # costs no embedding work.
-        self._table.delete(f"file_path = '{old_esc}'")
         new_digest = hashlib.sha256(new.encode()).hexdigest()
         rekeyed = [{
             "id": f"{new_digest}#{int(r.get('chunk_idx', 0))}",

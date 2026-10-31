@@ -144,8 +144,7 @@ def check_health() -> dict:
             checks["embedding"] = _check_http(base + "/health", timeout=3.0)
     except Exception as e:
         checks["embedding"] = {"ok": False, "detail": f"{type(e).__name__}: {str(e)[:100]}"}
-    except Exception as e:
-        checks["llm"] = {"ok": False, "detail": f"{type(e).__name__}: {str(e)[:100]}"}
+
 
     broken = [k for k, v in checks.items() if not v.get("ok")]
     degraded = [

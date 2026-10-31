@@ -22,7 +22,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from .deps import state
+from .deps import state, can_access, visible_children
+from .trash import TrashService
 
 # ---------------------------------------------------------------------------
 # Tool definitions (OpenAI function-calling format)
@@ -239,8 +240,10 @@ def _handle_list_directory(path: str) -> dict:
     target = _abs_path(path) if path.strip() else Path(state.get_settings().storage_path)
     if not target.exists():
         return {"error": f"目录不存在: {path}"}
+    all_children = list(target.iterdir())
+    allowed = visible_children(target, all_children)
     entries = []
-    for child in sorted(target.iterdir()):
+    for child in sorted(allowed):
         entries.append({
             "name": child.name,
             "type": "directory" if child.is_dir() else "file",
@@ -249,10 +252,14 @@ def _handle_list_directory(path: str) -> dict:
     return {"path": _rel(target), "entries": entries}
 
 
-def _handle_read_file(path: str, limit: int = 50000) -> dict:
+def _handle_read_file(path: str, limit: int | None = None) -> dict:
+    if limit is None or limit < 1 or limit > 200000:
+        limit = 50000
     target = _abs_path(path)
     if not target.exists():
         return {"error": f"文件不存在: {path}"}
+    if not can_access(target, "read"):
+        return {"error": f"无权读取: {path}"}
     try:
         content = target.read_text(encoding="utf-8")[:limit]
         return {"path": _rel(target), "content": content, "truncated": len(content) >= limit}
@@ -262,6 +269,8 @@ def _handle_read_file(path: str, limit: int = 50000) -> dict:
 
 def _handle_write_file(path: str, content: str) -> dict:
     target = _abs_path(path)
+    if target.exists() and not can_access(target, "write"):
+        return {"error": f"无权写入: {path}"}
     if target.exists():
         # Keep what is there now, so overwriting can be undone.
         try:
@@ -278,6 +287,8 @@ def _handle_move_file(source: str, destination: str) -> dict:
     dst = _abs_path(destination)
     if not src.exists():
         return {"error": f"源文件不存在: {source}"}
+    if not can_access(src, "write") or not can_access(dst.parent, "write"):
+        return {"error": f"无权移动: {source}"}
     dst.parent.mkdir(parents=True, exist_ok=True)
     src.rename(dst)
     return {"source": _rel(src), "destination": _rel(dst), "moved": True}
@@ -287,17 +298,20 @@ def _handle_delete_file(path: str) -> dict:
     target = _abs_path(path)
     if not target.exists():
         return {"error": f"路径不存在: {path}"}
-    trash_root = Path(state.get_settings().storage_path) / ".trash"
-    ts = time.strftime("%Y%m%d-%H%M%S")
-    rel = _rel(target)
-    dest = trash_root / ts / rel
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    target.rename(dest)
-    return {"path": rel, "trashed_to": str(dest.relative_to(Path(state.get_settings().storage_path)))}
+    if not can_access(target, "write"):
+        return {"error": f"无权删除: {path}"}
+    svc = TrashService(Path(state.get_settings().storage_path))
+    try:
+        entry = svc.trash(target)
+    except Exception as e:
+        return {"error": str(e)}
+    return {"path": _rel(target), "trashed_to": entry.get("id", "")}
 
 
 def _handle_create_directory(path: str) -> dict:
     target = _abs_path(path)
+    if not can_access(target.parent, "write"):
+        return {"error": f"无权创建目录: {path}"}
     target.mkdir(parents=True, exist_ok=True)
     return {"path": _rel(target), "created": True}
 
@@ -322,6 +336,8 @@ def _handle_file_info(path: str) -> dict:
     target = _abs_path(path)
     if not target.exists():
         return {"error": f"路径不存在: {path}"}
+    if not can_access(target, "read"):
+        return {"error": f"无权访问: {path}"}
     st = target.stat()
     return {
         "path": _rel(target),
