@@ -244,3 +244,13 @@ class TestSkillManagementAPI:
     def test_toggle_unknown_tool(self):
         res = client.patch("/api/skills/tools/no_such_tool/toggle", json={"enabled": True})
         assert res.status_code == 404
+def test_path_traversal_is_blocked():
+    """Paths that resolve outside the storage root must be refused."""
+    import os
+    os.environ["STORAGE_PATH"] = "/tmp/sfm_pathcheck"
+    from app.skills import _abs_path
+    import pytest
+    with pytest.raises(ValueError):
+        _abs_path("../../etc/passwd")
+    with pytest.raises(ValueError):
+        _abs_path("/etc/passwd")

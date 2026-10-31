@@ -71,6 +71,16 @@ TOOL_READ_FILE = _tool(
     ["path"],
 )
 
+TOOL_SEMANTIC_SEARCH = _tool(
+    "semantic_search",
+    "按含义而非关键词搜索已索引的文件内容。适合了解一份大文档讲了什么，或寻找措辞未知的相关段落。",
+    {
+        "query": {"type": "string", "description": "自然语言描述你想找什么"},
+        "top_k": {"type": "integer", "description": "返回段落数，默认 5，最大 20"},
+    },
+    ["query"],
+)
+
 TOOL_WRITE_FILE = _tool(
     "write_file",
     "创建或覆盖一个文件。",
@@ -113,12 +123,13 @@ TOOL_FILE_INFO = _tool(
     ["path"],
 )
 
-BASE_TOOLS = [TOOL_SEARCH, TOOL_LIST_DIR, TOOL_READ_FILE, TOOL_WRITE_FILE]
+BASE_TOOLS = [TOOL_SEARCH, TOOL_LIST_DIR, TOOL_READ_FILE, TOOL_WRITE_FILE, TOOL_SEMANTIC_SEARCH]
 ATOMIC_TOOLS = [TOOL_MOVE_FILE, TOOL_DELETE_FILE, TOOL_CREATE_DIR, TOOL_FILE_INFO]
 ALL_TOOLS = BASE_TOOLS + ATOMIC_TOOLS
 
 # Human-facing metadata for the settings UI and safety labeling.
 TOOL_META: dict[str, dict] = {
+    "semantic_search": {"label": "语义检索", "description": "按含义搜索文档内容", "danger": "safe"},
     "search_files":  {"label": "搜索文件",    "description": "按关键词搜索文件名或内容", "danger": "safe"},
     "list_directory": {"label": "列出目录",   "description": "查看目录结构",           "danger": "safe"},
     "read_file":     {"label": "读取文件",    "description": "读取文本文件内容",        "danger": "safe"},
@@ -192,12 +203,18 @@ BUILTIN_SKILLS: dict[str, dict] = {
 # ---------------------------------------------------------------------------
 
 def _abs_path(path: str) -> Path:
-    """Resolve a user-supplied path under the storage root."""
+    """Resolve a user-supplied path under the storage root.
+
+    Raises ValueError if the path resolves outside the root — without
+    this, a crafted path like "../../etc/passwd" would read or write
+    anywhere on the host.
+    """
     root = Path(state.get_settings().storage_path).resolve()
     p = Path(path)
     target = (root / p) if not p.is_absolute() else p
     target = target.resolve()
-    target.relative_to(root)
+    if not target.is_relative_to(root):
+        raise ValueError(f"路径越界: {path}")
     return target
 
 
@@ -245,6 +262,12 @@ def _handle_read_file(path: str, limit: int = 50000) -> dict:
 
 def _handle_write_file(path: str, content: str) -> dict:
     target = _abs_path(path)
+    if target.exists():
+        # Keep what is there now, so overwriting can be undone.
+        try:
+            state.get_version_store().snapshot(target, note="被 Agent 写入覆盖")
+        except Exception:
+            pass
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     return {"path": _rel(target), "size": target.stat().st_size, "written": True}
@@ -266,16 +289,33 @@ def _handle_delete_file(path: str) -> dict:
         return {"error": f"路径不存在: {path}"}
     trash_root = Path(state.get_settings().storage_path) / ".trash"
     ts = time.strftime("%Y%m%d-%H%M%S")
-    dest = trash_root / ts / _rel(target) if _rel(target) else trash_root / ts / target.name
+    rel = _rel(target)
+    dest = trash_root / ts / rel
     dest.parent.mkdir(parents=True, exist_ok=True)
     target.rename(dest)
-    return {"path": _rel(target), "trashed_to": _rel(dest)}
+    return {"path": rel, "trashed_to": str(dest.relative_to(Path(state.get_settings().storage_path)))}
 
 
 def _handle_create_directory(path: str) -> dict:
     target = _abs_path(path)
     target.mkdir(parents=True, exist_ok=True)
     return {"path": _rel(target), "created": True}
+
+
+def _handle_semantic_search(query: str, top_k: int = 5) -> dict:
+    from .deps import interaction
+    from .search_engine import search_engine
+    interaction.mark_active()
+    payload = search_engine.hybrid_search(query, min(top_k, 20), "", "semantic")
+    results = payload.get("results", [])
+    passages = []
+    for r in results:
+        passages.append({
+            "path": _rel(Path(r.get("path", ""))),
+            "score": r.get("score", 0),
+            "text": r.get("preview", "")[:200],
+        })
+    return {"query": query, "passages": passages, "total": len(passages)}
 
 
 def _handle_file_info(path: str) -> dict:
@@ -295,6 +335,7 @@ TOOL_HANDLERS: dict[str, Any] = {
     "search_files": _handle_search_files,
     "list_directory": _handle_list_directory,
     "read_file": _handle_read_file,
+    "semantic_search": _handle_semantic_search,
     "write_file": _handle_write_file,
     "move_file": _handle_move_file,
     "delete_file": _handle_delete_file,
