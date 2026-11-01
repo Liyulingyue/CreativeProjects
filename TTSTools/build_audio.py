@@ -50,7 +50,9 @@ SRC_DIR = ROOT / "references" / "book" / "src"
 OUT_DIR = ROOT / "output" / "audio"
 META_DIR = ROOT / "output" / "meta"
 
-VOICE = "en-US-AriaNeural"      # female, clear, great for English practice
+VOICE_EN = "en-US-AriaNeural"        # female, clear, great for English practice
+VOICE_ZH = "zh-CN-XiaoxiaoNeural"    # warm female, best for Mandarin narration
+VOICE_DEFAULT = VOICE_EN
 RATE = "+0%"                    # default speaking rate
 PITCH = "+0Hz"
 MAX_CHARS = 4500                # safe chunk size for edge-tts
@@ -59,6 +61,41 @@ RETRY_DELAY = 6                 # seconds; backoff multiplies by attempt #
 INTER_CHUNK_SLEEP = 2.0         # gentle pacing between chunks to avoid 429
 INTER_CHAPTER_SLEEP = 3.0       # gentle pacing between chapters
 SKIP_EXISTING = True            # resume-friendly: skip MP3s already on disk
+
+# Minimum fraction of CJK characters that switches a chunk to Chinese voice.
+ZH_THRESHOLD = 0.2
+
+# ---------------------------------------------------------------------------
+# Language detection
+# ---------------------------------------------------------------------------
+_CJK_RANGES = (
+    (0x3400, 0x4DBF),   # CJK Extension A
+    (0x4E00, 0x9FFF),   # CJK Unified Ideographs
+    (0xF900, 0xFAFF),   # CJK Compatibility Ideographs
+    (0x20000, 0x2FFFF), # CJK Extension B-F
+)
+
+
+def cjk_ratio(text: str) -> float:
+    """Return fraction of characters that fall in a CJK block."""
+    if not text:
+        return 0.0
+    cjk = sum(
+        1 for c in text
+        if any(lo <= ord(c) <= hi for lo, hi in _CJK_RANGES)
+    )
+    # Ignore whitespace / punctuation in the denominator so a chunk that is
+    # mostly "fn main()" doesn't count as English-with-some-foreign-chars.
+    meaningful = sum(1 for c in text if not c.isspace())
+    return cjk / meaningful if meaningful else 0.0
+
+
+def pick_voice(text: str, force: str | None = None) -> str:
+    """Choose TTS voice for a chunk of text. force wins if given."""
+    if force:
+        return force
+    return VOICE_ZH if cjk_ratio(text) >= ZH_THRESHOLD else VOICE_EN
+
 
 # ---------------------------------------------------------------------------
 # Markdown cleaning
@@ -434,18 +471,35 @@ async def synthesize_one(text: str, voice: str, out_path: Path) -> None:
     raise RuntimeError(f"edge-tts failed after {RETRY} tries: {last_err}")
 
 
+def synth_chapter_sync(chunks: list[str], voice_for, out_path: Path) -> float:
+    """Sync wrapper used in tests / when caller already runs in a loop.
+
+    voice_for: callable text -> voice name.
+    """
+    raise NotImplementedError("use synth_chapter instead")
+
+
 async def synth_chapter(
-    chunks: list[str], voice: str, out_path: Path
-) -> float:
-    """Synthesize all chunks into one MP3, return seconds of audio."""
+    chunks: list[str],
+    voice_for,
+    out_path: Path,
+    force_voice: str | None = None,
+) -> tuple[float, list[dict]]:
+    """Synthesize all chunks into one MP3, return (seconds, per-chunk info).
+
+    voice_for: callable text -> voice name (used when force_voice is None).
+    """
     tmp_dir = out_path.parent / "_tmp"
     tmp_dir.mkdir(exist_ok=True)
     tmp_files: list[Path] = []
     for i, chunk in enumerate(chunks):
         tmp_files.append(tmp_dir / f"{out_path.stem}_{i:03d}.mp3")
+    info: list[dict] = []
     try:
         for i, (chunk, tf) in enumerate(zip(chunks, tmp_files)):
+            voice = force_voice or voice_for(chunk)
             await synthesize_one(chunk, voice, tf)
+            info.append({"i": i, "voice": voice, "bytes": tf.stat().st_size})
             # breathe between chunks inside a chapter
             if i + 1 < len(chunks):
                 await asyncio.sleep(INTER_CHUNK_SLEEP)
@@ -463,7 +517,7 @@ async def synth_chapter(
             tmp_dir.rmdir()
         except OSError:
             pass
-    return out_path.stat().st_size / 16_000  # rough seconds at 128 kbps
+    return out_path.stat().st_size / 16_000, info  # rough seconds at 128 kbps
 
 
 # ---------------------------------------------------------------------------
@@ -527,7 +581,9 @@ async def process_one(
             "skipped": True,
         }
     t0 = time.time()
-    size = await synth_chapter(chunks, voice, out_path)
+    def voice_for(chunk: str) -> str:
+        return pick_voice(chunk, force=voice)
+    size, info = await synth_chapter(chunks, voice_for, out_path, force_voice=voice)
     dt = time.time() - t0
     return {
         "file": md_path.name,
@@ -538,6 +594,7 @@ async def process_one(
         "wall_seconds": round(dt, 1),
         "mp3_seconds_est": round(size, 1),
         "mp3_bytes": out_path.stat().st_size,
+        "chunk_voices": info,
     }
 
 
@@ -557,7 +614,7 @@ async def main_async(args: argparse.Namespace) -> None:
 
     if args.dry_run:
         for f in files:
-            r = await process_one(f, OUT_DIR, VOICE, dry=True)
+            r = await process_one(f, OUT_DIR, args.voice, dry=True)
             if r:
                 print(f"{r['file']:<48} {r['chars']:>6} chars  {r['chunks']:>3} chunks")
                 print(f"   {r['title']}")
@@ -566,7 +623,7 @@ async def main_async(args: argparse.Namespace) -> None:
     manifest: list[dict] = []
     total = len(files)
     for i, f in enumerate(files, 1):
-        r = await process_one(f, OUT_DIR, VOICE, dry=False)
+        r = await process_one(f, OUT_DIR, args.voice, dry=False)
         if r is None:
             print(f"[{i}/{total}] {f.name}: empty, skipped")
             continue
@@ -611,6 +668,11 @@ def main() -> None:
     ap.add_argument(
         "--dry-run", action="store_true",
         help="Show stats without making any network calls",
+    )
+    ap.add_argument(
+        "--voice", default=VOICE_DEFAULT,
+        help=f"Force a specific voice for every chunk "
+             f"(default: auto-pick {VOICE_EN} / {VOICE_ZH} by content)",
     )
     args = ap.parse_args()
     asyncio.run(main_async(args))
