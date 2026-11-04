@@ -80,6 +80,7 @@ export function SkillsPanel({
   const [preview, setPreview] = useState(false);
   const [editMessage, setEditMessage] = useState<string | null>(null);
   const [fileBusy, setFileBusy] = useState(false);
+  const [showUploadMenu, setShowUploadMenu] = useState(false);
   const [newSkill, setNewSkill] = useState({ id: '', label: '', instruction: '', description: '' });
   const [masterBusy, setMasterBusy] = useState(false);
 
@@ -209,6 +210,7 @@ export function SkillsPanel({
     setResource(null);
     setPreview(false);
     setEditMessage(null);
+    setShowUploadMenu(false);
   };
 
   const refreshEditing = async (skillId: string) => {
@@ -248,6 +250,7 @@ export function SkillsPanel({
   const onUploadResources = async (e: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     e.target.value = '';
+    setShowUploadMenu(false);
     if (!editing || !files.length) return;
     setFileBusy(true);
     setEditMessage(null);
@@ -551,7 +554,8 @@ export function SkillsPanel({
       <Sheet
         open={editing !== null}
         title={editing ? `编辑技能 · ${editing.label}` : '编辑技能'}
-        onClose={() => { setEditing(null); setResource(null); setSelected('SKILL.md'); }}
+        size="lg"
+        onClose={() => { setEditing(null); setResource(null); setSelected('SKILL.md'); setShowUploadMenu(false); }}
       >
         {editing && (
           <div className="space-y-3">
@@ -561,16 +565,29 @@ export function SkillsPanel({
 
             <div className="grid gap-3 sm:grid-cols-[11rem_1fr]">
               <div className="space-y-2">
-                <div className="flex flex-wrap gap-1.5">
-                  <label className={`text-[11px] px-2 py-1 rounded-md border border-slate-200 cursor-pointer hover:bg-slate-50 ${(fileBusy || readOnly) ? 'opacity-50 pointer-events-none' : ''}`}>
-                    上传
-                    <input type="file" multiple className="hidden" onChange={onUploadResources} disabled={fileBusy || readOnly} />
-                  </label>
-                  <label className={`text-[11px] px-2 py-1 rounded-md border border-slate-200 cursor-pointer hover:bg-slate-50 ${(fileBusy || readOnly) ? 'opacity-50 pointer-events-none' : ''}`}>
-                    文件夹
-                    <input type="file" multiple className="hidden" onChange={onUploadResources} disabled={fileBusy || readOnly}
-                      ref={el => { if (el) el.setAttribute('webkitdirectory', ''); }} />
-                  </label>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <div className="relative">
+                    <button onClick={() => setShowUploadMenu(v => !v)} disabled={fileBusy || readOnly}
+                      className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md border border-slate-200 hover:bg-slate-50 disabled:opacity-50">
+                      上传 <Icon name="chevronDown" size={11} />
+                    </button>
+                    {showUploadMenu && (
+                      <>
+                        <div className="fixed inset-0 z-10" onClick={() => setShowUploadMenu(false)} />
+                        <div className="absolute left-0 top-full z-20 mt-1 w-32 rounded-lg border border-slate-200 bg-white shadow-lg py-1">
+                          <label className="block px-3 py-1.5 text-[11px] text-slate-600 hover:bg-slate-50 cursor-pointer">
+                            选择文件
+                            <input type="file" multiple className="hidden" onChange={onUploadResources} disabled={fileBusy || readOnly} />
+                          </label>
+                          <label className="block px-3 py-1.5 text-[11px] text-slate-600 hover:bg-slate-50 cursor-pointer">
+                            选择文件夹
+                            <input type="file" multiple className="hidden" onChange={onUploadResources} disabled={fileBusy || readOnly}
+                              ref={el => { if (el) el.setAttribute('webkitdirectory', ''); }} />
+                          </label>
+                        </div>
+                      </>
+                    )}
+                  </div>
                   <button onClick={onCreateFile} disabled={fileBusy || readOnly}
                     className="text-[11px] px-2 py-1 rounded-md border border-slate-200 hover:bg-slate-50 disabled:opacity-50">新建</button>
                 </div>
@@ -688,7 +705,7 @@ export function SkillsPanel({
 
             <p className="text-[11px] text-slate-400">技能 ID 固定为 <code className="font-mono">{editing.id}</code>，不可修改。</p>
             <div className="flex justify-end">
-              <button onClick={() => { setEditing(null); setResource(null); setSelected('SKILL.md'); }}
+              <button onClick={() => { setEditing(null); setResource(null); setSelected('SKILL.md'); setShowUploadMenu(false); }}
                 className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-700 text-xs hover:bg-slate-200">完成</button>
             </div>
           </div>

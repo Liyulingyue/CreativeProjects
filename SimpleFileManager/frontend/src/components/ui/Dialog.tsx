@@ -38,6 +38,7 @@ interface SheetProps {
   title: string;
   onClose: () => void;
   children: React.ReactNode;
+  size?: 'default' | 'lg';
 }
 
 /**
@@ -51,7 +52,7 @@ interface SheetProps {
  * does, keeps the page visible above it, and dismisses by tapping
  * away.
  */
-export function Sheet({ open, title, onClose, children }: SheetProps) {
+export function Sheet({ open, title, onClose, children, size = 'default' }: SheetProps) {
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => { if (e.key === 'Escape' && open) onClose(); };
     document.addEventListener('keydown', handleEscape);
@@ -64,7 +65,7 @@ export function Sheet({ open, title, onClose, children }: SheetProps) {
     <div className="fixed inset-0 z-50 flex items-end sm:items-center sm:justify-center">
       <div className="fixed inset-0 bg-black/30 backdrop-blur-sm" onClick={onClose} />
       <div
-        className="relative bg-white rounded-t-2xl sm:rounded-xl shadow-popover w-full sm:max-w-md sm:mx-4 max-h-[85vh] flex flex-col"
+        className={`relative bg-white rounded-t-2xl sm:rounded-xl shadow-popover w-full ${size === 'lg' ? 'sm:max-w-2xl' : 'sm:max-w-md'} sm:mx-4 max-h-[85vh] flex flex-col`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 flex-shrink-0">
