@@ -219,6 +219,7 @@ export interface ToolState {
   danger: 'safe' | 'low' | 'medium' | 'high';
   enabled: boolean;
   builtin_base: boolean;
+  agent_builtin: boolean;
 }
 
 export interface SkillsState {

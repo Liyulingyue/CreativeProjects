@@ -9,12 +9,13 @@ import {
 /**
  * Skills are the "how" — methodology the model follows.
  *
- * With the master switch off, the assistant only has basic tools
- * (search, read, list, write): safe and cheap. With it on, the model
- * also gets to move, delete and create folders, guided by whatever
- * skills are enabled. A skill is not a fixed pipeline — it is a chunk
- * of instruction that gets injected so the model knows how to approach
- * a task. The model still freely picks which tools to call.
+ * With the master switch off, the assistant only has the agent's own
+ * read-only tools (list, read, find, search, semantic search) plus
+ * submit_plan. With it on, the model also gets to write, move, delete
+ * and create folders, guided by whatever skills are enabled. A skill is
+ * not a fixed pipeline — it is a chunk of instruction that gets injected
+ * so the model knows how to approach a task. The model still freely
+ * picks which tools to call.
  *
  * Custom skills can be uploaded by the administrator.
  */
@@ -155,8 +156,8 @@ export function SkillsPanel({ readOnly = false }: { readOnly?: boolean }) {
           <div className="flex-1">
             <div className="text-sm font-medium text-slate-800">技能总开关</div>
             <div className="text-[11px] text-slate-400 mt-0.5">
-              关闭时模型只使用基础工具（搜索、读取、列出、写入）。
-              开启后额外暴露移动、删除、创建等工具，并按启用的技能注入方法论指导。
+              关闭时模型只使用 Agent 自身的只读工具（列出、读取、查找、语义检索）。
+              开启后额外暴露写入、移动、删除、创建等工具，并按启用的技能注入方法论指导。
             </div>
           </div>
           <button
@@ -214,11 +215,13 @@ export function SkillsPanel({ readOnly = false }: { readOnly?: boolean }) {
         </div>
       )}
 
-      {/* Tool toggles — only when master is on */}
-      {state?.master && (state?.tools.length ?? 0) > 0 && (
+      {/* Skill-only tool toggles — only when master is on. Tools the agent
+          already provides itself (list/read/semantic search) are omitted:
+          their switch would give a false sense of control. */}
+      {state?.master && (state?.tools ?? []).some(t => !t.agent_builtin) && (
         <div className="space-y-2">
           <div className="flex items-center justify-between pt-2">
-            <span className="text-xs font-semibold text-slate-400">原子工具</span>
+            <span className="text-xs font-semibold text-slate-400">技能附加工具</span>
             <div className="flex gap-2">
               <button onClick={() => onToggleAllTools(true)}
                 className="text-[11px] text-indigo-500 hover:text-indigo-700">全部启用</button>
@@ -226,8 +229,11 @@ export function SkillsPanel({ readOnly = false }: { readOnly?: boolean }) {
                 className="text-[11px] text-slate-400 hover:text-slate-600">全部关闭</button>
             </div>
           </div>
+          <p className="text-[11px] text-slate-400">
+            列出目录、读取文件、语义检索等只读工具始终由 Agent 提供，见页面上方「只读工具」。
+          </p>
           <div className="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
-            {(state?.tools ?? []).map(tool => (
+            {(state?.tools ?? []).filter(t => !t.agent_builtin).map(tool => (
               <div key={tool.name} className="flex items-center gap-2 px-3 py-2">
                 <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium flex-shrink-0 ${
                   tool.danger === 'high' ? 'bg-red-100 text-red-700'
