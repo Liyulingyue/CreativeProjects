@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from ..skills import get_skill_registry
+from ..skills import (
+    MAX_SKILL_BYTES,
+    get_skill_registry,
+    import_files_skill,
+    import_zip_skill,
+)
 from .auth import require_admin
 
 skills_router = APIRouter()
@@ -108,3 +113,38 @@ def toggle_all_tools(req: ToggleRequest, _admin=Depends(require_admin)) -> dict:
     reg = get_skill_registry()
     reg.set_all_tools(req.enabled)
     return {"success": True, "all_enabled": req.enabled}
+
+
+@skills_router.post("/import/zip")
+async def import_zip_skill_endpoint(
+    file: UploadFile = File(...),
+    skill_id: str = Form(""),
+    _admin=Depends(require_admin),
+) -> dict:
+    data = await file.read()
+    if len(data) > MAX_SKILL_BYTES:
+        raise HTTPException(status_code=413, detail="ZIP 过大（上限 50MB）")
+    try:
+        return import_zip_skill(data, skill_id or None)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@skills_router.post("/import/files")
+async def import_files_endpoint(
+    files: list[UploadFile] = File(...),
+    skill_id: str = Form(""),
+    _admin=Depends(require_admin),
+) -> dict:
+    entries: list[tuple[str, bytes]] = []
+    total = 0
+    for upload in files:
+        data = await upload.read()
+        total += len(data)
+        if total > MAX_SKILL_BYTES:
+            raise HTTPException(status_code=413, detail="技能包过大（上限 50MB）")
+        entries.append((upload.filename or "", data))
+    try:
+        return import_files_skill(entries, skill_id or None)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

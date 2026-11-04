@@ -59,8 +59,9 @@ def test_set_all_tools():
     reg = get_skill_registry()
     reg.set_master(True)
     reg.set_all_tools(False)
+    from app.skills import ALWAYS_ON_TOOL_NAMES
     names = {t["function"]["name"] for t in reg.get_active_tools()}
-    assert names == set()
+    assert names == set(ALWAYS_ON_TOOL_NAMES)
     reg.set_all_tools(True)
     names = {t["function"]["name"] for t in reg.get_active_tools()}
     from app.skills import ALL_TOOL_NAMES
@@ -234,9 +235,9 @@ class TestSkillManagementAPI:
         res = client.patch("/api/skills/tools/all", json={"enabled": False})
         assert res.status_code == 200
         assert res.json()["all_enabled"] is False
-        # Now list should show all disabled
+        # Toggleable tools are disabled; always-on meta tools stay available.
         body = client.get("/api/skills").json()
-        assert all(not t["enabled"] for t in body["tools"])
+        assert all(not t["enabled"] or t["always_on"] for t in body["tools"])
         # Reset
         client.patch("/api/skills/tools/all", json={"enabled": True})
         client.patch("/api/skills/master", json={"enabled": False})
@@ -319,3 +320,121 @@ def test_agent_runs_directly_executable_tool():
     result = agent_execute_tool("write_file", {"path": "guard_dir/keep.txt", "content": "new"})
     assert result.get("success") is True, result
     reg.set_master(False)
+
+
+# ---- file-based skills (SKILL.md + resources) ----
+
+def _make_zip(files: dict[str, bytes]) -> bytes:
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, data in files.items():
+            zf.writestr(name, data)
+    return buf.getvalue()
+
+
+_SKILL_MD = """---
+name: Test Zip Skill
+description: a test skill
+---
+# Body
+Use the reference file.
+"""
+
+
+def test_import_zip_and_read_skill():
+    from app.skills import (
+        import_zip_skill, _handle_read_skill, _handle_list_skill_files,
+    )
+    reg = get_skill_registry()
+    data = _make_zip({
+        "SKILL.md": _SKILL_MD.encode(),
+        "refs/note.txt": b"hello note",
+    })
+    try:
+        info = import_zip_skill(data, "test_zip_skill")
+        assert info["id"] == "test_zip_skill"
+        assert info["description"] == "a test skill"
+        assert "SKILL.md" in info["files"]
+        assert "refs/note.txt" in info["files"]
+
+        body = _handle_read_skill("test_zip_skill")
+        assert "Body" in body["content"]
+        note = _handle_read_skill("test_zip_skill", "refs/note.txt")
+        assert note["content"] == "hello note"
+        listing = _handle_list_skill_files("test_zip_skill")
+        assert "refs/note.txt" in listing["files"]
+
+        assert "test_zip_skill" in {s["id"] for s in reg.all_skills()}
+
+        reg.set_master(True)
+        reg.set_enabled("test_zip_skill", True)
+        instr = reg.get_active_instructions()
+        # Progressive disclosure: metadata + read_skill hint, not the body.
+        assert "read_skill" in instr
+        assert "Use the reference file" not in instr
+    finally:
+        reg.set_master(False)
+        reg.remove_custom("test_zip_skill")
+
+
+def test_import_nested_zip_uses_inner_folder():
+    from app.skills import import_zip_skill
+    reg = get_skill_registry()
+    data = _make_zip({
+        "mypack/SKILL.md": _SKILL_MD.encode(),
+        "mypack/a/b.txt": b"b",
+    })
+    try:
+        info = import_zip_skill(data, "test_nested_skill")
+        assert "a/b.txt" in info["files"]
+    finally:
+        reg.remove_custom("test_nested_skill")
+
+
+def test_import_files_skill():
+    from app.skills import import_files_skill
+    reg = get_skill_registry()
+    try:
+        info = import_files_skill([
+            ("pack/SKILL.md", _SKILL_MD.encode()),
+            ("pack/ref/a.txt", b"a"),
+        ], "test_files_skill")
+        assert info["id"] == "test_files_skill"
+        assert "ref/a.txt" in info["files"]
+    finally:
+        reg.remove_custom("test_files_skill")
+
+
+def test_import_requires_skill_md():
+    from app.skills import import_zip_skill
+    import pytest
+    with pytest.raises(ValueError):
+        import_zip_skill(_make_zip({"readme.txt": b"x"}), "no_md_skill")
+
+
+def test_read_skill_blocks_traversal():
+    from app.skills import import_zip_skill, execute_tool
+    reg = get_skill_registry()
+    try:
+        import_zip_skill(_make_zip({"SKILL.md": _SKILL_MD.encode()}), "test_trav_skill")
+        result = execute_tool("read_skill", {"skill_id": "test_trav_skill", "file": "../../etc/passwd"})
+        assert result["success"] is False
+    finally:
+        reg.remove_custom("test_trav_skill")
+
+
+def test_import_zip_via_api():
+    reg = get_skill_registry()
+    try:
+        data = _make_zip({"SKILL.md": _SKILL_MD.encode()})
+        res = client.post(
+            "/api/skills/import/zip",
+            files={"file": ("skill.zip", data, "application/zip")},
+            data={"skill_id": "test_api_zip_skill"},
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["id"] == "test_api_zip_skill"
+    finally:
+        reg.remove_custom("test_api_zip_skill")

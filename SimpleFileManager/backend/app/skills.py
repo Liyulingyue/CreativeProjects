@@ -17,10 +17,14 @@ those powers.
 
 from __future__ import annotations
 
+import io
 import json
+import re
+import shutil
 import threading
 import time
-from pathlib import Path
+import zipfile
+from pathlib import Path, PurePosixPath
 from typing import Any, Optional
 
 from .deps import state, can_access, visible_children
@@ -125,9 +129,27 @@ TOOL_FILE_INFO = _tool(
     ["path"],
 )
 
+TOOL_READ_SKILL = _tool(
+    "read_skill",
+    "读取一个技能的完整说明（SKILL.md）或它附带的资源文件。技能说明通常只在系统提示里给出摘要，需要细节时用这个工具按需读取。",
+    {
+        "skill_id": {"type": "string", "description": "技能 ID"},
+        "file": {"type": "string", "description": "资源文件的相对路径；留空读取 SKILL.md"},
+    },
+    ["skill_id"],
+)
+
+TOOL_LIST_SKILL_FILES = _tool(
+    "list_skill_files",
+    "列出某个技能附带的文件（SKILL.md 与资源），用于知道有哪些资料可读。",
+    {"skill_id": {"type": "string", "description": "技能 ID"}},
+    ["skill_id"],
+)
+
 BASE_TOOLS = [TOOL_SEARCH, TOOL_LIST_DIR, TOOL_READ_FILE, TOOL_WRITE_FILE, TOOL_SEMANTIC_SEARCH]
 ATOMIC_TOOLS = [TOOL_MOVE_FILE, TOOL_DELETE_FILE, TOOL_CREATE_DIR, TOOL_FILE_INFO]
-ALL_TOOLS = BASE_TOOLS + ATOMIC_TOOLS
+META_TOOLS = [TOOL_READ_SKILL, TOOL_LIST_SKILL_FILES]
+ALL_TOOLS = BASE_TOOLS + ATOMIC_TOOLS + META_TOOLS
 
 # Human-facing metadata for the settings UI and safety labeling.
 TOOL_META: dict[str, dict] = {
@@ -140,6 +162,8 @@ TOOL_META: dict[str, dict] = {
     "delete_file":   {"label": "删除文件",    "description": "移入回收站",             "danger": "high"},
     "create_directory": {"label": "创建目录", "description": "新建文件夹",             "danger": "low"},
     "file_info":     {"label": "文件信息",    "description": "查看大小、修改时间等",    "danger": "safe"},
+    "read_skill":    {"label": "读取技能",    "description": "读取 SKILL.md 或资源文件", "danger": "safe"},
+    "list_skill_files": {"label": "技能文件", "description": "列出技能附带文件",         "danger": "safe"},
 }
 ALL_TOOL_NAMES = [t["function"]["name"] for t in ALL_TOOLS]
 
@@ -153,6 +177,11 @@ AGENT_BUILTIN_TOOL_NAMES = {"list_directory", "read_file", "semantic_search", "s
 # Read-only/info tools run directly; move/delete default to plan-only so a
 # mistaken direct call cannot mutate files without the user approving a plan.
 DEFAULT_DIRECT_EXECUTABLE = {"safe": True, "low": True, "medium": False, "high": False}
+
+# Meta tools that must be present whenever skills are on: without them the
+# model cannot read a file-based skill's SKILL.md or resources, so they are
+# not user-toggleable.
+ALWAYS_ON_TOOL_NAMES = {"read_skill", "list_skill_files"}
 
 # ---------------------------------------------------------------------------
 # Built-in skills
@@ -400,6 +429,270 @@ def execute_tool(name: str, arguments: dict) -> dict:
         return {"success": False, "error": str(e)}
 
 # ---------------------------------------------------------------------------
+# File-based skills (SKILL.md + resources)
+# ---------------------------------------------------------------------------
+
+SKILL_FILE_NAME = "SKILL.md"
+SKILL_ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
+MAX_SKILL_FILES = 200
+MAX_SKILL_BYTES = 50 * 1024 * 1024
+MAX_SKILL_READ_CHARS = 200_000
+
+
+def skills_root() -> Path:
+    from .deps import DATA_DIR
+    root = DATA_DIR / "skills"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def normalize_skill_id(raw: str) -> str:
+    """Turn a frontmatter name or folder name into a safe skill id."""
+    text = (raw or "").strip().lower()
+    text = re.sub(r"[^a-z0-9_]+", "_", text).strip("_")
+    if not text:
+        raise ValueError("技能 ID 不能为空")
+    if not text[0].isalpha():
+        text = "skill_" + text
+    if not SKILL_ID_RE.match(text):
+        raise ValueError("技能 ID 须以小写字母开头，仅含小写字母、数字、下划线，2-64 个字符")
+    return text
+
+
+def _split_frontmatter(text: str) -> tuple[dict, str]:
+    """Parse a leading YAML frontmatter block if present."""
+    if not text.startswith("---"):
+        return {}, text
+    nl = text.find("\n")
+    if nl == -1:
+        return {}, text
+    end = text.find("\n---", nl)
+    if end == -1:
+        return {}, text
+    fm_text = text[nl + 1:end]
+    body = text[end + 4:]
+    if body.startswith("\n"):
+        body = body[1:]
+    try:
+        import yaml
+        fm = yaml.safe_load(fm_text) or {}
+        if isinstance(fm, dict):
+            return fm, body
+    except Exception:
+        pass
+    return {}, text
+
+
+def _safe_rel(rel: str) -> str:
+    rel = (rel or "").replace("\\", "/")
+    path = PurePosixPath(rel)
+    if path.is_absolute():
+        raise ValueError("非法路径")
+    parts = [part for part in path.parts if part not in ("", ".")]
+    if not parts or any(part == ".." for part in parts):
+        raise ValueError("非法路径")
+    return "/".join(parts)
+
+
+def _read_dir_skill(skill_dir: Path) -> Optional[dict]:
+    md = skill_dir / SKILL_FILE_NAME
+    if not md.is_file():
+        return None
+    try:
+        raw = md.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    fm, body = _split_frontmatter(raw)
+    files: list[str] = []
+    for path in sorted(skill_dir.rglob("*")):
+        if path.is_file():
+            files.append(path.relative_to(skill_dir).as_posix())
+    return {
+        "id": skill_dir.name,
+        "label": str(fm.get("name") or skill_dir.name),
+        "description": str(fm.get("description") or ""),
+        "instruction": body,
+        "files": files,
+        "source": "file",
+    }
+
+
+def discover_dir_skills() -> dict[str, dict]:
+    root = skills_root()
+    found: dict[str, dict] = {}
+    try:
+        children = sorted(root.iterdir())
+    except OSError:
+        return found
+    for child in children:
+        if not child.is_dir() or not SKILL_ID_RE.match(child.name):
+            continue
+        info = _read_dir_skill(child)
+        if info:
+            found[child.name] = info
+    return found
+
+
+def _skill_dir(skill_id: str) -> Path:
+    if not SKILL_ID_RE.match(skill_id or ""):
+        raise ValueError("非法技能 ID")
+    root = skills_root().resolve()
+    target = (root / skill_id).resolve()
+    if target.parent != root:
+        raise ValueError("非法技能 ID")
+    return target
+
+
+def _handle_list_skill_files(skill_id: str) -> dict:
+    skill = discover_dir_skills().get(skill_id)
+    if not skill:
+        return {"error": f"技能不存在或不是文件技能: {skill_id}"}
+    return {"skill_id": skill_id, "files": skill["files"], "total": len(skill["files"])}
+
+
+def _handle_read_skill(skill_id: str, file: str = "") -> dict:
+    skill = discover_dir_skills().get(skill_id)
+    if not skill:
+        builtin = BUILTIN_SKILLS.get(skill_id)
+        if builtin:
+            return {"skill_id": skill_id, "file": SKILL_FILE_NAME,
+                    "content": builtin["instruction"], "builtin": True}
+        return {"error": f"技能不存在: {skill_id}"}
+    base = _skill_dir(skill_id).resolve()
+    rel = _safe_rel(file) if file else SKILL_FILE_NAME
+    target = (base / rel).resolve()
+    try:
+        target.relative_to(base)
+    except ValueError:
+        return {"error": "资源路径越界"}
+    if not target.is_file():
+        return {"error": f"文件不存在: {rel}"}
+    try:
+        if target.stat().st_size > 4 * 1024 * 1024:
+            return {"error": "文件过大，无法读取"}
+        content = target.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        return {"error": str(e)}
+    return {
+        "skill_id": skill_id,
+        "file": rel,
+        "content": content[:MAX_SKILL_READ_CHARS],
+        "truncated": len(content) > MAX_SKILL_READ_CHARS,
+    }
+
+
+TOOL_HANDLERS.update({
+    "read_skill": _handle_read_skill,
+    "list_skill_files": _handle_list_skill_files,
+})
+
+
+def _write_skill_tree(skill_id: str, entries: dict[str, bytes]) -> dict:
+    if SKILL_FILE_NAME not in entries:
+        raise ValueError("技能包必须包含 SKILL.md")
+    if len(entries) > MAX_SKILL_FILES:
+        raise ValueError(f"文件数过多（上限 {MAX_SKILL_FILES}）")
+    if sum(len(v) for v in entries.values()) > MAX_SKILL_BYTES:
+        raise ValueError("技能包过大（上限 50MB）")
+    root = skills_root()
+    target = root / skill_id
+    if target.exists():
+        raise ValueError(f"技能已存在: {skill_id}")
+    target.mkdir(parents=True)
+    try:
+        for rel, data in entries.items():
+            dest = target / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+        info = _read_dir_skill(target)
+        if not info:
+            raise ValueError("SKILL.md 无法解析")
+    except Exception:
+        shutil.rmtree(target, ignore_errors=True)
+        raise
+    return info
+
+
+def _derive_skill_id(entries: dict[str, bytes], prefix: str, explicit: Optional[str]) -> str:
+    if explicit:
+        return normalize_skill_id(explicit)
+    fm, _ = _split_frontmatter(entries.get(SKILL_FILE_NAME, b"").decode("utf-8", "replace"))
+    candidate = str(fm.get("name") or "")
+    if not candidate and prefix not in ("", "."):
+        candidate = prefix.split("/")[-1]
+    if not candidate:
+        candidate = "skill"
+    return normalize_skill_id(candidate)
+
+
+def _collect_entries(raw: dict[str, bytes], prefix: str) -> dict[str, bytes]:
+    entries: dict[str, bytes] = {}
+    for rel, data in raw.items():
+        rel = rel.replace("\\", "/")
+        if prefix not in ("", "."):
+            if not rel.startswith(prefix + "/"):
+                continue
+            rel = rel[len(prefix) + 1:]
+        if not rel or rel.startswith("__MACOSX/"):
+            continue
+        safe = _safe_rel(rel)
+        entries[safe] = data
+    if SKILL_FILE_NAME not in entries:
+        raise ValueError("技能包必须包含 SKILL.md")
+    return entries
+
+
+def import_zip_skill(data: bytes, skill_id: Optional[str] = None) -> dict:
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile:
+        raise ValueError("不是有效的 ZIP 文件")
+    with zf:
+        infos = [i for i in zf.infolist() if not i.is_dir() and not i.filename.endswith("/")]
+        if not infos:
+            raise ValueError("ZIP 是空的")
+        if len(infos) > MAX_SKILL_FILES:
+            raise ValueError(f"文件数过多（上限 {MAX_SKILL_FILES}）")
+        if sum(i.file_size for i in infos) > MAX_SKILL_BYTES:
+            raise ValueError("技能包过大（上限 50MB）")
+        names = [i.filename.replace("\\", "/") for i in infos]
+        md_name = next((n for n in names if Path(n).name.lower() == SKILL_FILE_NAME.lower()), None)
+        if not md_name:
+            raise ValueError("ZIP 中缺少 SKILL.md")
+        prefix = str(PurePosixPath(md_name).parent)
+        raw: dict[str, bytes] = {}
+        for info, name in zip(infos, names):
+            raw[name] = zf.read(info)
+        entries = _collect_entries(raw, prefix)
+        sid = _derive_skill_id(entries, prefix, skill_id)
+        return _write_skill_tree(sid, entries)
+
+
+def import_files_skill(files: list[tuple[str, bytes]], skill_id: Optional[str] = None) -> dict:
+    if not files:
+        raise ValueError("没有收到文件")
+    if len(files) > MAX_SKILL_FILES:
+        raise ValueError(f"文件数过多（上限 {MAX_SKILL_FILES}）")
+    if sum(len(d) for _, d in files) > MAX_SKILL_BYTES:
+        raise ValueError("技能包过大（上限 50MB）")
+    raw: dict[str, bytes] = {}
+    md_name = None
+    for filename, data in files:
+        name = (filename or "").replace("\\", "/")
+        if not name:
+            continue
+        if Path(name).name.lower() == SKILL_FILE_NAME.lower() and md_name is None:
+            md_name = name
+        raw[name] = data
+    if not md_name:
+        raise ValueError("请选择包含 SKILL.md 的文件")
+    prefix = str(PurePosixPath(md_name).parent)
+    entries = _collect_entries(raw, prefix)
+    sid = _derive_skill_id(entries, prefix, skill_id)
+    return _write_skill_tree(sid, entries)
+
+
+# ---------------------------------------------------------------------------
 # Skill registry
 # ---------------------------------------------------------------------------
 
@@ -459,23 +752,39 @@ class SkillRegistry:
 
     def all_skills(self) -> list[dict]:
         result = []
-        for sid, s in BUILTIN_SKILLS.items():
+        for sid, skill in BUILTIN_SKILLS.items():
             result.append({
                 "id": sid,
-                "label": s["label"],
-                "description": s["description"],
-                "enabled": self._overrides.get(sid, s.get("enabled", False)),
+                "label": skill["label"],
+                "description": skill["description"],
+                "enabled": self._overrides.get(sid, skill.get("enabled", False)),
                 "builtin": True,
-                "instruction": s["instruction"],
+                "source": "builtin",
+                "instruction": skill["instruction"],
             })
-        for sid, s in self._custom.items():
+        dir_skills = discover_dir_skills()
+        for sid, skill in dir_skills.items():
             result.append({
                 "id": sid,
-                "label": s["label"],
-                "description": s.get("description", ""),
-                "enabled": self._overrides.get(sid, s.get("enabled", False)),
+                "label": skill["label"],
+                "description": skill["description"],
+                "enabled": self._overrides.get(sid, False),
                 "builtin": False,
-                "instruction": s["instruction"],
+                "source": "file",
+                "files": skill["files"],
+                "instruction": skill["instruction"],
+            })
+        for sid, skill in self._custom.items():
+            if sid in dir_skills:
+                continue
+            result.append({
+                "id": sid,
+                "label": skill["label"],
+                "description": skill.get("description", ""),
+                "enabled": self._overrides.get(sid, skill.get("enabled", False)),
+                "builtin": False,
+                "source": "inline",
+                "instruction": skill["instruction"],
             })
         return result
 
@@ -486,6 +795,8 @@ class SkillRegistry:
     def add_custom(self, skill_id: str, label: str, instruction: str, description: str = "") -> dict:
         if skill_id in BUILTIN_SKILLS:
             raise ValueError(f"技能 ID '{skill_id}' 与内置技能冲突")
+        if skill_id in discover_dir_skills():
+            raise ValueError(f"技能 ID '{skill_id}' 已存在")
         if not skill_id or not label or not instruction:
             raise ValueError("技能 ID、名称和指令不能为空")
         self._custom[skill_id] = {"label": label, "instruction": instruction, "description": description}
@@ -495,8 +806,18 @@ class SkillRegistry:
                 "instruction": instruction, "enabled": False, "builtin": False}
 
     def remove_custom(self, skill_id: str) -> bool:
+        removed = False
         if skill_id in self._custom:
             del self._custom[skill_id]
+            removed = True
+        try:
+            target = _skill_dir(skill_id)
+        except ValueError:
+            target = None
+        if target is not None and target.is_dir():
+            shutil.rmtree(target, ignore_errors=True)
+            removed = True
+        if removed:
             self._overrides.pop(skill_id, None)
             self._save()
             return True
@@ -505,6 +826,8 @@ class SkillRegistry:
         """Whether the tool schema is advertised to the model (master on)."""
         if not self._master:
             return False
+        if name in ALWAYS_ON_TOOL_NAMES:
+            return True
         base_names = {t["function"]["name"] for t in BASE_TOOLS}
         return self._tool_overrides.get(name, name in base_names)
 
@@ -514,7 +837,7 @@ class SkillRegistry:
         Agent-builtin tools are always direct (the agent ships them).
         Skill tools must be visible and not pinned to plan-only.
         """
-        if name in AGENT_BUILTIN_TOOL_NAMES:
+        if name in AGENT_BUILTIN_TOOL_NAMES or name in ALWAYS_ON_TOOL_NAMES:
             return True
         if not self._is_visible(name, meta):
             return False
@@ -528,13 +851,15 @@ class SkillRegistry:
         for t in ALL_TOOLS:
             name = t["function"]["name"]
             meta = TOOL_META.get(name, {})
-            enabled = self._tool_overrides.get(name, name in base_names)
+            always_on = name in ALWAYS_ON_TOOL_NAMES
+            enabled = always_on or self._tool_overrides.get(name, name in base_names)
             result.append({
                 "name": name,
                 "label": meta.get("label", name),
                 "description": meta.get("description", ""),
                 "danger": meta.get("danger", "safe"),
                 "enabled": enabled,
+                "always_on": always_on,
                 "builtin_base": name in base_names,
                 "agent_builtin": name in AGENT_BUILTIN_TOOL_NAMES,
                 "direct_executable": self._is_directly_executable(name, meta),
@@ -581,12 +906,22 @@ class SkillRegistry:
         if not self._master:
             return ""
         parts = []
-        for s in self.all_skills():
-            if s["enabled"]:
-                parts.append(f"[{s['label']}]\n{s['instruction']}")
+        for skill in self.all_skills():
+            if not skill["enabled"]:
+                continue
+            if skill.get("source") == "file":
+                summary = skill.get("description") or "（无描述）"
+                parts.append(
+                    f"[{skill['label']}] {summary}\n"
+                    f"完整说明和附带资源请按需读取：read_skill(skill_id=\"{skill['id']}\")，"
+                    f"查看资源列表用 list_skill_files(skill_id=\"{skill['id']}\")。"
+                )
+            else:
+                parts.append(f"[{skill['label']}]\n{skill['instruction']}")
         if not parts:
             return ""
-        return "可用的技能:\n\n" + "\n\n".join(parts) + "\n\n根据用户的请求选择合适的方法，并用工具完成。"
+        return ("可用的技能:\n\n" + "\n\n".join(parts)
+                + "\n\n根据用户的请求选择合适的方法，并用工具完成。")
 
     def get_active_tools(self) -> list[dict]:
         """Master off → no tools. Master on → individually toggled tools."""
@@ -596,7 +931,7 @@ class SkillRegistry:
         result: list[dict] = []
         for t in ALL_TOOLS:
             name = t["function"]["name"]
-            enabled = self._tool_overrides.get(name, name in base_names)
+            enabled = name in ALWAYS_ON_TOOL_NAMES or self._tool_overrides.get(name, name in base_names)
             if enabled:
                 result.append(t)
         return result

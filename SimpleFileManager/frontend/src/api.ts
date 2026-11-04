@@ -1290,6 +1290,30 @@ export async function removeSkill(skillId: string): Promise<void> {
   if (!res.ok) throw new Error('删除技能失败');
 }
 
+export async function importSkillZip(file: File, skillId = ''): Promise<Skill> {
+  const form = new FormData();
+  form.append('file', file);
+  if (skillId) form.append('skill_id', skillId);
+  const res = await authFetch(`${API_BASE}/skills/import/zip`, { method: 'POST', body: form });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || '导入 ZIP 失败');
+  }
+  return res.json();
+}
+
+export async function importSkillFiles(files: File[], skillId = ''): Promise<Skill> {
+  const form = new FormData();
+  files.forEach(f => form.append('files', f, (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name));
+  if (skillId) form.append('skill_id', skillId);
+  const res = await authFetch(`${API_BASE}/skills/import/files`, { method: 'POST', body: form });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || '导入文件失败');
+  }
+  return res.json();
+}
+
 export async function toggleTool(toolName: string, enabled: boolean): Promise<{ name: string; enabled: boolean }> {
   const res = await authFetch(`${API_BASE}/skills/tools/${toolName}/toggle`, {
     method: 'PATCH',

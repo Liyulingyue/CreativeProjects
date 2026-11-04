@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
+import type { ChangeEvent } from 'react';
 import { Icon } from './ui/Icon';
 import type { Skill, SkillsState } from '../types';
-import { fetchSkills, setSkillsMaster, toggleSkill, addSkill, removeSkill } from '../api';
+import {
+  fetchSkills, setSkillsMaster, toggleSkill, addSkill, removeSkill,
+  importSkillZip, importSkillFiles,
+} from '../api';
 
 /**
  * Skills are the "how" — methodology the model follows.
@@ -104,6 +108,40 @@ export function SkillsPanel({
     }
   };
 
+  const onImportZip = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const info = await importSkillZip(file);
+      setMessage(`已导入技能「${info.label}」`);
+      await load();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : '导入失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onImportFiles = async (e: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (!files.length) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const info = await importSkillFiles(files);
+      setMessage(`已导入技能「${info.label}」`);
+      await load();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : '导入失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const onRemove = async (skill: Skill) => {
     if (!window.confirm(`删除技能「${skill.label}」？`)) return;
     setMessage(null);
@@ -165,9 +203,17 @@ export function SkillsPanel({
                     {skill.builtin && (
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 font-medium">内置</span>
                     )}
+                    {skill.source === 'file' && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 font-medium">文件</span>
+                    )}
                   </div>
                   {skill.description && (
                     <div className="text-[11px] text-slate-400 mt-0.5">{skill.description}</div>
+                  )}
+                  {skill.source === 'file' && (skill.files?.length ?? 0) > 0 && (
+                    <div className="text-[10px] text-slate-400 mt-0.5" title={(skill.files || []).join('\n')}>
+                      包含 {skill.files!.length} 个文件
+                    </div>
                   )}
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
@@ -191,6 +237,24 @@ export function SkillsPanel({
           ))}
         </div>
       )}
+
+      {/* Import a file-based skill: SKILL.md + resources */}
+      <div className="grid grid-cols-2 gap-2">
+        <label className={`py-2 rounded-lg border border-dashed border-slate-300 text-slate-600 text-xs text-center cursor-pointer hover:bg-slate-50 ${(busy || readOnly) ? 'opacity-50 pointer-events-none' : ''}`}>
+          上传 ZIP 技能包
+          <input type="file" accept=".zip,application/zip" className="hidden"
+            onChange={onImportZip} disabled={busy || readOnly} />
+        </label>
+        <label className={`py-2 rounded-lg border border-dashed border-slate-300 text-slate-600 text-xs text-center cursor-pointer hover:bg-slate-50 ${(busy || readOnly) ? 'opacity-50 pointer-events-none' : ''}`}>
+          上传文件（含 SKILL.md）
+          <input type="file" multiple className="hidden"
+            onChange={onImportFiles} disabled={busy || readOnly} />
+        </label>
+      </div>
+      <p className="text-[11px] text-slate-400">
+        文件技能是一个目录：<code className="font-mono">SKILL.md</code>（YAML frontmatter 的 name/description + 正文）加可选资源。
+        系统只在提示里给摘要，模型需要时会用 <code className="font-mono">read_skill</code> 按需读取全文。
+      </p>
 
       {/* Add custom skill */}
       {showAdd ? (

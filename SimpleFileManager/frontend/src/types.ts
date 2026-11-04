@@ -210,6 +210,8 @@ export interface Skill {
   instruction?: string;
   enabled: boolean;
   builtin: boolean;
+  source?: 'builtin' | 'file' | 'inline';
+  files?: string[];
 }
 
 export interface ToolState {
@@ -218,6 +220,7 @@ export interface ToolState {
   description: string;
   danger: 'safe' | 'low' | 'medium' | 'high';
   enabled: boolean;
+  always_on: boolean;
   builtin_base: boolean;
   agent_builtin: boolean;
   direct_executable: boolean;
