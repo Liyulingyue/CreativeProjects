@@ -11,7 +11,8 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
-from ..deps import state, resolve_under_root, PathOutsideRoot, PathNotAllowed, validate_plan_action, get_storage_root, session_owner
+from ..deps import (state, resolve_under_root, PathOutsideRoot, PathNotAllowed,
+                    validate_plan_action, current_user, get_storage_root, session_owner)
 from ..models import AgentPlan, CreatePlanRequest
 
 plans = APIRouter(prefix="/api/plans", tags=["plans"])
@@ -37,10 +38,24 @@ def get_plan_log(plan_id: str) -> dict:
     return {"log": state.get_plan_store().get_log(plan_id)}
 
 
+def _is_admin() -> bool:
+    """Whether the person asking may plan a shell command.
+
+    An open installation (no accounts) is a single-user install, so
+    there is nobody to tell apart.
+    """
+    user = current_user()
+    if user is None:
+        return True
+    return user.get("role") == "admin"
+
+
 @plans.post("")
 def create_plan(req: CreatePlanRequest) -> AgentPlan:
     if not req.actions:
         raise HTTPException(status_code=400, detail="Plan must contain at least one action")
+    if any(a.action_type == "run" for a in req.actions) and not _is_admin():
+        raise HTTPException(status_code=403, detail="只有管理员可以创建命令执行计划")
     for a in req.actions:
         error = validate_plan_action(a.model_dump())
         if error:
@@ -84,6 +99,9 @@ def execute_plan(plan_id: str) -> AgentPlan:
     if plan.status != "approved":
         raise HTTPException(status_code=400, detail=f"Plan must be approved before execution (current: {plan.status})")
 
+    if any(a.action_type == "run" for a in plan.actions) and not _is_admin():
+        raise HTTPException(status_code=403, detail="只有管理员可以执行命令计划")
+
     store = state.get_plan_store()
     succeeded, failed, skipped = 0, 0, 0
 
@@ -95,16 +113,17 @@ def execute_plan(plan_id: str) -> AgentPlan:
             skipped += 1
             continue
         try:
-            message = _execute_action(action.action_type, action.source_path, action.target_path)
+            message = _execute_action(action.action_type, action.source_path, action.target_path,
+                                      action.command, action.cwd)
             store.update_action(action.id, "done", message)
             store.add_log(plan_id, action.id, action.action_type,
-                          action.source_path, action.target_path, True, message)
+                          action.source_path or action.command, action.target_path, True, message)
             succeeded += 1
         except Exception as e:
             message = str(e)
             store.update_action(action.id, "failed", message)
             store.add_log(plan_id, action.id, action.action_type,
-                          action.source_path, action.target_path, False, message)
+                          action.source_path or action.command, action.target_path, False, message)
             failed += 1
 
     if failed == 0 and succeeded > 0:
@@ -170,11 +189,15 @@ def _resolve_existing_source(source: str) -> str:
     return matches[0] if len(matches) == 1 else source
 
 
-def _execute_action(action_type: str, source: str, target: str) -> str:
+def _execute_action(action_type: str, source: str, target: str,
+                    command: str = "", cwd: str = "") -> str:
     """Execute a single approved action. Paths are relative to the storage root.
 
     Raises on any failure so the caller can record it.
     """
+    if action_type == "run":
+        return _execute_run(command, cwd)
+
     if action_type == "create_folder":
         if not target:
             raise ValueError("create_folder requires target_path")
@@ -220,6 +243,41 @@ def _execute_action(action_type: str, source: str, target: str) -> str:
         return f"Moved {source} -> {target}"
 
     raise ValueError(f"Unknown action_type: {action_type}")
+
+
+def _execute_run(command: str, cwd: str = "") -> str:
+    """Run an approved command inside the sandbox.
+
+    The approval screen showed the user this exact command, so it runs
+    as written -- but inside the same sandbox the model would have used,
+    so an approved command still cannot reach the network, the API keys
+    or anything outside the storage root.
+    """
+    from ..deps import DATA_DIR
+    from ..sandbox import SandboxError, resolve_cwd, run
+
+    command = (command or "").strip()
+    if not command:
+        raise ValueError("run requires command")
+    try:
+        root = get_storage_root().resolve()
+        target = resolve_cwd(root, DATA_DIR.resolve(), cwd or "")
+        result = run(command, target, timeout=120)
+    except SandboxError as e:
+        raise ValueError(str(e)) from e
+
+    stdout = (result["stdout"] or "").strip()
+    stderr = (result["stderr"] or "").strip()
+    parts = [f"$ {command}"]
+    if stdout:
+        parts.append(stdout)
+    if stderr:
+        parts.append(stderr)
+    if result["timed_out"]:
+        raise ValueError("命令超时，已终止\n" + "\n".join(parts))
+    if result["returncode"] != 0:
+        raise ValueError(f"命令失败，退出码 {result['returncode']}\n" + "\n".join(parts))
+    return "\n".join(parts)
 
 
 def _safe(path: str, mode: str = "read") -> Path:

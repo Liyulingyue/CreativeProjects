@@ -6,7 +6,20 @@ from pydantic import BaseModel
 
 from ..deps import state
 from ..llm_client import chat_completion
+from ..deps import current_user
 from ..skills import get_skill_registry, execute_tool
+
+
+def _is_admin() -> bool:
+    """Whether the person asking may run a shell command.
+
+    An open installation (no accounts) is a single-user install, so
+    there is nobody to tell apart.
+    """
+    user = current_user()
+    if user is None:
+        return True
+    return user.get("role") == "admin"
 
 chat = APIRouter()
 
@@ -83,7 +96,9 @@ def _run_tool_loop(messages: list[dict], tools: list[dict], provider,
                 args = json.loads(tc["function"]["arguments"])
             except (json.JSONDecodeError, TypeError):
                 args = {}
-            if not reg.tool_is_visible(name):
+            if name == "run_command" and not _is_admin():
+                tool_result = {"success": False, "error": "只有管理员可以使用命令执行工具。"}
+            elif not reg.tool_is_visible(name):
                 tool_result = {"success": False, "error": f"工具未启用: {name}"}
             elif not reg.tool_is_directly_executable(name):
                 tool_result = {

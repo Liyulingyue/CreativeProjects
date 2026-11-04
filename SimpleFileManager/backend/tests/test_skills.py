@@ -64,8 +64,9 @@ def test_set_all_tools():
     assert names == set(ALWAYS_ON_TOOL_NAMES)
     reg.set_all_tools(True)
     names = {t["function"]["name"] for t in reg.get_active_tools()}
-    from app.skills import ALL_TOOL_NAMES
-    assert names == set(ALL_TOOL_NAMES)
+    from app.skills import ALL_TOOL_NAMES, BULK_TOGGLE_EXCLUDED
+    # The bulk switch leaves command execution off on purpose.
+    assert names == set(ALL_TOOL_NAMES) - set(BULK_TOGGLE_EXCLUDED)
 
 
 def test_master_off_ignores_tool_toggles():

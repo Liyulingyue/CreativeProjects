@@ -315,6 +315,7 @@ export function AgentToolsPage() {
             {hasSkillTools && (
               <div className="flex gap-2">
                 <button onClick={() => onToggleAll(true)} disabled={!isAdmin || busyKey !== null}
+                  title="批量开关不包含「执行命令」——它必须单独开启"
                   className="text-[11px] text-indigo-500 hover:text-indigo-700 disabled:opacity-40">全部可见</button>
                 <button onClick={() => onToggleAll(false)} disabled={!isAdmin || busyKey !== null}
                   className="text-[11px] text-slate-400 hover:text-slate-600 disabled:opacity-40">全部隐藏</button>

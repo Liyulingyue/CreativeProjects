@@ -400,9 +400,11 @@ class CompareResponse(BaseModel):
 
 class PlanAction(BaseModel):
     id: str
-    action_type: str  # move | rename | create_folder | delete
+    action_type: str  # move | rename | create_folder | delete | run
     source_path: Optional[str] = None
     target_path: Optional[str] = None
+    command: Optional[str] = None
+    cwd: Optional[str] = None
     reason: str = ""
     status: str = "pending"  # pending | done | failed | skipped
     result: Optional[str] = None
@@ -412,6 +414,8 @@ class PlanActionInput(BaseModel):
     action_type: str
     source_path: Optional[str] = None
     target_path: Optional[str] = None
+    command: Optional[str] = None
+    cwd: Optional[str] = None
     reason: str = ""
 
 

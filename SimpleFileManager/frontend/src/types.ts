@@ -171,7 +171,7 @@ export interface AutoIndexStatus {
   } | null;
 }
 
-export type PlanActionType = 'move' | 'rename' | 'create_folder' | 'delete';
+export type PlanActionType = 'move' | 'rename' | 'create_folder' | 'delete' | 'run';
 
 export type PlanStatus =
   | 'pending'
@@ -186,6 +186,8 @@ export interface PlanAction {
   action_type: PlanActionType;
   source_path: string | null;
   target_path: string | null;
+  command: string | null;
+  cwd: string | null;
   reason: string;
   status: 'pending' | 'done' | 'failed' | 'skipped';
   result: string | null;

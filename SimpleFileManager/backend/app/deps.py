@@ -1375,8 +1375,18 @@ def visible_children(target: Path, entries: list[Path]) -> list[Path]:
 def validate_plan_action(action: dict) -> Optional[str]:
     """Return an error message if a plan action is malformed or escapes the storage root, else None."""
     action_type = action.get("action_type", "")
-    if action_type not in ("move", "rename", "create_folder", "delete"):
+    if action_type not in ("move", "rename", "create_folder", "delete", "run"):
         return f"Unknown action_type: {action_type}"
+    if action_type == "run":
+        command = (action.get("command") or "").strip()
+        if not command:
+            return "run requires command"
+        if len(command) > 8000:
+            return "run command is too long (max 8000 characters)"
+        cwd = (action.get("cwd") or "").strip()
+        if cwd.startswith("/") or cwd.startswith("~"):
+            return "run cwd must be relative to the storage root"
+        return None
     if action_type in ("move", "rename", "delete") and not (action.get("source_path") or "").strip():
         return f"{action_type} requires source_path"
     if action_type in ("move", "rename", "create_folder") and not (action.get("target_path") or "").strip():
@@ -1436,6 +1446,11 @@ class PlanStore:
                     FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE
                 )
             """)
+            action_cols = {r[1] for r in conn.execute("PRAGMA table_info(plan_actions)")}
+            if "command" not in action_cols:
+                conn.execute("ALTER TABLE plan_actions ADD COLUMN command TEXT")
+            if "cwd" not in action_cols:
+                conn.execute("ALTER TABLE plan_actions ADD COLUMN cwd TEXT")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS execution_log (
                     id TEXT PRIMARY KEY,
@@ -1467,15 +1482,18 @@ class PlanStore:
             for pos, a in enumerate(actions):
                 action_id = uuid.uuid4().hex
                 conn.execute(
-                    "INSERT INTO plan_actions (id, plan_id, action_type, source_path, target_path, reason, position) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO plan_actions (id, plan_id, action_type, source_path, target_path, command, cwd, reason, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (action_id, plan_id, a.get("action_type", "move"), a.get("source_path"),
-                     a.get("target_path"), a.get("reason", ""), pos)
+                     a.get("target_path"), a.get("command"), a.get("cwd"),
+                     a.get("reason", ""), pos)
                 )
                 action_models.append(PlanAction(
                     id=action_id,
                     action_type=a.get("action_type", "move"),
                     source_path=a.get("source_path"),
                     target_path=a.get("target_path"),
+                    command=a.get("command"),
+                    cwd=a.get("cwd"),
                     reason=a.get("reason", ""),
                 ))
             conn.commit()
@@ -1488,12 +1506,12 @@ class PlanStore:
     def _row_to_plan(self, conn: sqlite3.Connection, row) -> AgentPlan:
         plan_id, title, summary, status, source, created_at, decided_at, executed_at, owner = row
         action_rows = conn.execute(
-            "SELECT id, action_type, source_path, target_path, reason, status, result FROM plan_actions WHERE plan_id = ? ORDER BY position ASC",
+            "SELECT id, action_type, source_path, target_path, command, cwd, reason, status, result FROM plan_actions WHERE plan_id = ? ORDER BY position ASC",
             (plan_id,)
         ).fetchall()
         actions = [
             PlanAction(id=r[0], action_type=r[1], source_path=r[2], target_path=r[3],
-                       reason=r[4] or "", status=r[5], result=r[6])
+                       command=r[4], cwd=r[5], reason=r[6] or "", status=r[7], result=r[8])
             for r in action_rows
         ]
         return AgentPlan(

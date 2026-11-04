@@ -10,6 +10,7 @@ const ACTION_META: Record<string, { icon: string; label: string; color: string }
   rename: { icon: 'edit', label: '重命名', color: 'bg-violet-50 text-violet-600' },
   create_folder: { icon: 'folder', label: '新建文件夹', color: 'bg-green-50 text-green-600' },
   delete: { icon: 'trash', label: '删除', color: 'bg-red-50 text-red-600' },
+  run: { icon: 'code', label: '执行命令', color: 'bg-orange-50 text-orange-600' },
 };
 
 const STATUS_META: Record<PlanStatus, { label: string; className: string }> = {
@@ -29,6 +30,8 @@ function ActionRow({ action }: { action: PlanAction }) {
   // from a failure message. They were four lines of prose with the
   // first two prefixed and the last two not.
   const fields: { label: string; value: string; className: string }[] = [];
+  if (action.command) fields.push({ label: '命令', value: action.command, className: 'font-mono text-slate-700' });
+  if (action.cwd) fields.push({ label: '目录', value: action.cwd, className: 'text-slate-600' });
   if (action.source_path) fields.push({ label: '源', value: action.source_path, className: 'text-slate-600' });
   if (action.target_path) fields.push({ label: '目标', value: action.target_path, className: 'text-slate-600' });
   if (action.reason) fields.push({ label: '理由', value: action.reason, className: 'text-slate-400' });

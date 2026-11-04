@@ -129,6 +129,19 @@ TOOL_FILE_INFO = _tool(
     ["path"],
 )
 
+TOOL_RUN_COMMAND = _tool(
+    "run_command",
+    "在沙箱里执行一条 shell 命令（bash）。命令只能读写用户存储目录，网络被禁用，"
+    "系统配置与数据库不可见；技能自带的脚本以只读方式挂载在 /skills。"
+    "可以用它运行 python3 脚本、处理数据、做批量转换。",
+    {
+        "command": {"type": "string", "description": "要执行的 shell 命令"},
+        "cwd": {"type": "string", "description": "工作目录（相对存储根目录），留空表示存储根目录"},
+        "timeout": {"type": "integer", "description": "超时秒数，默认 30，最大 120"},
+    },
+    ["command"],
+)
+
 TOOL_READ_SKILL = _tool(
     "read_skill",
     "读取一个技能的完整说明（SKILL.md）或它附带的资源文件。技能说明通常只在系统提示里给出摘要，需要细节时用这个工具按需读取。",
@@ -148,8 +161,11 @@ TOOL_LIST_SKILL_FILES = _tool(
 
 BASE_TOOLS = [TOOL_SEARCH, TOOL_LIST_DIR, TOOL_READ_FILE, TOOL_WRITE_FILE, TOOL_SEMANTIC_SEARCH]
 ATOMIC_TOOLS = [TOOL_MOVE_FILE, TOOL_DELETE_FILE, TOOL_CREATE_DIR, TOOL_FILE_INFO]
+# Command execution is not one of the file tools: it is switched on by
+# hand and is never part of a bulk switch.
+COMMAND_TOOLS = [TOOL_RUN_COMMAND]
 META_TOOLS = [TOOL_READ_SKILL, TOOL_LIST_SKILL_FILES]
-ALL_TOOLS = BASE_TOOLS + ATOMIC_TOOLS + META_TOOLS
+ALL_TOOLS = BASE_TOOLS + ATOMIC_TOOLS + META_TOOLS + COMMAND_TOOLS
 
 # Human-facing metadata for the settings UI and safety labeling.
 TOOL_META: dict[str, dict] = {
@@ -164,8 +180,13 @@ TOOL_META: dict[str, dict] = {
     "file_info":     {"label": "文件信息",    "description": "查看大小、修改时间等",    "danger": "safe"},
     "read_skill":    {"label": "读取技能",    "description": "读取 SKILL.md 或资源文件", "danger": "safe"},
     "list_skill_files": {"label": "技能文件", "description": "列出技能附带文件",         "danger": "safe"},
+    "run_command":   {"label": "执行命令",    "description": "在沙箱中运行 shell 命令（禁网，只能读写存储目录）", "danger": "high"},
 }
 ALL_TOOL_NAMES = [t["function"]["name"] for t in ALL_TOOLS]
+
+# Tools the bulk "show all" switch leaves alone, because turning them on
+# is a decision rather than a convenience.
+BULK_TOGGLE_EXCLUDED = {"run_command"}
 
 # The agent endpoint ships its own richer implementations of these tools
 # (with per-user access checks and better argument handling), so they are
@@ -388,6 +409,44 @@ def _handle_file_info(path: str) -> dict:
     }
 
 
+def _handle_run_command(command: str, cwd: str = "", timeout: int = 30) -> dict:
+    """Run a shell command inside the sandbox.
+
+    The command cannot see anything but the storage root, and the
+    storage root's manager directory is hidden from it. A non-zero exit
+    code is reported back rather than raised: the model needs to see
+    what the command said.
+    """
+    from .deps import DATA_DIR, get_storage_root
+    from .sandbox import SandboxError, resolve_cwd, run
+
+    try:
+        root = get_storage_root().resolve()
+        target = resolve_cwd(root, DATA_DIR.resolve(), cwd)
+        result = run(command, target, timeout=timeout)
+    except SandboxError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        return {"success": False, "error": f"命令执行失败: {e}"}
+
+    ok = result["returncode"] == 0 and not result["timed_out"]
+    out = {
+        "success": ok,
+        "command": result["command"],
+        "cwd": result["cwd"],
+        "returncode": result["returncode"],
+        "stdout": result["stdout"],
+        "stderr": result["stderr"],
+        "timed_out": result["timed_out"],
+        "truncated": result["truncated"],
+    }
+    if result["timed_out"]:
+        out["error"] = "命令超时，已终止"
+    elif not ok:
+        out["error"] = f"命令失败，退出码 {result['returncode']}"
+    return out
+
+
 TOOL_HANDLERS: dict[str, Any] = {
     "search_files": _handle_search_files,
     "list_directory": _handle_list_directory,
@@ -398,10 +457,11 @@ TOOL_HANDLERS: dict[str, Any] = {
     "delete_file": _handle_delete_file,
     "create_directory": _handle_create_directory,
     "file_info": _handle_file_info,
+    "run_command": _handle_run_command,
 }
 
 
-MAX_TOOL_RESULT_CHARS = 4000
+MAX_TOOL_RESULT_CHARS = 8000
 
 
 def _trim_tool_result(result: dict) -> dict:
@@ -1071,7 +1131,12 @@ class SkillRegistry:
         self._save()
 
     def set_all_tools(self, enabled: bool):
+        # The bulk switch must not hand the model a shell by accident:
+        # "show everything" is about letting the model plan, not about
+        # letting it run commands. That tool is switched on deliberately.
         for name in ALL_TOOL_NAMES:
+            if name in BULK_TOGGLE_EXCLUDED:
+                continue
             self._tool_overrides[name] = enabled
         self._save()
 

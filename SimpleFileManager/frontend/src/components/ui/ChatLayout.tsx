@@ -541,7 +541,8 @@ function InlinePlanApproval({ plans }: { plans: AgentPlan[] }) {
             failedActions.map(a => {
               const i = errorResult.plan.actions.findIndex(x => x.id === a.id);
               const r = errorResult.result.actions?.[i];
-              return `• ${a.action_type}: ${a.source_path || a.target_path || '未知路径'}\n  错误: ${r?.result || '未知错误'}`;
+              const what = a.command || a.source_path || a.target_path || '未知路径';
+              return `• ${a.action_type}: ${what}\n  错误: ${r?.result || '未知错误'}`;
             }).join('\n\n')
           }
           confirmText="知道了"

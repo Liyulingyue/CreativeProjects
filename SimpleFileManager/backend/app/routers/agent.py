@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from ..deps import (
     state, get_storage_root, resolve_under_root, PathOutsideRoot,
-    PathNotAllowed, can_access, validate_plan_action, session_owner,
+    PathNotAllowed, can_access, current_user, validate_plan_action, session_owner,
 )
 from ..doc_extract import ExtractionError, extract_text
 from ..interaction import interaction
@@ -32,7 +32,7 @@ log = logging.getLogger(__name__)
 
 agent = APIRouter()
 
-MAX_TOOL_RESULT_CHARS = 4000
+MAX_TOOL_RESULT_CHARS = 8000
 # Backstop only. Conversation length is normally bounded by the token budget in
 # compact(); this exists so a runaway session (millions of tiny messages) cannot
 # grow without limit. Kept high deliberately: the window is applied as a slice,
@@ -154,9 +154,11 @@ TOOLS = [
                         "items": {
                             "type": "object",
                             "properties": {
-                                "action_type": {"type": "string", "enum": ["move", "rename", "create_folder", "delete"]},
+                                "action_type": {"type": "string", "enum": ["move", "rename", "create_folder", "delete", "run"]},
                                 "source_path": {"type": "string", "description": "Existing file/dir to act on (relative to storage root). Required for move/rename/delete."},
                                 "target_path": {"type": "string", "description": "Destination path. Required for move/rename/create_folder."},
+                                "command": {"type": "string", "description": "Shell command to run in the sandbox. Required for run."},
+                                "cwd": {"type": "string", "description": "Working directory for run, relative to the storage root. Optional."},
                                 "reason": {"type": "string", "description": "Why this action is proposed."}
                             },
                             "required": ["action_type"],
@@ -708,7 +710,17 @@ def tool_submit_plan(title: str, summary: str = "", actions: Optional[list[dict]
         action_type = a.get("action_type", "move")
         source = a.get("source_path")
         target = a.get("target_path")
+        command = (a.get("command") or "").strip()
+        cwd = (a.get("cwd") or "").strip()
         reason = a.get("reason", "")
+
+        # Running a shell command is the one thing in a plan that can do
+        # anything the server can do, so it is the administrator's call
+        # only. The approval screen shows the command before it runs.
+        if action_type == "run" and not _is_admin():
+            return {"success": False, "error": (
+                "只有管理员可以提交命令执行计划。"
+            )}
 
         # Guard against the failure mode where the agent remembers a path
         # from an earlier turn and the file has since been moved. A plan
@@ -758,6 +770,8 @@ def tool_submit_plan(title: str, summary: str = "", actions: Optional[list[dict]
             "action_type": action_type,
             "source_path": source,
             "target_path": target,
+            "command": command or None,
+            "cwd": cwd or None,
             "reason": reason,
         })
     plan = state.get_plan_store().create_plan(
@@ -885,7 +899,21 @@ def tool_semantic_search(query: str, path: str = "", top_k: int = 5) -> dict:
     return out
 
 
+def _is_admin() -> bool:
+    """Whether the person asking may run a shell command.
+
+    An open installation (no accounts) is a single-user install, so
+    there is nobody to tell apart.
+    """
+    user = current_user()
+    if user is None:
+        return True
+    return user.get("role") == "admin"
+
+
 def execute_tool(name: str, arguments: dict) -> dict:
+    if name == "run_command" and not _is_admin():
+        return {"success": False, "error": "只有管理员可以使用命令执行工具。"}
     try:
         if name == "list_directory":
             return tool_list_directory(**arguments)
@@ -1057,7 +1085,8 @@ class Session:
                 + "、".join(plan_only)
                 + " 不能直接调用，直接调用会被服务端拒绝。涉及这些工具的操作必须写成 "
                 "submit_plan 的 actions：删除用 action_type=delete，移动/重命名用 "
-                "move/rename。写文件、建目录等仍可直接调用。"
+                "move/rename，执行命令用 action_type=run 并在 command 里给出完整命令。"
+                "写文件、建目录等仍可直接调用。"
             )
         msgs = [{"role": "system", "content": system_text}]
         if self.memory:
