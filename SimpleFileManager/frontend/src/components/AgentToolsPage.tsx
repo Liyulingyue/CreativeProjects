@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { getAgentTools, fetchCurrentUser } from '../api';
+import { getAgentTools, fetchCurrentUser, fetchSkills } from '../api';
 import type { AgentToolDefinition, AgentToolDisplay } from '../api';
+import type { SkillsState } from '../types';
 import { Icon } from './ui/Icon';
 import { SkillsPanel } from './SkillsPanel';
 
@@ -45,9 +46,6 @@ function ToolCard({ tool, def }: { tool: AgentToolDisplay; def?: AgentToolDefini
       </div>
 
       {paramNames.length > 0 && (
-        /* flex-1 so a card with fewer parameters fills the extra row height
-           inside the shaded block, instead of leaving a white gap at the
-           bottom that reads as a rendering mistake. */
         <div className="border-t border-slate-100 px-4 py-3 bg-slate-50/60 flex-1">
           <div className="text-[11px] font-medium text-slate-400 uppercase tracking-wider mb-2">参数</div>
           <div className="space-y-1.5">
@@ -76,9 +74,11 @@ export function AgentToolsPage() {
   const [definitions, setDefinitions] = useState<AgentToolDefinition[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(true);
+  const [skillsState, setSkillsState] = useState<SkillsState | null>(null);
 
   useEffect(() => {
     fetchCurrentUser().then(u => setIsAdmin(u.is_admin)).catch(() => setIsAdmin(false));
+    fetchSkills().then(setSkillsState).catch(() => {});
     getAgentTools()
       .then(d => {
         setTools(d.display || []);
@@ -90,6 +90,7 @@ export function AgentToolsPage() {
   const byName = new Map(definitions.map(d => [d.function.name, d]));
   const readOnly = (tools || []).filter(t => t.display.risk !== 'approval');
   const approval = (tools || []).filter(t => t.display.risk === 'approval');
+  const skillsOn = skillsState?.master ?? false;
 
   return (
     <div className="h-full overflow-y-auto bg-slate-50">
@@ -98,26 +99,56 @@ export function AgentToolsPage() {
         <span className="text-base font-semibold text-slate-800">Agent 能力</span>
       </div>
 
-      {/* Full width with a responsive grid: the cards are prose plus a short
-          parameter list, so one very wide column would leave long unreadable
-          lines while a narrow one would squeeze the descriptions. */}
-      <div className="p-4 sm:p-6 space-y-5">
-        {/* The single most important fact on this page, so it leads. */}
-        <div className="flex items-start gap-2.5 p-3 rounded-lg bg-emerald-50 border border-emerald-100">
-          <Icon name="shield" size={16} className="text-emerald-600 mt-0.5 flex-shrink-0" />
-          <div className="text-sm text-emerald-800 leading-relaxed">
-            Agent <strong>只能读取你的文件</strong>，无法直接修改、移动或删除任何内容。
-            它能做的唯一写操作是提交一份整理计划，需要你在
-            <Link to="/organizer" className="underline hover:text-emerald-900">「整理」</Link>
-            页审批后才会执行。
-          </div>
-        </div>
-
+      <div className="p-4 sm:p-6 space-y-6">
         {error && (
           <div className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">加载失败：{error}</div>
         )}
+
+        {/* Dynamic banner: reflects what the agent can actually do right now. */}
+        <div className={`flex items-start gap-2.5 p-3 rounded-lg border ${
+          skillsOn
+            ? 'bg-indigo-50 border-indigo-100'
+            : 'bg-emerald-50 border-emerald-100'
+        }`}>
+          <Icon
+            name={skillsOn ? 'sparkles' : 'shield'}
+            size={16}
+            className={`mt-0.5 flex-shrink-0 ${skillsOn ? 'text-indigo-600' : 'text-emerald-600'}`}
+          />
+          <div className={`text-sm leading-relaxed ${skillsOn ? 'text-indigo-800' : 'text-emerald-800'}`}>
+            {skillsOn ? (
+              <>
+                技能已开启：Agent 可以<strong>直接操作文件</strong>（写入、移动、删除），
+                具体能做什么取决于下方启用的技能和工具。
+              </>
+            ) : (
+              <>
+                Agent <strong>只能读取你的文件</strong>，无法直接修改、移动或删除任何内容。
+                它能做的唯一写操作是提交一份整理计划，需要你在
+                <Link to="/organizer" className="underline hover:text-emerald-900">「整理」</Link>
+                页审批后才会执行。
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Skills control — comes first because it gates everything below. */}
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+              技能与方法论
+            </h2>
+            <div className="flex-1 h-px bg-slate-200" />
+          </div>
+          <p className="text-xs text-slate-400">
+            技能决定 Agent「怎么做」。开启后模型获得额外工具和操作能力；关闭时只保留基础只读工具。
+          </p>
+          <SkillsPanel readOnly={!isAdmin} />
+        </div>
+
+        {/* Tools list — what the agent can actually call. */}
         {tools === null && !error && (
-          <div className="text-sm text-slate-400">加载中...</div>
+          <div className="text-sm text-slate-400">加载工具列表...</div>
         )}
 
         {readOnly.length > 0 && (
@@ -151,21 +182,6 @@ export function AgentToolsPage() {
         {tools?.length === 0 && (
           <div className="text-sm text-slate-400">Agent 当前没有可用的工具。</div>
         )}
-
-        {/* Skills: methodology + tool gating for the agent. */}
-        <div className="space-y-3 pt-2 border-t border-slate-200">
-          <div className="flex items-center gap-2">
-            <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-              技能与工具权限
-            </h2>
-            <div className="flex-1 h-px bg-slate-200" />
-          </div>
-          <p className="text-xs text-slate-400">
-            技能决定 Agent「怎么做」——开启后模型获得更多工具和方法论指导。
-            关闭时只保留搜索、读取等基础工具。
-          </p>
-          <SkillsPanel readOnly={!isAdmin} />
-        </div>
       </div>
     </div>
   );
