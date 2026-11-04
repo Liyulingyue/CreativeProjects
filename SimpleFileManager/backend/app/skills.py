@@ -148,7 +148,7 @@ ALL_TOOL_NAMES = [t["function"]["name"] for t in ALL_TOOLS]
 # always available there. The skills registry's copies only matter to the
 # legacy /api/chat endpoint; the settings UI hides their toggles because
 # flipping them on the agent path would do nothing.
-AGENT_BUILTIN_TOOL_NAMES = {"list_directory", "read_file", "semantic_search"}
+AGENT_BUILTIN_TOOL_NAMES = {"list_directory", "read_file", "semantic_search", "search_files"}
 
 # ---------------------------------------------------------------------------
 # Built-in skills
@@ -506,6 +506,7 @@ class SkillRegistry:
                 "enabled": enabled,
                 "builtin_base": name in base_names,
                 "agent_builtin": name in AGENT_BUILTIN_TOOL_NAMES,
+                "parameters": t["function"].get("parameters", {}),
             })
         return result
 

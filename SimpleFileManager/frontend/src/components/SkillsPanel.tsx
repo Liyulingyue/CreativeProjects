@@ -1,10 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Icon } from './ui/Icon';
-import type { Skill, SkillsState, ToolState } from '../types';
-import {
-  fetchSkills, setSkillsMaster, toggleSkill, addSkill, removeSkill,
-  toggleTool, toggleAllTools,
-} from '../api';
+import type { Skill, SkillsState } from '../types';
+import { fetchSkills, setSkillsMaster, toggleSkill, addSkill, removeSkill } from '../api';
 
 /**
  * Skills are the "how" — methodology the model follows.
@@ -19,7 +16,13 @@ import {
  *
  * Custom skills can be uploaded by the administrator.
  */
-export function SkillsPanel({ readOnly = false }: { readOnly?: boolean }) {
+export function SkillsPanel({
+  readOnly = false,
+  onMasterChange,
+}: {
+  readOnly?: boolean;
+  onMasterChange?: (master: boolean) => void;
+}) {
   const [state, setState] = useState<SkillsState | null>(null);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
@@ -51,6 +54,7 @@ export function SkillsPanel({ readOnly = false }: { readOnly?: boolean }) {
     try {
       const r = await setSkillsMaster(enabled);
       setState(prev => prev ? { ...prev, master: r.master } : prev);
+      onMasterChange?.(r.master);
       setMessage(enabled ? '技能已开启：模型将获得更多工具和方法' : '技能已关闭：模型只使用基础工具');
     } catch (e) {
       setMessage(e instanceof Error ? e.message : '操作失败');
@@ -71,33 +75,6 @@ export function SkillsPanel({ readOnly = false }: { readOnly?: boolean }) {
       setMessage(e instanceof Error ? e.message : '操作失败');
     }
   };
-  const onToggleTool = async (tool: ToolState, enabled: boolean) => {
-    setMessage(null);
-    try {
-      await toggleTool(tool.name, enabled);
-      setState(prev => prev ? {
-        ...prev,
-        tools: prev.tools.map(t => t.name === tool.name ? { ...t, enabled } : t),
-      } : prev);
-    } catch (e) {
-      setMessage(e instanceof Error ? e.message : '操作失败');
-    }
-  };
-
-  const onToggleAllTools = async (enabled: boolean) => {
-    setMessage(null);
-    try {
-      await toggleAllTools(enabled);
-      setState(prev => prev ? {
-        ...prev,
-        tools: prev.tools.map(t => ({ ...t, enabled })),
-      } : prev);
-      setMessage(enabled ? '已启用全部工具' : '已关闭全部工具');
-    } catch (e) {
-      setMessage(e instanceof Error ? e.message : '操作失败');
-    }
-  };
-
   const onAdd = async () => {
     const id = newSkill.id.trim();
     if (!id || !newSkill.label.trim() || !newSkill.instruction.trim()) {
@@ -212,53 +189,6 @@ export function SkillsPanel({ readOnly = false }: { readOnly?: boolean }) {
               </div>
             </div>
           ))}
-        </div>
-      )}
-
-      {/* Skill-only tool toggles — only when master is on. Tools the agent
-          already provides itself (list/read/semantic search) are omitted:
-          their switch would give a false sense of control. */}
-      {state?.master && (state?.tools ?? []).some(t => !t.agent_builtin) && (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between pt-2">
-            <span className="text-xs font-semibold text-slate-400">技能附加工具</span>
-            <div className="flex gap-2">
-              <button onClick={() => onToggleAllTools(true)}
-                className="text-[11px] text-indigo-500 hover:text-indigo-700">全部启用</button>
-              <button onClick={() => onToggleAllTools(false)}
-                className="text-[11px] text-slate-400 hover:text-slate-600">全部关闭</button>
-            </div>
-          </div>
-          <p className="text-[11px] text-slate-400">
-            列出目录、读取文件、语义检索等只读工具始终由 Agent 提供，见页面上方「只读工具」。
-          </p>
-          <div className="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
-            {(state?.tools ?? []).filter(t => !t.agent_builtin).map(tool => (
-              <div key={tool.name} className="flex items-center gap-2 px-3 py-2">
-                <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium flex-shrink-0 ${
-                  tool.danger === 'high' ? 'bg-red-100 text-red-700'
-                  : tool.danger === 'medium' ? 'bg-amber-100 text-amber-700'
-                  : tool.danger === 'low' ? 'bg-sky-100 text-sky-700'
-                  : 'bg-slate-100 text-slate-500'
-                }`}>
-                  {tool.danger === 'high' ? '危险' : tool.danger === 'medium' ? '谨慎' : tool.danger === 'low' ? '一般' : '安全'}
-                </span>
-                <div className="flex-1 min-w-0">
-                  <div className="text-xs font-medium text-slate-700">{tool.label}</div>
-                  <div className="text-[10px] text-slate-400">{tool.description}</div>
-                </div>
-                <button
-                  onClick={() => onToggleTool(tool, !tool.enabled)}
-                  className={`relative inline-flex h-5 w-9 flex-shrink-0 rounded-full transition-colors ${
-                    tool.enabled ? 'bg-indigo-600' : 'bg-slate-300'
-                  }`}
-                >
-                  <span style={{ transform: `translateX(${tool.enabled ? '18px' : '2px'})` }}
-                    className="inline-block h-4 w-4 rounded-full bg-white shadow mt-0.5 transition-transform" />
-                </button>
-              </div>
-            ))}
-          </div>
         </div>
       )}
 

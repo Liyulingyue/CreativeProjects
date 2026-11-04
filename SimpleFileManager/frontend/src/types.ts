@@ -220,6 +220,7 @@ export interface ToolState {
   enabled: boolean;
   builtin_base: boolean;
   agent_builtin: boolean;
+  parameters?: { properties?: Record<string, { type: string; description?: string }> };
 }
 
 export interface SkillsState {
