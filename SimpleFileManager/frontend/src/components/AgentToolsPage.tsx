@@ -166,6 +166,7 @@ export function AgentToolsPage() {
   const [isAdmin, setIsAdmin] = useState(true);
   const [skillsState, setSkillsState] = useState<SkillsState | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [addSignal, setAddSignal] = useState(0);
 
   useEffect(() => {
     fetchCurrentUser().then(u => setIsAdmin(u.is_admin)).catch(() => setIsAdmin(false));
@@ -287,12 +288,20 @@ export function AgentToolsPage() {
           <div className="flex items-center gap-2">
             <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">技能与方法论</h2>
             <div className="flex-1 h-px bg-slate-200" />
+            <button
+              onClick={() => setAddSignal(n => n + 1)}
+              disabled={!isAdmin}
+              className="text-[11px] px-2 py-1 rounded-md border border-slate-200 text-slate-500 hover:bg-white hover:text-slate-700 disabled:opacity-40"
+            >
+              + 添加技能
+            </button>
           </div>
           <p className="text-xs text-slate-400">
             技能决定 Agent「怎么做」。开启后模型获得写操作工具和对应方法论；关闭时只保留基础只读工具。
           </p>
           <SkillsPanel
             readOnly={!isAdmin}
+            addSignal={addSignal}
             onMasterChange={() => { refreshSkills(); }}
           />
         </div>

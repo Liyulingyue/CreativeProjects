@@ -23,9 +23,11 @@ import {
 export function SkillsPanel({
   readOnly = false,
   onMasterChange,
+  addSignal = 0,
 }: {
   readOnly?: boolean;
   onMasterChange?: (master: boolean) => void;
+  addSignal?: number;
 }) {
   const [state, setState] = useState<SkillsState | null>(null);
   const [loading, setLoading] = useState(true);
@@ -52,6 +54,13 @@ export function SkillsPanel({
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (addSignal > 0 && !readOnly) {
+      setShowAdd(false);
+      setShowMenu(true);
+    }
+  }, [addSignal, readOnly]);
 
   const onToggleMaster = async (enabled: boolean) => {
     setMasterBusy(true);
@@ -301,12 +310,7 @@ export function SkillsPanel({
               className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs hover:bg-indigo-700 disabled:opacity-50">保存</button>
           </div>
         </div>
-      ) : (
-        <button onClick={() => setShowMenu(true)} disabled={readOnly}
-          className="w-full py-2 rounded-lg border border-dashed border-slate-300 text-slate-500 text-xs hover:bg-slate-50 disabled:opacity-50">
-          + 添加技能
-        </button>
-      )}
+      ) : null}
     </div>
   );
 }
