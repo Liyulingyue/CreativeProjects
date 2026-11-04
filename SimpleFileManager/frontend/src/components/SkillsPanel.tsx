@@ -554,7 +554,7 @@ export function SkillsPanel({
       <Sheet
         open={editing !== null}
         title={editing ? `编辑技能 · ${editing.label}` : '编辑技能'}
-        size="lg"
+        size="xl"
         onClose={() => { setEditing(null); setResource(null); setSelected('SKILL.md'); setShowUploadMenu(false); }}
       >
         {editing && (
