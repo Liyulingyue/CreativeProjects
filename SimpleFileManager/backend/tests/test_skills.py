@@ -577,3 +577,60 @@ def test_resource_api_upload_read_edit_delete():
         assert client.get("/api/skills/res_api_skill/files/SKILL.md").status_code == 400
     finally:
         reg.remove_custom("res_api_skill")
+
+
+# ---- manual skills grow a file tree on first upload ----
+
+def test_inline_skill_promotes_to_file_on_upload():
+    reg = get_skill_registry()
+    reg.add_custom("promo_skill", "Promo", "original method", "desc")
+    try:
+        res = client.post("/api/skills/promo_skill/files", files=[
+            ("files", ("refs/a.txt", b"hello", "text/plain")),
+        ])
+        assert res.status_code == 200, res.text
+        assert res.json()["files"] == ["refs/a.txt"]
+
+        skills = {s["id"]: s for s in client.get("/api/skills").json()["skills"]}
+        skill = skills["promo_skill"]
+        assert skill["source"] == "file"
+        assert skill["instruction"].strip() == "original method"
+        assert "SKILL.md" in skill["files"]
+        assert "refs/a.txt" in skill["files"]
+        assert "promo_skill" not in reg._custom
+    finally:
+        reg.remove_custom("promo_skill")
+
+
+def test_inline_skill_promotes_on_write_resource():
+    from app.skills import write_skill_resource, read_skill_resource
+    reg = get_skill_registry()
+    reg.add_custom("promo_write_skill", "Promo Write", "method", "")
+    try:
+        write_skill_resource("promo_write_skill", "notes/a.md", "# hi")
+        assert read_skill_resource("promo_write_skill", "notes/a.md")["content"] == "# hi"
+        assert "promo_write_skill" not in reg._custom
+    finally:
+        reg.remove_custom("promo_write_skill")
+
+
+def test_download_skill_file_nested_and_skill_md():
+    from app.skills import import_zip_skill
+    reg = get_skill_registry()
+    try:
+        import_zip_skill(_make_zip({
+            "SKILL.md": _SKILL_MD.encode(),
+            "refs/deep/a.txt": b"download me",
+        }), "dl_skill")
+        res = client.get("/api/skills/dl_skill/download/refs/deep/a.txt")
+        assert res.status_code == 200, res.text
+        assert res.content == b"download me"
+        assert "attachment" in res.headers["content-disposition"]
+
+        res = client.get("/api/skills/dl_skill/download/SKILL.md")
+        assert res.status_code == 200
+        assert b"Test Zip Skill" in res.content
+
+        assert client.get("/api/skills/dl_skill/download/../x").status_code in (400, 404)
+    finally:
+        reg.remove_custom("dl_skill")

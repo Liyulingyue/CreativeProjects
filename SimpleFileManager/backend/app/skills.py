@@ -617,11 +617,37 @@ def _require_dir_skill(skill_id: str) -> Path:
     return _skill_dir(skill_id)
 
 
-def _resource_target(skill_id: str, rel: str) -> tuple[Path, str]:
+def _ensure_dir_skill(skill_id: str) -> Path:
+    """Return the skill directory, promoting an inline skill to file mode.
+
+    Manually created skills start as inline JSON entries. As soon as a
+    resource is uploaded we write SKILL.md and move them to directory
+    storage, so every custom skill can grow a resource tree.
+    """
+    if skill_id in discover_dir_skills():
+        return _skill_dir(skill_id)
+    if skill_id in BUILTIN_SKILLS:
+        raise ValueError("内置技能不可修改")
+    entry = get_skill_registry()._custom.get(skill_id)
+    if not entry:
+        raise ValueError("技能不存在")
+    skill_dir = _skill_dir(skill_id)
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    _write_skill_md(
+        skill_dir,
+        entry.get("label") or skill_id,
+        entry.get("description", ""),
+        entry["instruction"],
+    )
+    get_skill_registry().promote_to_dir(skill_id)
+    return _skill_dir(skill_id)
+
+
+def _resource_target(skill_id: str, rel: str, create: bool = False) -> tuple[Path, str]:
     safe = _safe_rel(rel)
     if safe == SKILL_FILE_NAME:
         raise ValueError("请通过「编辑技能」修改 SKILL.md")
-    base = _require_dir_skill(skill_id).resolve()
+    base = (_ensure_dir_skill if create else _require_dir_skill)(skill_id).resolve()
     target = (base / safe).resolve()
     try:
         target.relative_to(base)
@@ -644,7 +670,7 @@ def read_skill_resource(skill_id: str, rel: str) -> dict:
 
 
 def write_skill_resource(skill_id: str, rel: str, content: str) -> dict:
-    target, safe = _resource_target(skill_id, rel)
+    target, safe = _resource_target(skill_id, rel, create=True)
     data = content.encode("utf-8")
     if len(data) > MAX_RESOURCE_BYTES:
         raise ValueError("文件过大（上限 4MB）")
@@ -654,7 +680,7 @@ def write_skill_resource(skill_id: str, rel: str, content: str) -> dict:
 
 
 def add_skill_resources(skill_id: str, files: list[tuple[str, bytes]]) -> dict:
-    base = _require_dir_skill(skill_id).resolve()
+    base = _ensure_dir_skill(skill_id).resolve()
     if not files:
         raise ValueError("没有收到文件")
     total = sum(len(data) for _, data in files)
@@ -682,6 +708,22 @@ def delete_skill_resource(skill_id: str, rel: str) -> dict:
         raise ValueError(f"文件不存在: {safe}")
     target.unlink()
     return {"deleted": safe}
+
+
+def read_skill_file_bytes(skill_id: str, rel: str) -> tuple[bytes, str]:
+    """Read any file in a skill directory (including SKILL.md) for download."""
+    safe = _safe_rel(rel)
+    base = _require_dir_skill(skill_id).resolve()
+    target = (base / safe).resolve()
+    try:
+        target.relative_to(base)
+    except ValueError:
+        raise ValueError("资源路径越界")
+    if not target.is_file():
+        raise ValueError(f"文件不存在: {safe}")
+    if target.stat().st_size > MAX_SKILL_BYTES:
+        raise ValueError("文件过大（上限 50MB）")
+    return target.read_bytes(), safe
 
 
 def _write_skill_tree(skill_id: str, entries: dict[str, bytes]) -> dict:
@@ -947,6 +989,12 @@ class SkillRegistry:
                 "builtin": False, "source": "inline",
             }
         raise ValueError("技能不存在")
+
+    def promote_to_dir(self, skill_id: str):
+        """Drop the inline entry after SKILL.md has been written to disk."""
+        if skill_id in self._custom:
+            self._custom.pop(skill_id, None)
+            self._save()
 
     def remove_custom(self, skill_id: str) -> bool:
         removed = False

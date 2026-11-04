@@ -1336,6 +1336,23 @@ export async function putSkillResource(
   return res.json();
 }
 
+export async function downloadSkillResource(skillId: string, path: string): Promise<void> {
+  const res = await authFetch(`${API_BASE}/skills/${skillId}/download/${encodeSkillPath(path)}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || '下载失败');
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = path.split('/').pop() || 'download';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export async function uploadSkillResources(
   skillId: string, files: File[],
 ): Promise<{ files: string[]; count: number }> {

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import Optional
 
+from urllib.parse import quote
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from ..skills import (
@@ -14,6 +17,7 @@ from ..skills import (
     get_skill_registry,
     import_files_skill,
     import_zip_skill,
+    read_skill_file_bytes,
     read_skill_resource,
     write_skill_resource,
 )
@@ -226,3 +230,16 @@ async def upload_skill_resources(
         return add_skill_resources(skill_id, entries)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@skills_router.get("/{skill_id}/download/{path:path}")
+def download_skill_file(skill_id: str, path: str, _admin=Depends(require_admin)) -> Response:
+    try:
+        data, safe = read_skill_file_bytes(skill_id, path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    import mimetypes
+    media = mimetypes.guess_type(safe)[0] or "application/octet-stream"
+    name = safe.rsplit("/", 1)[-1]
+    headers = {"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"}
+    return Response(content=data, media_type=media, headers=headers)

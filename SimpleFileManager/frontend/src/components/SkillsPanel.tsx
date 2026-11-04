@@ -1,13 +1,48 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { ChangeEvent } from 'react';
+import type { ChangeEvent, ReactNode } from 'react';
 import { Icon } from './ui/Icon';
 import { Sheet } from './ui/Dialog';
+import { MarkdownText } from './ui/MarkdownText';
 import type { Skill, SkillsState } from '../types';
 import {
   fetchSkills, setSkillsMaster, toggleSkill, addSkill, removeSkill, updateSkill,
   importSkillZip, importSkillFiles, getSkillResource, putSkillResource,
-  uploadSkillResources, deleteSkillResource,
+  uploadSkillResources, deleteSkillResource, downloadSkillResource,
 } from '../api';
+
+interface TreeNode {
+  name: string;
+  path: string;
+  children?: TreeNode[];
+}
+
+function buildFileTree(paths: string[]): TreeNode[] {
+  const root: TreeNode = { name: '', path: '', children: [] };
+  for (const full of paths) {
+    const parts = full.split('/');
+    let node = root;
+    parts.forEach((part, i) => {
+      node.children = node.children || [];
+      let child = node.children.find(c => c.name === part);
+      if (!child) {
+        child = { name: part, path: parts.slice(0, i + 1).join('/') };
+        if (i < parts.length - 1) child.children = [];
+        node.children.push(child);
+      }
+      node = child;
+    });
+  }
+  const sort = (nodes: TreeNode[]) => {
+    nodes.sort((a, b) => {
+      const af = !!a.children, bf = !!b.children;
+      if (af !== bf) return af ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    nodes.forEach(n => n.children && sort(n.children));
+  };
+  if (root.children) sort(root.children);
+  return root.children || [];
+}
 
 /**
  * Skills are the "how" — methodology the model follows.
@@ -40,7 +75,10 @@ export function SkillsPanel({
   const [showMenu, setShowMenu] = useState(false);
   const [editing, setEditing] = useState<Skill | null>(null);
   const [editForm, setEditForm] = useState({ label: '', description: '', instruction: '' });
-  const [editingFile, setEditingFile] = useState<{ path: string; content: string } | null>(null);
+  const [selected, setSelected] = useState('SKILL.md');
+  const [resource, setResource] = useState<{ path: string; content: string; binary?: boolean } | null>(null);
+  const [preview, setPreview] = useState(false);
+  const [editMessage, setEditMessage] = useState<string | null>(null);
   const [fileBusy, setFileBusy] = useState(false);
   const [newSkill, setNewSkill] = useState({ id: '', label: '', instruction: '', description: '' });
   const [masterBusy, setMasterBusy] = useState(false);
@@ -167,6 +205,10 @@ export function SkillsPanel({
       description: skill.description || '',
       instruction: skill.instruction || '',
     });
+    setSelected('SKILL.md');
+    setResource(null);
+    setPreview(false);
+    setEditMessage(null);
   };
 
   const refreshEditing = async (skillId: string) => {
@@ -176,15 +218,28 @@ export function SkillsPanel({
     if (found) setEditing(found);
   };
 
-  const openResource = async (path: string) => {
+  const selectFile = async (path: string) => {
     if (!editing) return;
+    setSelected(path);
+    setResource(null);
+    setEditMessage(null);
+    if (path === 'SKILL.md') {
+      setPreview(false);
+      return;
+    }
     setFileBusy(true);
-    setMessage(null);
     try {
       const r = await getSkillResource(editing.id, path);
-      setEditingFile({ path: r.path, content: r.content });
+      setResource({ path: r.path, content: r.content });
+      setPreview(/\.(md|markdown)$/i.test(path));
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : '读取资源失败');
+      const msg = e instanceof Error ? e.message : '读取资源失败';
+      if (msg.includes('二进制')) {
+        setResource({ path, content: '', binary: true });
+        setPreview(false);
+      } else {
+        setEditMessage(msg);
+      }
     } finally {
       setFileBusy(false);
     }
@@ -195,67 +250,95 @@ export function SkillsPanel({
     e.target.value = '';
     if (!editing || !files.length) return;
     setFileBusy(true);
-    setMessage(null);
+    setEditMessage(null);
     try {
       const r = await uploadSkillResources(editing.id, files);
       await refreshEditing(editing.id);
-      setMessage(`已上传 ${r.count} 个资源文件`);
+      setEditMessage(`已上传 ${r.count} 个文件`);
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : '上传资源失败');
+      setEditMessage(err instanceof Error ? err.message : '上传资源失败');
+    } finally {
+      setFileBusy(false);
+    }
+  };
+
+  const onCreateFile = async () => {
+    if (!editing) return;
+    const path = window.prompt('新建文件（可含子目录，如 notes/demo.md）')?.trim();
+    if (!path) return;
+    setFileBusy(true);
+    setEditMessage(null);
+    try {
+      await putSkillResource(editing.id, path, '');
+      await refreshEditing(editing.id);
+      await selectFile(path);
+    } catch (e) {
+      setEditMessage(e instanceof Error ? e.message : '新建失败');
     } finally {
       setFileBusy(false);
     }
   };
 
   const onSaveResource = async () => {
-    if (!editing || !editingFile) return;
+    if (!editing || !resource || resource.binary) return;
     setFileBusy(true);
-    setMessage(null);
+    setEditMessage(null);
     try {
-      await putSkillResource(editing.id, editingFile.path, editingFile.content);
-      setEditingFile(null);
-      setMessage('资源已保存');
+      await putSkillResource(editing.id, resource.path, resource.content);
+      setEditMessage('已保存');
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : '保存资源失败');
+      setEditMessage(e instanceof Error ? e.message : '保存资源失败');
     } finally {
       setFileBusy(false);
     }
   };
 
   const onDeleteResource = async (path: string) => {
-    if (!editing || !window.confirm(`删除资源文件「${path}」？`)) return;
+    if (!editing || !window.confirm(`删除文件「${path}」？`)) return;
     setFileBusy(true);
-    setMessage(null);
+    setEditMessage(null);
     try {
       await deleteSkillResource(editing.id, path);
-      if (editingFile?.path === path) setEditingFile(null);
+      if (selected === path) {
+        setSelected('SKILL.md');
+        setResource(null);
+      }
       await refreshEditing(editing.id);
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : '删除资源失败');
+      setEditMessage(e instanceof Error ? e.message : '删除资源失败');
     } finally {
       setFileBusy(false);
+    }
+  };
+
+  const onDownload = async (path: string) => {
+    if (!editing) return;
+    setEditMessage(null);
+    try {
+      await downloadSkillResource(editing.id, path);
+    } catch (e) {
+      setEditMessage(e instanceof Error ? e.message : '下载失败');
     }
   };
 
   const onSaveEdit = async () => {
     if (!editing) return;
     if (!editForm.label.trim() || !editForm.instruction.trim()) {
-      setMessage('名称和指令不能为空');
+      setEditMessage('名称和指令不能为空');
       return;
     }
     setBusy(true);
-    setMessage(null);
+    setEditMessage(null);
     try {
       await updateSkill(editing.id, {
         label: editForm.label.trim(),
         description: editForm.description.trim(),
         instruction: editForm.instruction,
       });
-      setEditing(null);
-      setMessage('已保存修改');
-      await load();
+      await refreshEditing(editing.id);
+      setEditMessage('已保存');
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : '保存失败');
+      setEditMessage(e instanceof Error ? e.message : '保存失败');
     } finally {
       setBusy(false);
     }
@@ -271,6 +354,38 @@ export function SkillsPanel({
       setMessage(e instanceof Error ? e.message : '删除失败');
     }
   };
+
+  const treeFiles = editing
+    ? Array.from(new Set([...(editing.files || []), 'SKILL.md']))
+    : [];
+  const fileTree = buildFileTree(treeFiles);
+
+  const renderTree = (nodes: TreeNode[], depth: number): ReactNode => nodes.map(node => {
+    if (node.children) {
+      return (
+        <div key={node.path}>
+          <div className="flex items-center gap-1 py-1 text-[11px] font-medium text-slate-500"
+            style={{ paddingLeft: depth * 10 + 4 }}>
+            <Icon name="folder" size={12} />
+            <span className="truncate">{node.name}</span>
+          </div>
+          {renderTree(node.children, depth + 1)}
+        </div>
+      );
+    }
+    const active = selected === node.path;
+    return (
+      <button key={node.path} onClick={() => selectFile(node.path)}
+        style={{ paddingLeft: depth * 10 + 4 }}
+        className={`w-full flex items-center gap-1.5 py-1 pr-1 rounded text-[11px] text-left ${
+          active ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-50'
+        }`}>
+        <Icon name={node.path === 'SKILL.md' ? 'sparkles' : 'file'} size={12}
+          className={active ? 'text-indigo-500' : 'text-slate-400'} />
+        <span className="truncate" title={node.path}>{node.name}</span>
+      </button>
+    );
+  });
 
   return (
     <div className="space-y-3">
@@ -435,95 +550,146 @@ export function SkillsPanel({
 
       <Sheet
         open={editing !== null}
-        title={editingFile ? '编辑资源文件' : '编辑技能'}
-        onClose={() => { setEditing(null); setEditingFile(null); }}
+        title={editing ? `编辑技能 · ${editing.label}` : '编辑技能'}
+        onClose={() => { setEditing(null); setResource(null); setSelected('SKILL.md'); }}
       >
-        {editingFile ? (
+        {editing && (
           <div className="space-y-3">
-            <div className="flex items-center gap-2">
-              <button onClick={() => setEditingFile(null)}
-                className="flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-700">
-                <Icon name="arrowLeft" size={12} /> 返回
-              </button>
-              <code className="text-[11px] text-slate-500 truncate">{editingFile.path}</code>
-            </div>
-            <textarea
-              value={editingFile.content}
-              onChange={e => setEditingFile(f => f ? { ...f, content: e.target.value } : f)}
-              rows={14}
-              className="w-full px-2 py-1.5 rounded-lg border border-slate-200 text-xs font-mono resize-y"
-            />
-            <div className="flex items-center justify-between">
-              <button onClick={() => onDeleteResource(editingFile.path)} disabled={fileBusy || readOnly}
-                className="text-[11px] text-red-500 hover:text-red-700 disabled:opacity-40">删除此文件</button>
-              <button onClick={onSaveResource} disabled={fileBusy || readOnly}
-                className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs hover:bg-indigo-700 disabled:opacity-50">
-                {fileBusy ? '保存中…' : '保存'}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            <div>
-              <label className="text-xs text-slate-500">名称</label>
-              <input value={editForm.label} onChange={e => setEditForm(p => ({ ...p, label: e.target.value }))}
-                className="mt-1 w-full px-2 py-1.5 rounded-lg border border-slate-200 text-sm" />
-            </div>
-            <div>
-              <label className="text-xs text-slate-500">描述</label>
-              <input value={editForm.description} onChange={e => setEditForm(p => ({ ...p, description: e.target.value }))}
-                className="mt-1 w-full px-2 py-1.5 rounded-lg border border-slate-200 text-sm" placeholder="可选" />
-            </div>
-            <div>
-              <label className="text-xs text-slate-500">
-                {editing?.source === 'file' ? 'SKILL.md 正文（方法论）' : '指令（方法论，注入给模型）'}
-              </label>
-              <textarea value={editForm.instruction} onChange={e => setEditForm(p => ({ ...p, instruction: e.target.value }))}
-                rows={6}
-                className="mt-1 w-full px-2 py-1.5 rounded-lg border border-slate-200 text-sm resize-y font-mono" />
-            </div>
-
-            {editing?.source === 'file' && (
-              <div className="pt-2 border-t border-slate-100 space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-medium text-slate-600">资源文件</span>
-                  <div className="flex gap-2">
-                    <label className={`text-[11px] px-2 py-1 rounded-md border border-slate-200 cursor-pointer hover:bg-slate-50 ${(fileBusy || readOnly) ? 'opacity-50 pointer-events-none' : ''}`}>
-                      上传文件
-                      <input type="file" multiple className="hidden" onChange={onUploadResources} disabled={fileBusy || readOnly} />
-                    </label>
-                    <label className={`text-[11px] px-2 py-1 rounded-md border border-slate-200 cursor-pointer hover:bg-slate-50 ${(fileBusy || readOnly) ? 'opacity-50 pointer-events-none' : ''}`}>
-                      上传文件夹
-                      <input type="file" multiple className="hidden" onChange={onUploadResources} disabled={fileBusy || readOnly}
-                        ref={el => { if (el) el.setAttribute('webkitdirectory', ''); }} />
-                    </label>
-                  </div>
-                </div>
-                {(editing.files || []).filter(f => f !== 'SKILL.md').length === 0 ? (
-                  <p className="text-[11px] text-slate-400">暂无资源文件。可上传文件或整个文件夹，子目录结构会保留。</p>
-                ) : (
-                  <div className="rounded-lg border border-slate-200 divide-y divide-slate-100 max-h-48 overflow-y-auto">
-                    {(editing.files || []).filter(f => f !== 'SKILL.md').map(f => (
-                      <div key={f} className="flex items-center gap-2 px-2 py-1.5">
-                        <Icon name="file" size={13} className="text-slate-400 flex-shrink-0" />
-                        <code className="flex-1 min-w-0 truncate text-[11px] text-slate-600" title={f}>{f}</code>
-                        <button onClick={() => openResource(f)} disabled={fileBusy || readOnly}
-                          className="text-[11px] text-slate-400 hover:text-slate-700 disabled:opacity-40">编辑</button>
-                        <button onClick={() => onDeleteResource(f)} disabled={fileBusy || readOnly}
-                          className="text-[11px] text-red-400 hover:text-red-600 disabled:opacity-40">删除</button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+            {editMessage && (
+              <div className="text-xs text-indigo-700 bg-indigo-50 rounded-lg px-3 py-2">{editMessage}</div>
             )}
 
-            <p className="text-[11px] text-slate-400">技能 ID 固定为 <code className="font-mono">{editing?.id}</code>，不可修改。</p>
-            <div className="flex justify-end gap-2">
-              <button onClick={() => { setEditing(null); setEditingFile(null); }}
-                className="px-3 py-1.5 rounded-lg text-slate-500 text-xs hover:bg-slate-100">取消</button>
-              <button onClick={onSaveEdit} disabled={busy || readOnly}
-                className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs hover:bg-indigo-700 disabled:opacity-50">保存</button>
+            <div className="grid gap-3 sm:grid-cols-[11rem_1fr]">
+              <div className="space-y-2">
+                <div className="flex flex-wrap gap-1.5">
+                  <label className={`text-[11px] px-2 py-1 rounded-md border border-slate-200 cursor-pointer hover:bg-slate-50 ${(fileBusy || readOnly) ? 'opacity-50 pointer-events-none' : ''}`}>
+                    上传
+                    <input type="file" multiple className="hidden" onChange={onUploadResources} disabled={fileBusy || readOnly} />
+                  </label>
+                  <label className={`text-[11px] px-2 py-1 rounded-md border border-slate-200 cursor-pointer hover:bg-slate-50 ${(fileBusy || readOnly) ? 'opacity-50 pointer-events-none' : ''}`}>
+                    文件夹
+                    <input type="file" multiple className="hidden" onChange={onUploadResources} disabled={fileBusy || readOnly}
+                      ref={el => { if (el) el.setAttribute('webkitdirectory', ''); }} />
+                  </label>
+                  <button onClick={onCreateFile} disabled={fileBusy || readOnly}
+                    className="text-[11px] px-2 py-1 rounded-md border border-slate-200 hover:bg-slate-50 disabled:opacity-50">新建</button>
+                </div>
+
+                <div className="rounded-lg border border-slate-200 p-1 max-h-56 sm:max-h-80 overflow-y-auto">
+                  {fileTree.length === 0 ? (
+                    <p className="text-[11px] text-slate-400 px-1 py-2">暂无文件</p>
+                  ) : renderTree(fileTree, 0)}
+                </div>
+                <p className="text-[10px] text-slate-400 leading-relaxed">
+                  子目录结构会保留。手动填写的技能在首次上传文件后会自动转为文件技能。
+                </p>
+              </div>
+
+              <div className="min-w-0 space-y-2">
+                <div className="flex items-center gap-2">
+                  <code className="flex-1 min-w-0 truncate text-[11px] text-slate-600" title={selected}>{selected}</code>
+                  {(!(selected === 'SKILL.md') || editing.source === 'file') && (
+                    <button onClick={() => onDownload(selected)}
+                      className="text-[11px] text-slate-400 hover:text-slate-700">下载</button>
+                  )}
+                </div>
+
+                {selected === 'SKILL.md' ? (
+                  <>
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => setPreview(false)}
+                        className={`text-[11px] px-2 py-0.5 rounded ${preview ? 'text-slate-400' : 'bg-slate-100 text-slate-700'}`}>编辑</button>
+                      <button onClick={() => setPreview(true)}
+                        className={`text-[11px] px-2 py-0.5 rounded ${preview ? 'bg-slate-100 text-slate-700' : 'text-slate-400'}`}>预览</button>
+                    </div>
+
+                    {preview ? (
+                      <div className="rounded-lg border border-slate-200 p-3 max-h-80 overflow-y-auto">
+                        <pre className="text-[10px] text-slate-400 bg-slate-50 rounded px-2 py-1 mb-2 whitespace-pre-wrap">{`---\nname: ${editForm.label}\ndescription: ${editForm.description}\n---`}</pre>
+                        <MarkdownText source="model" className="text-sm text-slate-700">
+                          {editForm.instruction || '_（暂无正文）_'}
+                        </MarkdownText>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <div>
+                          <label className="text-[11px] text-slate-500">名称</label>
+                          <input value={editForm.label} onChange={e => setEditForm(p => ({ ...p, label: e.target.value }))}
+                            className="mt-0.5 w-full px-2 py-1.5 rounded-lg border border-slate-200 text-sm" />
+                        </div>
+                        <div>
+                          <label className="text-[11px] text-slate-500">描述</label>
+                          <input value={editForm.description} onChange={e => setEditForm(p => ({ ...p, description: e.target.value }))}
+                            className="mt-0.5 w-full px-2 py-1.5 rounded-lg border border-slate-200 text-sm" placeholder="可选" />
+                        </div>
+                        <div>
+                          <label className="text-[11px] text-slate-500">正文（方法论，注入给模型）</label>
+                          <textarea value={editForm.instruction} onChange={e => setEditForm(p => ({ ...p, instruction: e.target.value }))}
+                            rows={9}
+                            className="mt-0.5 w-full px-2 py-1.5 rounded-lg border border-slate-200 text-xs resize-y font-mono" />
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex justify-end">
+                      <button onClick={onSaveEdit} disabled={busy || readOnly}
+                        className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs hover:bg-indigo-700 disabled:opacity-50">
+                        {busy ? '保存中…' : '保存 SKILL.md'}
+                      </button>
+                    </div>
+                  </>
+                ) : resource ? (
+                  resource.binary ? (
+                    <div className="rounded-lg border border-slate-200 p-6 text-center space-y-2">
+                      <Icon name="file" size={22} className="text-slate-300 mx-auto" />
+                      <p className="text-xs text-slate-500">二进制文件，无法在线预览或编辑。</p>
+                      <button onClick={() => onDownload(resource.path)}
+                        className="px-3 py-1.5 rounded-lg border border-slate-200 text-xs hover:bg-slate-50">下载文件</button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-1">
+                        <button onClick={() => setPreview(false)}
+                          className={`text-[11px] px-2 py-0.5 rounded ${preview ? 'text-slate-400' : 'bg-slate-100 text-slate-700'}`}>编辑</button>
+                        <button onClick={() => setPreview(true)}
+                          className={`text-[11px] px-2 py-0.5 rounded ${preview ? 'bg-slate-100 text-slate-700' : 'text-slate-400'}`}>预览</button>
+                      </div>
+
+                      {preview ? (
+                        <div className="rounded-lg border border-slate-200 p-3 max-h-80 overflow-y-auto">
+                          {/\.(md|markdown)$/i.test(resource.path) ? (
+                            <MarkdownText source="model" className="text-sm text-slate-700">{resource.content}</MarkdownText>
+                          ) : (
+                            <pre className="text-[11px] whitespace-pre-wrap break-words text-slate-700">{resource.content}</pre>
+                          )}
+                        </div>
+                      ) : (
+                        <textarea value={resource.content}
+                          onChange={e => setResource(r => r ? { ...r, content: e.target.value } : r)}
+                          rows={14}
+                          className="w-full px-2 py-1.5 rounded-lg border border-slate-200 text-xs font-mono resize-y" />
+                      )}
+
+                      <div className="flex items-center justify-between">
+                        <button onClick={() => onDeleteResource(resource.path)} disabled={fileBusy || readOnly}
+                          className="text-[11px] text-red-500 hover:text-red-700 disabled:opacity-40">删除此文件</button>
+                        <button onClick={onSaveResource} disabled={fileBusy || readOnly || preview}
+                          className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs hover:bg-indigo-700 disabled:opacity-50">
+                          {fileBusy ? '保存中…' : '保存'}
+                        </button>
+                      </div>
+                    </>
+                  )
+                ) : (
+                  <div className="text-xs text-slate-400 px-1 py-4">{fileBusy ? '读取中…' : '从左侧选择文件'}</div>
+                )}
+              </div>
+            </div>
+
+            <p className="text-[11px] text-slate-400">技能 ID 固定为 <code className="font-mono">{editing.id}</code>，不可修改。</p>
+            <div className="flex justify-end">
+              <button onClick={() => { setEditing(null); setResource(null); setSelected('SKILL.md'); }}
+                className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-700 text-xs hover:bg-slate-200">完成</button>
             </div>
           </div>
         )}
