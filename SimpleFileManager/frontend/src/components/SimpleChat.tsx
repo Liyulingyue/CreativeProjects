@@ -8,8 +8,6 @@ import { ChatLayout } from './ui/ChatLayout';
 import { Icon } from './ui/Icon';
 import { useToast } from './ui/Toast';
 
-const { toast } = useToast();
-
 const EXAMPLE_PROMPTS = [
   '这个目录里有哪些文件？',
   '找出所有名字带 screenshot 的图片',
@@ -61,6 +59,8 @@ function ChatWelcome({ onPick }: { onPick: (prompt: string) => void }) {
 }
 
 export function SimpleChat() {
+  const { toast } = useToast();
+
   const { sessions, currentSessionId, createSession, startNewSession, selectSession, deleteSession, addMessage } = useChatSessions('agent');
   const providersApi = useProviders();
   // Per-turn provider override. The chat UI shows a dropdown next to
