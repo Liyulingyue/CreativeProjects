@@ -1300,6 +1300,18 @@ export async function toggleTool(toolName: string, enabled: boolean): Promise<{ 
   return res.json();
 }
 
+export async function setToolExecutable(
+  toolName: string, executable: boolean,
+): Promise<{ name: string; executable: boolean }> {
+  const res = await authFetch(`${API_BASE}/skills/tools/${toolName}/executable`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ executable }),
+  });
+  if (!res.ok) throw new Error('更新工具执行权限失败');
+  return res.json();
+}
+
 export async function toggleAllTools(enabled: boolean): Promise<{ all_enabled: boolean }> {
   const res = await authFetch(`${API_BASE}/skills/tools/all`, {
     method: 'PATCH',

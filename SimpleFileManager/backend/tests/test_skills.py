@@ -254,3 +254,68 @@ def test_path_traversal_is_blocked():
         _abs_path("../../etc/passwd")
     with pytest.raises(ValueError):
         _abs_path("/etc/passwd")
+
+
+def test_executable_defaults_are_conservative():
+    """Destructive tools default to plan-only; read/info tools run directly."""
+    reg = get_skill_registry()
+    reg.set_master(True)
+    reg.set_all_tools(True)
+    states = {t["name"]: t for t in reg.all_tool_states()}
+    assert states["write_file"]["direct_executable"] is True
+    assert states["create_directory"]["direct_executable"] is True
+    assert states["file_info"]["direct_executable"] is True
+    assert states["move_file"]["direct_executable"] is False
+    assert states["delete_file"]["direct_executable"] is False
+    reg.set_master(False)
+    reg.set_all_tools(True)
+
+
+def test_executable_toggle_and_visibility_interaction():
+    reg = get_skill_registry()
+    reg.set_master(True)
+    reg.set_tool_enabled("delete_file", True)
+    assert "delete_file" in reg.plan_only_tool_names()
+    reg.set_tool_executable("delete_file", True)
+    assert "delete_file" not in reg.plan_only_tool_names()
+    assert reg.tool_is_directly_executable("delete_file") is True
+    # Hiding the tool also makes it non-executable.
+    reg.set_tool_enabled("delete_file", False)
+    assert reg.tool_is_directly_executable("delete_file") is False
+    # Reset
+    reg.set_tool_executable("delete_file", False)
+    reg.set_master(False)
+
+
+def test_agent_guard_rejects_hidden_tool():
+    from app.routers.agent import execute_tool as agent_execute_tool
+    reg = get_skill_registry()
+    reg.set_master(False)
+    result = agent_execute_tool("write_file", {"path": "x.txt", "content": "x"})
+    assert result["success"] is False
+    assert "未启用" in result["error"]
+
+
+def test_agent_guard_rejects_plan_only_tool():
+    from app.routers.agent import execute_tool as agent_execute_tool
+    reg = get_skill_registry()
+    reg.set_master(True)
+    reg.set_tool_enabled("delete_file", True)
+    reg.set_tool_executable("delete_file", False)
+    result = agent_execute_tool("delete_file", {"path": "whatever.txt"})
+    assert result["success"] is False
+    assert "仅计划执行" in result["error"]
+    reg.set_master(False)
+
+
+def test_agent_runs_directly_executable_tool():
+    from app.routers.agent import execute_tool as agent_execute_tool
+    from tests.conftest import create_test_file
+    reg = get_skill_registry()
+    reg.set_master(True)
+    reg.set_tool_enabled("write_file", True)
+    reg.set_tool_executable("write_file", True)
+    create_test_file("guard_dir/keep.txt", "old")
+    result = agent_execute_tool("write_file", {"path": "guard_dir/keep.txt", "content": "new"})
+    assert result.get("success") is True, result
+    reg.set_master(False)

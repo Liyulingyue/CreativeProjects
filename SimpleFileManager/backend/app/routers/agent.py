@@ -899,8 +899,19 @@ def execute_tool(name: str, arguments: dict) -> dict:
             return tool_semantic_search(**arguments)
         if name == "submit_plan":
             return tool_submit_plan(**arguments)
-        # Skills tools (only reachable when skills are enabled — the tool
-        # list sent to the model is gated by the registry).
+        # Skill tools. The schema list is gated by the registry, but a model
+        # can still emit a call for a tool it was not given. Enforce the two
+        # axes here rather than trusting the model to only call what it saw:
+        #   1. visible  - the tool must be enabled for this turn
+        #   2. executable - some tools are plan-only and must not run directly
+        reg = get_skill_registry()
+        if not reg.tool_is_visible(name):
+            return {"success": False, "error": f"工具未启用: {name}"}
+        if not reg.tool_is_directly_executable(name):
+            return {"success": False, "error": (
+                f"工具 {name} 被设置为「仅计划执行」，不能直接调用。"
+                f"请改用 submit_plan 提交计划，等待用户审批后由系统执行。"
+            )}
         return execute_skill_tool(name, arguments)
     except TypeError as e:
         return {"success": False, "error": f"Invalid arguments for {name}: {e}"}
@@ -1039,6 +1050,15 @@ class Session:
         skill_instr = reg.get_active_instructions()
         if skill_instr:
             system_text = system_text + "\n\n" + skill_instr
+        plan_only = reg.plan_only_tool_names() if reg.master_enabled else []
+        if plan_only:
+            system_text = system_text + (
+                "\n\n【仅计划执行的工具】"
+                + "、".join(plan_only)
+                + " 不能直接调用，直接调用会被服务端拒绝。涉及这些工具的操作必须写成 "
+                "submit_plan 的 actions：删除用 action_type=delete，移动/重命名用 "
+                "move/rename。写文件、建目录等仍可直接调用。"
+            )
         msgs = [{"role": "system", "content": system_text}]
         if self.memory:
             msgs.append({"role": "system", "content": f"【历史工作记忆（早期对话摘要）】\n{self.memory}"})

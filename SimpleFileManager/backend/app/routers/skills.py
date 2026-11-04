@@ -28,6 +28,10 @@ class MasterToggleRequest(BaseModel):
     enabled: bool
 
 
+class ExecutableToggleRequest(BaseModel):
+    executable: bool
+
+
 @skills_router.get("")
 def list_skills() -> dict:
     reg = get_skill_registry()
@@ -85,6 +89,18 @@ def toggle_tool(tool_name: str, req: ToggleRequest, _admin=Depends(require_admin
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return {"name": tool_name, "enabled": req.enabled}
+
+
+@skills_router.patch("/tools/{tool_name}/executable")
+def toggle_tool_executable(
+    tool_name: str, req: ExecutableToggleRequest, _admin=Depends(require_admin)
+) -> dict:
+    reg = get_skill_registry()
+    try:
+        reg.set_tool_executable(tool_name, req.executable)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"name": tool_name, "executable": req.executable}
 
 
 @skills_router.patch("/tools/all")

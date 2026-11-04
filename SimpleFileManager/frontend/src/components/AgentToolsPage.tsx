@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  getAgentTools, fetchCurrentUser, fetchSkills, toggleTool, toggleAllTools,
+  getAgentTools, fetchCurrentUser, fetchSkills, toggleTool, toggleAllTools, setToolExecutable,
 } from '../api';
 import type { AgentToolDefinition, AgentToolDisplay } from '../api';
 import type { SkillsState, ToolState } from '../types';
@@ -19,6 +19,7 @@ interface UnifiedTool {
   badge: string;
   source: 'agent' | 'skill';
   enabled: boolean;
+  directExecutable: boolean;
 }
 
 const TONE_STYLE: Record<Tone, string> = {
@@ -39,16 +40,37 @@ function DangerBadge({ tone, label }: { tone: Tone; label: string }) {
   );
 }
 
+function Switch({
+  checked, onChange, disabled, title,
+}: {
+  checked: boolean; onChange?: (v: boolean) => void; disabled?: boolean; title?: string;
+}) {
+  return (
+    <button
+      onClick={() => onChange?.(!checked)}
+      disabled={disabled}
+      title={title}
+      className={`relative inline-flex h-5 w-9 flex-shrink-0 rounded-full transition-colors ${
+        checked ? 'bg-indigo-600' : 'bg-slate-300'
+      } disabled:opacity-40`}
+    >
+      <span style={{ transform: `translateX(${checked ? '18px' : '2px'})` }}
+        className="inline-block h-4 w-4 rounded-full bg-white shadow mt-0.5 transition-transform" />
+    </button>
+  );
+}
+
 function ToolCard({
-  tool, onToggle, toggling, readOnly,
+  tool, onToggleVisible, onToggleExecutable, toggling, readOnly,
 }: {
   tool: UnifiedTool;
-  onToggle?: (enabled: boolean) => void;
+  onToggleVisible?: (enabled: boolean) => void;
+  onToggleExecutable?: (executable: boolean) => void;
   toggling?: boolean;
   readOnly?: boolean;
 }) {
   const paramNames = Object.keys(tool.params);
-  const toggleable = tool.source === 'skill';
+  const skill = tool.source === 'skill';
 
   return (
     <section
@@ -68,24 +90,36 @@ function ToolCard({
       </div>
 
       <div className="border-t border-slate-100 px-4 py-3 bg-slate-50/60 flex-1">
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">参数</div>
-          {toggleable ? (
-            <button
-              onClick={() => onToggle?.(!tool.enabled)}
-              disabled={toggling || readOnly}
-              className={`relative inline-flex h-5 w-9 flex-shrink-0 rounded-full transition-colors ${
-                tool.enabled ? 'bg-indigo-600' : 'bg-slate-300'
-              } disabled:opacity-50`}
-              title={readOnly ? '只有管理员可以修改' : undefined}
-            >
-              <span style={{ transform: `translateX(${tool.enabled ? '18px' : '2px'})` }}
-                className="inline-block h-4 w-4 rounded-full bg-white shadow mt-0.5 transition-transform" />
-            </button>
-          ) : (
-            <span className="text-[10px] text-slate-400">始终可用</span>
-          )}
-        </div>
+        {skill ? (
+          <div className="mb-3 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] text-slate-500">模型可见</span>
+              <Switch
+                checked={tool.enabled}
+                onChange={onToggleVisible}
+                disabled={toggling || readOnly}
+                title={readOnly ? '只有管理员可以修改' : undefined}
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] text-slate-500">直接执行</span>
+              <Switch
+                checked={tool.directExecutable}
+                onChange={onToggleExecutable}
+                disabled={toggling || readOnly || !tool.enabled}
+                title={!tool.enabled ? '先让模型可见' : '关闭后只能通过整理计划执行'}
+              />
+            </div>
+            {tool.enabled && !tool.directExecutable && (
+              <p className="text-[10px] text-amber-600">仅允许通过整理计划执行，直接调用会被拒绝</p>
+            )}
+          </div>
+        ) : (
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">参数</div>
+            <span className="text-[10px] text-slate-400">始终可见 · 可执行</span>
+          </div>
+        )}
         {paramNames.length > 0 ? (
           <div className="space-y-1.5">
             {paramNames.map(name => {
@@ -131,7 +165,7 @@ export function AgentToolsPage() {
   const [error, setError] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(true);
   const [skillsState, setSkillsState] = useState<SkillsState | null>(null);
-  const [busyTool, setBusyTool] = useState<string | null>(null);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
 
   useEffect(() => {
     fetchCurrentUser().then(u => setIsAdmin(u.is_admin)).catch(() => setIsAdmin(false));
@@ -146,26 +180,35 @@ export function AgentToolsPage() {
 
   const byName = new Map(definitions.map(d => [d.function.name, d]));
 
-  const onToggle = async (name: string, enabled: boolean) => {
-    setBusyTool(name);
+  const refreshSkills = () => fetchSkills().then(setSkillsState).catch(() => {});
+
+  const onToggleVisible = async (name: string, enabled: boolean) => {
+    setBusyKey(`v:${name}`);
     try {
       await toggleTool(name, enabled);
-      setSkillsState(prev => prev ? {
-        ...prev, tools: prev.tools.map(t => t.name === name ? { ...t, enabled } : t),
-      } : prev);
+      // Re-read rather than guessing: executability is derived from
+      // visibility on the server, so the returned state is authoritative.
+      await refreshSkills();
     } finally {
-      setBusyTool(null);
+      setBusyKey(null);
+    }
+  };
+  const onToggleExecutable = async (name: string, executable: boolean) => {
+    setBusyKey(`x:${name}`);
+    try {
+      await setToolExecutable(name, executable);
+      await refreshSkills();
+    } finally {
+      setBusyKey(null);
     }
   };
   const onToggleAll = async (enabled: boolean) => {
-    setBusyTool('__all__');
+    setBusyKey('all');
     try {
       await toggleAllTools(enabled);
-      setSkillsState(prev => prev ? {
-        ...prev, tools: prev.tools.map(t => ({ ...t, enabled })),
-      } : prev);
+      await refreshSkills();
     } finally {
-      setBusyTool(null);
+      setBusyKey(null);
     }
   };
 
@@ -181,6 +224,7 @@ export function AgentToolsPage() {
     badge: t.risk_label,
     source: 'agent',
     enabled: true,
+    directExecutable: true,
   }));
   if (skillsState?.master) {
     for (const s of skillsState.tools) {
@@ -194,6 +238,7 @@ export function AgentToolsPage() {
         badge: DANGER_LABEL[s.danger],
         source: 'skill',
         enabled: s.enabled,
+        directExecutable: s.direct_executable,
       });
     }
   }
@@ -225,7 +270,7 @@ export function AgentToolsPage() {
             {skillsOn ? (
               <>
                 技能已开启：Agent 可以<strong>直接操作文件</strong>（写入、移动、删除），
-                具体能做什么取决于下方启用的技能和工具。
+                但仅限标为「直接执行」的工具；标为「仅计划」的必须经你审批计划后执行。
               </>
             ) : (
               <>
@@ -248,7 +293,7 @@ export function AgentToolsPage() {
           </p>
           <SkillsPanel
             readOnly={!isAdmin}
-            onMasterChange={master => setSkillsState(prev => prev ? { ...prev, master } : prev)}
+            onMasterChange={() => { refreshSkills(); }}
           />
         </div>
 
@@ -260,10 +305,10 @@ export function AgentToolsPage() {
             <div className="flex-1 h-px bg-slate-200" />
             {hasSkillTools && (
               <div className="flex gap-2">
-                <button onClick={() => onToggleAll(true)} disabled={!isAdmin || busyTool !== null}
-                  className="text-[11px] text-indigo-500 hover:text-indigo-700 disabled:opacity-40">全部启用</button>
-                <button onClick={() => onToggleAll(false)} disabled={!isAdmin || busyTool !== null}
-                  className="text-[11px] text-slate-400 hover:text-slate-600 disabled:opacity-40">全部关闭</button>
+                <button onClick={() => onToggleAll(true)} disabled={!isAdmin || busyKey !== null}
+                  className="text-[11px] text-indigo-500 hover:text-indigo-700 disabled:opacity-40">全部可见</button>
+                <button onClick={() => onToggleAll(false)} disabled={!isAdmin || busyKey !== null}
+                  className="text-[11px] text-slate-400 hover:text-slate-600 disabled:opacity-40">全部隐藏</button>
               </div>
             )}
           </div>
@@ -278,8 +323,9 @@ export function AgentToolsPage() {
                   key={t.name}
                   tool={t}
                   readOnly={!isAdmin}
-                  toggling={busyTool === t.name || busyTool === '__all__'}
-                  onToggle={enabled => onToggle(t.name, enabled)}
+                  toggling={busyKey === `v:${t.name}` || busyKey === `x:${t.name}` || busyKey === 'all'}
+                  onToggleVisible={enabled => onToggleVisible(t.name, enabled)}
+                  onToggleExecutable={executable => onToggleExecutable(t.name, executable)}
                 />
               ))}
             </div>

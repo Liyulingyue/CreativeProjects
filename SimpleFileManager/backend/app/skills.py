@@ -150,6 +150,10 @@ ALL_TOOL_NAMES = [t["function"]["name"] for t in ALL_TOOLS]
 # flipping them on the agent path would do nothing.
 AGENT_BUILTIN_TOOL_NAMES = {"list_directory", "read_file", "semantic_search", "search_files"}
 
+# Read-only/info tools run directly; move/delete default to plan-only so a
+# mistaken direct call cannot mutate files without the user approving a plan.
+DEFAULT_DIRECT_EXECUTABLE = {"safe": True, "low": True, "medium": False, "high": False}
+
 # ---------------------------------------------------------------------------
 # Built-in skills
 # ---------------------------------------------------------------------------
@@ -408,6 +412,10 @@ class SkillRegistry:
         self._master: bool = False
         self._overrides: dict[str, bool] = {}
         self._tool_overrides: dict[str, bool] = {}
+        # Per-tool "may be called directly" flag. A tool can be visible
+        # to the model (advertised so it can plan with it) yet not
+        # directly executable — it may only run through an approved plan.
+        self._exec_overrides: dict[str, bool] = {}
         self._lock = threading.Lock()
         self._load()
 
@@ -424,6 +432,7 @@ class SkillRegistry:
                 self._master = data.get("master", False)
                 self._overrides = data.get("enabled", {})
                 self._tool_overrides = data.get("tools", {})
+                self._exec_overrides = data.get("exec", {})
             except Exception:
                 pass
 
@@ -432,7 +441,8 @@ class SkillRegistry:
             self._path().write_text(
                 json.dumps(
                     {"custom": self._custom, "master": self._master,
-                     "enabled": self._overrides, "tools": self._tool_overrides},
+                     "enabled": self._overrides, "tools": self._tool_overrides,
+                     "exec": self._exec_overrides},
                     ensure_ascii=False,
                     indent=2,
                 ),
@@ -491,6 +501,27 @@ class SkillRegistry:
             self._save()
             return True
         return False
+    def _is_visible(self, name: str, meta: dict | None = None) -> bool:
+        """Whether the tool schema is advertised to the model (master on)."""
+        if not self._master:
+            return False
+        base_names = {t["function"]["name"] for t in BASE_TOOLS}
+        return self._tool_overrides.get(name, name in base_names)
+
+    def _is_directly_executable(self, name: str, meta: dict | None = None) -> bool:
+        """Whether the model may invoke the tool itself.
+
+        Agent-builtin tools are always direct (the agent ships them).
+        Skill tools must be visible and not pinned to plan-only.
+        """
+        if name in AGENT_BUILTIN_TOOL_NAMES:
+            return True
+        if not self._is_visible(name, meta):
+            return False
+        meta = meta or TOOL_META.get(name, {})
+        danger = meta.get("danger", "safe")
+        return self._exec_overrides.get(name, DEFAULT_DIRECT_EXECUTABLE.get(danger, True))
+
     def all_tool_states(self) -> list[dict]:
         result = []
         base_names = {t["function"]["name"] for t in BASE_TOOLS}
@@ -506,6 +537,7 @@ class SkillRegistry:
                 "enabled": enabled,
                 "builtin_base": name in base_names,
                 "agent_builtin": name in AGENT_BUILTIN_TOOL_NAMES,
+                "direct_executable": self._is_directly_executable(name, meta),
                 "parameters": t["function"].get("parameters", {}),
             })
         return result
@@ -516,10 +548,33 @@ class SkillRegistry:
         self._tool_overrides[tool_name] = bool(enabled)
         self._save()
 
+    def set_tool_executable(self, tool_name: str, executable: bool):
+        if tool_name not in ALL_TOOL_NAMES:
+            raise ValueError(f"未知工具: {tool_name}")
+        self._exec_overrides[tool_name] = bool(executable)
+        self._save()
+
     def set_all_tools(self, enabled: bool):
         for name in ALL_TOOL_NAMES:
             self._tool_overrides[name] = enabled
         self._save()
+
+    def tool_is_visible(self, name: str) -> bool:
+        return self._is_visible(name)
+
+    def tool_is_directly_executable(self, name: str) -> bool:
+        return self._is_directly_executable(name)
+
+    def plan_only_tool_names(self) -> list[str]:
+        """Visible skill tools the model may reference but not call directly."""
+        out = []
+        for t in ALL_TOOLS:
+            name = t["function"]["name"]
+            if name in AGENT_BUILTIN_TOOL_NAMES:
+                continue
+            if self._is_visible(name) and not self._is_directly_executable(name):
+                out.append(name)
+        return out
 
 
     def get_active_instructions(self) -> str:

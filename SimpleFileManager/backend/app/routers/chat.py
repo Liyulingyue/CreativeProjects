@@ -83,7 +83,15 @@ def _run_tool_loop(messages: list[dict], tools: list[dict], provider,
                 args = json.loads(tc["function"]["arguments"])
             except (json.JSONDecodeError, TypeError):
                 args = {}
-            tool_result = execute_tool(name, args)
+            if not reg.tool_is_visible(name):
+                tool_result = {"success": False, "error": f"工具未启用: {name}"}
+            elif not reg.tool_is_directly_executable(name):
+                tool_result = {
+                    "success": False,
+                    "error": f"工具 {name} 只能通过整理计划执行，不能直接调用。",
+                }
+            else:
+                tool_result = execute_tool(name, args)
             tools_used.append(ToolUse(name=name, arguments=args, result=tool_result))
             messages.append({
                 "role": "tool",
