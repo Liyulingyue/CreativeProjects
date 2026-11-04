@@ -9,9 +9,13 @@ from pydantic import BaseModel
 
 from ..skills import (
     MAX_SKILL_BYTES,
+    add_skill_resources,
+    delete_skill_resource,
     get_skill_registry,
     import_files_skill,
     import_zip_skill,
+    read_skill_resource,
+    write_skill_resource,
 )
 from .auth import require_admin
 
@@ -31,6 +35,10 @@ class UpdateSkillRequest(BaseModel):
     label: Optional[str] = None
     description: Optional[str] = None
     instruction: Optional[str] = None
+
+
+class ResourceContentRequest(BaseModel):
+    content: str
 
 
 class ToggleRequest(BaseModel):
@@ -166,5 +174,55 @@ async def import_files_endpoint(
         entries.append((upload.filename or "", data))
     try:
         return import_files_skill(entries, skill_id or None)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@skills_router.get("/{skill_id}/files/{path:path}")
+def get_skill_resource(skill_id: str, path: str, _admin=Depends(require_admin)) -> dict:
+    try:
+        return read_skill_resource(skill_id, path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@skills_router.put("/{skill_id}/files/{path:path}")
+def put_skill_resource(
+    skill_id: str, path: str, req: ResourceContentRequest, _admin=Depends(require_admin)
+) -> dict:
+    try:
+        return write_skill_resource(skill_id, path, req.content)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@skills_router.delete("/{skill_id}/files/{path:path}")
+def delete_skill_resource_endpoint(
+    skill_id: str, path: str, _admin=Depends(require_admin)
+) -> dict:
+    try:
+        return delete_skill_resource(skill_id, path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@skills_router.post("/{skill_id}/files")
+async def upload_skill_resources(
+    skill_id: str,
+    files: list[UploadFile] = File(...),
+    _admin=Depends(require_admin),
+) -> dict:
+    entries: list[tuple[str, bytes]] = []
+    total = 0
+    for upload in files:
+        data = await upload.read()
+        total += len(data)
+        if total > MAX_SKILL_BYTES:
+            raise HTTPException(status_code=413, detail="资源总大小超限（上限 50MB）")
+        name = upload.filename or ""
+        if name:
+            entries.append((name, data))
+    try:
+        return add_skill_resources(skill_id, entries)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

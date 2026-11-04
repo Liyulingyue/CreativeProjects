@@ -608,6 +608,82 @@ TOOL_HANDLERS.update({
 })
 
 
+MAX_RESOURCE_BYTES = 4 * 1024 * 1024
+
+
+def _require_dir_skill(skill_id: str) -> Path:
+    if skill_id not in discover_dir_skills():
+        raise ValueError("技能不存在或不是文件技能")
+    return _skill_dir(skill_id)
+
+
+def _resource_target(skill_id: str, rel: str) -> tuple[Path, str]:
+    safe = _safe_rel(rel)
+    if safe == SKILL_FILE_NAME:
+        raise ValueError("请通过「编辑技能」修改 SKILL.md")
+    base = _require_dir_skill(skill_id).resolve()
+    target = (base / safe).resolve()
+    try:
+        target.relative_to(base)
+    except ValueError:
+        raise ValueError("资源路径越界")
+    return target, safe
+
+
+def read_skill_resource(skill_id: str, rel: str) -> dict:
+    target, safe = _resource_target(skill_id, rel)
+    if not target.is_file():
+        raise ValueError(f"文件不存在: {safe}")
+    if target.stat().st_size > MAX_RESOURCE_BYTES:
+        raise ValueError("文件过大（上限 4MB）")
+    data = target.read_bytes()
+    if b"\x00" in data[:2048]:
+        raise ValueError("二进制文件不支持在线编辑")
+    return {"path": safe, "content": data.decode("utf-8", "replace"),
+            "size": len(data)}
+
+
+def write_skill_resource(skill_id: str, rel: str, content: str) -> dict:
+    target, safe = _resource_target(skill_id, rel)
+    data = content.encode("utf-8")
+    if len(data) > MAX_RESOURCE_BYTES:
+        raise ValueError("文件过大（上限 4MB）")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    return {"path": safe, "size": len(data)}
+
+
+def add_skill_resources(skill_id: str, files: list[tuple[str, bytes]]) -> dict:
+    base = _require_dir_skill(skill_id).resolve()
+    if not files:
+        raise ValueError("没有收到文件")
+    total = sum(len(data) for _, data in files)
+    if total > MAX_SKILL_BYTES:
+        raise ValueError("资源总大小超限（上限 50MB）")
+    added: list[str] = []
+    for filename, data in files:
+        safe = _safe_rel(filename)
+        if safe == SKILL_FILE_NAME:
+            continue
+        target = (base / safe).resolve()
+        try:
+            target.relative_to(base)
+        except ValueError:
+            raise ValueError("资源路径越界")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        added.append(safe)
+    return {"files": added, "count": len(added)}
+
+
+def delete_skill_resource(skill_id: str, rel: str) -> dict:
+    target, safe = _resource_target(skill_id, rel)
+    if not target.is_file():
+        raise ValueError(f"文件不存在: {safe}")
+    target.unlink()
+    return {"deleted": safe}
+
+
 def _write_skill_tree(skill_id: str, entries: dict[str, bytes]) -> dict:
     if SKILL_FILE_NAME not in entries:
         raise ValueError("技能包必须包含 SKILL.md")

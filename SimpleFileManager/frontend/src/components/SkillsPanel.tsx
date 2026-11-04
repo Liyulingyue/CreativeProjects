@@ -5,7 +5,8 @@ import { Sheet } from './ui/Dialog';
 import type { Skill, SkillsState } from '../types';
 import {
   fetchSkills, setSkillsMaster, toggleSkill, addSkill, removeSkill, updateSkill,
-  importSkillZip, importSkillFiles,
+  importSkillZip, importSkillFiles, getSkillResource, putSkillResource,
+  uploadSkillResources, deleteSkillResource,
 } from '../api';
 
 /**
@@ -39,6 +40,8 @@ export function SkillsPanel({
   const [showMenu, setShowMenu] = useState(false);
   const [editing, setEditing] = useState<Skill | null>(null);
   const [editForm, setEditForm] = useState({ label: '', description: '', instruction: '' });
+  const [editingFile, setEditingFile] = useState<{ path: string; content: string } | null>(null);
+  const [fileBusy, setFileBusy] = useState(false);
   const [newSkill, setNewSkill] = useState({ id: '', label: '', instruction: '', description: '' });
   const [masterBusy, setMasterBusy] = useState(false);
 
@@ -164,6 +167,74 @@ export function SkillsPanel({
       description: skill.description || '',
       instruction: skill.instruction || '',
     });
+  };
+
+  const refreshEditing = async (skillId: string) => {
+    const fresh = await fetchSkills();
+    setState(fresh);
+    const found = fresh.skills.find(x => x.id === skillId);
+    if (found) setEditing(found);
+  };
+
+  const openResource = async (path: string) => {
+    if (!editing) return;
+    setFileBusy(true);
+    setMessage(null);
+    try {
+      const r = await getSkillResource(editing.id, path);
+      setEditingFile({ path: r.path, content: r.content });
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : '读取资源失败');
+    } finally {
+      setFileBusy(false);
+    }
+  };
+
+  const onUploadResources = async (e: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (!editing || !files.length) return;
+    setFileBusy(true);
+    setMessage(null);
+    try {
+      const r = await uploadSkillResources(editing.id, files);
+      await refreshEditing(editing.id);
+      setMessage(`已上传 ${r.count} 个资源文件`);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : '上传资源失败');
+    } finally {
+      setFileBusy(false);
+    }
+  };
+
+  const onSaveResource = async () => {
+    if (!editing || !editingFile) return;
+    setFileBusy(true);
+    setMessage(null);
+    try {
+      await putSkillResource(editing.id, editingFile.path, editingFile.content);
+      setEditingFile(null);
+      setMessage('资源已保存');
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : '保存资源失败');
+    } finally {
+      setFileBusy(false);
+    }
+  };
+
+  const onDeleteResource = async (path: string) => {
+    if (!editing || !window.confirm(`删除资源文件「${path}」？`)) return;
+    setFileBusy(true);
+    setMessage(null);
+    try {
+      await deleteSkillResource(editing.id, path);
+      if (editingFile?.path === path) setEditingFile(null);
+      await refreshEditing(editing.id);
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : '删除资源失败');
+    } finally {
+      setFileBusy(false);
+    }
   };
 
   const onSaveEdit = async () => {
@@ -364,41 +435,98 @@ export function SkillsPanel({
 
       <Sheet
         open={editing !== null}
-        title="编辑技能"
-        onClose={() => setEditing(null)}
+        title={editingFile ? '编辑资源文件' : '编辑技能'}
+        onClose={() => { setEditing(null); setEditingFile(null); }}
       >
-        <div className="space-y-3">
-          <div>
-            <label className="text-xs text-slate-500">名称</label>
-            <input value={editForm.label} onChange={e => setEditForm(p => ({ ...p, label: e.target.value }))}
-              className="mt-1 w-full px-2 py-1.5 rounded-lg border border-slate-200 text-sm" />
+        {editingFile ? (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <button onClick={() => setEditingFile(null)}
+                className="flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-700">
+                <Icon name="arrowLeft" size={12} /> 返回
+              </button>
+              <code className="text-[11px] text-slate-500 truncate">{editingFile.path}</code>
+            </div>
+            <textarea
+              value={editingFile.content}
+              onChange={e => setEditingFile(f => f ? { ...f, content: e.target.value } : f)}
+              rows={14}
+              className="w-full px-2 py-1.5 rounded-lg border border-slate-200 text-xs font-mono resize-y"
+            />
+            <div className="flex items-center justify-between">
+              <button onClick={() => onDeleteResource(editingFile.path)} disabled={fileBusy || readOnly}
+                className="text-[11px] text-red-500 hover:text-red-700 disabled:opacity-40">删除此文件</button>
+              <button onClick={onSaveResource} disabled={fileBusy || readOnly}
+                className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs hover:bg-indigo-700 disabled:opacity-50">
+                {fileBusy ? '保存中…' : '保存'}
+              </button>
+            </div>
           </div>
-          <div>
-            <label className="text-xs text-slate-500">描述</label>
-            <input value={editForm.description} onChange={e => setEditForm(p => ({ ...p, description: e.target.value }))}
-              className="mt-1 w-full px-2 py-1.5 rounded-lg border border-slate-200 text-sm" placeholder="可选" />
-          </div>
-          <div>
-            <label className="text-xs text-slate-500">
-              {editing?.source === 'file' ? 'SKILL.md 正文（方法论）' : '指令（方法论，注入给模型）'}
-            </label>
-            <textarea value={editForm.instruction} onChange={e => setEditForm(p => ({ ...p, instruction: e.target.value }))}
-              rows={8}
-              className="mt-1 w-full px-2 py-1.5 rounded-lg border border-slate-200 text-sm resize-y font-mono" />
+        ) : (
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs text-slate-500">名称</label>
+              <input value={editForm.label} onChange={e => setEditForm(p => ({ ...p, label: e.target.value }))}
+                className="mt-1 w-full px-2 py-1.5 rounded-lg border border-slate-200 text-sm" />
+            </div>
+            <div>
+              <label className="text-xs text-slate-500">描述</label>
+              <input value={editForm.description} onChange={e => setEditForm(p => ({ ...p, description: e.target.value }))}
+                className="mt-1 w-full px-2 py-1.5 rounded-lg border border-slate-200 text-sm" placeholder="可选" />
+            </div>
+            <div>
+              <label className="text-xs text-slate-500">
+                {editing?.source === 'file' ? 'SKILL.md 正文（方法论）' : '指令（方法论，注入给模型）'}
+              </label>
+              <textarea value={editForm.instruction} onChange={e => setEditForm(p => ({ ...p, instruction: e.target.value }))}
+                rows={6}
+                className="mt-1 w-full px-2 py-1.5 rounded-lg border border-slate-200 text-sm resize-y font-mono" />
+            </div>
+
             {editing?.source === 'file' && (
-              <p className="text-[11px] text-slate-400 mt-1">
-                只修改 SKILL.md 的正文与 frontmatter；已上传的资源文件保留不变。
-              </p>
+              <div className="pt-2 border-t border-slate-100 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-slate-600">资源文件</span>
+                  <div className="flex gap-2">
+                    <label className={`text-[11px] px-2 py-1 rounded-md border border-slate-200 cursor-pointer hover:bg-slate-50 ${(fileBusy || readOnly) ? 'opacity-50 pointer-events-none' : ''}`}>
+                      上传文件
+                      <input type="file" multiple className="hidden" onChange={onUploadResources} disabled={fileBusy || readOnly} />
+                    </label>
+                    <label className={`text-[11px] px-2 py-1 rounded-md border border-slate-200 cursor-pointer hover:bg-slate-50 ${(fileBusy || readOnly) ? 'opacity-50 pointer-events-none' : ''}`}>
+                      上传文件夹
+                      <input type="file" multiple className="hidden" onChange={onUploadResources} disabled={fileBusy || readOnly}
+                        ref={el => { if (el) el.setAttribute('webkitdirectory', ''); }} />
+                    </label>
+                  </div>
+                </div>
+                {(editing.files || []).filter(f => f !== 'SKILL.md').length === 0 ? (
+                  <p className="text-[11px] text-slate-400">暂无资源文件。可上传文件或整个文件夹，子目录结构会保留。</p>
+                ) : (
+                  <div className="rounded-lg border border-slate-200 divide-y divide-slate-100 max-h-48 overflow-y-auto">
+                    {(editing.files || []).filter(f => f !== 'SKILL.md').map(f => (
+                      <div key={f} className="flex items-center gap-2 px-2 py-1.5">
+                        <Icon name="file" size={13} className="text-slate-400 flex-shrink-0" />
+                        <code className="flex-1 min-w-0 truncate text-[11px] text-slate-600" title={f}>{f}</code>
+                        <button onClick={() => openResource(f)} disabled={fileBusy || readOnly}
+                          className="text-[11px] text-slate-400 hover:text-slate-700 disabled:opacity-40">编辑</button>
+                        <button onClick={() => onDeleteResource(f)} disabled={fileBusy || readOnly}
+                          className="text-[11px] text-red-400 hover:text-red-600 disabled:opacity-40">删除</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             )}
+
+            <p className="text-[11px] text-slate-400">技能 ID 固定为 <code className="font-mono">{editing?.id}</code>，不可修改。</p>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => { setEditing(null); setEditingFile(null); }}
+                className="px-3 py-1.5 rounded-lg text-slate-500 text-xs hover:bg-slate-100">取消</button>
+              <button onClick={onSaveEdit} disabled={busy || readOnly}
+                className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs hover:bg-indigo-700 disabled:opacity-50">保存</button>
+            </div>
           </div>
-          <p className="text-[11px] text-slate-400">技能 ID 固定为 <code className="font-mono">{editing?.id}</code>，不可修改。</p>
-          <div className="flex justify-end gap-2">
-            <button onClick={() => setEditing(null)}
-              className="px-3 py-1.5 rounded-lg text-slate-500 text-xs hover:bg-slate-100">取消</button>
-            <button onClick={onSaveEdit} disabled={busy || readOnly}
-              className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs hover:bg-indigo-700 disabled:opacity-50">保存</button>
-          </div>
-        </div>
+        )}
       </Sheet>
     </div>
   );

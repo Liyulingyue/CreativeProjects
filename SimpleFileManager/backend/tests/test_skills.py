@@ -497,3 +497,83 @@ def test_update_skill_via_api():
         assert body["instruction"] == "new body"
     finally:
         reg.remove_custom("upd_api_skill")
+
+
+# ---- skill resource files (nested folders) ----
+
+def test_resource_files_support_nested_folders():
+    from app.skills import (
+        import_zip_skill, discover_dir_skills, read_skill_resource,
+        write_skill_resource, add_skill_resources, delete_skill_resource,
+    )
+    reg = get_skill_registry()
+    try:
+        import_zip_skill(_make_zip({
+            "SKILL.md": _SKILL_MD.encode(),
+            "refs/deep/a.txt": b"hello",
+        }), "res_folder_skill")
+        info = discover_dir_skills()["res_folder_skill"]
+        assert "refs/deep/a.txt" in info["files"]
+
+        assert read_skill_resource("res_folder_skill", "refs/deep/a.txt")["content"] == "hello"
+        write_skill_resource("res_folder_skill", "refs/deep/a.txt", "updated")
+        assert read_skill_resource("res_folder_skill", "refs/deep/a.txt")["content"] == "updated"
+
+        add_skill_resources("res_folder_skill", [
+            ("refs/new/b.txt", b"B"),
+            ("notes/top.md", b"# t"),
+        ])
+        info = discover_dir_skills()["res_folder_skill"]
+        assert "refs/new/b.txt" in info["files"]
+        assert "notes/top.md" in info["files"]
+
+        delete_skill_resource("res_folder_skill", "refs/deep/a.txt")
+        assert "refs/deep/a.txt" not in discover_dir_skills()["res_folder_skill"]["files"]
+        assert "notes/top.md" in discover_dir_skills()["res_folder_skill"]["files"]
+    finally:
+        reg.remove_custom("res_folder_skill")
+
+
+def test_resource_endpoints_reject_skill_md_and_traversal():
+    from app.skills import import_zip_skill, read_skill_resource, write_skill_resource
+    reg = get_skill_registry()
+    try:
+        import_zip_skill(_make_zip({"SKILL.md": _SKILL_MD.encode()}), "res_guard_skill")
+        with pytest.raises(ValueError):
+            read_skill_resource("res_guard_skill", "SKILL.md")
+        with pytest.raises(ValueError):
+            write_skill_resource("res_guard_skill", "SKILL.md", "x")
+        with pytest.raises(ValueError):
+            read_skill_resource("res_guard_skill", "../outside.txt")
+        with pytest.raises(ValueError):
+            write_skill_resource("res_guard_skill", "a/../../outside.txt", "x")
+    finally:
+        reg.remove_custom("res_guard_skill")
+
+
+def test_resource_api_upload_read_edit_delete():
+    from app.skills import import_zip_skill
+    reg = get_skill_registry()
+    try:
+        import_zip_skill(_make_zip({"SKILL.md": _SKILL_MD.encode()}), "res_api_skill")
+        res = client.post("/api/skills/res_api_skill/files", files=[
+            ("files", ("refs/a.txt", b"hi", "text/plain")),
+            ("files", ("sub/b.txt", b"yo", "text/plain")),
+        ])
+        assert res.status_code == 200, res.text
+        assert set(res.json()["files"]) == {"refs/a.txt", "sub/b.txt"}
+
+        res = client.get("/api/skills/res_api_skill/files/refs/a.txt")
+        assert res.status_code == 200, res.text
+        assert res.json()["content"] == "hi"
+
+        res = client.put("/api/skills/res_api_skill/files/refs/a.txt",
+                         json={"content": "edited"})
+        assert res.status_code == 200, res.text
+        assert client.get("/api/skills/res_api_skill/files/refs/a.txt").json()["content"] == "edited"
+
+        assert client.delete("/api/skills/res_api_skill/files/sub/b.txt").status_code == 200
+        assert client.get("/api/skills/res_api_skill/files/sub/b.txt").status_code == 400
+        assert client.get("/api/skills/res_api_skill/files/SKILL.md").status_code == 400
+    finally:
+        reg.remove_custom("res_api_skill")

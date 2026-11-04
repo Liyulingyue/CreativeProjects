@@ -1306,6 +1306,62 @@ export async function updateSkill(
   return res.json();
 }
 
+function encodeSkillPath(path: string): string {
+  return path.split('/').map(encodeURIComponent).join('/');
+}
+
+export async function getSkillResource(
+  skillId: string, path: string,
+): Promise<{ path: string; content: string; size: number }> {
+  const res = await authFetch(`${API_BASE}/skills/${skillId}/files/${encodeSkillPath(path)}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || '读取资源失败');
+  }
+  return res.json();
+}
+
+export async function putSkillResource(
+  skillId: string, path: string, content: string,
+): Promise<{ path: string; size: number }> {
+  const res = await authFetch(`${API_BASE}/skills/${skillId}/files/${encodeSkillPath(path)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || '保存资源失败');
+  }
+  return res.json();
+}
+
+export async function uploadSkillResources(
+  skillId: string, files: File[],
+): Promise<{ files: string[]; count: number }> {
+  const form = new FormData();
+  files.forEach(f => form.append('files', f, (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name));
+  const res = await authFetch(`${API_BASE}/skills/${skillId}/files`, { method: 'POST', body: form });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || '上传资源失败');
+  }
+  return res.json();
+}
+
+export async function deleteSkillResource(
+  skillId: string, path: string,
+): Promise<{ deleted: string }> {
+  const res = await authFetch(`${API_BASE}/skills/${skillId}/files/${encodeSkillPath(path)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || '删除资源失败');
+  }
+  return res.json();
+}
+
 export async function importSkillZip(file: File, skillId = ''): Promise<Skill> {
   const form = new FormData();
   form.append('file', file);
