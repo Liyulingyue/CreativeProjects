@@ -18,7 +18,7 @@ import {
  *
  * Custom skills can be uploaded by the administrator.
  */
-export function SkillsPanel() {
+export function SkillsPanel({ readOnly = false }: { readOnly?: boolean }) {
   const [state, setState] = useState<SkillsState | null>(null);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
@@ -142,6 +142,11 @@ export function SkillsPanel() {
       {message && (
         <div className="text-sm text-indigo-700 bg-indigo-50 rounded-lg px-3 py-2">{message}</div>
       )}
+      {readOnly && (
+        <div className="text-xs text-amber-700 bg-amber-50 rounded-lg px-3 py-2">
+          只读模式 — 只有管理员可以修改技能设置。
+        </div>
+      )}
 
       {/* Master switch */}
       <div className="rounded-lg border border-slate-200 bg-white p-3">
@@ -156,7 +161,7 @@ export function SkillsPanel() {
           </div>
           <button
             onClick={() => onToggleMaster(!state?.master)}
-            disabled={masterBusy}
+            disabled={masterBusy || readOnly}
             className={`relative inline-flex h-6 w-11 flex-shrink-0 rounded-full transition-colors ${
               state?.master ? 'bg-indigo-600' : 'bg-slate-300'
             } disabled:opacity-50`}
@@ -194,7 +199,7 @@ export function SkillsPanel() {
                   )}
                   <button
                     onClick={() => onToggleSkill(skill, !skill.enabled)}
-                    disabled={busy}
+                    disabled={busy || readOnly}
                     className={`relative inline-flex h-5 w-9 flex-shrink-0 rounded-full transition-colors ${
                       skill.enabled ? 'bg-indigo-600' : 'bg-slate-300'
                     } disabled:opacity-50`}
@@ -279,7 +284,7 @@ export function SkillsPanel() {
           <div className="flex justify-end gap-2">
             <button onClick={() => setShowAdd(false)}
               className="px-3 py-1.5 rounded-lg text-slate-500 text-xs hover:bg-slate-100">取消</button>
-            <button onClick={onAdd} disabled={busy}
+            <button onClick={onAdd} disabled={busy || readOnly}
               className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs hover:bg-indigo-700 disabled:opacity-50">保存</button>
           </div>
         </div>

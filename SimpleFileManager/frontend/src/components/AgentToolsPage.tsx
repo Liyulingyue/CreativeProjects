@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { getAgentTools } from '../api';
+import { getAgentTools, fetchCurrentUser } from '../api';
 import type { AgentToolDefinition, AgentToolDisplay } from '../api';
 import { Icon } from './ui/Icon';
+import { SkillsPanel } from './SkillsPanel';
 
 function RiskBadge({ risk, label }: { risk?: string; label: string }) {
   const approval = risk === 'approval';
@@ -74,8 +75,10 @@ export function AgentToolsPage() {
   const [tools, setTools] = useState<AgentToolDisplay[] | null>(null);
   const [definitions, setDefinitions] = useState<AgentToolDefinition[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [isAdmin, setIsAdmin] = useState(true);
 
   useEffect(() => {
+    fetchCurrentUser().then(u => setIsAdmin(u.is_admin)).catch(() => setIsAdmin(false));
     getAgentTools()
       .then(d => {
         setTools(d.display || []);
@@ -148,6 +151,21 @@ export function AgentToolsPage() {
         {tools?.length === 0 && (
           <div className="text-sm text-slate-400">Agent 当前没有可用的工具。</div>
         )}
+
+        {/* Skills: methodology + tool gating for the agent. */}
+        <div className="space-y-3 pt-2 border-t border-slate-200">
+          <div className="flex items-center gap-2">
+            <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+              技能与工具权限
+            </h2>
+            <div className="flex-1 h-px bg-slate-200" />
+          </div>
+          <p className="text-xs text-slate-400">
+            技能决定 Agent「怎么做」——开启后模型获得更多工具和方法论指导。
+            关闭时只保留搜索、读取等基础工具。
+          </p>
+          <SkillsPanel readOnly={!isAdmin} />
+        </div>
       </div>
     </div>
   );

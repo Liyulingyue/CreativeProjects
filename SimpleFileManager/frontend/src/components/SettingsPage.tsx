@@ -9,7 +9,6 @@ import { useEmbeddingProviders } from '../hooks/useEmbeddingProviders';
 import { fetchCurrentUser } from '../api';
 import { UsersPanel } from './UsersPanel';
 import { UploadLogPanel } from './UploadLogPanel';
-import { SkillsPanel } from './SkillsPanel';
 
 interface ProbeResult { ok: boolean; detail?: string; latency_ms?: number; }
 
@@ -783,20 +782,6 @@ export function SettingsPage() {
 
           <Card icon="upload" tone="text-sky-500" title="上传记录">
             <UploadLogPanel />
-          </Card>
-
-          {/* ---- Agent 技能 ---- */}
-          <div className="flex items-center gap-3 pt-2">
-            <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Agent 技能</h2>
-            <div className="flex-1 h-px bg-slate-200" />
-          </div>
-
-          <Card icon="sparkles" tone="text-violet-500" title="技能与工具">
-            <p className="text-xs text-slate-400 mb-3">
-              技能决定模型"怎么做"——开启后模型获得移动、删除等高级工具，并按启用的技能注入方法论。
-              关闭时只保留搜索、读取等基础工具。技能不规定固定步骤，模型自行选择具体工具调用。
-            </p>
-            <SkillsPanel />
           </Card>
 
           {/* ---- 索引与自动化 ---- */}
