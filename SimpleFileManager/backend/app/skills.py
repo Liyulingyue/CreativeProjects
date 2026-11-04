@@ -517,6 +517,27 @@ def _read_dir_skill(skill_dir: Path) -> Optional[dict]:
     }
 
 
+def _write_skill_md(skill_dir: Path, label: str, description: str, body: str) -> None:
+    """Rewrite SKILL.md, preserving any extra frontmatter keys."""
+    md = skill_dir / SKILL_FILE_NAME
+    meta: dict = {}
+    if md.is_file():
+        try:
+            existing, _ = _split_frontmatter(md.read_text(encoding="utf-8", errors="replace"))
+            if isinstance(existing, dict):
+                meta.update(existing)
+        except OSError:
+            pass
+    meta["name"] = label
+    meta["description"] = description
+    try:
+        import yaml
+        header = yaml.safe_dump(meta, allow_unicode=True, sort_keys=False).strip()
+    except Exception:
+        header = f"name: {label}\ndescription: {description}"
+    md.write_text(f"---\n{header}\n---\n\n{body}", encoding="utf-8")
+
+
 def discover_dir_skills() -> dict[str, dict]:
     root = skills_root()
     found: dict[str, dict] = {}
@@ -804,6 +825,52 @@ class SkillRegistry:
         self._save()
         return {"id": skill_id, "label": label, "description": description,
                 "instruction": instruction, "enabled": False, "builtin": False}
+
+    def update_custom(self, skill_id: str, label: Optional[str] = None,
+                      description: Optional[str] = None,
+                      instruction: Optional[str] = None) -> dict:
+        if skill_id in BUILTIN_SKILLS:
+            raise ValueError("内置技能不可修改")
+        dir_skills = discover_dir_skills()
+        if skill_id in dir_skills:
+            info = dir_skills[skill_id]
+            new_label = (label if label is not None else info["label"]).strip()
+            new_desc = description if description is not None else info["description"]
+            new_body = instruction if instruction is not None else info["instruction"]
+            if not new_label:
+                raise ValueError("名称不能为空")
+            if instruction is not None and not instruction.strip():
+                raise ValueError("指令不能为空")
+            _write_skill_md(_skill_dir(skill_id), new_label, new_desc, new_body)
+            updated = discover_dir_skills()[skill_id]
+            return {
+                "id": skill_id, "label": updated["label"],
+                "description": updated["description"],
+                "instruction": updated["instruction"], "files": updated["files"],
+                "enabled": self._overrides.get(skill_id, False),
+                "builtin": False, "source": "file",
+            }
+        if skill_id in self._custom:
+            entry = self._custom[skill_id]
+            if label is not None:
+                if not label.strip():
+                    raise ValueError("名称不能为空")
+                entry["label"] = label.strip()
+            if description is not None:
+                entry["description"] = description
+            if instruction is not None:
+                if not instruction.strip():
+                    raise ValueError("指令不能为空")
+                entry["instruction"] = instruction
+            self._save()
+            return {
+                "id": skill_id, "label": entry["label"],
+                "description": entry.get("description", ""),
+                "instruction": entry["instruction"],
+                "enabled": self._overrides.get(skill_id, False),
+                "builtin": False, "source": "inline",
+            }
+        raise ValueError("技能不存在")
 
     def remove_custom(self, skill_id: str) -> bool:
         removed = False

@@ -1290,6 +1290,22 @@ export async function removeSkill(skillId: string): Promise<void> {
   if (!res.ok) throw new Error('删除技能失败');
 }
 
+export async function updateSkill(
+  skillId: string,
+  payload: { label?: string; description?: string; instruction?: string },
+): Promise<Skill> {
+  const res = await authFetch(`${API_BASE}/skills/${skillId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || '更新技能失败');
+  }
+  return res.json();
+}
+
 export async function importSkillZip(file: File, skillId = ''): Promise<Skill> {
   const form = new FormData();
   form.append('file', file);

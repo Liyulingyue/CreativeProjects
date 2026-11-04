@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
@@ -23,6 +25,12 @@ class AddSkillRequest(BaseModel):
     label: str
     instruction: str
     description: str = ""
+
+
+class UpdateSkillRequest(BaseModel):
+    label: Optional[str] = None
+    description: Optional[str] = None
+    instruction: Optional[str] = None
 
 
 class ToggleRequest(BaseModel):
@@ -79,6 +87,18 @@ def remove_skill(skill_id: str, _admin=Depends(require_admin)) -> dict:
     if not reg.remove_custom(skill_id):
         raise HTTPException(status_code=404, detail="技能不存在或是内置技能")
     return {"success": True, "id": skill_id}
+
+
+@skills_router.patch("/{skill_id}")
+def update_skill(skill_id: str, req: UpdateSkillRequest, _admin=Depends(require_admin)) -> dict:
+    reg = get_skill_registry()
+    try:
+        return reg.update_custom(
+            skill_id, label=req.label, description=req.description,
+            instruction=req.instruction,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @skills_router.get("/tools")

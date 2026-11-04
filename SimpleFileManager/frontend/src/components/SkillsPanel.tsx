@@ -4,7 +4,7 @@ import { Icon } from './ui/Icon';
 import { Sheet } from './ui/Dialog';
 import type { Skill, SkillsState } from '../types';
 import {
-  fetchSkills, setSkillsMaster, toggleSkill, addSkill, removeSkill,
+  fetchSkills, setSkillsMaster, toggleSkill, addSkill, removeSkill, updateSkill,
   importSkillZip, importSkillFiles,
 } from '../api';
 
@@ -37,6 +37,8 @@ export function SkillsPanel({
 
   const [showAdd, setShowAdd] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
+  const [editing, setEditing] = useState<Skill | null>(null);
+  const [editForm, setEditForm] = useState({ label: '', description: '', instruction: '' });
   const [newSkill, setNewSkill] = useState({ id: '', label: '', instruction: '', description: '' });
   const [masterBusy, setMasterBusy] = useState(false);
 
@@ -155,6 +157,39 @@ export function SkillsPanel({
     }
   };
 
+  const openEdit = (skill: Skill) => {
+    setEditing(skill);
+    setEditForm({
+      label: skill.label,
+      description: skill.description || '',
+      instruction: skill.instruction || '',
+    });
+  };
+
+  const onSaveEdit = async () => {
+    if (!editing) return;
+    if (!editForm.label.trim() || !editForm.instruction.trim()) {
+      setMessage('名称和指令不能为空');
+      return;
+    }
+    setBusy(true);
+    setMessage(null);
+    try {
+      await updateSkill(editing.id, {
+        label: editForm.label.trim(),
+        description: editForm.description.trim(),
+        instruction: editForm.instruction,
+      });
+      setEditing(null);
+      setMessage('已保存修改');
+      await load();
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : '保存失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const onRemove = async (skill: Skill) => {
     if (!window.confirm(`删除技能「${skill.label}」？`)) return;
     setMessage(null);
@@ -231,8 +266,12 @@ export function SkillsPanel({
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
                   {!skill.builtin && (
-                    <button onClick={() => onRemove(skill)}
-                      className="text-red-400 hover:text-red-600 text-[11px]">删除</button>
+                    <>
+                      <button onClick={() => openEdit(skill)}
+                        className="text-slate-400 hover:text-slate-700 text-[11px]">编辑</button>
+                      <button onClick={() => onRemove(skill)}
+                        className="text-red-400 hover:text-red-600 text-[11px]">删除</button>
+                    </>
                   )}
                   <button
                     onClick={() => onToggleSkill(skill, !skill.enabled)}
@@ -321,6 +360,45 @@ export function SkillsPanel({
             </p>
           </div>
         )}
+      </Sheet>
+
+      <Sheet
+        open={editing !== null}
+        title="编辑技能"
+        onClose={() => setEditing(null)}
+      >
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs text-slate-500">名称</label>
+            <input value={editForm.label} onChange={e => setEditForm(p => ({ ...p, label: e.target.value }))}
+              className="mt-1 w-full px-2 py-1.5 rounded-lg border border-slate-200 text-sm" />
+          </div>
+          <div>
+            <label className="text-xs text-slate-500">描述</label>
+            <input value={editForm.description} onChange={e => setEditForm(p => ({ ...p, description: e.target.value }))}
+              className="mt-1 w-full px-2 py-1.5 rounded-lg border border-slate-200 text-sm" placeholder="可选" />
+          </div>
+          <div>
+            <label className="text-xs text-slate-500">
+              {editing?.source === 'file' ? 'SKILL.md 正文（方法论）' : '指令（方法论，注入给模型）'}
+            </label>
+            <textarea value={editForm.instruction} onChange={e => setEditForm(p => ({ ...p, instruction: e.target.value }))}
+              rows={8}
+              className="mt-1 w-full px-2 py-1.5 rounded-lg border border-slate-200 text-sm resize-y font-mono" />
+            {editing?.source === 'file' && (
+              <p className="text-[11px] text-slate-400 mt-1">
+                只修改 SKILL.md 的正文与 frontmatter；已上传的资源文件保留不变。
+              </p>
+            )}
+          </div>
+          <p className="text-[11px] text-slate-400">技能 ID 固定为 <code className="font-mono">{editing?.id}</code>，不可修改。</p>
+          <div className="flex justify-end gap-2">
+            <button onClick={() => setEditing(null)}
+              className="px-3 py-1.5 rounded-lg text-slate-500 text-xs hover:bg-slate-100">取消</button>
+            <button onClick={onSaveEdit} disabled={busy || readOnly}
+              className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs hover:bg-indigo-700 disabled:opacity-50">保存</button>
+          </div>
+        </div>
       </Sheet>
     </div>
   );

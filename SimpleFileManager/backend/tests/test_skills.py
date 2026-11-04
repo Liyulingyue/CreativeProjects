@@ -438,3 +438,62 @@ def test_import_zip_via_api():
         assert res.json()["id"] == "test_api_zip_skill"
     finally:
         reg.remove_custom("test_api_zip_skill")
+
+
+# ---- editing custom skills ----
+
+def test_update_inline_skill():
+    reg = get_skill_registry()
+    reg.add_custom("upd_inline", "Old", "old instruction", "old desc")
+    try:
+        out = reg.update_custom("upd_inline", label="New", description="d2",
+                                instruction="new instruction")
+        assert out["label"] == "New"
+        assert out["instruction"] == "new instruction"
+        skill = next(s for s in reg.all_skills() if s["id"] == "upd_inline")
+        assert skill["label"] == "New"
+        assert skill["description"] == "d2"
+    finally:
+        reg.remove_custom("upd_inline")
+
+
+def test_update_file_skill_keeps_resources():
+    from app.skills import import_zip_skill, discover_dir_skills
+    reg = get_skill_registry()
+    try:
+        import_zip_skill(
+            _make_zip({"SKILL.md": _SKILL_MD.encode(), "refs/a.txt": b"a"}),
+            "upd_file_skill",
+        )
+        reg.update_custom("upd_file_skill", label="New Name",
+                          description="new desc", instruction="NEW BODY")
+        info = discover_dir_skills()["upd_file_skill"]
+        assert info["label"] == "New Name"
+        assert info["description"] == "new desc"
+        assert "NEW BODY" in info["instruction"]
+        assert "refs/a.txt" in info["files"]
+    finally:
+        reg.remove_custom("upd_file_skill")
+
+
+def test_update_builtin_is_rejected():
+    import pytest
+    with pytest.raises(ValueError):
+        get_skill_registry().update_custom("organize", label="x")
+
+
+def test_update_skill_via_api():
+    reg = get_skill_registry()
+    client.post("/api/skills", json={
+        "id": "upd_api_skill", "label": "Old", "instruction": "old",
+    })
+    try:
+        res = client.patch("/api/skills/upd_api_skill", json={
+            "label": "New", "instruction": "new body",
+        })
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["label"] == "New"
+        assert body["instruction"] == "new body"
+    finally:
+        reg.remove_custom("upd_api_skill")
