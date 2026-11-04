@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import { Icon } from './ui/Icon';
+import { Sheet } from './ui/Dialog';
 import type { Skill, SkillsState } from '../types';
 import {
   fetchSkills, setSkillsMaster, toggleSkill, addSkill, removeSkill,
@@ -250,67 +251,77 @@ export function SkillsPanel({
         </div>
       )}
 
-      {/* One entry point; the actual method is chosen after clicking. */}
-      {showMenu ? (
-        <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2">
-          <div className="text-xs font-medium text-slate-600">添加技能</div>
-          <div className="grid grid-cols-2 gap-2">
-            <label className={`py-2 rounded-lg border border-dashed border-slate-300 text-slate-600 text-xs text-center cursor-pointer hover:bg-slate-50 ${(busy || readOnly) ? 'opacity-50 pointer-events-none' : ''}`}>
-              上传 ZIP 技能包
+      <Sheet
+        open={showMenu || showAdd}
+        title={showAdd ? '手动填写技能' : '添加技能'}
+        onClose={() => { setShowMenu(false); setShowAdd(false); }}
+      >
+        {showAdd ? (
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs text-slate-500">技能 ID（英文，不可重复）</label>
+              <input value={newSkill.id} onChange={e => setNewSkill(p => ({ ...p, id: e.target.value }))}
+                className="mt-1 w-full px-2 py-1.5 rounded-lg border border-slate-200 text-sm" placeholder="如 make_ppt" />
+            </div>
+            <div>
+              <label className="text-xs text-slate-500">名称</label>
+              <input value={newSkill.label} onChange={e => setNewSkill(p => ({ ...p, label: e.target.value }))}
+                className="mt-1 w-full px-2 py-1.5 rounded-lg border border-slate-200 text-sm" placeholder="如 做演示文稿" />
+            </div>
+            <div>
+              <label className="text-xs text-slate-500">描述</label>
+              <input value={newSkill.description} onChange={e => setNewSkill(p => ({ ...p, description: e.target.value }))}
+                className="mt-1 w-full px-2 py-1.5 rounded-lg border border-slate-200 text-sm" placeholder="可选" />
+            </div>
+            <div>
+              <label className="text-xs text-slate-500">指令（方法论，注入给模型）</label>
+              <textarea value={newSkill.instruction} onChange={e => setNewSkill(p => ({ ...p, instruction: e.target.value }))}
+                rows={5}
+                className="mt-1 w-full px-2 py-1.5 rounded-lg border border-slate-200 text-sm resize-y"
+                placeholder="告诉模型这类任务该怎么做、用什么工具、注意什么…" />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => { setShowAdd(false); setShowMenu(true); }}
+                className="px-3 py-1.5 rounded-lg text-slate-500 text-xs hover:bg-slate-100">返回</button>
+              <button onClick={onAdd} disabled={busy || readOnly}
+                className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs hover:bg-indigo-700 disabled:opacity-50">保存</button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <label className={`flex items-center gap-3 p-3 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-50 ${(busy || readOnly) ? 'opacity-50 pointer-events-none' : ''}`}>
+              <Icon name="archive" size={18} className="text-indigo-500 flex-shrink-0" />
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-slate-700">上传 ZIP 技能包</div>
+                <div className="text-[11px] text-slate-400">包含 SKILL.md 与资源的压缩包</div>
+              </div>
               <input type="file" accept=".zip,application/zip" className="hidden"
                 onChange={onImportZip} disabled={busy || readOnly} />
             </label>
-            <label className={`py-2 rounded-lg border border-dashed border-slate-300 text-slate-600 text-xs text-center cursor-pointer hover:bg-slate-50 ${(busy || readOnly) ? 'opacity-50 pointer-events-none' : ''}`}>
-              上传文件（含 SKILL.md）
+            <label className={`flex items-center gap-3 p-3 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-50 ${(busy || readOnly) ? 'opacity-50 pointer-events-none' : ''}`}>
+              <Icon name="folder" size={18} className="text-indigo-500 flex-shrink-0" />
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-slate-700">上传文件（含 SKILL.md）</div>
+                <div className="text-[11px] text-slate-400">选择一个或多个文件，其中必须有一个 SKILL.md</div>
+              </div>
               <input type="file" multiple className="hidden"
                 onChange={onImportFiles} disabled={busy || readOnly} />
             </label>
+            <button onClick={() => { setShowMenu(false); setShowAdd(true); }} disabled={readOnly}
+              className="w-full flex items-center gap-3 p-3 rounded-lg border border-slate-200 text-left hover:bg-slate-50 disabled:opacity-50">
+              <Icon name="edit" size={18} className="text-indigo-500 flex-shrink-0" />
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-slate-700">手动填写</div>
+                <div className="text-[11px] text-slate-400">直接写一段方法论，适合简单技能</div>
+              </div>
+            </button>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              文件技能是一个目录：<code className="font-mono">SKILL.md</code>（YAML frontmatter 的 name/description + 正文）加可选资源。
+              系统只在提示里给摘要，模型需要时用 <code className="font-mono">read_skill</code> 按需读取全文。
+            </p>
           </div>
-          <button onClick={() => { setShowMenu(false); setShowAdd(true); }} disabled={readOnly}
-            className="w-full py-2 rounded-lg border border-slate-200 text-slate-600 text-xs hover:bg-slate-50 disabled:opacity-50">
-            手动填写（一段方法论）
-          </button>
-          <p className="text-[11px] text-slate-400">
-            文件技能是一个目录：<code className="font-mono">SKILL.md</code> 加可选资源。
-            系统只在提示里给摘要，模型需要时用 <code className="font-mono">read_skill</code> 按需读取全文。
-          </p>
-          <div className="flex justify-end">
-            <button onClick={() => setShowMenu(false)}
-              className="px-3 py-1.5 rounded-lg text-slate-500 text-xs hover:bg-slate-100">取消</button>
-          </div>
-        </div>
-      ) : showAdd ? (
-        <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2">
-          <div>
-            <label className="text-xs text-slate-500">技能 ID（英文，不可重复）</label>
-            <input value={newSkill.id} onChange={e => setNewSkill(p => ({ ...p, id: e.target.value }))}
-              className="mt-1 w-full px-2 py-1.5 rounded-lg border border-slate-200 text-sm" placeholder="如 make_ppt" />
-          </div>
-          <div>
-            <label className="text-xs text-slate-500">名称</label>
-            <input value={newSkill.label} onChange={e => setNewSkill(p => ({ ...p, label: e.target.value }))}
-              className="mt-1 w-full px-2 py-1.5 rounded-lg border border-slate-200 text-sm" placeholder="如 做演示文稿" />
-          </div>
-          <div>
-            <label className="text-xs text-slate-500">描述</label>
-            <input value={newSkill.description} onChange={e => setNewSkill(p => ({ ...p, description: e.target.value }))}
-              className="mt-1 w-full px-2 py-1.5 rounded-lg border border-slate-200 text-sm" placeholder="可选" />
-          </div>
-          <div>
-            <label className="text-xs text-slate-500">指令（方法论，注入给模型）</label>
-            <textarea value={newSkill.instruction} onChange={e => setNewSkill(p => ({ ...p, instruction: e.target.value }))}
-              rows={4}
-              className="mt-1 w-full px-2 py-1.5 rounded-lg border border-slate-200 text-sm resize-y"
-              placeholder="告诉模型这类任务该怎么做、用什么工具、注意什么…" />
-          </div>
-          <div className="flex justify-end gap-2">
-            <button onClick={() => setShowAdd(false)}
-              className="px-3 py-1.5 rounded-lg text-slate-500 text-xs hover:bg-slate-100">取消</button>
-            <button onClick={onAdd} disabled={busy || readOnly}
-              className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs hover:bg-indigo-700 disabled:opacity-50">保存</button>
-          </div>
-        </div>
-      ) : null}
+        )}
+      </Sheet>
     </div>
   );
 }
