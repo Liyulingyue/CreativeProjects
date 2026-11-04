@@ -33,6 +33,7 @@ export function SkillsPanel({
   const [busy, setBusy] = useState(false);
 
   const [showAdd, setShowAdd] = useState(false);
+  const [showMenu, setShowMenu] = useState(false);
   const [newSkill, setNewSkill] = useState({ id: '', label: '', instruction: '', description: '' });
   const [masterBusy, setMasterBusy] = useState(false);
 
@@ -116,6 +117,7 @@ export function SkillsPanel({
     setMessage(null);
     try {
       const info = await importSkillZip(file);
+      setShowMenu(false);
       setMessage(`已导入技能「${info.label}」`);
       await load();
     } catch (err) {
@@ -133,6 +135,7 @@ export function SkillsPanel({
     setMessage(null);
     try {
       const info = await importSkillFiles(files);
+      setShowMenu(false);
       setMessage(`已导入技能「${info.label}」`);
       await load();
     } catch (err) {
@@ -238,26 +241,36 @@ export function SkillsPanel({
         </div>
       )}
 
-      {/* Import a file-based skill: SKILL.md + resources */}
-      <div className="grid grid-cols-2 gap-2">
-        <label className={`py-2 rounded-lg border border-dashed border-slate-300 text-slate-600 text-xs text-center cursor-pointer hover:bg-slate-50 ${(busy || readOnly) ? 'opacity-50 pointer-events-none' : ''}`}>
-          上传 ZIP 技能包
-          <input type="file" accept=".zip,application/zip" className="hidden"
-            onChange={onImportZip} disabled={busy || readOnly} />
-        </label>
-        <label className={`py-2 rounded-lg border border-dashed border-slate-300 text-slate-600 text-xs text-center cursor-pointer hover:bg-slate-50 ${(busy || readOnly) ? 'opacity-50 pointer-events-none' : ''}`}>
-          上传文件（含 SKILL.md）
-          <input type="file" multiple className="hidden"
-            onChange={onImportFiles} disabled={busy || readOnly} />
-        </label>
-      </div>
-      <p className="text-[11px] text-slate-400">
-        文件技能是一个目录：<code className="font-mono">SKILL.md</code>（YAML frontmatter 的 name/description + 正文）加可选资源。
-        系统只在提示里给摘要，模型需要时会用 <code className="font-mono">read_skill</code> 按需读取全文。
-      </p>
-
-      {/* Add custom skill */}
-      {showAdd ? (
+      {/* One entry point; the actual method is chosen after clicking. */}
+      {showMenu ? (
+        <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2">
+          <div className="text-xs font-medium text-slate-600">添加技能</div>
+          <div className="grid grid-cols-2 gap-2">
+            <label className={`py-2 rounded-lg border border-dashed border-slate-300 text-slate-600 text-xs text-center cursor-pointer hover:bg-slate-50 ${(busy || readOnly) ? 'opacity-50 pointer-events-none' : ''}`}>
+              上传 ZIP 技能包
+              <input type="file" accept=".zip,application/zip" className="hidden"
+                onChange={onImportZip} disabled={busy || readOnly} />
+            </label>
+            <label className={`py-2 rounded-lg border border-dashed border-slate-300 text-slate-600 text-xs text-center cursor-pointer hover:bg-slate-50 ${(busy || readOnly) ? 'opacity-50 pointer-events-none' : ''}`}>
+              上传文件（含 SKILL.md）
+              <input type="file" multiple className="hidden"
+                onChange={onImportFiles} disabled={busy || readOnly} />
+            </label>
+          </div>
+          <button onClick={() => { setShowMenu(false); setShowAdd(true); }} disabled={readOnly}
+            className="w-full py-2 rounded-lg border border-slate-200 text-slate-600 text-xs hover:bg-slate-50 disabled:opacity-50">
+            手动填写（一段方法论）
+          </button>
+          <p className="text-[11px] text-slate-400">
+            文件技能是一个目录：<code className="font-mono">SKILL.md</code> 加可选资源。
+            系统只在提示里给摘要，模型需要时用 <code className="font-mono">read_skill</code> 按需读取全文。
+          </p>
+          <div className="flex justify-end">
+            <button onClick={() => setShowMenu(false)}
+              className="px-3 py-1.5 rounded-lg text-slate-500 text-xs hover:bg-slate-100">取消</button>
+          </div>
+        </div>
+      ) : showAdd ? (
         <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2">
           <div>
             <label className="text-xs text-slate-500">技能 ID（英文，不可重复）</label>
@@ -289,9 +302,9 @@ export function SkillsPanel({
           </div>
         </div>
       ) : (
-        <button onClick={() => setShowAdd(true)}
-          className="w-full py-2 rounded-lg border border-dashed border-slate-300 text-slate-500 text-xs hover:bg-slate-50">
-          + 添加自定义技能
+        <button onClick={() => setShowMenu(true)} disabled={readOnly}
+          className="w-full py-2 rounded-lg border border-dashed border-slate-300 text-slate-500 text-xs hover:bg-slate-50 disabled:opacity-50">
+          + 添加技能
         </button>
       )}
     </div>
