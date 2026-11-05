@@ -15,6 +15,7 @@ from .routers.auth import is_auth_enabled, set_password, verify_stream_token
 from .deps import PathNotAllowed, resolve_under_root
 from .indexer import indexer
 from .auto_digest import auto_digest
+from .trash_retention import trash_retention
 from .routers import providers as providers_router  # noqa: E402
 from .routers import embedding_providers as embedding_providers_router  # noqa: E402
 from .routers.shares import shares as shares_router  # noqa: E402
@@ -53,13 +54,15 @@ async def lifespan(app: FastAPI):
     from .routers.auth import migrate_tokens
 
     migrate_tokens()
-    log.info("starting: indexer and digest scheduler coming up")
+    log.info("starting: indexer, digest scheduler and trash retention coming up")
     indexer.start()
     auto_digest.start()
+    trash_retention.start()
     yield
-    log.info("shutting down: stopping indexer and digest scheduler")
+    log.info("shutting down: stopping indexer, digest scheduler and trash retention")
     indexer.stop()
     auto_digest.stop()
+    trash_retention.stop()
 
 
 app = FastAPI(title="SimpleFileManager", version="0.4.0", lifespan=lifespan)

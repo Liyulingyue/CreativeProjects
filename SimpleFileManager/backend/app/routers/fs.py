@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Request
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
 from pydantic import BaseModel
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
@@ -15,6 +15,7 @@ from ..deps import (
     state, get_storage_root, resolve_under_root, PathOutsideRoot,
     PathNotAllowed, check_access, visible_children, current_user,
 )
+from .auth import require_admin
 from ..models import (
     BrowseResult,
     CreateFolderRequest,
@@ -26,6 +27,7 @@ from ..models import (
 from .. import uploads
 from ..storage_stats import dir_size, disk_info, invalidate as invalidate_sizes
 from ..trash import TrashError, TrashService
+from ..trash_retention import trash_retention
 
 fs = APIRouter()
 
@@ -382,12 +384,32 @@ def delete(req: DeleteRequest) -> FileOperation:
 def list_trash() -> dict:
     """Everything currently in the recycle bin, newest first."""
     svc = _trash_service()
-    entries = svc.list()
+    retention_days = trash_retention.retention_days()
+    entries = svc.list(retention_days=retention_days)
     return {
         "entries": entries,
         "count": len(entries),
         "size": sum(e.get("size", 0) for e in entries),
+        "retention_days": retention_days,
     }
+
+
+@fs.post("/trash/purge-expired")
+def purge_expired_trash(_admin=Depends(require_admin)) -> dict:
+    """Remove whatever has outlived the retention window, now."""
+    result = trash_retention.cleanup_now(reason="manual")
+    if result.get("skipped"):
+        return {**result, "message": "回收站保留时间为 0（永久保留），没有可清理的项目"}
+    return {
+        **result,
+        "message": f"已清理 {result['purged']} 个超过 {result['retention_days']} 天的项目",
+    }
+
+
+@fs.get("/trash/log")
+def trash_retention_log(limit: int = 50, _admin=Depends(require_admin)) -> dict:
+    """What the retention window removed, newest first."""
+    return {"entries": trash_retention.log.list(limit=limit)}
 
 
 @fs.post("/trash/{entry_id}/restore")

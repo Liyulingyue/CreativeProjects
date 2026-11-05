@@ -1631,6 +1631,7 @@ def _get_default_settings() -> AppSettings:
         # — no env rewrites required.
         index_interval=int(os.getenv("INDEX_INTERVAL", "300")),
         auto_index_enabled=os.getenv("AUTO_INDEX_ENABLED", "true").lower() in ("true", "1", "yes"),
+        trash_retention_days=int(os.getenv("TRASH_RETENTION_DAYS", "0")),
         index_debounce_seconds=int(os.getenv("INDEX_DEBOUNCE_SECONDS", "10")),
         max_agent_steps=int(os.getenv("MAX_AGENT_STEPS", "8")),
         storage_path=os.getenv("STORAGE_PATH", "./data"),

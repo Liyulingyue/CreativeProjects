@@ -101,6 +101,11 @@ class AppSettings(BaseModel):
     # next batch as soon as the row goes in).
     index_interval: int = 300
     auto_index_enabled: bool = True
+    # How long a deleted file waits in the recycle bin before it is
+    # removed for good. 0 keeps everything until the bin is emptied by
+    # hand, which is the default: on a family NAS the undo window is
+    # worth more than the disk it costs.
+    trash_retention_days: int = 0
     index_debounce_seconds: int = 10
     # "all", or an "HH:MM-HH:MM" window during which background indexing may
     # run. May wrap past midnight (23:00-07:00).

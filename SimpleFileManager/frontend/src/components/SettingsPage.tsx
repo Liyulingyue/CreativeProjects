@@ -815,10 +815,18 @@ export function SettingsPage() {
                   <input type="number" min={2000} step={1000} className={inputClass} value={settings.max_context_tokens}
                     onChange={e => set({ max_context_tokens: Math.max(2000, Number(e.target.value)) })} />
                 </Field>
+                <Field label="回收站保留天数" hint="0 = 永久保留">
+                  <input type="number" min={0} className={inputClass} value={settings.trash_retention_days ?? 0}
+                    onChange={e => set({ trash_retention_days: Math.max(0, Number(e.target.value)) })} />
+                </Field>
               </div>
               <p className="text-xs text-slate-400">
                 上下文窗口请填模型实际支持的值（32768 / 131072 / 1048576 …）。系统预留 4096 tokens 给模型回复，
                 超出后自动把最旧的对话压缩为摘要。LLMServices/serve.sh 会读取同一配置。
+              </p>
+              <p className="text-xs text-slate-400">
+                回收站保留天数为 0 时，删除的文件会一直留着，需要你在回收站手动清空；
+                设为 7 / 30 / 90 天后，超过期限的文件会被自动清理，清理记录写在回收站页面底部。
               </p>
             </div>
           </Card>

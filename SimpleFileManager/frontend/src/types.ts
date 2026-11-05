@@ -121,6 +121,8 @@ export interface AppSettings {
   // is_search) instead of one.
   index_interval: number;
   auto_index_enabled: boolean;
+  /** 回收站保留天数：0 = 永久保留，需要手动清空。 */
+  trash_retention_days: number;
   index_debounce_seconds: number;
   index_active_hours: string;
   max_agent_steps: number;

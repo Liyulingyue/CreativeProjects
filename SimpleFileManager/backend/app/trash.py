@@ -140,8 +140,12 @@ class TrashService:
         log.info("trashed %s -> %s", target, entry_id)
         return meta
 
-    def list(self) -> list[dict]:
-        """Every entry in the bin, newest first."""
+    def list(self, retention_days: int = 0) -> list[dict]:
+        """Every entry in the bin, newest first.
+
+        With a retention window the entries also say how long they have
+        left, so the UI can show it before the file is removed for good.
+        """
         root = trash_root(self.storage_root)
         if not root.exists():
             return []
@@ -172,6 +176,14 @@ class TrashService:
                 }
             entries.append(meta)
         entries.sort(key=lambda m: m.get("deleted_at", 0), reverse=True)
+        if retention_days and retention_days > 0:
+            now = time.time()
+            window = retention_days * 86400
+            for m in entries:
+                deleted_at = float(m.get("deleted_at") or 0)
+                expires_at = deleted_at + window
+                m["expires_at"] = int(expires_at)
+                m["expires_in_days"] = max(0, int((expires_at - now) // 86400))
         return entries
 
     def restore(self, entry_id: str) -> dict:
@@ -221,6 +233,27 @@ class TrashService:
         log.info("purged %s", entry_id)
         return {"id": entry_id, "name": meta.get("name", "")}
 
+    def purge_expired(self, retention_days: int) -> list[dict]:
+        """Remove the entries that have outlived the retention window.
+
+        Returns the metadata of everything that was removed, so the
+        caller can record what went away instead of it disappearing
+        quietly.
+        """
+        if not retention_days or retention_days <= 0:
+            return []
+        cutoff = time.time() - retention_days * 86400
+        removed: list[dict] = []
+        for meta in self.list():
+            if float(meta.get("deleted_at") or 0) >= cutoff:
+                continue
+            try:
+                self.purge(meta["id"])
+            except TrashError:
+                continue
+            removed.append(meta)
+        return removed
+
     def empty(self) -> dict:
         """Delete everything in the bin."""
         root = trash_root(self.storage_root)
@@ -240,3 +273,8 @@ class TrashService:
             "count": len(entries),
             "size": sum(e.get("size", 0) for e in entries),
         }
+
+    def oldest(self) -> Optional[dict]:
+        """The entry that has been in the bin the longest, if any."""
+        entries = self.list()
+        return entries[-1] if entries else None

@@ -55,6 +55,19 @@ export interface TrashEntry {
   is_dir: boolean;
   size: number;
   incomplete?: boolean;
+  /** 距离被自动清理还有几天；保留期为 0（永久保留）时没有这个值。 */
+  expires_in_days?: number | null;
+}
+
+/** 一条被自动清理的记录。 */
+export interface TrashLogEntry {
+  id: string;
+  ts: number;
+  entry_id: string;
+  name: string;
+  rel_path: string;
+  size: number;
+  reason: string;
 }
 
 /** A file somebody starred. */
@@ -145,6 +158,8 @@ export interface TrashListing {
   entries: TrashEntry[];
   count: number;
   size: number;
+  /** 保留天数，0 = 永久保留。 */
+  retention_days: number;
 }
 
 export async function fetchTrash(): Promise<TrashListing> {
@@ -162,6 +177,23 @@ export async function restoreTrashEntry(id: string): Promise<FileOperation> {
 export async function purgeTrashEntry(id: string): Promise<FileOperation> {
   const res = await authFetch(`${API_BASE}/fs/trash/${id}`, { method: 'DELETE' });
   if (!res.ok) throw new Error('Failed to delete permanently');
+  return res.json();
+}
+
+export async function purgeExpiredTrash(): Promise<{
+  purged: number;
+  retention_days: number;
+  message?: string;
+  entries: { id: string; name: string; size: number }[];
+}> {
+  const res = await authFetch(`${API_BASE}/fs/trash/purge-expired`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to purge expired entries');
+  return res.json();
+}
+
+export async function fetchTrashLog(): Promise<{ entries: TrashLogEntry[] }> {
+  const res = await authFetch(`${API_BASE}/fs/trash/log`);
+  if (!res.ok) throw new Error('Failed to fetch the cleanup log');
   return res.json();
 }
 

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  emptyTrash, fetchTrash, purgeTrashEntry, restoreTrashEntry,
+  emptyTrash, fetchCurrentUser, fetchTrash, fetchTrashLog,
+  purgeExpiredTrash, purgeTrashEntry, restoreTrashEntry,
 } from '../api';
-import type { TrashEntry } from '../api';
+import type { TrashEntry, TrashLogEntry } from '../api';
 import { Icon } from './ui/Icon';
 
 function formatSize(bytes: number): string {
@@ -25,6 +26,9 @@ function formatSize(bytes: number): string {
 export function TrashPage() {
   const [entries, setEntries] = useState<TrashEntry[]>([]);
   const [totalSize, setTotalSize] = useState(0);
+  const [retentionDays, setRetentionDays] = useState(0);
+  const [cleanupLog, setCleanupLog] = useState<TrashLogEntry[]>([]);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [busyId, setBusyId] = useState<string>('');
   const [message, setMessage] = useState<string | null>(null);
@@ -34,6 +38,7 @@ export function TrashPage() {
       const data = await fetchTrash();
       setEntries(data.entries);
       setTotalSize(data.size);
+      setRetentionDays(data.retention_days ?? 0);
     } catch (e) {
       setMessage(e instanceof Error ? e.message : '加载失败');
     } finally {
@@ -41,7 +46,23 @@ export function TrashPage() {
     }
   }, []);
 
+  const loadLog = useCallback(async () => {
+    try {
+      const data = await fetchTrashLog();
+      setCleanupLog(data.entries);
+    } catch {
+      // The log is administrator-only; a family member simply does not
+      // see it.
+    }
+  }, []);
+
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    fetchCurrentUser()
+      .then(u => { setIsAdmin(u.role === 'admin'); if (u.role === 'admin') loadLog(); })
+      .catch(() => {});
+  }, [loadLog]);
 
   const restore = async (entry: TrashEntry) => {
     setBusyId(entry.id); setMessage(null);
@@ -63,6 +84,18 @@ export function TrashPage() {
       await load();
     } catch (e) {
       setMessage(e instanceof Error ? e.message : '删除失败');
+    } finally { setBusyId(''); }
+  };
+
+  const purgeExpired = async () => {
+    setBusyId('__expired__'); setMessage(null);
+    try {
+      const res = await purgeExpiredTrash();
+      setMessage(res.message || `已清理 ${res.purged} 个过期项目`);
+      await load();
+      await loadLog();
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : '清理失败');
     } finally { setBusyId(''); }
   };
 
@@ -90,11 +123,32 @@ export function TrashPage() {
               : '删除的文件会先放到这里，可以随时还原'}
           </span>
         </div>
-        {entries.length > 0 && (
-          <button onClick={empty} disabled={busyId === '__all__'}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:opacity-50 transition-colors flex-shrink-0">
-            <Icon name="trash" size={16} />{busyId === '__all__' ? '清空中...' : '清空回收站'}
-          </button>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {isAdmin && retentionDays > 0 && (
+            <button onClick={purgeExpired} disabled={busyId === '__expired__'}
+              title="删除所有超过保留期的项目"
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 disabled:opacity-50 transition-colors">
+              <Icon name="clock" size={16} />{busyId === '__expired__' ? '清理中...' : '清理过期项'}
+            </button>
+          )}
+          {entries.length > 0 && (
+            <button onClick={empty} disabled={busyId === '__all__'}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:opacity-50 transition-colors flex-shrink-0">
+              <Icon name="trash" size={16} />{busyId === '__all__' ? '清空中...' : '清空回收站'}
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="bg-white border-b border-slate-200 px-4 sm:px-6 py-2 text-xs text-slate-500 flex items-center gap-2 flex-wrap">
+        <Icon name="clock" size={13} className="text-slate-400" />
+        {retentionDays > 0 ? (
+          <span>删除的文件会保留 <strong className="text-slate-700">{retentionDays}</strong> 天，之后自动清理。</span>
+        ) : (
+          <span>删除的文件会一直保留，直到你手动清空。</span>
+        )}
+        {isAdmin && (
+          <span className="text-slate-400">可在「设置」里调整保留天数。</span>
         )}
       </div>
 
@@ -122,6 +176,11 @@ export function TrashPage() {
                     {entry.rel_path || '（原路径未知）'} · {entry.deleted_at_human}
                     {entry.size > 0 && ` · ${formatSize(entry.size)}`}
                   </div>
+                  {entry.expires_in_days !== null && entry.expires_in_days !== undefined && (
+                    <div className={`text-[11px] mt-0.5 ${entry.expires_in_days <= 1 ? 'text-amber-600' : 'text-slate-400'}`}>
+                      {entry.expires_in_days <= 1 ? '今天将被自动清理' : `还有 ${entry.expires_in_days} 天自动清理`}
+                    </div>
+                  )}
                 </div>
                 <div className="flex items-center gap-1 flex-shrink-0">
                   <button onClick={() => restore(entry)} disabled={busyId === entry.id}
@@ -133,6 +192,25 @@ export function TrashPage() {
                     永久删除
                   </button>
                 </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {isAdmin && cleanupLog.length > 0 && (
+          <div className="mt-6 bg-white rounded-lg border border-slate-200 overflow-hidden">
+            <div className="px-4 py-2 border-b border-slate-100 text-xs font-medium text-slate-500">
+              自动清理记录
+            </div>
+            {cleanupLog.map(rec => (
+              <div key={rec.id}
+                className="flex items-center gap-3 px-4 py-2 border-b border-slate-50 last:border-b-0 text-xs text-slate-500">
+                <Icon name="trash" size={13} className="text-slate-300 flex-shrink-0" />
+                <span className="flex-1 min-w-0 truncate text-slate-700">{rec.name}</span>
+                <span className="text-slate-400 flex-shrink-0">
+                  {rec.size > 0 && `${formatSize(rec.size)} · `}
+                  {new Date(rec.ts * 1000).toLocaleString()}
+                </span>
               </div>
             ))}
           </div>
