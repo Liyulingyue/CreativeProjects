@@ -1,5 +1,5 @@
 import { useState, useEffect, lazy, Suspense } from 'react';
-import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, NavLink, Navigate } from 'react-router-dom';
 import { Icon } from './components/ui/Icon';
 import { FileManagerPage } from './components/FileManagerPage';
 import { ErrorBoundary } from './components/ui/ErrorBoundary';
@@ -284,6 +284,12 @@ function App() {
                   <Route path="/favorites" element={<FavoritesPage />} />
                   <Route path="/shares" element={<SharesPage />} />
                   <Route path="/settings" element={<SettingsPage />} />
+                  {/* The login screen lives outside the router, so right
+                      after a successful login the app mounts while the
+                      address bar still says /login. Nothing matches it,
+                      and the shell renders with an empty body. Send any
+                      unknown address home instead. */}
+                  <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
               </Suspense>
             </ErrorBoundary>
