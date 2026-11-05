@@ -625,6 +625,19 @@ export interface AgentToolDefinition {
  * Consume /agent/chat/stream. `signal` lets the caller abort mid-generation;
  * the backend treats the disconnect as a normal stop and keeps the partial text.
  */
+/** Tell the server the user stopped a turn, with what had arrived. */
+export async function abortAgentChat(
+  sessionId: string, content: string,
+): Promise<{ success: boolean; saved_message_id?: string | null }> {
+  const res = await authFetch(`${API_BASE}/agent/chat/abort`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId, content }),
+  });
+  if (!res.ok) throw new Error('Failed to report the stop');
+  return res.json();
+}
+
 export async function streamAgentMessage(
   message: string,
   sessionId: string | undefined,

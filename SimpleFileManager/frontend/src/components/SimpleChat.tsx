@@ -1,7 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { streamAgentMessage } from '../api';
-import type { AgentPlan } from '../types';
+import { abortAgentChat, streamAgentMessage } from '../api';
 import { useChatSessions } from '../hooks/useChatSessions';
 import { useProviders } from '../hooks/useProviders';
 import { ChatLayout } from './ui/ChatLayout';
@@ -61,7 +60,7 @@ function ChatWelcome({ onPick }: { onPick: (prompt: string) => void }) {
 export function SimpleChat() {
   const { toast } = useToast();
 
-  const { sessions, currentSessionId, createSession, startNewSession, selectSession, deleteSession, addMessage } = useChatSessions('agent');
+  const { sessions, currentSessionId, createSession, startNewSession, selectSession, deleteSession, addMessage, reloadSessions } = useChatSessions('agent');
   const providersApi = useProviders();
   // Per-turn provider override. The chat UI shows a dropdown next to
   // the send button; whatever the user picks goes out on the next
@@ -89,6 +88,11 @@ export function SimpleChat() {
   const [liveProviderName, setLiveProviderName] = useState<string | undefined>(undefined);
   const abortRef = useRef<AbortController | null>(null);
   const sendRef = useRef<((content: string) => Promise<void>) | null>(null);
+  // The text produced so far, readable from the stop handler without
+  // re-creating it on every token.
+  const replyRef = useRef('');
+  const sessionIdRef = useRef<string | null>(null);
+  sessionIdRef.current = currentSessionId;
 
   const toolActivity = currentSessionId ? traces[currentSessionId] : undefined;
 
@@ -101,9 +105,32 @@ export function SimpleChat() {
     setTraces(prev => ({ ...prev, [sessionId]: next }));
   }, []);
 
+  // A reload or a closed tab cuts the stream. The server keeps whatever
+  // the model produced, but the user should know before it happens.
+  useEffect(() => {
+    if (!isLoading) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [isLoading]);
+
   const handleStop = useCallback(() => {
-    abortRef.current?.abort();
+    const controller = abortRef.current;
+    const sessionId = sessionIdRef.current;
+    const partial = replyRef.current;
     abortRef.current = null;
+    if (!controller) return;
+    // Record the stop right away, with what the user already saw. The
+    // server cannot notice a dropped connection promptly (it is waiting
+    // on the model), so without this the partial answer would only be
+    // saved once the model next spoke.
+    if (sessionId) {
+      abortAgentChat(sessionId, partial).catch(() => {});
+    }
+    controller.abort();
   }, []);
 
   const handleSendMessage = async (content: string) => {
@@ -135,16 +162,11 @@ export function SimpleChat() {
     abortRef.current = controller;
 
     let reply = '';
-    let plans: AgentPlan[] = [];
+    replyRef.current = '';
     let streamError: string | null = null;
     let turnPerf: { ttft_ms: number; total_ms: number; tokens: number; tps: number } = {
       ttft_ms: 0, total_ms: 0, tokens: 0, tps: 0,
     };
-    // The server is the source of truth for which provider actually
-    // served the reply. We capture it from the SSE `done` event and
-    // mirror it into the persisted message so the bubble's
-    // "via <name>" badge survives a reload.
-    let servedProviderId: string | null = providerId;
     // Stash the name on the component so the live perf header can
     // render "via <name>" as soon as the SSE `done` lands, before
     // the persisted bubble takes over. Cleared on turn end.
@@ -183,6 +205,7 @@ export function SimpleChat() {
           } else if (event.type === 'token') {
             if (!event.text) return;
             reply += event.text;
+            replyRef.current = reply;
             setStreamingText(reply);
             // First token: stamp TTFT and reveal it in the live header.
             // The server's measurement is more accurate and overwrites
@@ -220,7 +243,6 @@ export function SimpleChat() {
           } else if (event.type === 'step') {
             setCurrentStep(event.step);
           } else if (event.type === 'done') {
-            plans = event.plans || [];
             reply = event.response || reply;
             // Server echoes the resolved provider. Capture for the
             // persisted bubble and for the session-row update below.
@@ -228,7 +250,6 @@ export function SimpleChat() {
             // given handle), so look it up in the providers list —
             // if the providers are still loading the user just sees
             // the model field on the next turn.
-            if (event.provider_id) servedProviderId = event.provider_id;
             if (event.provider_name) {
               const match = providersApi.providers.find(p => p.id === event.provider_id);
               setLiveProviderName(match?.model || event.provider_name);
@@ -276,41 +297,19 @@ export function SimpleChat() {
       setCurrentStep(undefined);
     }
 
-    let finalText = reply.trim();
-    if (!finalText) {
-      finalText = streamError
-        ? '发生错误：' + streamError
-        : (controller.signal.aborted ? '已停止生成。' : '抱歉，我没有得到回应。');
-    } else if (streamError) {
-      finalText += `\n\n（生成中断：${streamError}）`;
-    }
+    // The server writes the assistant reply to the transcript itself.
+    // It has to: a reload, a closed tab or a lost connection used to
+    // throw the answer away even though the model had produced it.
+    // All that is left here is to pick the saved message up.
+    //
+    // A stopped turn needs a moment -- the server notices the dropped
+    // connection and writes the partial reply before we can reload.
+    await new Promise(r => setTimeout(r, controller.signal.aborted ? 800 : 150));
+    await reloadSessions();
 
-    if (plans.length > 0) {
-      const actionCount = plans.reduce((n: number, p: AgentPlan) => n + (p.actions?.length ?? 0), 0);
-      finalText += `\n\n已生成 ${plans.length} 份整理计划（共 ${actionCount} 个操作），请到「整理」页审批中心批准后执行。`;
+    if (streamError && !reply.trim()) {
+      toast(streamError, 'error');
     }
-
-    // Persist the scratchpad with the reply. It lives only in the streaming
-    // bubble otherwise, and vanishes the moment the turn is saved.
-    const activity = tracesRef.current[sessionId] ?? [];
-    await addMessage(sessionId, {
-      role: 'assistant',
-      content: finalText,
-      reasoning: reasoningRef.current,
-      activity,
-      ttft_ms: turnPerf.ttft_ms,
-      total_ms: turnPerf.total_ms,
-      tokens: turnPerf.tokens,
-      tps: turnPerf.tps,
-      // The server is the source of truth for which provider
-      // actually served the reply; the bubble looks the name up
-      // from the providers list and renders "via <name>".
-      provider_id: servedProviderId,
-      // Plans the agent submitted during this turn. The chat bubble
-      // renders an inline "批准并执行" button per plan so the user
-      // can act on a one-turn plan without leaving the conversation.
-      plans,
-    });
     setStreamingText('');
     // Drop the live header once the persisted bubble (which carries the
     // same numbers via the message's perf fields) takes its place.

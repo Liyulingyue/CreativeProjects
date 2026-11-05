@@ -1206,6 +1206,85 @@ def _get_session(session_id: str) -> Session:
     return _restore_session(session_id)
 
 
+# Sessions whose stream the browser deliberately stopped. The value is
+# the message id the abort endpoint already saved, or None when it had
+# nothing to save. A reload or a closed tab never sets this, so the
+# server is the one that writes the partial reply down.
+_client_aborted: dict[str, Optional[str]] = {}
+_CLIENT_DID_NOT_ABORT = object()
+
+
+class AbortRequest(BaseModel):
+    session_id: str
+    content: Optional[str] = None
+
+
+@agent.post("/chat/abort")
+def abort_agent_chat(req: AbortRequest) -> dict:
+    """The browser stopped a turn on purpose.
+
+    A stop has to be recorded now, not whenever the server happens to
+    notice the dropped connection: the user is looking at the screen and
+    expects the partial answer to be there when they look back.
+    """
+    content = (req.content or "").strip()
+    if content:
+        saved = _save_assistant_message(req.session_id, content, interrupted=True)
+    else:
+        # Stopped while the model was still thinking: nothing had been
+        # produced, but the turn should still leave a trace rather than
+        # look like it never happened.
+        saved = _save_assistant_message(req.session_id, "已停止生成。")
+    _client_aborted[req.session_id] = saved
+    return {"success": True, "saved_message_id": saved}
+
+
+def _partial_perf(t0: float, first_token_at: Optional[float], token_count: int) -> dict:
+    """Perf numbers for a turn that did not finish normally."""
+    now = time.monotonic()
+    return {
+        "ttft_ms": int((first_token_at - t0) * 1000) if first_token_at else 0,
+        "total_ms": int((now - t0) * 1000),
+        "tokens": token_count,
+        "tps": 0.0,
+    }
+
+
+def _save_assistant_message(session_id: str, content: str, reasoning: str = "",
+                            activity: Optional[list] = None, perf: Optional[dict] = None,
+                            provider_id: Optional[str] = None,
+                            plans: Optional[list] = None,
+                            interrupted: bool = False) -> Optional[str]:
+    """Write the assistant's reply to the permanent transcript.
+
+    The reply used to be persisted by the browser when the stream
+    ended, which meant a reload, a closed tab or a lost connection
+    threw away an answer the model had already produced. The server is
+    the source of truth for what the model said, so it writes it -- on
+    a normal finish, and on a disconnect with whatever had arrived.
+    """
+    text = (content or "").strip()
+    if not text:
+        return None
+    if interrupted:
+        text += "\n\n（生成被中断，仅保留了已产生的部分）"
+    perf = perf or {}
+    try:
+        msg = state.get_chat_history().add_message(
+            session_id, role="assistant", content=text,
+            reasoning=reasoning or "", activity=activity or [],
+            ttft_ms=int(perf.get("ttft_ms") or 0),
+            total_ms=int(perf.get("total_ms") or 0),
+            tokens=int(perf.get("tokens") or 0),
+            tps=float(perf.get("tps") or 0.0),
+            provider_id=provider_id, plans=plans,
+        )
+        return msg.id
+    except Exception:
+        log.exception("could not persist the assistant reply for session %s", session_id)
+        return None
+
+
 @agent.post("/chat/stream")
 def agent_chat_stream(req: AgentRequest):
     """Server-sent events variant of /chat.
@@ -1244,7 +1323,9 @@ def agent_chat_stream(req: AgentRequest):
         chat_svc = state.get_chat_history()
         provider = _resolve_provider(chat_svc, req.provider_id, session.provider_id)
         if provider is None:
-            yield sse("error", {"message": "没有可用的 LLM provider；请到 /settings 添加"})
+            message = "没有可用的 LLM provider；请到 /settings 添加"
+            yield sse("error", {"message": message})
+            _save_assistant_message(session_id, f"发生错误：{message}", interrupted=True)
             return
         # Defer persisting the override until the first token arrives.
         # If the stream fails immediately (provider down), the session
@@ -1289,6 +1370,9 @@ def agent_chat_stream(req: AgentRequest):
         # as opposed to the same call repeating verbatim.
         barren_stop = False
         emitted: list[str] = []  # streamed text, kept for session history
+        # Ordered reasoning/tool transcript, rebuilt server-side so the
+        # permanent record does not depend on the browser staying put.
+        activity: list[dict] = []
         turn_complete = False
         # Accumulated across steps: the model reasons again after each tool
         # call. Lives in the generator, not the enclosing function.
@@ -1353,6 +1437,10 @@ def agent_chat_stream(req: AgentRequest):
                         first_token_at = time.monotonic()
                     if kind == "reasoning":
                         all_reasoning += payload
+                        if activity and activity[-1].get("kind") == "reasoning":
+                            activity[-1]["text"] += payload
+                        else:
+                            activity.append({"kind": "reasoning", "text": payload})
                         yield sse("reasoning", {"text": payload})
                     elif kind == "token":
                         # Bracket the answer-text decode phase. Across
@@ -1419,6 +1507,10 @@ def agent_chat_stream(req: AgentRequest):
                                 barren_tool = ""
                                 barren_count = 0
                         tool_results.append({"tool": name, "result": result})
+                        activity.append({
+                            "kind": "tool", "tool": name, "status": "done",
+                            "args": args_for_display, "result": result,
+                        })
                         yield sse("tool", {"tool": name, "args": args_for_display, "result": result})
                         all_messages.append({
                             "role": "tool",
@@ -1586,8 +1678,26 @@ def agent_chat_stream(req: AgentRequest):
                 decode_s = 0.0
             tps = (token_count / decode_s) if decode_s > 0 else 0.0
 
+            # The chat bubble used to append this note to the text it
+            # persisted. The server owns the persisted reply now, so it
+            # adds the same note here.
+            if plans:
+                action_count = sum(len(p.get("actions") or []) for p in plans)
+                final_text = (final_text.rstrip() + (
+                    f"\n\n已生成 {len(plans)} 份整理计划（共 {action_count} 个操作），"
+                    "请到「整理」页审批中心批准后执行。"
+                ))
+
+            saved_message_id = _save_assistant_message(
+                session_id, final_text, reasoning=all_reasoning, activity=activity,
+                perf={"ttft_ms": ttft_ms, "total_ms": total_ms,
+                      "tokens": token_count, "tps": round(tps, 2)},
+                provider_id=provider.id, plans=plans,
+            )
+
             yield sse("done", {
                 "response": final_text,
+                "saved_message_id": saved_message_id,
                 "reasoning": all_reasoning,
                 "tool_results": tool_results or None,
                 "plans": plans,
@@ -1605,13 +1715,39 @@ def agent_chat_stream(req: AgentRequest):
                 "provider_name": provider.name,
             })
         except GeneratorExit:
-            # The client already displayed these deltas. Keep the server-side
-            # context and permanent transcript aligned with what it saw; do not
-            # yield from a GeneratorExit handler (the connection is gone).
-            partial = "".join(emitted).strip()
+            # The connection is gone -- a reload, a closed tab, or the
+            # user pressing stop. The client already displayed these
+            # deltas, and it may be gone for good, so the reply has to
+            # be written down here rather than by the browser.
+            answer_part = "".join(emitted).strip()
+            aborted = _client_aborted.pop(session_id, _CLIENT_DID_NOT_ABORT)
+            if aborted is not _CLIENT_DID_NOT_ABORT and aborted is not None:
+                # The browser stopped the turn and already saved what it
+                # had shown. Writing it again would duplicate it.
+                log.info("agent stream for session %s stopped by the user", session_id)
+                raise
             if not turn_complete:
-                if partial:
-                    all_messages.append({"role": "assistant", "content": partial})
+                if answer_part:
+                    all_messages.append({"role": "assistant", "content": answer_part})
+                    _save_assistant_message(
+                        session_id, answer_part, reasoning=all_reasoning,
+                        activity=activity,
+                        perf=_partial_perf(t0, first_token_at, token_count),
+                        provider_id=provider.id if provider else None,
+                        interrupted=True,
+                    )
+                else:
+                    # Dropped before a single answer token. The model may
+                    # still have been thinking, so keep that, and say
+                    # plainly that nothing was produced -- a turn that
+                    # saved nothing at all read as if it never happened.
+                    all_messages.append({"role": "assistant", "content": "（生成被中断，没有产出内容）"})
+                    _save_assistant_message(
+                        session_id, "（生成被中断，没有产出内容）",
+                        reasoning=all_reasoning, activity=activity,
+                        perf=_partial_perf(t0, first_token_at, token_count),
+                        provider_id=provider.id if provider else None,
+                    )
                 session.history = [
                     m for m in all_messages if m.get("role") in ("user", "assistant")
                 ][-MAX_SESSION_MESSAGES:]
@@ -1619,14 +1755,30 @@ def agent_chat_stream(req: AgentRequest):
             raise
         except Exception as e:
             log.exception("agent stream failed")
+            error_text = _friendly_error(e)
+            aborted = _client_aborted.pop(session_id, _CLIENT_DID_NOT_ABORT)
+            if aborted is not _CLIENT_DID_NOT_ABORT and aborted is not None:
+                log.info("agent stream for session %s stopped by the user", session_id)
+                return
             if not turn_complete:
                 partial = "".join(emitted).strip()
                 if partial:
                     all_messages.append({"role": "assistant", "content": partial})
+                    _save_assistant_message(
+                        session_id, partial, reasoning=all_reasoning,
+                        activity=activity,
+                        perf=_partial_perf(t0, first_token_at, token_count),
+                        provider_id=provider.id if provider else None,
+                        interrupted=True,
+                    )
+                else:
+                    _save_assistant_message(
+                        session_id, f"发生错误：{error_text}", interrupted=True,
+                    )
                 session.history = [
                     m for m in all_messages if m.get("role") in ("user", "assistant")
                 ][-MAX_SESSION_MESSAGES:]
-            yield sse("error", {"message": _friendly_error(e)})
+            yield sse("error", {"message": error_text})
 
     return StreamingResponse(
         generate(),

@@ -126,10 +126,16 @@ const addMessage = useCallback(async (
     return sessions.find(s => s.id === currentSessionId) || null;
   }, [sessions, currentSessionId]);
 
+  // Re-read the sessions (with their messages). The agent endpoint
+  // persists the assistant reply itself, so after a turn -- and after a
+  // reload -- this is how the client picks the saved answer up.
+  const reloadSessions = useCallback(() => loadSessions(), [loadSessions]);
+
   return {
     sessions,
     currentSessionId,
     isLoading,
+    reloadSessions,
     createSession,
     startNewSession,
     selectSession,

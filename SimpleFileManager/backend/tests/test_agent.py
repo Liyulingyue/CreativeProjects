@@ -114,3 +114,225 @@ class TestPathSafety:
     def test_read_file_path_escape(self):
         result = tool_read_file("../../../etc/passwd")
         assert result["success"] is False
+
+
+# ---- the server persists the assistant reply ----
+
+class _FakeProvider:
+    id = "fake-provider"
+    name = "fake"
+    reasoning_budget = 0
+
+
+def _fake_stream(messages, tools=None, provider=None, reasoning_budget=0, max_tokens=None):
+    yield ("token", "你好")
+    yield ("token", "，世界")
+
+
+def _make_agent_session(client):
+    return client.post("/api/chat_history/sessions", json={"session_type": "agent"}).json()
+
+
+def test_stream_persists_the_assistant_reply(monkeypatch):
+    import importlib
+    from conftest import client
+    agent_mod = importlib.import_module("app.routers.agent")
+
+    monkeypatch.setattr(agent_mod, "_resolve_provider", lambda *a, **k: _FakeProvider())
+    monkeypatch.setattr(agent_mod, "chat_completion_stream", _fake_stream)
+
+    session = _make_agent_session(client)
+    res = client.post("/api/agent/chat/stream", json={
+        "message": "hi", "session_id": session["id"],
+    })
+    assert res.status_code == 200, res.text
+    assert "event: done" in res.text
+
+    messages = client.get(f"/api/chat_history/sessions/{session['id']}").json()["messages"]
+    assistant = [m for m in messages if m["role"] == "assistant"]
+    assert len(assistant) == 1
+    assert "你好，世界" in assistant[0]["content"]
+    assert assistant[0]["provider_id"] == "fake-provider"
+
+
+def test_a_disconnected_stream_still_persists_the_partial_reply(monkeypatch):
+    import importlib
+    from conftest import client
+    agent_mod = importlib.import_module("app.routers.agent")
+    AgentRequest = agent_mod.AgentRequest
+
+    monkeypatch.setattr(agent_mod, "_resolve_provider", lambda *a, **k: _FakeProvider())
+    monkeypatch.setattr(agent_mod, "chat_completion_stream", _fake_stream)
+
+    # Capture the generator the endpoint would hand to StreamingResponse,
+    # so the test can drop it the way a reload or a closed tab does.
+    captured = {}
+
+    class _CaptureResponse:
+        def __init__(self, content, **kwargs):
+            captured["generator"] = content
+            self.body_iterator = content
+
+    monkeypatch.setattr(agent_mod, "StreamingResponse", _CaptureResponse)
+
+    session = _make_agent_session(client)
+    agent_mod.agent_chat_stream(AgentRequest(
+        message="hi", session_id=session["id"],
+    ))
+    generator = captured["generator"]
+    # Pull events until the first token has been produced, then drop the
+    # connection -- the moment a reload or a closed tab creates.
+    saw_token = False
+    for event in generator:
+        if event.startswith("event: token"):
+            saw_token = True
+            break
+    assert saw_token, "the fake stream never produced a token"
+    generator.close()
+
+    messages = client.get(f"/api/chat_history/sessions/{session['id']}").json()["messages"]
+    assistant = [m for m in messages if m["role"] == "assistant"]
+    assert len(assistant) == 1
+    assert "你好" in assistant[0]["content"]
+    assert "生成被中断" in assistant[0]["content"]
+
+
+def test_stopping_before_any_answer_still_leaves_a_trace(monkeypatch):
+    import importlib
+    from conftest import client
+    agent_mod = importlib.import_module("app.routers.agent")
+    AgentRequest = agent_mod.AgentRequest
+
+    monkeypatch.setattr(agent_mod, "_resolve_provider", lambda *a, **k: _FakeProvider())
+
+    def reasoning_only(messages, tools=None, provider=None, reasoning_budget=0, max_tokens=None):
+        yield ("reasoning", "让我想想")
+        yield ("reasoning", "怎么回答")
+
+    monkeypatch.setattr(agent_mod, "chat_completion_stream", reasoning_only)
+
+    captured = {}
+
+    class _CaptureResponse:
+        def __init__(self, content, **kwargs):
+            captured["generator"] = content
+            self.body_iterator = content
+
+    monkeypatch.setattr(agent_mod, "StreamingResponse", _CaptureResponse)
+
+    session = _make_agent_session(client)
+    agent_mod.agent_chat_stream(AgentRequest(message="hi", session_id=session["id"]))
+    generator = captured["generator"]
+    # Take the first reasoning event, then drop the connection while the
+    # model is still thinking and has produced no answer text.
+    for event in generator:
+        if event.startswith("event: reasoning"):
+            break
+    generator.close()
+
+    messages = client.get(f"/api/chat_history/sessions/{session['id']}").json()["messages"]
+    assistant = [m for m in messages if m["role"] == "assistant"]
+    assert len(assistant) == 1
+    # A dropped connection, not a deliberate stop: say so, because the
+    # user did not ask for the turn to end.
+    assert assistant[0]["content"] == "（生成被中断，没有产出内容）"
+    assert "让我想想" in (assistant[0].get("reasoning") or "")
+
+
+def test_abort_endpoint_saves_what_the_user_saw(monkeypatch):
+    from conftest import client
+
+    session = _make_agent_session(client)
+    res = client.post("/api/agent/chat/abort", json={
+        "session_id": session["id"], "content": "已经写了一半",
+    })
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["success"] is True
+    assert body["saved_message_id"]
+
+    messages = client.get(f"/api/chat_history/sessions/{session['id']}").json()["messages"]
+    assistant = [m for m in messages if m["role"] == "assistant"]
+    assert len(assistant) == 1
+    assert "已经写了一半" in assistant[0]["content"]
+    assert "生成被中断" in assistant[0]["content"]
+
+
+def test_abort_then_disconnect_does_not_duplicate(monkeypatch):
+    import importlib
+    from conftest import client
+    agent_mod = importlib.import_module("app.routers.agent")
+    AgentRequest = agent_mod.AgentRequest
+
+    monkeypatch.setattr(agent_mod, "_resolve_provider", lambda *a, **k: _FakeProvider())
+    monkeypatch.setattr(agent_mod, "chat_completion_stream", _fake_stream)
+
+    captured = {}
+
+    class _CaptureResponse:
+        def __init__(self, content, **kwargs):
+            captured["generator"] = content
+            self.body_iterator = content
+
+    monkeypatch.setattr(agent_mod, "StreamingResponse", _CaptureResponse)
+
+    session = _make_agent_session(client)
+    # The browser stops the turn and reports what it had.
+    client.post("/api/agent/chat/abort", json={
+        "session_id": session["id"], "content": "用户看到的半截",
+    })
+
+    agent_mod.agent_chat_stream(AgentRequest(message="hi", session_id=session["id"]))
+    generator = captured["generator"]
+    for event in generator:
+        if event.startswith("event: token"):
+            break
+    generator.close()
+
+    messages = client.get(f"/api/chat_history/sessions/{session['id']}").json()["messages"]
+    assistant = [m for m in messages if m["role"] == "assistant"]
+    assert len(assistant) == 1
+    assert "用户看到的半截" in assistant[0]["content"]
+
+
+def test_abort_with_nothing_still_leaves_a_trace(monkeypatch):
+    import importlib
+    from conftest import client
+    agent_mod = importlib.import_module("app.routers.agent")
+    AgentRequest = agent_mod.AgentRequest
+
+    monkeypatch.setattr(agent_mod, "_resolve_provider", lambda *a, **k: _FakeProvider())
+
+    def reasoning_only(messages, tools=None, provider=None, reasoning_budget=0, max_tokens=None):
+        yield ("reasoning", "想想")
+
+    monkeypatch.setattr(agent_mod, "chat_completion_stream", reasoning_only)
+
+    captured = {}
+
+    class _CaptureResponse:
+        def __init__(self, content, **kwargs):
+            captured["generator"] = content
+            self.body_iterator = content
+
+    monkeypatch.setattr(agent_mod, "StreamingResponse", _CaptureResponse)
+
+    session = _make_agent_session(client)
+    client.post("/api/agent/chat/abort", json={
+        "session_id": session["id"], "content": "",
+    })
+
+    agent_mod.agent_chat_stream(AgentRequest(message="hi", session_id=session["id"]))
+    generator = captured["generator"]
+    for event in generator:
+        if event.startswith("event: reasoning"):
+            break
+    generator.close()
+
+    messages = client.get(f"/api/chat_history/sessions/{session['id']}").json()["messages"]
+    assistant = [m for m in messages if m["role"] == "assistant"]
+    # The abort endpoint wrote the placeholder straight away, so the
+    # user sees the stopped turn immediately rather than whenever the
+    # server happens to notice the dropped connection.
+    assert len(assistant) == 1
+    assert assistant[0]["content"] == "已停止生成。"
