@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import type { ToolActivity } from '../../stores/agentStream';
 import { Icon } from './Icon';
 import { useCollapse } from '../../hooks/useCollapse';
 import { MarkdownText } from './MarkdownText';
@@ -18,14 +19,6 @@ export type { ChatMessage, ChatSession };
  * splitting them into "thinking" and "tools" loses the interleaving, which is
  * the part that explains *why* each tool call happened.
  */
-export interface ToolActivity {
-  kind: 'reasoning' | 'tool';
-  tool?: string;
-  status?: 'running' | 'done' | 'cancelled';
-  args?: Record<string, unknown>;
-  result?: unknown;
-  text?: string;
-}
 
 const MAX_RESULT_CHARS = 800;
 

@@ -2,6 +2,8 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { abortAgentChat, streamAgentMessage } from '../api';
 import { useChatSessions } from '../hooks/useChatSessions';
+import { agentStream, getAgentStreamState, useAgentStream } from '../stores/agentStream';
+import type { ToolActivity } from '../stores/agentStream';
 import { useProviders } from '../hooks/useProviders';
 import { ChatLayout } from './ui/ChatLayout';
 import { Icon } from './ui/Icon';
@@ -13,15 +15,6 @@ const EXAMPLE_PROMPTS = [
   '搜索哪些文件里提到了「合同」',
   '按类型帮我整理文件',
 ];
-
-interface ToolActivityItem {
-  kind: 'reasoning' | 'tool';
-  tool?: string;
-  status?: 'running' | 'done' | 'cancelled';
-  args?: Record<string, unknown>;
-  result?: unknown;
-  text?: string;
-}
 
 /**
  * Empty state stays light: greeting plus example prompts. The tool reference
@@ -69,40 +62,18 @@ export function SimpleChat() {
   // turn defaults to the user's pick even without the override.
   // Switching back to the dropdown's "main" clears the override.
   const [providerId, setProviderId] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [streamingText, setStreamingText] = useState('');
-  const reasoningRef = useRef('');
-  // kept per session so switching conversations does not erase the trace of
-  // what the agent already read on the user's behalf
-  const [traces, setTraces] = useState<Record<string, ToolActivityItem[]>>({});
-  const tracesRef = useRef<Record<string, ToolActivityItem[]>>({});
-  const [currentStep, setCurrentStep] = useState<number | undefined>(undefined);
-  // Live per-turn header. clockMs is captured the moment the user submits
-  // (so ⏱ renders before the first token); ttft_ms / total_ms / tokens / tps
-  // get filled in as the SSE events arrive. Cleared on turn end so the
-  // streaming bubble re-uses the same renderer without flicker.
-  const [livePerf, setLivePerf] = useState<{ clockMs: number; ttft_ms?: number; total_ms?: number; tokens?: number; tps?: number } | null>(null);
-  // Provider name that the running turn actually went through, so
-  // the live perf header can show "via <name>" before the bubble
-  // gets persisted. Cleared on turn end like livePerf.
-  const [liveProviderName, setLiveProviderName] = useState<string | undefined>(undefined);
-  const abortRef = useRef<AbortController | null>(null);
+  // The running turn's state lives in a module-level store, not here:
+  // navigating away unmounts this page, and the turn keeps going. Reading
+  // it from the store means a fresh mount picks the turn back up and shows
+  // the live bubble, the step counter and the stop button.
+  const stream = useAgentStream();
+  const { isLoading, streamingText, currentStep, livePerf, liveProviderName } = stream;
   const sendRef = useRef<((content: string) => Promise<void>) | null>(null);
-  // The text produced so far, readable from the stop handler without
-  // re-creating it on every token.
-  const replyRef = useRef('');
-  const sessionIdRef = useRef<string | null>(null);
-  sessionIdRef.current = currentSessionId;
 
-  const toolActivity = currentSessionId ? traces[currentSessionId] : undefined;
+  const toolActivity = stream.sessionId ? stream.traces[stream.sessionId] : undefined;
 
-  const updateTrace = useCallback((sessionId: string, update: (prev: ToolActivityItem[]) => ToolActivityItem[]) => {
-    // Keep a ref alongside the state: the transcript has to be readable
-    // synchronously when the turn is saved, and state would still be stale
-    // inside the same tick the stream finished.
-    const next = update(tracesRef.current[sessionId] || []);
-    tracesRef.current = { ...tracesRef.current, [sessionId]: next };
-    setTraces(prev => ({ ...prev, [sessionId]: next }));
+  const updateTrace = useCallback((sessionId: string, update: (prev: ToolActivity[]) => ToolActivity[]) => {
+    agentStream.trace(sessionId, update);
   }, []);
 
   // A reload or a closed tab cuts the stream. The server keeps whatever
@@ -117,11 +88,22 @@ export function SimpleChat() {
     return () => window.removeEventListener('beforeunload', handler);
   }, [isLoading]);
 
+  // A turn can outlive a page navigation: the store keeps it running, and
+  // this mount may not be the one that started it. When it ends, the store
+  // clears itself but this mount's session list is still stale -- reload so
+  // the saved reply shows up without the user having to navigate again.
+  const wasLoading = useRef(false);
+  useEffect(() => {
+    if (wasLoading.current && !isLoading) {
+      reloadSessions();
+    }
+    wasLoading.current = isLoading;
+  }, [isLoading, reloadSessions]);
+
   const handleStop = useCallback(() => {
-    const controller = abortRef.current;
-    const sessionId = sessionIdRef.current;
-    const partial = replyRef.current;
-    abortRef.current = null;
+    const controller = agentStream.getController();
+    const { sessionId, streamingText: partial } = getAgentStreamState();
+    agentStream.setController(null);
     if (!controller) return;
     // Record the stop right away, with what the user already saw. The
     // server cannot notice a dropped connection promptly (it is waiting
@@ -145,9 +127,7 @@ export function SimpleChat() {
     }
     await addMessage(sessionId, { role: 'user', content });
 
-    setIsLoading(true);
-    setStreamingText('');
-    setCurrentStep(undefined);
+    agentStream.start(sessionId, Date.now());
     // a fresh turn starts a fresh trace for that session
     updateTrace(sessionId, () => []);
 
@@ -156,13 +136,12 @@ export function SimpleChat() {
     // so the user sees the request start time without waiting on the
     // model. Subsequent fields fill in as events come in.
     const clockMs = Date.now();
-    setLivePerf({ clockMs });
+    agentStream.perf({ clockMs });
 
     const controller = new AbortController();
-    abortRef.current = controller;
+    agentStream.setController(controller);
 
     let reply = '';
-    replyRef.current = '';
     let streamError: string | null = null;
     let turnPerf: { ttft_ms: number; total_ms: number; tokens: number; tps: number } = {
       ttft_ms: 0, total_ms: 0, tokens: 0, tps: 0,
@@ -170,7 +149,7 @@ export function SimpleChat() {
     // Stash the name on the component so the live perf header can
     // render "via <name>" as soon as the SSE `done` lands, before
     // the persisted bubble takes over. Cleared on turn end.
-    setLiveProviderName(undefined);
+    agentStream.providerName(undefined);
     // Client-side anchors for the live header. Used only when the server
     // doesn't emit the perf fields (e.g. legacy build) — and to measure
     // TTFT for the streaming bubble the moment the first text delta
@@ -180,7 +159,6 @@ export function SimpleChat() {
     // agrees with the persisted message's TTFT.
     const clientT0 = performance.now();
     let clientFirstTokenAt: number | null = null;
-    reasoningRef.current = '';
 
     try {
       await streamAgentMessage(
@@ -194,7 +172,6 @@ export function SimpleChat() {
             // instead of "all thinking, then all tool calls, then the answer".
             // Consecutive reasoning deltas fold into the previous block so a
             // step does not fragment into dozens of one-word entries.
-            reasoningRef.current += event.text ?? '';
             updateTrace(sessionId, (prev) => {
               const last = prev[prev.length - 1];
               if (last?.kind === 'reasoning') {
@@ -205,8 +182,7 @@ export function SimpleChat() {
           } else if (event.type === 'token') {
             if (!event.text) return;
             reply += event.text;
-            replyRef.current = reply;
-            setStreamingText(reply);
+            agentStream.token(event.text);
             // First token: stamp TTFT and reveal it in the live header.
             // The server's measurement is more accurate and overwrites
             // this on the "done" event, but the client value lets the
@@ -215,7 +191,7 @@ export function SimpleChat() {
             if (clientFirstTokenAt === null) {
               clientFirstTokenAt = performance.now();
               const ttft = Math.round(clientFirstTokenAt - clientT0);
-              setLivePerf(prev => prev ? { ...prev, ttft_ms: ttft } : prev);
+              agentStream.perf({ ttft_ms: ttft });
             }
           } else if (event.type === 'tool_start') {
             updateTrace(sessionId, prev => [...prev, { kind: 'tool', tool: event.tool, status: 'running', args: event.args }]);
@@ -241,7 +217,7 @@ export function SimpleChat() {
               return next;
             });
           } else if (event.type === 'step') {
-            setCurrentStep(event.step);
+            agentStream.step(event.step);
           } else if (event.type === 'done') {
             reply = event.response || reply;
             // Server echoes the resolved provider. Capture for the
@@ -252,7 +228,7 @@ export function SimpleChat() {
             // the model field on the next turn.
             if (event.provider_name) {
               const match = providersApi.providers.find(p => p.id === event.provider_id);
-              setLiveProviderName(match?.model || event.provider_name);
+              agentStream.providerName(match?.model || event.provider_name);
             }
             // The server emits the authoritative perf numbers in the
             // "done" event. Mirror them into both turnPerf (used when
@@ -265,19 +241,15 @@ export function SimpleChat() {
                 tokens: event.tokens ?? 0,
                 tps: event.tps ?? 0,
               };
-              setLivePerf(prev => prev ? {
-                ...prev,
+              agentStream.perf({
                 ttft_ms: turnPerf.ttft_ms,
                 total_ms: turnPerf.total_ms,
                 tokens: turnPerf.tokens,
                 tps: turnPerf.tps,
-              } : prev);
+              });
             }
             // Covers the case where the stream ends without the client having
             // seen every reasoning delta.
-            if (event.reasoning && event.reasoning.length > reasoningRef.current.length) {
-              reasoningRef.current = event.reasoning;
-            }
           } else if (event.type === 'error') {
             streamError = event.message;
           }
@@ -291,10 +263,9 @@ export function SimpleChat() {
         streamError = e instanceof Error ? e.message : '请求失败';
       }
     } finally {
-      abortRef.current = null;
-      updateTrace(sessionId, prev => prev.map(t => (t.status === 'running' ? { ...t, status: 'cancelled' as const } : t)));
-      setIsLoading(false);
-      setCurrentStep(undefined);
+      agentStream.setController(null);
+      agentStream.cancelTools(sessionId);
+      agentStream.end();
     }
 
     // The server writes the assistant reply to the transcript itself.
@@ -310,11 +281,9 @@ export function SimpleChat() {
     if (streamError && !reply.trim()) {
       toast(streamError, 'error');
     }
-    setStreamingText('');
     // Drop the live header once the persisted bubble (which carries the
     // same numbers via the message's perf fields) takes its place.
-    setLivePerf(null);
-    setLiveProviderName(undefined);
+    agentStream.end();
     // Refresh sessions so the new assistant message appears in the
     // sidebar with the resolved provider_id — without this the row
     // would still show the previous (pre-override) state until the
