@@ -33,7 +33,8 @@ engine does the one thing it is good at.
 
 Usage
 -----
-    from generators import three_mf, grid_panel
+    from pipeline import three_mf
+    from examples.grid_panel import grid_panel
 
     bundle = three_mf.load("input_bambu.3mf")
     info = bundle.get_part(object_id=1)             # trimesh.Trimesh

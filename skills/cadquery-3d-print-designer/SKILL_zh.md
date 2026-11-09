@@ -110,6 +110,69 @@ AI 会按上面"双流水线"选择 A 还是 B，并按选定流水线执行。
 | A | `xxx.stl`、`preview_iso.png` / `preview_front.png` / `preview_top.png`、（无 PyVista 时）`preview_fallback.svg` |
 | B | `xxx_modified.3mf`（拓竹切片软件直接打开，彩印/预设/板面布局全部保留） |
 
+## 参考示例（examples/）
+
+`examples/` 里是 6 个完整可跑的生成器。它们的作用是**参考实现** —— 每个演示一种建模手法 —— 而不是成品。
+参数看各自模块的 docstring，下表只说明每个例子演示了什么技术：
+
+| 示例 | 是什么 | 演示的技术 |
+| --- | --- | --- |
+| `examples/grid_panel.py` | 机箱穿孔板 | 栅格排布 + **解析体积**交叉校验 |
+| `examples/ribbed_plate.py` | 双向栅格 | 如何保证格栅是**一个**实体 |
+| `examples/hanger_hook.py` | 衣架钩尖保护套 | 沿曲线**扫掠**出型腔 |
+| `examples/blade.py` | 一体成型乒乓球底板 | 宽度剖面 → **PCHIP** 样条，mitre 偏移做倒角 |
+| `examples/paddle.py` | 快拆乒乓球拍 | **多零件装配体**：燕尾榫 + 双螺丝 |
+| `examples/longcat_logo.py` | 美团 LongCat logo（三种构建） | SVG 路径解析、分色拆分、鼓起的 3D 头 |
+
+```python
+from examples.blade import table_tennis_blade, BladeSpec
+
+blade = table_tennis_blade(BladeSpec())
+blade.save("blade.stl")
+print(blade)
+# table_tennis_blade  volume   133,170.9 mm^3  faces 1927  mass  165.1 g
+```
+
+底板轮廓的做法是「宽度剖面」—— 一张"往下走多少、宽多少"的表 —— 用保形三次插值（PCHIP）算出来，
+再按弧长重采样。两个坑记一下：
+
+- **不要用 `edges(">Z").fillet(r)` 做边缘圆角**：OCCT 的 fillet 在面边环超过约 180 条边时
+  会直接放弃，而光滑轮廓恰恰需要很多条边。改用布尔切：把轮廓向内做 mitre 偏移，
+  用两个轮廓之间的环从上下两面切掉。
+- **宽度剖面的采样点必须单调递增**：一旦乱序，PCHIP 的二分查找会静默出错，轮廓会自己折回去。
+
+`pipeline.demo` 会把样例产物渲染到 `out/`；`pipeline.selftest` 验证所有生成器。
+
+## 美团 LongCat logo（三种构建方式）
+
+`examples/longcat_logo.py` 收录了**美团 LongCat logo** —— M 形外轮廓、双耳之间的 V 形缺口、圆润的猫脸、两只斜眼 —— 路径数据直接解析自真实 SVG，比例精确。三种构建共享同一套轮廓源：
+
+```python
+from examples.longcat_logo import longcat_logo, longcat_logo_split, longcat_logo_3d
+
+longcat_logo().save("logo.stl")          # 一块平板，脸和眼是凹槽（换料/喷涂上色）
+
+parts = longcat_logo_split()             # 三块平板，可分色打印
+for name, part in parts.items():
+    part.save(f"{name}.stl")
+
+parts = longcat_logo_3d()                # 头是鼓起的实体，眼睛与头部表面齐平
+parts["cat_head"].save("cat_head.stl")
+```
+
+| 构建 | 函数 | 什么时候用 |
+| --- | --- | --- |
+| 平板 | `longcat_logo()` | 单色打印，颜色靠换料或喷涂 |
+| 分色 | `longcat_logo_split()` | 多色打印，独立 STL / MMU |
+| 3D | `longcat_logo_3d()` | 头要鼓起来成为立体件 |
+
+3D 头的侧轮廓是 **弧 – 直线 – 弧**：边缘的直线段正好等于 `thickness`（和 M 外壳同宽），两条弧可以自由鼓。直线边就是面部轮廓本身，所以与外壳相接处无缝、无悬空。
+
+两个实现要点（扩展时请保留）：
+
+* **不要用缩放球体做穹顶。** OCCT 球体网格在极点会留下 4 边裂缝，导出的 STL 不 watertight。`_dome` 用轮廓放样到一点；`_ellipsoid`（椭圆线框放样）是需要光滑帽檐时的 watertight 替代。
+* **直边必须是未缩放的轮廓。** 把轮廓按质心缩放后放样，直边会比外壳开口宽，头就会和 M 撞在一起。直边保持 `thickness`，只有鼓出部分长大。
+
 ## 拓竹 3MF 的坑与避坑
 
 1. **彩印是按顶点存的**。任何重网格化都会丢彩印。**带颜色的零件优先用 `add_modifier`**（不碰原网格）。
@@ -124,13 +187,13 @@ AI 会按上面"双流水线"选择 A 还是 B，并按选定流水线执行。
 
 修改或扩展这个 skill 时：
 
-1. **STL/3MF 网格必须是流形（manifold）**：不能有反面法线、非流形边。CadQuery 的 CSG 操作天然保证这一点，但 `.stl` 导入再导出可能破坏。`generators.core.verify()` 会用 OCCT 的 BRep 合法性检查把这类问题挡下来。
+1. **STL/3MF 网格必须是流形（manifold）**：不能有反面法线、非流形边。CadQuery 的 CSG 操作天然保证这一点，但 `.stl` 导入再导出可能破坏。`pipeline.core.verify()` 会用 OCCT 的 BRep 合法性检查把这类问题挡下来。
 2. **打印间隙默认值**：M3 → 3.3 mm，M4 → 4.3 mm，M5 → 5.3 mm，压配合额外 +0.1 ~ +0.2 mm。
 3. **PyVista 离屏渲染**：必须 `off_screen=True`，否则会弹 GUI。Linux 无头机器优先靠 EGL/Mesa，`pv.start_xvfb()` 是兜底。
 4. **回退方案**：检测不到 PyVista 时不要硬失败，切到 `cq.exporters.export(..., "xxx.svg", opt={...})`。
 5. **3MF 写入严禁全量重生成**：必须解包 → 字节级改 → 重新打包。任何重写整个 3dmodel.model 的路径都会丢拓竹元数据。
 6. **`generators/three_mf.py` 里 cadquery 是懒加载**：纯 trimesh 的读 / 检查 / round-trip 不依赖 CadQuery，方便 CI smoke test。
-7. **渲染边的坑**：在 STL 上 `show_edges=True` 画的是**三角面片的边**，不是零件的特征边 —— 一块平板会渲染成一片小方格，看起来像几何错了，其实只是画法骗人。要真边线用 `feature_angle=30`（渲染器的 `edges=30`）。三角面的二面角是 0，30° 阈值刚好把它们滤掉。
+7. **渲染边的坑**：在 STL 上 `show_edges=True` 画的是**三角面片的边**，不是零件的特征边 —— 一块平板会渲染成一片小方格，看起来像几何错了，其实只是画法骗人。要真边线用 `extract_feature_edges(feature_angle=30)` 单独提取再叠加（渲染器的 `edges=30` 就是这么做的）。**注意 `add_mesh(feature_angle=...)` 没用** —— 在 PyVista 0.49 里它只管平滑着色的锐边拆分，跟边线叠加无关。
 
 ## 依赖项
 
@@ -148,10 +211,21 @@ AI 会按上面"双流水线"选择 A 还是 B，并按选定流水线执行。
 | --- | --- |
 | `SKILL.md` | 给 AI 看的执行规范（opencode 加载，**英文**，含完整代码样例） |
 | `SKILL_zh.md` | 本文件，给开发者看的快速了解 |
-| `generators/three_mf.py` | 3MF round-trip 引擎（trimesh + 字节级 XML + zipfile） |
-| `generators/three_mf_selftest.py` | 3MF round-trip 自测 |
-| `generators/core.py` | 栅格排布 / 流形校验 / 解析体积公式 |
-| `generators/grid_panel.py` | 单向穿孔板生成器 |
-| `generators/ribbed_plate.py` | 双向栅格（带基板、永为单体） |
-| `generators/render.py` | PyVista 多视角渲染 |
-| `generators/selftest.py` | CadQuery 生成器自测 |
+| `CONTRIBUTING.md` | 什么该放进 `examples/`、什么不该（写给想扩展的人） |
+| `pipeline/core.py` | 栅格排布 / 流形校验 / 解析体积公式 |
+| `pipeline/render.py` | PyVista 多视角渲染 |
+| `pipeline/three_mf.py` | 3MF round-trip 引擎（trimesh + 字节级 XML + zipfile） |
+| `pipeline/selftest.py` | CadQuery 生成器自测 |
+| `pipeline/three_mf_selftest.py` | 3MF round-trip 自测 |
+| `pipeline/demo.py` | 渲染样例零件到 `out/` |
+| `pipeline/three_mf_demo.py` | 3MF round-trip 演示 |
+| `examples/grid_panel.py` | 单向穿孔板生成器 |
+| `examples/ribbed_plate.py` | 双向栅格（带基板、永为单体） |
+| `examples/hanger_hook.py` | 衣架挂钩末端保护套 + 参考挂钩 |
+| `examples/blade.py` | 一体成型乒乓球底板（PCHIP 轮廓 / 斜接偏移 / 圆角边缘） |
+| `examples/paddle.py` | 快拆乒乓球拍（燕尾榫 + 双螺丝夹紧） |
+| `examples/longcat_logo.py` | 美团 LongCat logo（平板 / 分色 / 3D 鼓头，三种构建） |
+
+**两个目录的分工**：`pipeline/` 是这个 skill 真正的引擎（校验、渲染、3MF 往返），
+`examples/` 是参考实现的零件生成器。两者都是顶层包，没有 `__init__.py`，
+直接 `from examples.grid_panel import grid_panel` 这样导入。

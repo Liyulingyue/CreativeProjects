@@ -1,6 +1,7 @@
 """Preview renderer shared by all generators.
 
-    from generators import grid_panel, render
+    from examples.grid_panel import grid_panel
+    from pipeline.render import render
     p = grid_panel(266, 156, 3, rib=4, gap=5, direction="u")
     render(p, "panel", views=("iso", "front", "top"), outdir="out")
 
@@ -21,6 +22,11 @@ slicer would care about - ask for them by angle:
 
 Anything above ~25 degrees hides the triangulation (whose dihedral angle is
 0) and keeps only real corners.
+
+Note: PyVista's own `add_mesh(feature_angle=...)` does NOT do this.  It
+only controls how normals are split for smooth shading; the `show_edges`
+overlay always draws the triangle boundaries.  So the feature edges are
+extracted with `extract_feature_edges()` and added as their own actor.
 """
 from __future__ import annotations
 
@@ -48,6 +54,17 @@ def _shape_of(obj) -> cq.Shape | cq.Workplane:
     raise TypeError(
         f"cannot render {type(obj).__name__}; expected a GridPanel / "
         f"RibbedPlate / cq.Workplane / cq.Shape"
+    )
+
+
+def _feature_edges(mesh: pv.PolyData, angle: float) -> pv.PolyData:
+    """Edges whose dihedral angle exceeds `angle` degrees."""
+    return mesh.extract_feature_edges(
+        feature_angle=float(angle),
+        feature_edges=True,
+        boundary_edges=True,
+        non_manifold_edges=False,
+        manifold_edges=False,
     )
 
 
@@ -87,21 +104,22 @@ def render(
         extra_m = pv.read(str(outdir / f"{stem}_ref.stl"))
 
     if edges is False:
+        edge_mesh = None
         edge_kw: dict = {"show_edges": False}
     elif edges is True:
+        edge_mesh = None
         edge_kw = {"show_edges": True, "edge_color": "dimgray"}
     else:
-        edge_kw = {
-            "show_edges": True,
-            "edge_color": "dimgray",
-            "feature_angle": float(edges),
-        }
+        edge_mesh = _feature_edges(mesh, float(edges))
+        edge_kw = {"show_edges": False}
 
     written = [stl]
     for v in views:
         pl = pv.Plotter(off_screen=True, window_size=list(window_size))
         pl.set_background(background)
         pl.add_mesh(mesh, color=color, specular=0.3, **edge_kw)
+        if edge_mesh is not None and edge_mesh.n_points:
+            pl.add_mesh(edge_mesh, color="dimgray", line_width=2)
         if extra_m is not None:
             pl.add_mesh(extra_m, color="dodgerblue", opacity=0.16,
                         show_edges=True, edge_color="steelblue", specular=0.0)

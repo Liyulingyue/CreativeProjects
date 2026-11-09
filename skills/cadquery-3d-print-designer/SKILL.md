@@ -1,6 +1,6 @@
 ---
 name: cadquery-3d-print-designer
-description: Parameterized 3D printing design pipeline using CadQuery (CSG) + PyVista (preview) + Trimesh (3MF round-trip). Generates watertight STL, renders multi-view PNG/SVG previews, AND round-trips Bambu Studio / OrcaSlicer .3mf files without losing slicer-specific metadata (color painting, print profiles, plate layout) via a dual-engine unpack-modify-repack pipeline. Use when designing 3D printable brackets, enclosures, adapters, fan mounts, NUC mounts, parametric hardware, or when you need to surgically replace / append geometry inside an existing Bambu .3mf project.
+description: Parameterized 3D printing design pipeline using CadQuery (CSG) + PyVista (preview) + Trimesh (3MF round-trip). Generates watertight STL, renders multi-view PNG/SVG previews, AND round-trips Bambu Studio / OrcaSlicer .3mf files without losing slicer-specific metadata (color painting, print profiles, plate layout) via a dual-engine unpack-modify-repack pipeline. Ships parametric generators for vent grilles, ribbed plates, hanger-hook caps, table-tennis blades and paddles, and the Meituan LongCat logo (flat / split-colour / bulging-3D-head builds). Use when designing 3D printable brackets, enclosures, adapters, fan mounts, NUC mounts, parametric hardware, or when you need to surgically replace / append geometry inside an existing Bambu .3mf project.
 ---
 
 # CadQuery 3D Print Designer
@@ -123,7 +123,8 @@ cq.exporters.export(model, "output_model.stl")
 For a fully watertight perforated plate, prefer the built-in generators:
 
 ```python
-from generators import grid_panel, ribbed_plate
+from examples.grid_panel import grid_panel
+from examples.ribbed_plate import ribbed_plate
 
 # A flat 266x156 chassis panel with a single-direction vent grille
 panel = grid_panel(length=266, width=156, thickness=3, rib=4, gap=5, direction="u")
@@ -134,12 +135,101 @@ ribs = ribbed_plate(length=266, width=156, base=3, rib_w=4, gap=5, rib_h=6, dire
 ribs.save("cross_grille.stl")
 ```
 
+### Step 1b: Worked Examples
+
+`examples/` holds six complete, working generators. They exist as **reference
+implementations** — each one shows a different modelling technique — not as
+products. Read the module's own docstring for its parameters; the table below
+only says which technique each one demonstrates.
+
+| example | what it is | technique it demonstrates |
+| --- | --- | --- |
+| `examples/grid_panel.py` | perforated chassis panel | lattice layout + **analytic volume** cross-check |
+| `examples/ribbed_plate.py` | cross-lattice grille | a grid that must stay one solid |
+| `examples/hanger_hook.py` | sleeve for a clothes hanger hook tip | a **swept** cavity that follows a curve |
+| `examples/blade.py` | one-piece table-tennis blade | a width profile → **PCHIP** spline, mitred inward offset for the bevelled rim |
+| `examples/paddle.py` | quick-release table-tennis paddle | a **multi-part assembly** with a dovetail joint and two screws |
+| `examples/longcat_logo.py` | the Meituan LongCat logo, three ways | SVG path parsing, colour splits, a domed 3D head |
+
+```python
+from examples.hanger_hook import hanger_hook_cap, hanger_hook
+
+cap = hanger_hook_cap(wire_dia=4.0, hook_r=15.0, cap_len=12.0)
+cap.save("hook_cap.stl")
+print(cap)
+# hanger_hook_cap  wire 4.0  hook R 15.0  cap 12.0 long
+#   cavity r 2.30  outer r 4.10  wall 1.8
+#   covers 45.8 deg of the bend, tip at -70.0 deg
+#   mass 0.69 g
+
+hook = hanger_hook()          # reference hook, to check the fit visually
+```
+
+The hook cap's cavity is a swept tube around the wire centreline and its wall is
+a constant offset of that, so the fit is geometric rather than eyeballed.
+
+### Step 1c: Meituan LongCat Logo (flat / split-colour / 3D head)
+
+`examples/longcat_logo.py` holds the Meituan LongCat logo — an M-shaped outline
+with a V notch between the ears, a rounded cat face, and two slanted eyes —
+parsed from the real SVG path data, so the proportions are exact. Three builds
+share the same source outlines:
+
+```python
+from examples.longcat_logo import longcat_logo, longcat_logo_split, longcat_logo_3d
+
+# one flat plate; face and eyes are recessed pockets (filament swap / paint)
+longcat_logo().save("logo.stl")
+
+# three flat pieces that slot together, for printing in three colours
+parts = longcat_logo_split()
+for name, part in parts.items():
+    part.save(f"{name}.stl")
+
+# the same three pieces, but the head is a bulging solid that rises out of
+# the shell; eyes sit flush with the head surface
+parts = longcat_logo_3d()
+parts["cat_head"].save("cat_head.stl")
+```
+
+| build | function | use when |
+| --- | --- | --- |
+| flat | `longcat_logo()` | one-colour print, colour zones come from a filament swap or painting |
+| split | `longcat_logo_split()` | multi-colour print from separate STLs / MMU |
+| 3D | `longcat_logo_3d()` | the head should stand out as a rounded solid |
+
+| parameter (`HeadSpec`) | default | meaning |
+| --- | --- | --- |
+| `thickness` | 5.0 | flat M shell thickness (Z) — **also the head's rim width** |
+| `front_h` / `back_h` | 6.0 / 5.0 | how far the head bulges above / below the shell |
+| `eye_depth` | 1.5 | how deep the eye pockets are cut into the head |
+
+The 3D head's side profile is **arc – straight – arc**: the straight rim at
+the edge is exactly `thickness` wide (the same width as the M shell), and the
+two arcs bulge freely. The rim is the face outline itself, so it meets the
+shell with no gap and no overhang.
+
+`save_split(parts, outdir)` writes one STL per component; `save_split_3mf`
+writes them as a 3-object 3MF so the slicer's colour picker sees each part.
+
+Two implementation notes worth keeping if you extend this:
+
+* **Do not build the dome from a scaled sphere.** OCCT's sphere tessellation
+  leaves a 4-edge crack at the pole, so the exported STL is not watertight.
+  `_dome` lofts the outline to a point instead; `_ellipsoid` (a loft of
+  ellipse wires) is the watertight alternative when a smooth cap is wanted.
+* **The rim must be the unscaled outline.** Scaling the outline about its
+  centroid and lofting *that* makes the rim wider than the shell opening, so
+  the head collides with the M. The rim stays at `thickness`; only the bulge
+  grows.
+
 ### Step 2: PyVista Off-Screen Multi-View Rendering
 
 Use the shared renderer. It accepts a generator result, a `cq.Workplane` or a `cq.Shape` — the `GridPanel` / `RibbedPlate` dataclasses are unwrapped automatically, so you never have to pass `p.shape` by hand:
 
 ```python
-from generators import grid_panel, render
+from examples.grid_panel import grid_panel
+from pipeline.render import render
 
 panel = grid_panel(length=266, width=156, thickness=3, rib=4, gap=5, direction="u")
 render(panel, "panel", views=("iso", "front", "top"), outdir="out")
@@ -157,15 +247,22 @@ Useful flags:
 
 **Why `edges` matters.** On a tessellated STL, PyVista's `show_edges=True` draws the *triangle* boundaries, not the part's feature edges. A flat panel then renders as a grid of little squares instead of a row of slots — the geometry is fine, the picture is lying. `edges=30` keeps the real corners and drops the triangulation (whose dihedral angle is 0).
 
+> **`add_mesh(feature_angle=...)` does NOT do this.** In PyVista 0.49 `feature_angle` only controls how normals are split for smooth shading; the `show_edges` overlay always draws the triangle boundaries, whatever you pass. To get real feature edges you have to extract them yourself and add them as a second actor — which is what `render(edges=30)` does.
+
 If you need a hand-rolled plot instead of the shared renderer:
 
 ```python
 import pyvista as pv
 
 mesh = pv.read("output_model.stl")
+edges = mesh.extract_feature_edges(
+    feature_angle=30, feature_edges=True, boundary_edges=True,
+    non_manifold_edges=False, manifold_edges=False,
+)
+
 plotter = pv.Plotter(off_screen=True)
-plotter.add_mesh(mesh, color="whitesmoke", show_edges=True,
-                 edge_color="gray", feature_angle=30, specular=0.5)
+plotter.add_mesh(mesh, color="whitesmoke", specular=0.5)
+plotter.add_mesh(edges, color="gray", line_width=2)
 plotter.add_bounding_box(color="black", line_width=1)
 plotter.show_bounds(grid='back', location='outer', ticks='both',
                     xtitle='X (mm)', ytitle='Y (mm)', ztitle='Z (mm)')
@@ -193,7 +290,7 @@ cq.exporters.export(
 ### Step 1: Open the Bundle
 
 ```python
-from generators import three_mf
+from pipeline import three_mf
 
 bundle = three_mf.load("input_bambu.3mf")
 print("parts:", [(p.object_id, p.name, p.size) for p in bundle.list_parts()])
@@ -215,7 +312,7 @@ agg_bbox = bundle.bbox()                       # np.ndarray shape (2, 3)
 Hand the dimensions to the existing generators:
 
 ```python
-from generators import grid_panel
+from examples.grid_panel import grid_panel
 
 vent = grid_panel(length=length, width=width, thickness=3,
                   rib=4, gap=5, direction="u")
@@ -272,16 +369,16 @@ Whether generated from scratch or spliced into a 3MF, every part must be:
 - Manifold: every edge shared by exactly two faces.
 - Coordinate-convention: XY is the flat face, Z is the print direction.
 
-`generators.core.verify()` enforces the first two by assertion — one solid, one shell, and OCCT BRep validity (which rejects non-manifold edges, free boundary edges and self-intersecting faces). The third is a construction rule: every generator authors in XY and extrudes along Z, so the flat face is always the XY plane.
+`pipeline.core.verify()` enforces the first two by assertion — one solid, one shell, and OCCT BRep validity (which rejects non-manifold edges, free boundary edges and self-intersecting faces). The third is a construction rule: every generator authors in XY and extrudes along Z, so the flat face is always the XY plane.
 
-`generators.core.analytic_volume()` computes the material volume of a two-axis lattice by inclusion-exclusion, and `verify()` compares it against the real solid. A broken slot that lands on a wall face and leaves a membrane fails loudly instead of silently shipping a non-perforated plate. The overlap term is summed from the actual slot intervals, so it stays correct even when the end rails are wide enough that the outermost slots of the two families no longer cross.
+`pipeline.core.analytic_volume()` computes the material volume of a two-axis lattice by inclusion-exclusion, and `verify()` compares it against the real solid. A broken slot that lands on a wall face and leaves a membrane fails loudly instead of silently shipping a non-perforated plate. The overlap term is summed from the actual slot intervals, so it stays correct even when the end rails are wide enough that the outermost slots of the two families no longer cross.
 
 Run the tests:
 
 ```bash
-python -m generators.selftest          # CSG generators (CadQuery required)
-python -m generators.three_mf_selftest # 3MF round-trip (CadQuery required for shape bridges; trimesh-only paths also covered)
-python -m generators.demo               # render the sample parts into out/
+python -m pipeline.selftest          # CSG generators (CadQuery required)
+python -m pipeline.three_mf_selftest # 3MF round-trip (CadQuery required for shape bridges; trimesh-only paths also covered)
+python -m pipeline.demo               # render the sample parts into out/
 ```
 
 ## Dependencies
