@@ -2,10 +2,12 @@
 
 Everything here is deliberately small and independently testable:
 
-  layout()   - symmetric pattern maths for rib/gap lattices
-  verify()   - volume + topology assertion so a broken part can never ship
-  render()   - consistent multi-view preview PNGs
-  build()    - assemble the common "cut a set of slots out of a plate" case
+  layout()        - symmetric pattern maths for rib/gap lattices
+  verify()        - volume + topology assertion so a broken part can never ship
+  slotted_plate() - assemble the common "cut a set of slots out of a plate" case
+  analytic_volume() - exact material volume, used as the self-check oracle
+
+The multi-view preview renderer lives in render.py, not here.
 
 Coordinate convention used by every generator:
     the part is authored in the XY plane and extruded along +Z,
@@ -108,10 +110,17 @@ def verify(
     *,
     tol: float = 0.005,
     require_solid: bool = True,
+    check_validity: bool = True,
     label: str = "part",
 ) -> dict:
     """Assert the shape is a single watertight solid and, if given, that its
-    volume matches the analytic expectation.  Returns a stats dict."""
+    volume matches the analytic expectation.  Returns a stats dict.
+
+    The checks are:
+      * exactly one solid and one shell  -> closed and printable as one piece
+      * OCCT BRep validity               -> manifold, no self-intersections
+      * volume == analytic volume        -> the layout is what it claims
+    """
     shp = shape.val() if isinstance(shape, cq.Workplane) else shape
     stats = {
         "label": label,
@@ -131,6 +140,19 @@ def verify(
             f"{label}: expected 1 shell (closed), got {stats['shells']} "
             f"-> the surface is not watertight"
         )
+
+    if check_validity:
+        try:
+            valid = bool(shp.isValid())
+        except Exception:
+            valid = True          # never fail a part because OCCT hiccuped
+        stats["valid"] = valid
+        if not valid:
+            raise PartError(
+                f"{label}: OCCT reports the shape is not a valid BRep "
+                f"-> non-manifold edges, free boundary edges or "
+                f"self-intersecting faces"
+            )
 
     if expected_volume is not None and expected_volume > 0:
         ratio = stats["volume"] / expected_volume
@@ -219,6 +241,11 @@ def slotted_plate(
     return plate, info
 
 
+def _overlap_len(a0: float, a1: float, b0: float, b1: float) -> float:
+    """Length of the overlap between two closed intervals."""
+    return max(0.0, min(a1, b1) - max(a0, b0))
+
+
 def analytic_volume(
     length: float,
     width: float,
@@ -234,6 +261,13 @@ def analytic_volume(
     """Exact material volume, by inclusion-exclusion.
 
     plate - all u-slots - all v-slots + (u-slot x v-slot) overlaps
+
+    The overlap term is summed from the actual slot intervals, NOT from
+    n_u * n_v.  Those two are only equal while every u-slot crosses every
+    v-slot.  As soon as the end rails are wide enough that the outermost
+    slot of one family no longer reaches the outermost slot of the other,
+    some pairs do not intersect, and counting them all over-estimates the
+    material - which used to make verify() reject perfectly good parts.
     """
     v = length * width * thickness
 
@@ -247,5 +281,21 @@ def analytic_volume(
     if n_v:
         v -= n_v * lat_v.gap * sv_len * thickness
     if n_u and n_v:
-        v += n_u * n_v * lat_u.gap * lat_v.gap * thickness
+        # u-slots are thin along X and long along Y; v-slots are thin along
+        # Y and long along X.  Their Y / X spans are shortened by the rails.
+        u_x = [(x - lat_u.gap / 2, x + lat_u.gap / 2) for x in lat_u.slots]
+        v_y = [(y - lat_v.gap / 2, y + lat_v.gap / 2) for y in lat_v.slots]
+        v_x_span = (-length / 2 + end_rail_v, length / 2 - end_rail_v)
+        u_y_span = (-width / 2 + end_rail_u, width / 2 - end_rail_u)
+
+        area = 0.0
+        for x0, x1 in u_x:
+            ox = _overlap_len(x0, x1, *v_x_span)
+            if ox <= 0.0:
+                continue
+            for y0, y1 in v_y:
+                oy = _overlap_len(y0, y1, *u_y_span)
+                if oy > 0.0:
+                    area += ox * oy
+        v += area * thickness
     return v

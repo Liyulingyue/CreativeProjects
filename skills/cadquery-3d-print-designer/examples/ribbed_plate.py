@@ -7,7 +7,7 @@ Raising the pattern off a solid base fixes that: the base ties every rib
 together, the result is one solid, and the channels between the ribs still
 let air through.
 
-    from generators import ribbed_plate
+    from examples.ribbed_plate import ribbed_plate
     p = ribbed_plate(length=266, width=156, base=3, rib_w=4, gap=5, rib_h=6)
 
 Direction semantics
@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 
 import cadquery as cq
 
-from .core import Lattice, PartError, layout, report, verify
+from pipeline.core import Lattice, PartError, layout, report, verify
 
 
 @dataclass

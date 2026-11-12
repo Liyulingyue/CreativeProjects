@@ -1,6 +1,6 @@
 """Self-test for the 3MF round-trip module.
 
-Run:  python -m generators.three_mf_selftest
+Run:  python -m pipeline.three_mf_selftest
 
 We never depend on a real Bambu Studio file.  Instead each test
 fabricates a minimal 3MF in a temp directory using a hand-written
@@ -28,7 +28,7 @@ def _cq_module():
 
 import numpy as np
 
-from .grid_panel import grid_panel
+from examples.grid_panel import grid_panel
 from .three_mf import Bundle, ThreeMFError, load
 
 

@@ -1,4 +1,4 @@
-"""3MF round-trip demo.  Run:  python -m generators.three_mf_demo
+"""3MF round-trip demo.  Run:  python -m pipeline.three_mf_demo
 
 Builds a synthetic Bambu-like 3MF in a temp directory, sizes a vent
 grille from the part's bounding box, and writes three variants:
@@ -21,7 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .grid_panel import grid_panel
+from examples.grid_panel import grid_panel
 from .three_mf import load
 
 

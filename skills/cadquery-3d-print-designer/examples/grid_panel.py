@@ -4,7 +4,7 @@ The workhorse part: chassis walls, floors, lids, fan guards, filter frames.
 Give it a rectangle and a rib/gap pitch and it returns a watertight,
 slice-ready, *single-piece* solid.
 
-    from generators import grid_panel
+    from examples.grid_panel import grid_panel
     p = grid_panel(length=266, width=156, thickness=3, rib=4, gap=5)
     p.save("wall.stl")
     print(p)
@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 
 import cadquery as cq
 
-from .core import (
+from pipeline.core import (
     Lattice,
     PartError,
     analytic_volume,
