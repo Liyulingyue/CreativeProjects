@@ -494,3 +494,56 @@ def test_a_picture_in_the_bin_is_not_offered_and_leaves_no_ghost(
     picture.unlink()
     assert search_by_text("一张图") == []
     assert "photos/binned.jpg" not in store.indexed()
+
+
+def test_two_conversations_may_generate_at_the_same_time(monkeypatch):
+    """The lock must not be stricter than the server.
+
+    The llama-server here was started with --parallel 2: it serves two
+    conversations at once and queues the rest itself. With the old
+    mutex the second conversation waited for the first to finish, and
+    then failed after a minute.
+    """
+    from app import llm_client
+    from app.cpu_pool import get_big_pool
+
+    inside = []
+    both_inside = threading.Event()
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            inside.append(1)
+            if len(inside) >= 2:
+                both_inside.set()
+            # Both requests have to be in flight at the same time.
+            both_inside.wait(5)
+            message = type("M", (), {"content": "hi", "tool_calls": None})()
+            choice = type("Ch", (), {"message": message})()
+            return type("R", (), {"choices": [choice]})()
+
+    class FakeClient:
+        chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(llm_client, "_get_client", lambda provider: FakeClient())
+    local = type("P", (), {"model": "m", "max_tokens": None,
+                           "reasoning_budget": None,
+                           "base_url": "http://127.0.0.1:9010/v1"})()
+
+    results = []
+
+    def talk():
+        try:
+            llm_client.chat_completion([{"role": "user", "content": "hi"}],
+                                       provider=local)
+            results.append("ok")
+        except Exception as e:  # noqa: BLE001
+            results.append(f"{type(e).__name__}: {e}")
+
+    threads = [threading.Thread(target=talk) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(20)
+
+    assert results == ["ok", "ok"], results
+    assert len(inside) == 2, inside

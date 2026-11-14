@@ -27,8 +27,12 @@ RETRY_MAX_DELAY = 20.0
 
 def _with_pool(operation, pool_timeout: Optional[float] = None, **kwargs):
     """Make one request while holding the big cores."""
+    # A reader's lease: the llama-server can serve more than one request
+    # at a time (--parallel 2), and it queues the rest itself. The lock
+    # does not need to be stricter than the server -- two conversations
+    # should not lock each other out.
     with get_big_pool().hold(timeout=BIG_POOL_TIMEOUT if pool_timeout is None
-                             else pool_timeout):
+                             else pool_timeout, shared=True):
         return operation(**kwargs)
 
 
@@ -368,7 +372,8 @@ def chat_completion_stream(
         # minutes before the first token, and the indexers should keep
         # their hands off the cores during that time too.
         interaction.mark_active()
-    with (pool.hold(timeout=BIG_POOL_TIMEOUT) if pool else _null_context()):
+    with (pool.hold(timeout=BIG_POOL_TIMEOUT, shared=True) if pool
+          else _null_context()):
         # The retry stays inside the lock here, unlike the single-shot
         # path: the lock has to cover the whole stream, so it cannot be
         # given up between attempts.
