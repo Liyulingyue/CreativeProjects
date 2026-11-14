@@ -29,6 +29,14 @@ services:
       - AUTO_DIGEST_MODE=${AUTO_DIGEST_MODE:-scheduled}
       - AUTO_DIGEST_HOUR=${AUTO_DIGEST_HOUR:-23}
       - AUTO_DIGEST_INTERVAL_HOURS=${AUTO_DIGEST_INTERVAL_HOURS:-6}
+      # Picture search (jina-embeddings-v5-omni). The service runs on the
+      # host, so the address is the host gateway -- 127.0.0.1 inside the
+      # container would be the container itself.
+      # The host gateway: the jina service runs on the host, and 127.0.0.1
+      # inside the container is the container itself.
+      - IMAGE_EMBEDDING_BASE_URL=${IMAGE_EMBEDDING_BASE_URL:-http://host.docker.internal:9014}
+      - IMAGE_INDEX_ENABLED=${IMAGE_INDEX_ENABLED:-false}
+      - IMAGE_INDEX_WINDOW=${IMAGE_INDEX_WINDOW:-09:00-09:30}
       # The application writes its own log, rotated, and keeps it on the
       # mounted volume so it survives a container being replaced. Without
       # this the only record of what happened is in `docker logs`, which

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -23,6 +24,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from starlette.concurrency import run_in_threadpool
 
 from ..deps import get_storage_root, resolve_under_root, PathOutsideRoot, can_access
 from ..thumbnails import DEFAULT_SIZE, ThumbnailStore
@@ -33,6 +35,25 @@ thumbnails = APIRouter(prefix="/api/thumbnails", tags=["thumbnails"])
 # that a page left open still works, short enough that it is not
 # something anybody keeps.
 TOKEN_TTL = 600
+
+
+_store: Optional[ThumbnailStore] = None
+_store_lock = threading.Lock()
+
+
+def _thumbnail_store() -> ThumbnailStore:
+    """The one store of little pictures.
+
+    A new one per request would mean a new set of locks per request, and
+    the locks are what stop two requests from making the same picture
+    twice. The creation itself needs a lock too: forty threads arriving
+    at once would otherwise each build one.
+    """
+    global _store
+    with _store_lock:
+        if _store is None:
+            _store = ThumbnailStore(get_storage_root())
+        return _store
 
 
 def _secret() -> bytes:
@@ -106,7 +127,11 @@ async def get_thumbnail(
         raise HTTPException(status_code=403, detail="没有访问这个位置的权限")
 
     size = max(32, min(int(size or DEFAULT_SIZE), 1024))
-    data = ThumbnailStore(get_storage_root()).get(target, size)
+    # Decoding a photograph and resizing it takes about a tenth of a
+    # second. Doing that in the event loop stops every other request --
+    # including a streaming answer -- for as long as it takes, and a
+    # search page asks for two dozen of them at once.
+    data = await run_in_threadpool(_thumbnail_store().get, target, size)
     if not data:
         raise HTTPException(status_code=404, detail="No thumbnail")
     return Response(

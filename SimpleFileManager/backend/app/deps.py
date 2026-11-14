@@ -1,5 +1,6 @@
 import json
 import hashlib
+import logging
 import os
 import time
 import sqlite3
@@ -68,17 +69,52 @@ def _detect_embedding_dim(model: str, api_key: str, base_url: str) -> int:
     return 1536
 
 
-def _load_json(path: Path, default=None):
+def _load_json(path: Path, default=None, strict: bool = False):
+    """Read a settings file, surviving a half-written one.
+
+    The file is written by this process, so a broken one means the process
+    was killed halfway through a write -- a crash, an out-of-memory kill,
+    a power cut. Refusing to start because of that would turn a hiccup
+    into an outage, so the broken file is kept aside and the defaults are
+    used.
+
+    `strict` turns that off for files where falling back to "nothing"
+    would be dangerous -- a password file that reads as "no password"
+    would leave the service open.
+    """
     if not path.exists():
         return default if default is not None else {}
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        if strict:
+            raise
+        log = logging.getLogger(__name__)
+        log.error("%s is not readable (%s); keeping it aside and using the defaults",
+                  path, e)
+        try:
+            path.rename(path.with_suffix(path.suffix + ".broken"))
+        except OSError:
+            pass
+        return default if default is not None else {}
 
 
 def _save_json(path: Path, data):
+    """Write a settings file atomically.
+
+    A file that is truncated and then never finished is a file that will
+    not parse next time the service starts. Writing beside it and moving
+    it into place means the old one stays readable until the new one is
+    complete.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 
 def _update_env_value(path: Path, key: str, value: str) -> None:
@@ -1639,6 +1675,10 @@ def _get_default_settings() -> AppSettings:
         auto_digest_mode=os.getenv("AUTO_DIGEST_MODE", "scheduled"),
         auto_digest_hour=int(os.getenv("AUTO_DIGEST_HOUR", "23")),
         auto_digest_interval_hours=int(os.getenv("AUTO_DIGEST_INTERVAL_HOURS", "6")),
+        # The picture index is built in a window, not around the clock: it
+        # uses the cores the model wants.
+        image_index_enabled=os.getenv("IMAGE_INDEX_ENABLED", "false").lower() in ("true", "1", "yes"),
+        image_index_window=os.getenv("IMAGE_INDEX_WINDOW", "09:00-09:30"),
         max_context_tokens=int(os.getenv("MAX_CONTEXT_TOKENS", "32768")),
     )
 

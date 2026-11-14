@@ -1,9 +1,11 @@
 import time
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from ..deps import state
 from .auth import require_admin
-from ..indexer import indexer
+from ..cpu_pool import CpuPoolBusy
+from ..image_indexer import _sane_window
+from ..indexer import ACTIVE_HOURS_ALL, _parse_window, indexer
 from ..models import AppSettings, IndexStats, IndexStatus, AutoIndexStatus
 
 settings = APIRouter()
@@ -19,6 +21,18 @@ def get_settings() -> AppSettings:
 
 @settings.post("")
 def update_settings(updates: dict, _admin=Depends(require_admin)) -> AppSettings:
+    # A window that does not parse is treated as all-day, which for the
+    # picture index means it never stops. Better to say so than to accept
+    # a setting that quietly behaves the opposite of what was asked.
+    window = updates.get("image_index_window")
+    if window is not None and window != ACTIVE_HOURS_ALL:
+        # The same rule the scheduler applies: a window the scheduler
+        # would refuse must not be accepted here either, or the setting
+        # would be taken and then quietly replaced.
+        if _parse_window(str(window)) is None or not _sane_window(str(window)):
+            raise HTTPException(
+                status_code=400,
+                detail="时间窗口格式应为 HH:MM-HH:MM，例如 09:00-09:30（或 all 表示不限时）")
     return state.update_settings(updates)
 
 
@@ -128,11 +142,21 @@ def _probe_llm() -> tuple[bool, str]:
             max_tokens=8,
             provider=provider,
             reasoning_budget=provider.reasoning_budget,
+            # The sidebar asks for this every minute. Waiting a minute for
+            # the cores would hold the whole server up, and a probe that
+            # times out would show the model as broken when it is merely
+            # busy.
+            pool_timeout=2.0,
+            request_timeout=8.0,
         )
         content = (result.get("content") or "").strip()
         return True, content[:60] or "ok"
+    except CpuPoolBusy:
+        # Busy is not broken. The model is answering somebody else.
+        return True, "模型正忙（有人在用）"
     except Exception as e:
-        return False, str(e)[:200]
+        from ..llm_client import _friendly_error
+        return False, _friendly_error(e)[:200]
 
 
 def _probe_embedding() -> tuple[bool, str]:

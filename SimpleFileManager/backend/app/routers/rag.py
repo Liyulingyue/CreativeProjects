@@ -108,6 +108,7 @@ def semantic_search(req: SearchRequest) -> SearchResult:
     # The query embedding itself goes through the dedicated *search* embedder
     # (EMBEDDING_SEARCH_URL) so it has its own low-latency path even while
     # the indexer is hammering the indexer embedder.
+    from ..cpu_pool import CpuPoolBusy
     from ..interaction import interaction
     interaction.mark_active()
     try:
@@ -137,8 +138,11 @@ def query(req: QueryRequest) -> QueryResponse:
         search_svc = state.get_search_embedding_service()
         result = rag_svc.query(req.question, top_k=req.top_k, embedder=search_svc)
         return QueryResponse(**result)
+    except CpuPoolBusy as e:
+        # The model was busy -- say so in the same words the chat uses.
+        raise HTTPException(status_code=503, detail=_friendly_error(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=_friendly_error(e))
 
 
 @rag.post("/query/stream")

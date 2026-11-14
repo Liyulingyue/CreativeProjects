@@ -5,6 +5,7 @@ import type { HybridSearchResult } from '../api';
 import { Icon } from './ui/Icon';
 import { MarkdownText } from './ui/MarkdownText';
 import { useToast } from './ui/Toast';
+import { ImageSearchPanel } from './ImageSearchPanel';
 
 type HybridSearchResponseLike = { results: HybridSearchResult[]; keyword_count: number; semantic_count: number; };
 
@@ -53,6 +54,10 @@ export function SearchPage() {
   const [isSearching, setIsSearching] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [mode, setMode] = useState<SearchMode>('hybrid');
+  // 'files' searches the text index, 'images' the picture index. Two
+  // different models and two different corpora, so they get their own
+  // screens rather than sharing one result list.
+  const [kind, setKind] = useState<'files' | 'images'>('files');
   const [error, setError] = useState<string | null>(null);
 
   const [aiAnswer, setAiAnswer] = useState<string | null>(null);
@@ -92,6 +97,29 @@ export function SearchPage() {
 
   return (
     <div className="flex flex-col h-full bg-slate-50">
+      <div className="bg-white border-b border-slate-200 px-4 sm:px-6 pt-3 flex-shrink-0">
+        <div className="flex gap-4">
+          {([['files', '文件'], ['images', '图片']] as ['files' | 'images', string][]).map(([k, label]) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => setKind(k)}
+              aria-pressed={kind === k}
+              className={`pb-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                kind === k
+                  ? 'border-indigo-600 text-indigo-600'
+                  : 'border-transparent text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {kind === 'images' ? (
+        <ImageSearchPanel />
+      ) : (
+        <>
       {/* Search bar */}
       <div className="bg-white border-b border-slate-200 px-4 sm:px-6 py-3 sm:py-4 flex-shrink-0">
         <form onSubmit={handleSearch} className="flex flex-wrap items-center gap-2 sm:gap-3">
@@ -274,6 +302,8 @@ export function SearchPage() {
           )}
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 }

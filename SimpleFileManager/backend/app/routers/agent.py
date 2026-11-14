@@ -141,6 +141,36 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "search_images",
+            "description": "Find pictures by what they show, from a text description such as 'a red apple on a table' or 'a sunset over the sea'. Returns the file paths of the matching pictures, best match first. It only knows the pictures that have been put into the picture index; when nothing is indexed it says so. The search needs the server's main cores and refuses to run while they are busy.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Description of the picture to look for, in the language the user used."},
+                    "top_k": {"type": "integer", "description": "How many pictures to return (default 8, max 20)."}
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_similar_images",
+            "description": "Find pictures that look like a given picture. Returns the file paths of the closest matches, best match first. The reference picture does not have to be indexed.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path of the picture to search from, relative to the storage root."},
+                    "top_k": {"type": "integer", "description": "How many pictures to return (default 8, max 20)."}
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "submit_plan",
             "description": "Submit a file organization plan for user approval. The plan will NOT be executed until the user approves it. Call this when you have decided what actions to propose.",
             "parameters": {
@@ -228,6 +258,24 @@ TOOL_DISPLAY: dict[str, dict] = {
             "actions": "操作数组，每项描述一个移动、重命名或删除动作",
         },
     },
+    "search_images": {
+        "title": "以文搜图",
+        "summary": "用一句话描述画面内容，找出符合的图片（例如「海边日落」）。只搜已经建过索引的图片；服务器正在忙时会直接告知暂不可用。",
+        "risk": "read",
+        "params": {
+            "query": "描述想找的画面，用用户说的语言",
+            "top_k": "返回的图片数量，默认 8，最大 20",
+        },
+    },
+    "find_similar_images": {
+        "title": "以图搜图",
+        "summary": "给一张图片，找出和它最像的其他图片。参考图本身不需要在索引里。",
+        "risk": "read",
+        "params": {
+            "path": "参考图片的路径，相对存储根目录",
+            "top_k": "返回的图片数量，默认 8，最大 20",
+        },
+    },
 }
 
 RISK_LABELS = {"read": "只读", "approval": "需审批"}
@@ -240,6 +288,19 @@ SYSTEM_PROMPT = """你是 NASMind 的文件治理 Agent，负责帮助用户分�
 - find_files: 按文件名正则搜索文件
 - search_content: 按内容正则搜索文件
 - semantic_search: 按含义检索已索引的段落，理解大文件时优先用它
+- search_images: 以文搜图，用一句话描述画面找出图片（如「海边日落」）
+- find_similar_images: 以图搜图，给一张图片找出相似的其他图片
+
+【图片检索的规矩】
+- 只有当用户明确在找图片时才用图片检索（"找一张…照片"、"有没有…的图片"）。
+  整理文件、找文档这类任务用 list_directory 和 semantic_search，不要顺手搜图：
+  搜图会占住服务器的大核，模型生成会因此变慢。
+- 图片检索只能认出「已经进过图片索引」的图片。图片索引是单独建立的（用户点一下
+  或按计划跑），和文本索引不是一回事。
+- 检索会占用服务器的大核；服务器正在生成回答或正在建图片索引时，图片检索会直接
+  失败并说明原因。这种情况把原因转述给用户，不要重试刷屏。
+- 找到图片后，把文件路径列给用户，并说明这些是按相似度排序的。模型看不见图片本身，
+  不要替用户断言图画的具体细节。
 
 {MUTATION_POLICY}
 
@@ -809,6 +870,38 @@ def _indexed_name_is_readable(name: str) -> bool:
     return False
 
 
+def tool_search_images(query: str, top_k: int = 8) -> dict:
+    """Pictures that match a description of what they show."""
+    from ..image_search import SearchUnavailable, search_by_text
+
+    try:
+        results = search_by_text(query, limit=max(1, min(top_k, 20)))
+    except SearchUnavailable as e:
+        return {"success": False, "error": str(e)}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    if not results:
+        return {"success": True, "results": [],
+                "note": "没有匹配的图片。图片索引可能还是空的——请用户到搜索页的「图片」标签点「建立图片索引」。"}
+    return {"success": True, "results": results}
+
+
+def tool_find_similar_images(path: str, top_k: int = 8) -> dict:
+    """Pictures that look like a given picture."""
+    from ..image_search import SearchUnavailable, search_by_image
+
+    try:
+        results = search_by_image(path, limit=max(1, min(top_k, 20)))
+    except SearchUnavailable as e:
+        return {"success": False, "error": str(e)}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    if not results:
+        return {"success": True, "results": [],
+                "note": "没有找到相似的图片。图片索引可能还是空的——请用户到搜索页的「图片」标签点「建立图片索引」。"}
+    return {"success": True, "results": results}
+
+
 def tool_semantic_search(query: str, path: str = "", top_k: int = 5) -> dict:
     """Meaning-based retrieval over the indexed corpus.
 
@@ -925,6 +1018,10 @@ def execute_tool(name: str, arguments: dict) -> dict:
             return tool_search_content(**arguments)
         if name == "semantic_search":
             return tool_semantic_search(**arguments)
+        if name == "search_images":
+            return tool_search_images(**arguments)
+        if name == "find_similar_images":
+            return tool_find_similar_images(**arguments)
         if name == "submit_plan":
             return tool_submit_plan(**arguments)
         # Skill tools. The schema list is gated by the registry, but a model

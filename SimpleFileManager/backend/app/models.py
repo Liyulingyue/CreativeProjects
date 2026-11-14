@@ -117,6 +117,11 @@ class AppSettings(BaseModel):
     auto_digest_mode: str = "scheduled"  # scheduled | interval
     auto_digest_hour: int = 23
     auto_digest_interval_hours: int = 6
+    # Building the picture index is a deliberate job: it uses the same cores
+    # as the model, so it runs in a window instead of all day. The window is
+    # "HH:MM-HH:MM"; "all" lets it run to the end.
+    image_index_enabled: bool = False
+    image_index_window: str = "09:00-09:30"
     max_context_tokens: int = 32768
     # Ceiling on a single model reply. Left unset, llama-server generates until
     # EOS or until it exhausts the slot's context, which in the agent loop

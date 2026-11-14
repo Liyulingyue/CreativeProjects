@@ -10,3 +10,6 @@ __pycache__/
 .env
 references/
 
+
+# 下载的安装包（不是源码）
+*.deb

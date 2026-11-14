@@ -942,7 +942,8 @@ def thumbnail(path: str, size: int = 256):
     make the machine work hard. A file that is not a picture gets a
     404, and the browser shows the icon it would have shown anyway.
     """
-    from ..thumbnails import DEFAULT_SIZE, ThumbnailStore
+    from .thumbnails import _thumbnail_store
+    from ..thumbnails import DEFAULT_SIZE
 
     try:
         target = resolve_under_root(path)
@@ -952,7 +953,7 @@ def thumbnail(path: str, size: int = 256):
         raise HTTPException(status_code=404, detail="File not found")
 
     size = max(32, min(int(size or DEFAULT_SIZE), 1024))
-    data = ThumbnailStore(get_storage_root()).get(target, size)
+    data = _thumbnail_store().get(target, size)
     if not data:
         raise HTTPException(status_code=404, detail="No thumbnail")
     return Response(content=data, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})

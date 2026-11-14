@@ -269,7 +269,16 @@ export async function updateSettings(updates: Partial<AppSettings>): Promise<App
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updates),
   });
-  if (!res.ok) throw new Error('Failed to update settings');
+  if (!res.ok) {
+    // The backend says what is wrong ("时间窗口格式应为 HH:MM-HH:MM");
+    // a generic English sentence would hide it.
+    let detail = '保存设置失败';
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = typeof body.detail === 'string' ? body.detail : detail;
+    } catch { /* the body was not JSON */ }
+    throw new Error(detail);
+  }
   return res.json();
 }
 
@@ -965,6 +974,108 @@ export async function hybridSearch(
   const params = new URLSearchParams({ query, top_k: String(topK), mode });
   const res = await authFetch(`${API_BASE}/search/hybrid?${params}`, { method: 'POST' });
   if (!res.ok) throw new Error('Failed to search');
+  return res.json();
+}
+
+// ---- Picture search ----
+
+/** A picture the search found. */
+export interface ImageHit {
+  path: string;
+  name: string;
+  score: number;
+  size: number;
+  modified_at: number;
+  /** Key for the little picture; a picture element cannot send a header. */
+  thumbnail_token?: string;
+  /** True for the picture the search started from. */
+  is_source?: boolean;
+}
+
+export interface ImageSearchResponse {
+  results: ImageHit[];
+}
+
+/** Find pictures by a description of what they show. */
+export async function searchImages(query: string, topK: number = 12): Promise<ImageSearchResponse> {
+  const res = await authFetch(`${API_BASE}/images/search`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, top_k: topK }),
+  });
+  if (!res.ok) {
+    let detail = '图片检索失败';
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = body.detail;
+    } catch { /* the body was not JSON */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+/** Find pictures that look like a given picture. */
+export async function searchSimilarImages(path: string, topK: number = 12): Promise<ImageSearchResponse> {
+  const res = await authFetch(`${API_BASE}/images/search/similar`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, top_k: topK }),
+  });
+  if (!res.ok) {
+    let detail = '图片检索失败';
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = body.detail;
+    } catch { /* the body was not JSON */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+export interface ImageIndexStatus {
+  running: boolean;
+  paused: boolean;
+  total: number;
+  done: number;
+  skipped: number;
+  encoded: number;
+  /** Pictures that could not have the cores and were put back in the queue. */
+  deferred: number;
+  failed: number;
+  current: string;
+  /** How long the last picture took to encode, in seconds. */
+  last_encode_seconds?: number;
+  started_at: number;
+  finished_at: number;
+  last_error: string;
+  indexed: number;
+}
+
+export async function fetchImageIndexStatus(): Promise<ImageIndexStatus> {
+  const res = await authFetch(`${API_BASE}/images/index/status`);
+  if (!res.ok) throw new Error((await detailOf(res)) || '读取图片索引状态失败');
+  return res.json();
+}
+
+export async function startImageIndex(limit = 0, rebuild = false): Promise<ImageIndexStatus> {
+  const res = await authFetch(`${API_BASE}/images/index/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ limit, rebuild }),
+  });
+  if (!res.ok) throw new Error((await detailOf(res)) || '建立图片索引失败');
+  return res.json();
+}
+
+export async function pauseImageIndex(): Promise<ImageIndexStatus> {
+  const res = await authFetch(`${API_BASE}/images/index/pause`, { method: 'POST' });
+  if (!res.ok) throw new Error((await detailOf(res)) || '暂停图片索引失败');
+  return res.json();
+}
+
+export async function resumeImageIndex(): Promise<ImageIndexStatus> {
+  const res = await authFetch(`${API_BASE}/images/index/resume`, { method: 'POST' });
+  if (!res.ok) throw new Error((await detailOf(res)) || '继续图片索引失败');
   return res.json();
 }
 

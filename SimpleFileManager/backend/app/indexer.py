@@ -44,21 +44,37 @@ def _display_path(path: Path) -> str:
 ACTIVE_HOURS_ALL = "all"
 
 
-def _in_active_hours(window: str, now: Optional[datetime] = None) -> bool:
+def _parse_window(window: str) -> Optional[tuple[int, int]]:
+    """The window as minutes since midnight, or None when there is none.
+
+    None means either "all day" or something that does not parse. Both are
+    treated as all-day, which is what this has always done.
+
+    The hours and minutes are not range-checked on purpose: "24:00-06:00"
+    is a natural way to write "from midnight to six", and it means exactly
+    what it used to -- a window that wraps past midnight. Rejecting it
+    would turn a night-time window into a round-the-clock one.
+    """
     if not window or window == ACTIVE_HOURS_ALL:
-        return True
+        return None
     try:
         start_s, end_s = window.split("-")
         sh, sm = (int(x) for x in start_s.strip().split(":"))
         eh, em = (int(x) for x in end_s.strip().split(":"))
     except (ValueError, AttributeError):
         log.warning("invalid index active hours %r, treating as all-day", window)
+        return None
+    return sh * 60 + sm, eh * 60 + em
+
+
+def _in_active_hours(window: str, now: Optional[datetime] = None) -> bool:
+    parsed = _parse_window(window)
+    if parsed is None:
         return True
+    start, end = parsed
 
     t = (now or datetime.now())
     cur = t.hour * 60 + t.minute
-    start = sh * 60 + sm
-    end = eh * 60 + em
     if start == end:
         return True
     if start < end:

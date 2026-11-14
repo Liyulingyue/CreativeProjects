@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from .cpu_pool import CpuPoolBusy
 from . import db
 from .deps import DATA_DIR, get_storage_root, state
 
@@ -116,12 +117,21 @@ class DigestService:
                 reasoning_budget=provider.reasoning_budget,
             )
             return result.get("content")
+        except CpuPoolBusy:
+            # The model was busy (a conversation, or a picture index build).
+            # The digest falls back to a plain list, and says why -- a
+            # digest with no summary and no explanation looks broken.
+            log.warning("daily digest skipped: the model was busy")
+            self._last_reason = "模型当时正忙（其它对话或图片索引构建），这次没写成摘要"
+            return None
         except Exception:
             log.exception("daily digest composition failed")
+            self._last_reason = "摘要生成失败"
             return None
 
     def _fallback_compose(self, date: str, items: list[dict]) -> str:
-        lines = [f"# 知识日报 · {date}", "", f"今日共 {len(items)} 个文件新增或变动（LLM 摘要生成失败，以下为原始清单）：", ""]
+        reason = getattr(self, "_last_reason", None) or "LLM 摘要生成失败"
+        lines = [f"# 知识日报 · {date}", "", f"今日共 {len(items)} 个文件新增或变动（{reason}，以下为原始清单）：", ""]
         for i in items:
             lines.append(f"- **{i['name']}** — `{i['path']}` ({i['size']} bytes)")
         return "\n".join(lines)

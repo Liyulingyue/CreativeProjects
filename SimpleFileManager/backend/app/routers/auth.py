@@ -47,7 +47,20 @@ def _load_auth() -> dict:
         mtime = None
     if _auth_cache["data"] is not None and _auth_cache["mtime"] == mtime:
         return _auth_cache["data"]
-    data = _load_json(AUTH_FILE, {"password_hash": None, "salt": None, "tokens": {}})
+    # Not the forgiving loader: a password file that cannot be read must
+    # not turn into "no password". Failing open here would leave the
+    # whole service open to anyone who can reach it.
+    if not AUTH_FILE.exists():
+        # No password file at all: the normal state of a fresh install.
+        data = {"password_hash": None, "salt": None, "tokens": {}}
+    else:
+        data = _load_json(AUTH_FILE, None, strict=True)
+        if not isinstance(data, dict) or "password_hash" not in data:
+            # The file is there but does not make sense. Treating that as
+            # "no password" would leave the service open to anyone.
+            raise RuntimeError(
+                f"{AUTH_FILE} is damaged; refusing to start without it. "
+                f"Restore it from a backup or delete it to set a new password.")
     _auth_cache["mtime"] = mtime
     _auth_cache["data"] = data
     return data

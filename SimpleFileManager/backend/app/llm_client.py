@@ -11,6 +11,8 @@ from typing import Iterator, Optional
 from openai import APIConnectionError, APIStatusError, OpenAI
 
 from .deps import state
+from .cpu_pool import CpuPoolBusy, get_big_pool
+from .interaction import interaction
 
 log = logging.getLogger(__name__)
 
@@ -23,10 +25,37 @@ RETRY_BASE_DELAY = 1.5
 RETRY_MAX_DELAY = 20.0
 
 
+def _with_pool(operation, pool_timeout: Optional[float] = None, **kwargs):
+    """Make one request while holding the big cores."""
+    with get_big_pool().hold(timeout=BIG_POOL_TIMEOUT if pool_timeout is None
+                             else pool_timeout):
+        return operation(**kwargs)
+
+
+class _null_context:
+    """A context manager that does nothing.
+
+    A remote provider does not take the local cores, so it does not need
+    the lock; this stands in for it.
+    """
+
+    def __enter__(self):
+        return None
+
+    def __exit__(self, *exc):
+        return False
+
+
 def _friendly_error(exc: Exception) -> str:
     """Turn transport/SDK errors into something worth showing in the UI."""
+    if isinstance(exc, CpuPoolBusy):
+        # The holder could be another conversation, the daily digest or a
+        # picture index build -- saying which one would be a guess.
+        return ("服务器正在忙（模型正在生成，或图片索引构建中），稍等一会儿再试。")
     if isinstance(exc, APIStatusError):
         code = exc.status_code
+        if code == 402:
+            return ("远程模型服务额度用尽了。请在聊天页把 provider 换成本地的 Model24B。")
         if code == 429:
             return "模型服务繁忙（429），已自动重试多次仍被拒绝。请稍后再试，或在设置里确认 llama-server 已用 --parallel 启动。"
         if code in (500, 502, 503, 504):
@@ -38,6 +67,50 @@ def _friendly_error(exc: Exception) -> str:
     if isinstance(exc, (APIConnectionError, TimeoutError)):
         return "无法连接模型服务，请确认 LLMServices/serve.sh 已启动且端口可达。"
     return str(exc)
+
+
+# How long a request waits for the big cores. A picture index build or a
+# long answer can have them for a while; a user should not wait forever
+# without being told.
+BIG_POOL_TIMEOUT = 60.0
+
+# How often a running answer says "still busy". The idle window is 45
+# seconds, so this has to be well inside it.
+INTERACTION_RENEW_SECONDS = 10.0
+
+
+# The host names that mean "this machine".
+LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0", "host.docker.internal"}
+
+
+def _is_local_provider(provider) -> bool:
+    """Whether the provider runs on this machine.
+
+    A remote model does not use the local cores, so it has no business
+    locking them: a slow round trip to a cloud provider would otherwise
+    stop the picture index and every local search for the length of it.
+
+    The host name is compared exactly. A substring test would call
+    "https://localhost.example.com" local and "http://192.168.1.50:9010"
+    remote -- and the second one is a llama-server on this very box,
+    addressed by its LAN address.
+    """
+    url = (getattr(provider, "base_url", "") or "").strip()
+    if not url:
+        return True
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:  # noqa: BLE001
+        host = url.lower()
+    if not host:
+        return True
+    if host in LOCAL_HOSTS:
+        return True
+    # An address on this machine's own network is this machine too.
+    if host.startswith("192.168.") or host.startswith("10.") or host.startswith("172."):
+        return True
+    return False
 
 
 def _with_retry(operation, *args, **kwargs):
@@ -103,6 +176,8 @@ def chat_completion(
     max_tokens: Optional[int] = None,
     reasoning_budget: Optional[int] = None,
     provider=None,
+    pool_timeout: Optional[float] = None,
+    request_timeout: Optional[float] = None,
 ) -> dict:
     """Send a chat completion request. Returns the raw choice message dict.
 
@@ -129,12 +204,30 @@ def chat_completion(
     }
     if tools:
         kwargs["tools"] = tools
+    if request_timeout is not None:
+        # A probe that hangs is worse than one that gives up: the sidebar
+        # asks every minute, and a provider that never answers would tie
+        # up a worker thread for as long as it likes.
+        kwargs["timeout"] = request_timeout
     if reasoning_budget is not None and reasoning_budget >= 0:
         # llama-server's token budget for thinking. Without it a reasoning
         # model is free to think for the whole max_tokens, and on this box
         # that is minutes of generation before it does anything useful.
         kwargs["extra_body"] = {"reasoning_budget": reasoning_budget}
-    resp = _with_retry(client.chat.completions.create, **kwargs)
+    # The big cores have one owner at a time: the model, a picture search,
+    # or a picture index build. The model has priority -- it is what the
+    # user is waiting for -- so it waits for the lock rather than taking
+    # the cores away from a running build.
+    if _is_local_provider(provider):
+        # The lock covers the request, not the backoff between attempts.
+        # A server that answers 429 twice would otherwise keep the cores
+        # for the twenty seconds it sleeps between tries.
+        resp = _with_retry(
+            lambda **kw: _with_pool(client.chat.completions.create, **kw,
+                                    pool_timeout=pool_timeout),
+            **kwargs)
+    else:
+        resp = _with_retry(client.chat.completions.create, **kwargs)
     choice = resp.choices[0]
     message = choice.message
     result: dict = {"content": message.content or ""}
@@ -259,33 +352,63 @@ def chat_completion_stream(
     if reasoning_budget is not None and reasoning_budget >= 0:
         # See chat_completion: a token budget for the model's thinking.
         kwargs["extra_body"] = {"reasoning_budget": reasoning_budget}
-    stream = _with_retry(client.chat.completions.create, **kwargs)
-
     calls: dict[int, dict] = {}
-    for chunk in stream:
-        if not chunk.choices:
-            continue
-        delta = chunk.choices[0].delta
-        # Reasoning arrives on its own channel ahead of the answer. Without a
-        # separate event type it would either be lost or interleaved into the
-        # reply text, which reads as the model thinking out loud mid-sentence.
-        reasoning = getattr(delta, "reasoning_content", None)
-        if reasoning:
-            yield ("reasoning", reasoning)
-        content = getattr(delta, "content", None)
-        if content:
-            yield ("token", content)
-        for tc in getattr(delta, "tool_calls", None) or []:
-            idx = tc.index if getattr(tc, "index", None) is not None else len(calls)
-            slot = calls.setdefault(idx, {"id": "", "name": "", "arguments": ""})
-            if getattr(tc, "id", None):
-                slot["id"] = tc.id
-            fn = getattr(tc, "function", None)
-            if fn is not None:
-                if getattr(fn, "name", None):
-                    slot["name"] = fn.name
-                if getattr(fn, "arguments", None):
-                    slot["arguments"] += fn.arguments
+    # The lock is held for the whole stream, not just for the request: the
+    # cores are busy until the last token is out. Closing the generator
+    # early -- which is what happens when the model asks for a tool -- ends
+    # the with-block and hands the cores back.
+    #
+    # The request goes out inside the block on purpose. The server starts
+    # computing the moment it receives it, so asking first and locking
+    # afterwards would let the model run on the cores while a picture
+    # index build believes it has them.
+    pool = get_big_pool() if _is_local_provider(provider) else None
+    if pool:
+        # Before the request goes out: a reasoning model can think for
+        # minutes before the first token, and the indexers should keep
+        # their hands off the cores during that time too.
+        interaction.mark_active()
+    with (pool.hold(timeout=BIG_POOL_TIMEOUT) if pool else _null_context()):
+        # The retry stays inside the lock here, unlike the single-shot
+        # path: the lock has to cover the whole stream, so it cannot be
+        # given up between attempts.
+        stream = _with_retry(client.chat.completions.create, **kwargs)
+        # A long answer can run for minutes. The "someone is talking"
+        # signal is only good for 45 seconds, so it is renewed while the
+        # tokens keep coming -- otherwise the indexers would decide the
+        # machine is idle and take the cores away from the answer.
+        last_mark = time.monotonic()
+        for chunk in stream:
+            now = time.monotonic()
+            # Only a local answer occupies the local cores, so only a
+            # local answer should keep the indexers standing down. A
+            # cloud model uses no CPU here at all.
+            if pool and now - last_mark >= INTERACTION_RENEW_SECONDS:
+                interaction.mark_active()
+                last_mark = now
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            # Reasoning arrives on its own channel ahead of the answer. Without a
+            # separate event type it would either be lost or interleaved into the
+            # reply text, which reads as the model thinking out loud mid-sentence.
+            reasoning = getattr(delta, "reasoning_content", None)
+            if reasoning:
+                yield ("reasoning", reasoning)
+            content = getattr(delta, "content", None)
+            if content:
+                yield ("token", content)
+            for tc in getattr(delta, "tool_calls", None) or []:
+                idx = tc.index if getattr(tc, "index", None) is not None else len(calls)
+                slot = calls.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                if getattr(tc, "id", None):
+                    slot["id"] = tc.id
+                fn = getattr(tc, "function", None)
+                if fn is not None:
+                    if getattr(fn, "name", None):
+                        slot["name"] = fn.name
+                    if getattr(fn, "arguments", None):
+                        slot["arguments"] += fn.arguments
 
     for slot in calls.values():
         if slot["name"]:

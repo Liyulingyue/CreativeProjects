@@ -867,6 +867,31 @@ export function SettingsPage() {
             </div>
           </Card>
 
+          <Card icon="image" tone="text-emerald-500" title="图片索引">
+            <div className="space-y-3">
+              <Toggle
+                checked={settings.image_index_enabled}
+                onChange={() => set({ image_index_enabled: !settings.image_index_enabled })}
+                label="定时建立图片索引"
+                hint="在指定时间段内自动编码图片，用来做以文搜图"
+              />
+              {settings.image_index_enabled && (
+                <Field
+                  label="执行时间段"
+                  hint="到点自动开始，时间一到就停（哪怕还有没做完的，下次接着做）"
+                >
+                  <input
+                    type="text"
+                    className={inputClass}
+                    value={settings.image_index_window ?? '09:00-09:30'}
+                    onChange={e => set({ image_index_window: e.target.value })}
+                    placeholder="09:00-09:30"
+                  />
+                </Field>
+              )}
+            </div>
+          </Card>
+
           </>
           )}
 

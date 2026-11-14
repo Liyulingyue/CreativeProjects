@@ -63,7 +63,10 @@ class ThumbnailStore:
 
             cache_root = DATA_DIR / THUMBNAIL_DIR_NAME
         self.cache_root = Path(cache_root)
-        self._lock = threading.Lock()
+        # One lock per picture being made, so a page full of pictures
+        # does not have to wait for each other.
+        self._locks: dict[str, threading.Lock] = {}
+        self._locks_lock = threading.Lock()
 
     def cache_path(self, target: Path, size: int) -> Path:
         """Where the little picture for a file is kept.
@@ -100,7 +103,12 @@ class ThumbnailStore:
         if Image is None:
             return None
 
-        with self._lock:
+        # One lock per picture, not one for the whole cache. Decoding a
+        # photograph takes about a tenth of a second, and a page of
+        # pictures asks for two dozen of them at once: a single lock
+        # would make them all queue up and fill the thread pool.
+        key = str(cached)
+        with self._lock_for(key):
             # Another thread may have made it while we waited.
             try:
                 return cached.read_bytes()
@@ -116,13 +124,24 @@ class ThumbnailStore:
             try:
                 self.cache_root.mkdir(parents=True, exist_ok=True)
                 # Written under a name of its own and then moved into
-                # place, so a half-written picture is never served.
-                tmp = cached.with_suffix(f".tmp{os.getpid()}")
+                # place, so a half-written picture is never served. The
+                # thread is in the name so two threads working on the
+                # same picture do not write the same temporary file.
+                tmp = cached.with_suffix(f".tmp{os.getpid()}-{threading.get_ident()}")
                 tmp.write_bytes(data)
                 tmp.replace(cached)
             except OSError:
                 pass
             return data
+
+    def _lock_for(self, key: str) -> threading.Lock:
+        """The lock for one picture."""
+        with self._locks_lock:
+            lock = self._locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._locks[key] = lock
+            return lock
 
     def _make(self, target: Path, size: int, Image) -> Optional[bytes]:
         """The little picture, made from the file."""

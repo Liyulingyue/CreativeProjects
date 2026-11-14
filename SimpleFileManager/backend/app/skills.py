@@ -181,6 +181,8 @@ TOOL_META: dict[str, dict] = {
     "read_skill":    {"label": "读取技能",    "description": "读取 SKILL.md 或资源文件", "danger": "safe"},
     "list_skill_files": {"label": "技能文件", "description": "列出技能附带文件",         "danger": "safe"},
     "run_command":   {"label": "执行命令",    "description": "在沙箱中运行 shell 命令（禁网，只能读写存储目录）", "danger": "high"},
+    "search_images": {"label": "以文搜图",    "description": "用一句话找出符合的图片",              "danger": "safe"},
+    "find_similar_images": {"label": "以图搜图", "description": "找出一张图的相似图片",            "danger": "safe"},
 }
 ALL_TOOL_NAMES = [t["function"]["name"] for t in ALL_TOOLS]
 
@@ -193,7 +195,8 @@ BULK_TOGGLE_EXCLUDED = {"run_command"}
 # always available there. The skills registry's copies only matter to the
 # legacy /api/chat endpoint; the settings UI hides their toggles because
 # flipping them on the agent path would do nothing.
-AGENT_BUILTIN_TOOL_NAMES = {"list_directory", "read_file", "semantic_search", "search_files"}
+AGENT_BUILTIN_TOOL_NAMES = {"list_directory", "read_file", "semantic_search", "search_files",
+                            "search_images", "find_similar_images"}
 
 # Read-only/info tools run directly; move/delete default to plan-only so a
 # mistaken direct call cannot mutate files without the user approving a plan.

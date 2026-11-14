@@ -16,6 +16,7 @@ from .deps import PathNotAllowed, resolve_under_root
 from .indexer import indexer
 from .auto_digest import auto_digest
 from .trash_retention import trash_retention
+from .image_indexer import image_index_schedule
 from .routers import providers as providers_router  # noqa: E402
 from .routers import embedding_providers as embedding_providers_router  # noqa: E402
 from .routers.shares import shares as shares_router  # noqa: E402
@@ -23,6 +24,7 @@ from .routers.share_public import share_public as share_public_router  # noqa: E
 from .routers.users import users as users_router  # noqa: E402
 from .routers.upload_log import upload_log as upload_log_router  # noqa: E402
 from .routers.thumbnails import thumbnails  # noqa: E402
+from .routers.images import images  # noqa: E402
 from .routers.favorites import favorites as favorites_router  # noqa: E402
 from .routers.skills import skills_router  # noqa: E402
 
@@ -58,11 +60,13 @@ async def lifespan(app: FastAPI):
     indexer.start()
     auto_digest.start()
     trash_retention.start()
+    image_index_schedule.start()
     yield
     log.info("shutting down: stopping indexer, digest scheduler and trash retention")
     indexer.stop()
     auto_digest.stop()
     trash_retention.stop()
+    image_index_schedule.stop()
 
 
 app = FastAPI(title="SimpleFileManager", version="0.4.0", lifespan=lifespan)
@@ -177,6 +181,7 @@ app.include_router(fs, prefix="/api/fs", tags=["fs"], dependencies=[Depends(fs_a
 # element cannot send a header, so the key is in the URL. It is not the
 # fs_auth dependency, because that would open the files as well.
 app.include_router(thumbnails)
+app.include_router(images, dependencies=[auth_dep])
 app.include_router(skills_router, prefix="/api/skills", tags=["skills"], dependencies=[auth_dep])
 app.include_router(search, prefix="/api/search", tags=["search"], dependencies=[auth_dep])
 app.include_router(settings, prefix="/api/settings", tags=["settings"], dependencies=[auth_dep])

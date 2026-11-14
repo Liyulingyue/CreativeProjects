@@ -576,6 +576,120 @@ show_backends() {
 }
 
 # ---------------------------------------------------------------------------
+# jina v5-omni: picture and text encoding in one space
+# ---------------------------------------------------------------------------
+# The picture search needs a model that puts pictures and text in the same
+# vector space, so a sentence can find a photograph. jina-embeddings-v5-omni
+# is that model, and it needs its own llama-server -- the stock build in
+# LLMServices/bin does not know the media protocol the vision projector uses.
+#
+# It runs on the *big* cores, next to the model, because the vision tower is
+# about ten times faster on those (a picture costs ~9s there against ~110s
+# on the little cores). The two services never compute at the same time: the
+# backend holds a lock over the big cores for the model, for the picture
+# search and for the picture index, and only one of them runs at a time.
+#
+# The fork lives under references/llama.cpp-jina (the branch with the v5-omni
+# patches). The projector here is the low-resolution build: the shipped one
+# looks at 256 tokens per picture, which costs four times as much for detail
+# that does not change what a search finds. scripts/patch_mmproj_pixels.py
+# makes that file.
+JINA_PORT="${JINA_PORT:-9014}"
+JINA_PID_FILE="$PID_DIR/jina.pid"
+JINA_LOG="$LOG_DIR/jina.log"
+JINA_BUILD="${JINA_BUILD:-$SCRIPT_DIR/../references/llama.cpp-jina/build/bin}"
+JINA_MODEL="${JINA_MODEL:-$SCRIPT_DIR/models/jina-v5-omni/jina-embeddings-v5-omni-small-retrieval-Q4_K_M.gguf}"
+JINA_MMPROJ="${JINA_MMPROJ:-$SCRIPT_DIR/models/jina-v5-omni/jina-embeddings-v5-omni-small-retrieval-vision-mmproj-F16-64tok.gguf}"
+JINA_THREADS="${JINA_THREADS:-4}"
+# Same cores as the model: they take turns, and the picture search needs the
+# speed. Override when the box is homogeneous (then JINA_CPUSET stays empty
+# and the scheduler decides).
+JINA_CPUSET="${JINA_CPUSET:-$LLM_CPUSET}"
+
+start_jina() {
+    if [ -f "$JINA_PID_FILE" ] && kill -0 "$(cat "$JINA_PID_FILE")" 2>/dev/null; then
+        echo "[Jina] Already running (PID $(cat "$JINA_PID_FILE"))"
+        return 0
+    fi
+    if [ ! -x "$JINA_BUILD/llama-server" ]; then
+        echo "[Jina] skip: no build at $JINA_BUILD" >&2
+        echo "       the v5-omni patches are not in the stock build; see references/llama.cpp-jina" >&2
+        return 1
+    fi
+    if [ ! -f "$JINA_MODEL" ]; then
+        echo "[Jina] skip: model not found at $JINA_MODEL" >&2
+        return 1
+    fi
+    local mmproj_args=()
+    if [ -f "$JINA_MMPROJ" ]; then
+        mmproj_args=(--mmproj "$JINA_MMPROJ")
+    else
+        echo "[Jina] note: no vision projector at $JINA_MMPROJ -- pictures cannot be encoded" >&2
+    fi
+
+    echo "[Jina] Starting (port $JINA_PORT, $JINA_THREADS threads)..."
+    local cpuset_env=()
+    if [ -n "$JINA_CPUSET" ]; then
+        cpuset_env=(taskset -a "$JINA_CPUSET")
+    fi
+    # setsid puts the server in a session of its own, so stopping it takes
+    # the whole process group with it and the port is really free
+    # afterwards. Without it the group kill finds nothing, the server can
+    # keep the port, and the next start says "failed".
+    LD_LIBRARY_PATH="$JINA_BUILD" \
+        setsid nohup "${cpuset_env[@]}" "$JINA_BUILD/llama-server" \
+            -m "$JINA_MODEL" "${mmproj_args[@]}" \
+            --host 0.0.0.0 --port "$JINA_PORT" \
+            --threads "$JINA_THREADS" -c 1024 --parallel 1 \
+            --pooling last --embeddings \
+            > "$JINA_LOG" 2>&1 < /dev/null &
+    local pid=$!
+    echo "$pid" > "$JINA_PID_FILE"
+    local waited=0
+    while [ "$waited" -lt 120 ]; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "[Jina] Failed to start (exited during load). Check $JINA_LOG"
+            rm -f "$JINA_PID_FILE"
+            return 1
+        fi
+        if curl -sf -m 2 -o /dev/null "http://127.0.0.1:$JINA_PORT/health" 2>/dev/null; then
+            echo "[Jina] Started (PID $pid, port $JINA_PORT)"
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    echo "[Jina] Timed out after ${waited}s. Check $JINA_LOG"
+    rm -f "$JINA_PID_FILE"
+    return 1
+}
+
+stop_jina() {
+    if [ ! -f "$JINA_PID_FILE" ]; then
+        echo "[Jina] Not running"
+        return 0
+    fi
+    local pid
+    pid=$(cat "$JINA_PID_FILE")
+    if kill -0 "$pid" 2>/dev/null; then
+        echo "[Jina] Stopping (PID $pid)..."
+        kill -TERM "-$pid" 2> /dev/null || kill "$pid" 2> /dev/null || true
+        local waited=0
+        while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 15 ]; do
+            sleep 1
+            waited=$((waited + 1))
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            kill -9 "-$pid" 2> /dev/null || kill -9 "$pid" 2> /dev/null || true
+        fi
+        echo "[Jina] Stopped"
+    else
+        echo "[Jina] Process not found, cleaning pid file"
+    fi
+    rm -f "$JINA_PID_FILE"
+}
+
+# ---------------------------------------------------------------------------
 # GPU embedding server (search-dedicated)
 # ---------------------------------------------------------------------------
 # Optional second llama-server on the Mali-G720 Vulkan device, used by the
@@ -698,6 +812,9 @@ case "${1:-}" in
         # search path. Starts only if the Vulkan-enabled build is present; on
         # cloud-only or CPU-only boxes this is a no-op.
         start_gpu_embedding || true
+        # The picture search model. Skipped when the v5-omni fork or its
+        # weights are missing; the rest of the stack does not need it.
+        start_jina || true
         # Optional fast-path LLM. Brings up a small (350M-class) model on
         # $LLM_FAST_PORT for per-turn `use_fast` requests. Skipped when
         # the gguf is missing or LLM_FAST_ENABLED=false so a fresh
@@ -718,6 +835,13 @@ case "${1:-}" in
         fi
         echo ""
         echo "Logs: $LOG_DIR/"
+        ;;
+    start-jina)
+        # Bring up just the picture search model.
+        start_jina
+        ;;
+    stop-jina)
+        stop_jina
         ;;
     start-gpu-embed)
         # Bring up just the GPU embedding server without touching the rest.
@@ -747,6 +871,7 @@ case "${1:-}" in
         stop_service "Embedding" "$EMBEDDING_PID_FILE"
         stop_service "LLM-Fast" "$LLM_FAST_PID_FILE"
         stop_gpu_embedding
+        stop_jina
         ;;
     stop-gpu-embed)
         stop_gpu_embedding
@@ -755,6 +880,9 @@ case "${1:-}" in
         echo "=== LLM Services Status ==="
         status_service "Embedding" "$EMBEDDING_PID_FILE" "$EMBEDDING_PORT"
         status_service "LLM" "$LLM_PID_FILE" "$LLM_PORT"
+        if [ -f "$JINA_PID_FILE" ]; then
+            status_service "Jina" "$JINA_PID_FILE" "$JINA_PORT"
+        fi
         if [ "$LLM_FAST_ENABLED" = "true" ] || [ -f "$LLM_FAST_PID_FILE" ]; then
             status_service "LLM-Fast" "$LLM_FAST_PID_FILE" "$LLM_FAST_PORT"
         fi

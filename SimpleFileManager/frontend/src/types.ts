@@ -132,6 +132,9 @@ export interface AppSettings {
   auto_digest_mode: 'scheduled' | 'interval';
   auto_digest_hour: number;
   auto_digest_interval_hours: number;
+  /** 定时建立图片索引：开关 + 时间段（"HH:MM-HH:MM"，到点就停）。 */
+  image_index_enabled: boolean;
+  image_index_window: string;
   max_context_tokens: number;
   max_output_tokens: number;
   digest_max_tokens: number;

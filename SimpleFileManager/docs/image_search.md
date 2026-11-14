@@ -1,0 +1,177 @@
+# 以文搜图 / 以图搜图 — 设计说明
+
+## 做什么
+
+用一句话找出图片，或者用一张图片找出相似的图片。
+
+- **以文搜图**：`search_images(query)` —「一张红色的水果」
+- **以图搜图**：`find_similar_images(path)` — 给一张参考图，找相似的
+
+两者都走 jina-embeddings-v5-omni：它把文字和图片放进同一个向量空间，所以一句话能和一张图互相匹配。
+
+## 为什么不用文本索引那套
+
+文本索引用 bge（768 维、每秒 15 段），图片索引用 jina（1024 维、每张 3 秒）。两者维度不同，塞进同一张 LanceDB 表会逼着已有的一万条文本向量全部重算。所以：
+
+| 表 | 模型 | 维度 | 内容 |
+|---|---|---|---|
+| `file_embeddings` | bge-base-zh-v1.5 | 768 | 文本分段（已有，未动） |
+| `image_embeddings` | jina-v5-omni | 1024 | 每张图片一行 |
+
+只做「图搜图」和「文搜图」，**不做「图搜文」**：那需要把全部文档也编码进 jina 空间（按文件级约 17 分钟），而演示价值不高。
+
+## 大核锁：为什么整个体系不能被抢核
+
+这台机器的大核（A720，8 个）跑 24B 模型，小核（A520，4 个）跑 bge。jina 放在**大核**上，因为它要快 10 倍：
+
+| 位置 | 单图编码 |
+|---|---|
+| 小核 A520（3 核） | 88–110 秒 |
+| 大核 A720（4 线程，256 token） | 9.5 秒 |
+| 大核 A720（4 线程，**64 token**） | **2.9–3.5 秒** |
+
+大核只有一个主人，三方排队：
+
+```
+大核锁（flock 文件锁，跨进程）
+  持有者：模型生成 | jina 工具调用 | 图片索引构建
+  优先级：交互（聊天 + 工具）> 图片索引构建
+```
+
+- **模型生成**持锁直到最后一个 token 吐完。流式生成器被提前关闭时锁也会释放。请求本身也在锁内发出——服务端收到请求就开始算，先发后锁等于白锁。
+- **工具调用**等锁**至少 8 秒、最多 20 秒**：如果索引器刚测出单张图要 9.5 秒（官方投影器），就按实测值等更久——写死的 3 秒会让构建期间的搜图有一半直接失败。拿不到锁就回「服务器正在忙，请稍后重试」——用户等不起，不排队。
+- **图片索引构建**逐张图持锁（每张约 3 秒），每张之间检查有没有人在说话（复用 `interaction`），有人就停下让路。
+- **搜图也会登记为交互**（`interaction.mark_active()`），所以构建会为一次搜图让路，而不是恒定拒绝。
+- **远程 provider 不持锁**。云端模型不用本地核，一次远程往返不该把本地的图片索引和搜图都挡住。
+- **等待 8 秒而不是 3 秒**：一张图的编码本身就要 3 秒（大核实测 2.9–3.9 秒），超时若只有 3 秒，构建期间大约一半的搜图会失败。
+
+两个容易忽略的细节：
+
+- **锁不是可重入的**。同一个线程再拿一次会等到前一次结束（带期限就是失败，不是挂死）。原因：流式响应由线程池消费，`with` 块可能在一个线程进入、另一个线程退出；按线程身份记账会留下「幽灵持有者」，让互斥形同虚设。所以锁的归属按**计数**记，不按线程记。
+- **聊天等锁有 60 秒上限**。日报、图片索引都在抢同一批核，用户不该无限期转圈——超时会给一句人话提示。
+
+### 为什么用文件锁而不是线程锁
+
+编码实际发生在另一个进程（llama-server）里，锁由后端持有再发起请求。`flock` 还带来一个好处：后端崩了，锁由内核自动释放，不会留下一个永远锁死的池子。
+
+## 图片索引：定时窗口，不是后台常驻
+
+一张图 3 秒，一万张就是 8 个多小时。做成后台常驻任务有两个问题：一直占着大核（模型就没法快速响应），用户也不知道索引到哪了。所以：
+
+- **开启后默认每天 09:00–09:30 自动建立**（设置页可改，或 `IMAGE_INDEX_WINDOW`；`IMAGE_INDEX_ENABLED` 默认是关的）
+- **到点就停**，哪怕还有没做完的。下次窗口接着做——已经编好的图按内容哈希跳过
+- 也可以在搜索页手动点「建立图片索引」，随时暂停/继续
+
+窗口格式 `HH:MM-HH:MM`（可跨午夜，如 `23:00-07:00`），填 `all` 表示不限时。格式不对会被接口挡下来（400），而不是悄悄当成全天——窗口写错时「全天」意味着它永远不停。
+
+调度器每 10 秒检查一次：窗口开就启动，窗口关就停。停是温和的——当前这张图做完再停。
+
+实测（24 张图需 72 秒，窗口 1 分钟）：
+
+```
+09:23:17  running=True  done=1/24     ← 窗口开，自动开始
+09:23:57  running=True  done=14/24
+09:24:05  running=False done=16/24    ← 到点，停
+09:25:14  running=True  done=16/24 skipped=16   ← 下次窗口，跳过已完成的
+09:25:38  running=False done=24/24    ← 补完
+```
+
+按内容哈希判断是否需要重新编码：改过的图重编，没动过的跳过。
+
+**写库是批量的**：编码仍是一张一张来（要独占大核），但写进表里是攒够 50 张一次提交。这不是细节——逐张提交时 LanceDB 每写一次留一份版本，一千张图会留下 45MB 版本文件、花 69 秒；批量写只要 0.3 秒和 30KB。
+
+**让路的图会重排**：大核被模型占着时，那张图不算失败（本轮末尾会再试一次），状态栏显示「让路 N」，不会混进「失败」里。
+
+## 分辨率的取舍
+
+jina 的视觉投影器自带分辨率设定（`clip.vision.image_min_pixels`），原版是 512×512（256 token）。`scripts/patch_mmproj_pixels.py` 把这两个值改小（min/max 各一个 u32，共 8 个字节；脚本**另存**成一个新文件，原文件不动）：
+
+```bash
+python3 scripts/patch_mmproj_pixels.py \
+  LLMServices/models/jina-v5-omni/jina-embeddings-v5-omni-small-retrieval-vision-mmproj-F16.gguf \
+  LLMServices/models/jina-v5-omni/jina-embeddings-v5-omni-small-retrieval-vision-mmproj-F16-64tok.gguf \
+  --tokens 64
+```
+
+64 token（≈256×256）时，单图 3 秒，检索质量实测没有下降：
+
+| 查询 | 命中 | 相似度 | 次高 |
+|---|---|---|---|
+| 一张红色的水果 | Red_apple | 0.370 | 0.095 |
+| 一只可爱的猫 | Cat_posing | 0.371 | 0.120 |
+| 海边的日落 | Sunset_in_Greece | 0.513 | 0.479（另一张日落） |
+
+（`--image-min-tokens` 这个命令行开关**没用**：投影器自带 min/max 像素时它会被忽略，必须改 GGUF 元数据。）
+
+## 新机器上的准备
+
+模型权重和带 v5-omni 补丁的 llama-server 都不在 git 里（`models/` 和 `references/` 被忽略了）。全新克隆的仓库上，这个功能需要三步：
+
+```bash
+# 1. 两个模型文件（约 1GB）
+mkdir -p LLMServices/models/jina-v5-omni
+# 从 HuggingFace jinaai/jina-embeddings-v5-omni-small-retrieval 下载：
+#   jina-embeddings-v5-omni-small-retrieval-Q4_K_M.gguf
+#   jina-embeddings-v5-omni-small-retrieval-vision-mmproj-F16.gguf
+# 放进 LLMServices/models/jina-v5-omni/
+
+# 2. 低分辨率的视觉投影器（只动 8 个字节，把单图成本从 9.5s 降到 3s）
+python3 scripts/patch_mmproj_pixels.py \
+  LLMServices/models/jina-v5-omni/jina-embeddings-v5-omni-small-retrieval-vision-mmproj-F16.gguf \
+  LLMServices/models/jina-v5-omni/jina-embeddings-v5-omni-small-retrieval-vision-mmproj-F16-64tok.gguf \
+  --tokens 64
+
+# 3. 带 v5-omni 补丁的 llama-server（官方构建不认识媒体协议）
+git clone --branch feat-v5-omni https://github.com/jina-ai/llama.cpp.git references/llama.cpp-jina
+cd references/llama.cpp-jina && cmake -B build && cmake --build build -j2
+cd ../..
+
+# 起服务（绑大核，与模型轮流用）
+./LLMServices/serve.sh start-jina
+```
+
+**没有这些会怎样**：
+
+- **构建或模型缺失**：`serve.sh start-jina` 打一行 `skip` 就跳过，别的服务不受影响。
+- **投影器缺失**：服务照常起来，但它看不懂图片 → 搜图报「以文搜图不可用：图片模型没有视觉投影器（serve.sh 的 JINA_MMPROJ 指向的文件不存在，或不是 -64tok 那份）」；图片索引每张图立刻失败，状态栏显示「失败 N」。用 `curl http://127.0.0.1:9014/props` 看 `modalities.vision` 就知道（`false` 就是没有投影器）。
+
+## 服务
+
+`LLMServices/serve.sh start-jina` 起 jina（端口 9014），绑大核 `--parallel 1`。它用的是 jina 的 llama.cpp 分支（`references/llama.cpp-jina`），因为官方构建不认识视觉投影器的媒体协议。
+
+请求格式也不是标准的 OpenAI 格式：
+
+```jsonc
+// 文字
+POST /v1/embeddings  {"input": ["海边日落"]}
+
+// 图片
+POST /embeddings
+{
+  "content": [{
+    "prompt_string": "<媒体占位符>",
+    "multimodal_data": ["<图片的 base64>"]
+  }]
+}
+```
+
+占位符是服务启动时随机生成的（`<__media_XXXX>`），必须从 `/props` 读回来，不能写死——写死会得到 `number of bitmaps (1) does not match number of markers (0)`。
+
+## 设置项
+
+| 设置 | 默认 | 说明 |
+|---|---|---|
+| `IMAGE_INDEX_ENABLED` | `true`（.env）/ `false`（.env.example） | 是否定时建立图片索引 |
+| `IMAGE_INDEX_WINDOW` | `09:00-09:30` | 时间窗口，到点停、下次续 |
+| `IMAGE_EMBEDDING_BASE_URL` | `http://127.0.0.1:9014` | jina 服务地址 |
+
+设置页「图片索引」卡片里也能改开关和时间窗口。
+
+## 已知边界
+
+- **模型看不见图**。工具只能返回路径，模型无法断言画面细节（文件名往往已经透露了内容，但那是推断）。真正的价值在用户端的缩略图网格。
+- **图片索引构建期间搜图会变慢**。构建占用大核，搜图要等当前那张图编码完（约 3 秒）。这是「完整功能必须空闲才能调用」的直接后果，缓解办法是给构建加暂停（暂停后搜图立刻可用）。
+- **扫描件 PDF 里的图进不来**。目前没有 OCR，PDF 走文本抽取。
+- jina 是 CC BY-NC 4.0，非商用授权。
+- **Docker 部署要用宿主机的地址**：`IMAGE_EMBEDDING_BASE_URL=http://host.docker.internal:9014`。容器里的 127.0.0.1 是容器自己。docker-compose.yml 已经带上了这个默认值。
+- **jina 挂掉时**：搜图返回「图片模型不可用」；图片索引每张图立刻失败（不会卡住）。`/api/health` 不检查图片服务，所以健康检查仍然是 ok。
