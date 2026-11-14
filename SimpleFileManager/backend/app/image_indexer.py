@@ -19,7 +19,8 @@ from pathlib import Path
 from typing import Optional
 
 from .cpu_pool import CpuPoolBusy, get_big_pool
-from .image_embed import JinaError, get_image_embedder, is_image_file
+from .image_embed import (JinaError, get_image_embedder, is_image_file,
+                          looks_like_an_image)
 from .image_store import ImageVectorStore, file_hash, get_image_store
 from .indexer import ACTIVE_HOURS_ALL, _in_active_hours, _parse_window
 from .interaction import interaction
@@ -56,6 +57,33 @@ def _relative(path: Path) -> str:
         return path.name
 
 
+def _fresh_status(**overrides) -> dict:
+    """A status with every field in it.
+
+    There used to be two copies of this dict -- one for the start, one
+    for a run that begins -- and a field added to one of them was missing
+    from the other. One place to add a field now.
+    """
+    status = {
+        "running": False,
+        "paused": False,
+        "total": 0,
+        "done": 0,
+        "skipped": 0,
+        "encoded": 0,
+        "deferred": 0,
+        "failed": 0,
+        "not_pictures": 0,
+        "current": "",
+        "last_encode_seconds": 0.0,
+        "started_at": 0.0,
+        "finished_at": 0.0,
+        "last_error": "",
+    }
+    status.update(overrides)
+    return status
+
+
 class ImageIndexer:
     """Encodes the pictures in the storage and keeps their vectors."""
 
@@ -70,21 +98,9 @@ class ImageIndexer:
         # says.
         self._resume_event = threading.Event()
         self._resume_event.set()
-        self._status = {
-            "running": False,
-            "paused": False,
-            "total": 0,
-            "done": 0,
-            "skipped": 0,
-            "encoded": 0,
-            "deferred": 0,
-            "failed": 0,
-            "current": "",
-            "last_encode_seconds": 0.0,
-            "started_at": 0.0,
-            "finished_at": 0.0,
-            "last_error": "",
-        }
+        # How many files were called pictures but were not.
+        self._not_pictures = 0
+        self._status = _fresh_status()
 
     # -- control -----------------------------------------------------------
 
@@ -148,6 +164,8 @@ class ImageIndexer:
         """
         found: list[Path] = []
         complete = True
+        # Files that are called .jpg but are not pictures.
+        not_pictures = 0
         if not root.exists():
             log.error("the storage root %s does not exist", root)
             return [], False
@@ -156,6 +174,12 @@ class ImageIndexer:
                 if _is_hidden(entry, root) or not entry.is_file():
                     continue
                 if not is_image_file(entry):
+                    continue
+                # The name says picture, the bytes say otherwise. Encoding
+                # it would cost the big cores and fail; skipping it is
+                # free and honest.
+                if not looks_like_an_image(entry):
+                    not_pictures += 1
                     continue
                 try:
                     if entry.stat().st_size == 0 or entry.stat().st_size > MAX_IMAGE_BYTES:
@@ -179,6 +203,11 @@ class ImageIndexer:
                 log.warning("the storage root has %d directories but no pictures "
                             "were found -- treating the scan as incomplete", dirs)
                 complete = False
+        if not_pictures:
+            log.info("%d files are called pictures but are not", not_pictures)
+        self._not_pictures = not_pictures
+        with self._lock:
+            self._status["not_pictures"] = not_pictures
         return sorted(found), complete
 
     def _run(self, limit: int, rebuild: bool) -> None:
@@ -214,21 +243,16 @@ class ImageIndexer:
             # The counters start over; the flags do not. A pause issued
             # while the tree was being scanned would otherwise be
             # overwritten, and the build would look like it was running.
-            self._status = {
-                "running": True,
-                "paused": self._paused,
-                "total": len(pictures),
-                "done": 0,
-                "skipped": 0,
-                "encoded": 0,
-                "deferred": 0,
-                "failed": 0,
-                "current": "",
-                "last_encode_seconds": 0.0,
-                "started_at": time.time(),
-                "finished_at": 0.0,
-                "last_error": "",
-            }
+            self._status = _fresh_status(
+                running=True,
+                paused=self._paused,
+                total=len(pictures),
+                started_at=time.time(),
+            )
+            # The scan happened before the status was reset, so its count
+            # of "files that are called pictures but are not" has to be
+            # carried over.
+            self._status["not_pictures"] = self._not_pictures
 
         # What is already indexed, read once. Asking the table for this
         # per picture would mean reading the whole table per picture.
@@ -251,6 +275,11 @@ class ImageIndexer:
         # is full would otherwise let the build run for hours, encoding
         # pictures that cannot be stored.
         write_failures = 0
+
+        # Whether anything has been written yet. The first batch of a run
+        # is deliberately small: it is the canary that finds out whether
+        # the table works at all.
+        wrote_once = False
 
         # The pictures are walked by hand rather than with a for-loop:
         # a pause or a busy machine has to *wait* for the same picture,
@@ -348,12 +377,17 @@ class ImageIndexer:
             # batch it belongs to is actually in the table -- otherwise the
             # status would claim pictures that were never stored.
             pending.append((vector, rel, digest, stat.st_size, stat.st_mtime))
-            if len(pending) >= WRITE_BATCH:
+            # The first write of a run is a small one on purpose. If the
+            # table cannot be written to, we want to know after five
+            # pictures rather than after fifty -- encoding is the slow
+            # part, and the cores are needed for the model.
+            batch_size = WRITE_BATCH if wrote_once else CANARY_BATCH
+            if len(pending) >= batch_size:
                 wrote = _flush(store, pending, on_written=_counted(store, indexed, self),
                                on_failed=_failed(self))
                 if not wrote:
                     write_failures += 1
-                    if write_failures >= MAX_WRITE_FAILURES:
+                    if not wrote_once or write_failures >= MAX_WRITE_FAILURES:
                         log.error("the index cannot be written to (%d tries in a row) "
                                   "-- stopping the build", write_failures)
                         with self._lock:
@@ -361,6 +395,7 @@ class ImageIndexer:
                                 "连续写库失败，已中止本轮（磁盘满了？或者向量库被换掉了）")
                         break
                 else:
+                    wrote_once = True
                     write_failures = 0
 
         if pending:
@@ -448,6 +483,11 @@ POOL_WAIT_TIMEOUT = 120.0
 
 # How many pictures are written to the table in one go.
 WRITE_BATCH = 50
+
+# The first write of a run. Small on purpose: if the table is broken, we
+# want to hear about it after a handful of pictures, not after a whole
+# window of encoding.
+CANARY_BATCH = 5
 
 # How many times writing may fail in a row before the build gives up.
 MAX_WRITE_FAILURES = 3

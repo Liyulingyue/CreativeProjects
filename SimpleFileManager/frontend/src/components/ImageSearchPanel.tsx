@@ -108,6 +108,7 @@ function IndexBar({ status, onChange, isAdmin }: { status: ImageIndexStatus | nu
         {status.paused && ' · 已暂停'}
         {status.deferred > 0 && ` · 让路 ${status.deferred}（等大核空闲后重试）`}
         {status.failed > 0 && ` · 失败 ${status.failed}`}
+        {(status.not_pictures ?? 0) > 0 && ` · ${status.not_pictures} 个文件不是图片（已跳过）`}
       </span>
       {status.last_error && (
         <span className="text-amber-600 truncate max-w-xs" title={status.last_error}>

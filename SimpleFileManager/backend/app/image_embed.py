@@ -202,3 +202,39 @@ def get_image_embedder() -> JinaEmbedder:
 
 def is_image_file(path: Path | str) -> bool:
     return Path(path).suffix.lower() in IMAGE_EXTENSIONS
+
+
+# The first bytes of the formats we accept. A file called .jpg is not
+# always a picture: a download that failed leaves an HTML page under a
+# name that says otherwise, and half-written uploads look like one.
+IMAGE_MAGIC = (
+    b"\xff\xd8\xff",          # jpeg
+    b"\x89PNG\r\n\x1a\n",    # png
+    b"GIF8",                     # gif
+    b"RIFF",                     # webp (the WEBP tag is at offset 8)
+    b"BM",                       # bmp
+    b"II*\x00",                 # tiff, little endian
+    b"MM\x00*",                 # tiff, big endian
+)
+
+
+def looks_like_an_image(path: Path | str) -> bool:
+    """Whether the content of the file really is a picture.
+
+    The name says one thing and the bytes another; encoding a file that
+    is not a picture costs three seconds of the big cores and comes back
+    as an error. Reading sixteen bytes is much cheaper than that.
+    """
+    try:
+        with open(path, "rb") as f:
+            head = f.read(16)
+    except OSError:
+        return False
+    if not head:
+        return False
+    if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
+        return True
+    # HEIC and the other ISO-BMFF formats: "....ftyp<type>"
+    if len(head) >= 12 and head[4:8] == b"ftyp":
+        return True
+    return any(head.startswith(magic) for magic in IMAGE_MAGIC)

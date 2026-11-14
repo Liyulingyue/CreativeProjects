@@ -1042,6 +1042,8 @@ export interface ImageIndexStatus {
   /** Pictures that could not have the cores and were put back in the queue. */
   deferred: number;
   failed: number;
+  /** Files whose name says picture but whose content is not one. */
+  not_pictures?: number;
   current: string;
   /** How long the last picture took to encode, in seconds. */
   last_encode_seconds?: number;
