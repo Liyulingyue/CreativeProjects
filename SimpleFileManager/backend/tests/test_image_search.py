@@ -6,6 +6,20 @@ from app.image_search import SearchUnavailable, search_by_image, search_by_text
 from app.image_store import ImageVectorStore
 
 
+def _make_picture(root, name: str):
+    """A picture that is really on disk.
+
+    The search drops results whose file is gone -- a picture deleted
+    since the index was built used to be handed out with a thumbnail
+    that could not draw. A test that only puts a name in the table is
+    describing a file that does not exist.
+    """
+    path = root / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 32)
+    return path
+
+
 class FakeEmbedder:
     def __init__(self, vector=None):
         self.vector = vector or [1.0, 0.0, 0.0, 0.0]
@@ -22,6 +36,11 @@ class FakeEmbedder:
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
+    from app.deps import get_storage_root
+
+    root = get_storage_root()
+    _make_picture(root, "photos/apple.jpg")
+    _make_picture(root, "photos/cat.jpg")
     s = ImageVectorStore(str(tmp_path / "vectors"), dim=4)
     s.add([1.0, 0.0, 0.0, 0.0], "photos/apple.jpg")
     s.add([0.0, 1.0, 0.0, 0.0], "photos/cat.jpg")

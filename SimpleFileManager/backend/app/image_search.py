@@ -92,29 +92,73 @@ def _storage_root() -> Path:
     return get_storage_root()
 
 
-def _readable(hits: list[dict]) -> list[dict]:
-    """Drop the hits the caller may not open.
+def _readable(hits: list[dict]) -> tuple[list[dict], list[str]]:
+    """Drop the hits the caller may not open, and the ones that are gone.
 
     The picture index is built from the whole storage root, so it holds
     everything -- including what one person may not look at. The text
     search filters its results the same way; without this, asking for "a
     photo of a red apple" would hand back the name and size of a private
     folder's picture.
+
+    The second reason is a picture that was deleted since the index was
+    built. The index is built once a day, so a picture deleted in the
+    morning would still be handed out in the evening -- with its name,
+    its size and a thumbnail that does not draw. The row is dropped
+    here, and the caller is told which ones so that the table can be
+    cleaned of them.
     """
     from .deps import can_access
 
     root = _storage_root()
     out = []
+    gone: list[str] = []
     for hit in hits:
         path = hit.get("file_path") or hit.get("path") or ""
         if not path:
             continue
         try:
-            if can_access(root / path, "read"):
-                out.append(hit)
+            if not can_access(root / path, "read"):
+                continue
+            if not (root / path).exists():
+                gone.append(path)
+                continue
         except OSError:
             continue
-    return out
+        out.append(hit)
+    return out, gone
+
+
+def _hits(store, vector: list[float], wanted: int) -> list[dict]:
+    """The best pictures for a vector, without the ones that are gone.
+
+    The table is asked for more than the caller wants, because some of
+    the nearest pictures may be in a folder this user cannot open, or
+    may have been deleted since the index was built. When those are
+    filtered away the page would show fewer than it should, so the
+    table is asked again with a wider net -- and the rows of the
+    pictures that are gone are dropped, so the table does not fill up
+    with names of files that are not there.
+    """
+    asked = min(max(wanted * 4, 12), 200)
+    keep: list[dict] = []
+    seen_gone: set[str] = set()
+    while asked <= 800:
+        hits = store.search(vector, top_k=asked)
+        readable, gone = _readable(hits)
+        for path in gone:
+            if path not in seen_gone:
+                seen_gone.add(path)
+                try:
+                    store.delete_by_file(path)
+                except Exception:  # noqa: BLE001
+                    # The row stays; the next search will notice it again.
+                    pass
+        keep = readable
+        if len(readable) >= wanted or len(hits) < asked:
+            break
+        asked *= 4
+    return keep[:wanted]
 
 
 def _image_store() -> ImageVectorStore:
@@ -174,9 +218,9 @@ def search_by_text(query: str, limit: int = 12) -> list[dict]:
     # afterwards would otherwise leave the page empty while plenty of
     # reachable pictures match.
     wanted = max(1, min(limit, 50))
-    hits = _readable(store.search(vector, top_k=min(wanted * 4, 200)))
+    hits = _hits(store, vector, wanted)
     return [{"score": round(h.get("score", 0.0), 4), **_describe(h.get("file_path", ""))}
-            for h in hits[:wanted]]
+            for h in hits]
 
 
 def search_by_image(image_path: str, limit: int = 12) -> list[dict]:
@@ -223,7 +267,7 @@ def search_by_image(image_path: str, limit: int = 12) -> list[dict]:
             raise SearchUnavailable(f"图片模型不可用：{e}") from e
 
     wanted = max(1, min(limit, 50))
-    hits = _readable(store.search(vector, top_k=min(wanted * 4, 200)))
+    hits = _hits(store, vector, wanted)
     results = []
     for h in hits:
         item = {"score": round(h.get("score", 0.0), 4), **_describe(h.get("file_path", ""))}

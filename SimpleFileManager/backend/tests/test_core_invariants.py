@@ -401,3 +401,96 @@ def test_a_pause_does_not_outlive_the_build_it_was_meant_for(tmp_path,
     indexer.start(rebuild=True)
     time.sleep(0.2)
     assert indexer.status()["paused"] is False, indexer.status()
+
+
+def test_a_picture_that_was_deleted_is_not_offered(tmp_path, monkeypatch):
+    """Deleting a picture must take it out of the search at once.
+
+    The index is built once a day, so a picture deleted in the morning
+    would still be handed out in the evening -- with its name, its size
+    and a thumbnail that cannot draw. The search drops it, and drops
+    the row with it, so the table does not fill up with ghosts.
+    """
+    from app.deps import get_storage_root
+    from app.image_search import search_by_text
+    from app.image_store import ImageVectorStore
+
+    root = get_storage_root()
+    picture = root / "photos" / "gone.jpg"
+    picture.parent.mkdir(parents=True, exist_ok=True)
+    picture.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 32)
+
+    store = ImageVectorStore(str(tmp_path / "vectors"), dim=4)
+    store.add([1.0, 0.0, 0.0, 0.0], "photos/gone.jpg")
+    store.add([0.0, 1.0, 0.0, 0.0], "photos/kept.jpg")
+    monkeypatch.setattr("app.image_search._image_store", lambda: store)
+
+    class FakeEmbedder:
+        def embed_text(self, text, prefix=""):
+            return [1.0, 0.0, 0.0, 0.0]
+
+    monkeypatch.setattr("app.image_search.get_image_embedder", lambda: FakeEmbedder())
+
+    # The picture is there to begin with.
+    assert [r["path"] for r in search_by_text("一张图")] == ["photos/gone.jpg"]
+
+    picture.unlink()
+    assert search_by_text("一张图") == []
+    # And the row is gone too, so the table does not keep the ghost.
+    assert "photos/gone.jpg" not in store.indexed()
+
+
+def test_a_renamed_picture_keeps_its_vector(tmp_path, monkeypatch):
+    """Moving a picture does not change what is in it.
+
+    Re-encoding it would cost three seconds of the big cores -- the ones
+    the model wants -- and the score would not change either.
+    """
+    from app.image_store import ImageVectorStore
+
+    store = ImageVectorStore(str(tmp_path / "vectors"), dim=3)
+    store.add([1.0, 0.0, 0.0], "photos/before.jpg")
+
+    assert store.move("photos/before.jpg", "photos/after.jpg") is True
+    assert "photos/before.jpg" not in store.indexed()
+    assert "photos/after.jpg" in store.indexed()
+
+    hits = store.search([1.0, 0.0, 0.0], top_k=3)
+    assert [h["file_path"] for h in hits] == ["photos/after.jpg"]
+    assert hits[0]["score"] == pytest.approx(1.0, abs=1e-3)
+
+
+def test_a_picture_in_the_bin_is_not_offered_and_leaves_no_ghost(
+        tmp_path, monkeypatch):
+    """A picture that was put in the bin must not turn up in a search.
+
+    The path it had is gone, so the search skips it -- and the row goes
+    with it, so the table does not fill up with names of files that are
+    not there. (Putting the picture back makes it findable again at the
+    next index window, not before.)
+    """
+    from app.deps import get_storage_root
+    from app.image_search import search_by_text
+    from app.image_store import ImageVectorStore
+
+    root = get_storage_root()
+    picture = root / "photos" / "binned.jpg"
+    picture.parent.mkdir(parents=True, exist_ok=True)
+    picture.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 32)
+
+    store = ImageVectorStore(str(tmp_path / "vectors"), dim=4)
+    store.add([1.0, 0.0, 0.0, 0.0], "photos/binned.jpg")
+    monkeypatch.setattr("app.image_search._image_store", lambda: store)
+
+    class FakeEmbedder:
+        def embed_text(self, text, prefix=""):
+            return [1.0, 0.0, 0.0, 0.0]
+
+    monkeypatch.setattr("app.image_search.get_image_embedder", lambda: FakeEmbedder())
+
+    assert [r["path"] for r in search_by_text("一张图")] == ["photos/binned.jpg"]
+
+    # Into the bin: the file is not where it was.
+    picture.unlink()
+    assert search_by_text("一张图") == []
+    assert "photos/binned.jpg" not in store.indexed()

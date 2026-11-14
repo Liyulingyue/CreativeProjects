@@ -211,6 +211,25 @@ def create_folder(req: CreateFolderRequest) -> FileOperation:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _relative_to_storage(*paths) -> str | tuple[str, ...]:
+    """Path(s) relative to the storage root, for the picture index.
+
+    The picture table knows its pictures by the path the user sees. A
+    path outside the storage root has no such form, and is reported as
+    empty so that the caller does nothing.
+    """
+    from ..deps import get_storage_root
+
+    root = get_storage_root()
+    out = []
+    for path in paths:
+        try:
+            out.append(str(Path(path).relative_to(root)))
+        except (ValueError, OSError):
+            return "" if len(paths) == 1 else ("",) * len(paths)
+    return out[0] if len(paths) == 1 else tuple(out)
+
+
 @fs.post("/move")
 def move(req: MoveRequest) -> FileOperation:
     storage_path = str(get_storage_root())
@@ -226,6 +245,13 @@ def move(req: MoveRequest) -> FileOperation:
         shutil.move(str(src), str(dest))
         invalidate_sizes(src)
         invalidate_sizes(dest)
+        # A picture that moved keeps its vector: the picture did not
+        # change, only where it is. Re-encoding it would cost three
+        # seconds of the big cores for nothing.
+        _rel = _relative_to_storage(src, dest)
+        if _rel:
+            from ..image_indexer import _follow_the_file
+            _follow_the_file(_rel[0], _rel[1])
         return FileOperation(success=True, message="File moved", path=str(dest))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -363,6 +389,9 @@ def delete(req: DeleteRequest) -> FileOperation:
                 shutil.rmtree(str(target))
             else:
                 target.unlink()
+            # A picture that is gone for good does not keep its vector.
+            from ..image_indexer import _forget_the_file
+            _forget_the_file(_relative_to_storage(target))
             return FileOperation(success=True, message="已永久删除", path=str(target))
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
@@ -431,7 +460,16 @@ def restore_trash(entry_id: str) -> FileOperation:
 def purge_trash(entry_id: str) -> FileOperation:
     """Destroy one entry for good."""
     try:
+        # What was it, and where did it come from? The bin is about to
+        # destroy it, and the picture index has to forget it too.
+        original = _trash_service().meta(entry_id).get("original_path") or ""
         result = _trash_service().purge(entry_id)
+        # It lived in the bin, where it kept its vector so that putting
+        # it back would make it findable at once. Now it is gone for
+        # good, and so is its vector.
+        if original:
+            from ..image_indexer import _forget_the_file
+            _forget_the_file(_relative_to_storage(original))
     except TrashError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -445,6 +483,11 @@ def purge_trash(entry_id: str) -> FileOperation:
 def empty_trash() -> FileOperation:
     """Destroy everything in the bin."""
     try:
+        from ..image_indexer import _forget_the_file
+        for entry in _trash_service().list():
+            original = entry.get("original_path") or ""
+            if original:
+                _forget_the_file(_relative_to_storage(original))
         result = _trash_service().empty()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

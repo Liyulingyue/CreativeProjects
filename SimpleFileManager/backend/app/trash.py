@@ -223,6 +223,15 @@ class TrashService:
         log.info("restored %s -> %s", entry_id, dest)
         return {"id": entry_id, "path": str(dest), "renamed": dest.name != (meta or {}).get("name")}
 
+    def meta(self, entry_id: str) -> dict:
+        """What is known about one entry in the bin.
+
+        The original path is what the picture index needs when the entry
+        is destroyed for good -- after the purge there is nothing left to
+        ask.
+        """
+        return self._read_meta(self._entry_dir(entry_id)) or {}
+
     def purge(self, entry_id: str) -> dict:
         """Delete one entry for good."""
         entry_dir = self._entry_dir(entry_id)

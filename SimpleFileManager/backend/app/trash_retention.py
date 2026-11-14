@@ -166,6 +166,23 @@ class TrashRetention:
         svc = TrashService(Path(get_storage_root()))
         removed = svc.purge_expired(days)
         if removed:
+            # These are gone for good, so the picture index forgets them.
+            try:
+                from .image_indexer import _forget_the_file
+
+                root = get_storage_root()
+                for entry in removed:
+                    original = entry.get("original_path") or ""
+                    if not original:
+                        continue
+                    try:
+                        relative = str(Path(original).relative_to(root))
+                    except (ValueError, OSError):
+                        continue
+                    _forget_the_file(relative)
+            except Exception:  # noqa: BLE001
+                log.warning("could not clean the picture index of the removed "
+                            "entries", exc_info=True)
             self.log.record(removed, reason=reason)
             log.info(
                 "trash retention removed %d entries older than %d days (%s)",

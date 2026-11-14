@@ -11,6 +11,13 @@ from app.image_store import ImageVectorStore
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
+    from app.deps import get_storage_root
+
+    root = get_storage_root()
+    for name in ("photos/apple.jpg", "photos/cat.jpg"):
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 32)
     s = ImageVectorStore(str(tmp_path / "vectors"), dim=4)
     s.add([1.0, 0.0, 0.0, 0.0], "photos/apple.jpg")
     s.add([0.0, 1.0, 0.0, 0.0], "photos/cat.jpg")

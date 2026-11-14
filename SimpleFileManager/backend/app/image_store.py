@@ -134,6 +134,28 @@ class ImageVectorStore:
         if ids:
             self._table.delete(" OR ".join(f"id = '{i}'" for i in ids))
 
+    def move(self, old_path: str, new_path: str) -> bool:
+        """Carry a vector from one path to another.
+
+        A picture that was renamed or moved is the same picture: its
+        vector is still good, and re-encoding it would cost three
+        seconds of the big cores for nothing. The row is rewritten under
+        the new path instead.
+        """
+        rows = self._table.to_arrow().select(["id", "file_path", "vector"]).to_pylist()
+        for row in rows:
+            if row.get("file_path") != old_path:
+                continue
+            if not re.fullmatch(r"[a-f0-9]{64}", row.get("id", "") or ""):
+                continue
+            self._table.delete(f"id = '{row['id']}'")
+            new_row = dict(row)
+            new_row["file_path"] = new_path
+            self._table.merge_insert("id").when_matched_update_all() \
+                .when_not_matched_insert_all().execute([new_row])
+            return True
+        return False
+
     def delete_missing(self, known_paths: set[str]) -> int:
         """Drop rows whose file is gone. Returns how many were removed."""
         ids = [i for i in self._ids_for_all() if i[1] not in known_paths]
@@ -269,13 +291,20 @@ def _directory_mark(db_path: str) -> tuple:
         return (0, 0)
 
 
-def get_image_store(db_path: str) -> ImageVectorStore:
+def get_image_store(db_path: str | None = None) -> ImageVectorStore:
     """The picture table, cached per path.
 
     Opening a LanceDB table is not free, and the page asks for the state of
     the index every few seconds. The cache is dropped when the directory
     underneath it has been replaced.
+
+    Without a path the table the server uses is meant -- the same one
+    the indexer writes to.
     """
+    if db_path is None:
+        from .deps import DATA_DIR
+
+        db_path = str(DATA_DIR / "vectors")
     with _stores_lock:
         mark = _directory_mark(db_path)
         cached = _stores.get(db_path)

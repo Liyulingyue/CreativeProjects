@@ -84,6 +84,40 @@ def _fresh_status(**overrides) -> dict:
     return status
 
 
+def _follow_the_file(old_path: str, new_path: str) -> None:
+    """Carry a picture's vector to the path the file now has.
+
+    Renaming or moving a picture does not change what is in it, so the
+    vector is still good. Re-encoding it would cost three seconds of
+    the big cores -- the ones the model wants -- for nothing.
+    """
+    from .image_store import get_image_store
+
+    try:
+        store = get_image_store()
+        store.move(old_path, new_path)
+    except Exception:  # noqa: BLE001
+        # The index is a convenience. If it cannot follow the file, the
+        # next build will pick the picture up under its new name.
+        log.warning("the picture index did not follow %s to %s", old_path,
+                    new_path, exc_info=True)
+
+
+def _forget_the_file(path: str) -> None:
+    """Drop the vector of a picture that is gone for good.
+
+    A picture that is merely in the recycle bin keeps its vector for a
+    while -- the search skips it anyway, because the path it had is
+    gone. A picture that was destroyed for good does not keep it.
+    """
+    from .image_store import get_image_store
+
+    try:
+        get_image_store().delete_by_file(path)
+    except Exception:  # noqa: BLE001
+        log.warning("the picture index did not forget %s", path, exc_info=True)
+
+
 class ImageIndexer:
     """Encodes the pictures in the storage and keeps their vectors."""
 
