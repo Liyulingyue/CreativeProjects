@@ -547,3 +547,54 @@ def test_two_conversations_may_generate_at_the_same_time(monkeypatch):
 
     assert results == ["ok", "ok"], results
     assert len(inside) == 2, inside
+
+
+def test_a_client_that_stops_reading_gives_the_cores_back(monkeypatch):
+    """A stalled client must not hold the box.
+
+    The browser tab went to the background, or the phone fell asleep: the
+    server stops generating, so the cores are idle -- but the lease says
+    the model is using them, and nothing else on the machine can get
+    them. The lease notices that the client took too long to take a
+    chunk and hands them back.
+    """
+    from app import llm_client
+    from app.cpu_pool import get_big_pool
+
+    monkeypatch.setattr(llm_client, "SLOW_CLIENT_SECONDS", 0.3)
+
+    def fake_chunk():
+        delta = type("D", (), {"content": "hello", "reasoning_content": None,
+                               "tool_calls": None})()
+        choice = type("C", (), {"delta": delta})()
+        return type("Chunk", (), {"choices": [choice]})()
+
+    class FakeStream:
+        def __iter__(self):
+            return iter([fake_chunk(), fake_chunk(), fake_chunk()])
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return FakeStream()
+
+    class FakeClient:
+        chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(llm_client, "_get_client", lambda provider: FakeClient())
+    local = type("P", (), {"model": "m", "max_tokens": None,
+                           "reasoning_budget": None,
+                           "base_url": "http://127.0.0.1:9010/v1"})()
+
+    stream = llm_client.chat_completion_stream(
+        [{"role": "user", "content": "hi"}], provider=local)
+
+    # Take the first chunk, then stop reading for longer than the
+    # threshold: this is the browser tab in the background.
+    next(iter(stream))
+    time.sleep(0.9)
+
+    # While the client is not reading, the cores must be free for
+    # somebody else.
+    with get_big_pool().try_hold(timeout=0) as got:
+        assert got is True, "the stalled client still holds the cores"
+    stream.close()

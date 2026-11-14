@@ -5,6 +5,7 @@ timeout, and error handling are consistent.
 """
 
 import logging
+import threading
 import time
 from typing import Iterator, Optional
 
@@ -77,6 +78,14 @@ def _friendly_error(exc: Exception) -> str:
 # long answer can have them for a while; a user should not wait forever
 # without being told.
 BIG_POOL_TIMEOUT = 60.0
+
+# How long a streaming client may take to accept a chunk before the
+# cores are given back. A client that stops reading -- the browser tab
+# went to the background, the phone fell asleep -- stops the server
+# generating too: the socket buffer fills up and the model waits. The
+# cores are then idle while the lock says the model is using them, and
+# that is a box nobody can use.
+SLOW_CLIENT_SECONDS = 8.0
 
 # How often a running answer says "still busy". The idle window is 45
 # seconds, so this has to be well inside it.
@@ -307,6 +316,82 @@ def get_embedding(
     return get_embeddings([text], base_url=base_url, api_key=api_key, model=model)[0]
 
 
+class _Lease:
+    """A lease on the big cores that a stalled client cannot keep.
+
+    A streaming answer holds the cores for as long as it lasts. If the
+    client stops reading -- the browser tab went to the background, the
+    phone fell asleep -- the server stops generating as well: the socket
+    buffer fills up and the model waits. The cores are then idle while
+    the lease says the model is using them, and that is a box nobody can
+    use.
+
+    The client that stops reading is the one that cannot be asked: a
+    generator suspended at a yield does not run any more, so it cannot
+    notice that it has been asleep. A watchdog notices instead: while the
+    lease has not been touched for a while, it is given back. The answer
+    picks it up again when the client comes back.
+    """
+
+    def __init__(self, pool, timeout: float, idle_seconds: Optional[float] = None):
+        self.pool = pool
+        self.timeout = timeout
+        # Read at the moment the lease is made, not when this function
+        # was defined: the number is a setting, and a default argument
+        # would freeze it at import time.
+        self.idle_seconds = SLOW_CLIENT_SECONDS if idle_seconds is None else idle_seconds
+        self.held = False
+        self._lock = threading.Lock()
+        # When the holder last did something.
+        self._touched = time.monotonic()
+        self._watching = False
+
+    def acquire(self) -> bool:
+        with self._lock:
+            if self.held:
+                return True
+            got = self.pool.acquire(self.timeout, shared=True)
+            self.held = got
+            if got:
+                self._touched = time.monotonic()
+                self._start_watching()
+            return got
+
+    def release(self) -> None:
+        with self._lock:
+            if self.held:
+                self.held = False
+                self.pool.release()
+
+    def touch(self) -> None:
+        """The holder is alive and working."""
+        with self._lock:
+            self._touched = time.monotonic()
+
+    def _start_watching(self) -> None:
+        if self._watching:
+            return
+        self._watching = True
+        threading.Thread(target=self._watch, daemon=True,
+                         name="cpu-lease-watchdog").start()
+
+    def _watch(self) -> None:
+        while True:
+            # Look often enough to be worth the thread: a lease that is
+            # given back after a minute is no use to anybody.
+            time.sleep(min(1.0, max(0.05, self.idle_seconds / 2)))
+            with self._lock:
+                if not self.held:
+                    continue
+                idle = time.monotonic() - self._touched
+                if idle <= self.idle_seconds:
+                    continue
+                log.info("the client has not read for %.0fs -- giving the "
+                         "cores back", idle)
+                self.held = False
+                self.pool.release()
+
+
 def chat_completion_stream(
     messages: list[dict],
     tools: Optional[list[dict]] = None,
@@ -367,13 +452,18 @@ def chat_completion_stream(
     # afterwards would let the model run on the cores while a picture
     # index build believes it has them.
     pool = get_big_pool() if _is_local_provider(provider) else None
+    lease = _Lease(pool, BIG_POOL_TIMEOUT) if pool else None
     if pool:
         # Before the request goes out: a reasoning model can think for
         # minutes before the first token, and the indexers should keep
         # their hands off the cores during that time too.
         interaction.mark_active()
-    with (pool.hold(timeout=BIG_POOL_TIMEOUT, shared=True) if pool
-          else _null_context()):
+        if not lease.acquire():
+            # The same answer as before: the cores are busy and the wait
+            # is over. Silently answering without the lease would let a
+            # picture index build take the cores mid-answer.
+            raise CpuPoolBusy(f"CPU 池在 {BIG_POOL_TIMEOUT} 秒内没有被释放")
+    try:
         # The retry stays inside the lock here, unlike the single-shot
         # path: the lock has to cover the whole stream, so it cannot be
         # given up between attempts.
@@ -399,10 +489,25 @@ def chat_completion_stream(
             # reply text, which reads as the model thinking out loud mid-sentence.
             reasoning = getattr(delta, "reasoning_content", None)
             if reasoning:
+                if lease:
+                    lease.touch()
                 yield ("reasoning", reasoning)
+                if lease:
+                    lease.acquire()
             content = getattr(delta, "content", None)
             if content:
+                # How long did the client take to take this chunk? A
+                # client that has stopped reading stops the server
+                # generating as well, and the cores are then idle while
+                # the lease says they are busy.
+                if lease:
+                    lease.touch()
                 yield ("token", content)
+                if lease:
+                    # The watchdog may have given the cores back while
+                    # the client was away. Take them again for the rest
+                    # of the answer.
+                    lease.acquire()
             for tc in getattr(delta, "tool_calls", None) or []:
                 idx = tc.index if getattr(tc, "index", None) is not None else len(calls)
                 slot = calls.setdefault(idx, {"id": "", "name": "", "arguments": ""})
@@ -414,6 +519,10 @@ def chat_completion_stream(
                         slot["name"] = fn.name
                     if getattr(fn, "arguments", None):
                         slot["arguments"] += fn.arguments
+
+    finally:
+        if lease:
+            lease.release()
 
     for slot in calls.values():
         if slot["name"]:
