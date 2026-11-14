@@ -146,9 +146,17 @@ class CpuPool:
         if self._writer:
             return False
         if shared:
-            # A reader may join readers that are already in. If nobody is
-            # in and a writer is waiting, the writer goes first.
-            return self._readers > 0 or self._writers_waiting == 0
+            # A reader does not wait for a writer that is only waiting.
+            # The picture index takes the cores one picture at a time
+            # and gives them back between pictures, so it is waiting
+            # most of the time; a reader that arrived in between would
+            # otherwise never get in, and the search page would be
+            # useless for as long as the build lasts.
+            #
+            # The writers have a deadline of their own (the search gives
+            # up in a couple of seconds, the index defers the picture),
+            # so a writer that is kept out is not a writer that hangs.
+            return True
         # A writer waits for the readers to leave.
         return self._readers == 0
 

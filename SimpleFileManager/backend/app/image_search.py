@@ -30,13 +30,22 @@ from .image_store import ImageVectorStore, get_image_store
 
 log = logging.getLogger(__name__)
 
-# How long a search may wait for the big cores at the very least. The
-# real wait is longer: a search that arrives while a picture is being
-# encoded has to wait for that picture to finish, and how long that
-# takes depends on the model and the projector (three seconds with the
-# low-resolution one, ten with the shipped one). The indexer publishes
-# what it last measured, and the search waits for that much.
-SEARCH_LOCK_TIMEOUT = 8.0
+# How long a search waits for the big cores.
+#
+# A *text* query is encoded in a fraction of a second and does not need
+# the whole box: it takes a reader's lease and runs next to a
+# conversation that is being answered. It still has to wait for the
+# picture index, which holds the box for a whole picture at a time.
+#
+# A *picture* query has to encode the picture itself -- seconds of every
+# core -- so it takes a writer's lease, and how long that takes depends
+# on the model and the projector (three seconds with the low-resolution
+# one, ten with the shipped one). The indexer publishes what it last
+# measured, and the search waits for that much.
+#
+# Neither of them queues for long: a person waiting for a picture gets
+# an answer or a clear refusal, not a spinner.
+SEARCH_LOCK_TIMEOUT = 2.0
 SEARCH_LOCK_MARGIN = 2.0
 # However slow a picture is, a search does not wait longer than this.
 SEARCH_LOCK_MAX = 20.0
@@ -59,8 +68,16 @@ def _check_vision(embedder, what: str) -> None:
         f"（serve.sh 的 JINA_MMPROJ 指向的文件不存在，或不是 -64tok 那份）")
 
 
-def _search_timeout() -> float:
-    """How long a search should wait for the big cores."""
+def _search_timeout(encoding_a_picture: bool = False) -> float:
+    """How long a search should wait for the big cores.
+
+    A text query is encoded in a fraction of a second, so it waits a
+    couple of seconds and then says so. A picture query encodes the
+    picture itself -- seconds of every core -- so it waits for as long
+    as that takes.
+    """
+    if not encoding_a_picture:
+        return SEARCH_LOCK_TIMEOUT
     try:
         from .image_indexer import image_indexer
         measured = float(image_indexer.status().get("last_encode_seconds") or 0)
@@ -203,7 +220,11 @@ def search_by_text(query: str, limit: int = 12) -> list[dict]:
 
     embedder = get_image_embedder()
     _check_vision(embedder, "以文搜图")
-    with get_big_pool().try_hold(timeout=_search_timeout()) as got:
+    # A text query is a fraction of a second of work: it takes a
+    # reader's lease, so it does not have to wait for a conversation to
+    # finish. It does have to wait for the picture index, which is
+    # holding the box for a whole picture at a time.
+    with get_big_pool().try_hold(timeout=_search_timeout(), shared=True) as got:
         if not got:
             raise SearchUnavailable(
                 "服务器正在忙（模型生成或图片索引构建中），以文搜图暂时不可用，请稍后重试"
@@ -256,7 +277,9 @@ def search_by_image(image_path: str, limit: int = 12) -> list[dict]:
 
     embedder = get_image_embedder()
     _check_vision(embedder, "以图搜图")
-    with get_big_pool().try_hold(timeout=_search_timeout()) as got:
+    # The picture has to be encoded: seconds of every core. That is a
+    # writer's lease, so a conversation has to wait for it.
+    with get_big_pool().try_hold(timeout=_search_timeout(True)) as got:
         if not got:
             raise SearchUnavailable(
                 "服务器正在忙（模型生成或图片索引构建中），以图搜图暂时不可用，请稍后重试"

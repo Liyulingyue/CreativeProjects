@@ -549,6 +549,21 @@ def test_two_conversations_may_generate_at_the_same_time(monkeypatch):
     assert len(inside) == 2, inside
 
 
+def _store_with_one_picture(tmp_path, monkeypatch):
+    """A picture table with one picture in it, really on disk."""
+    from app.deps import get_storage_root
+    from app.image_store import ImageVectorStore
+
+    root = get_storage_root()
+    picture = root / "photos" / "one.jpg"
+    picture.parent.mkdir(parents=True, exist_ok=True)
+    picture.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 32)
+    store = ImageVectorStore(str(tmp_path / "vectors"), dim=4)
+    store.add([1.0, 0.0, 0.0, 0.0], "photos/one.jpg")
+    monkeypatch.setattr("app.image_search._image_store", lambda: store)
+    return store
+
+
 def test_a_client_that_stops_reading_gives_the_cores_back(monkeypatch):
     """A stalled client must not hold the box.
 
@@ -598,3 +613,31 @@ def test_a_client_that_stops_reading_gives_the_cores_back(monkeypatch):
     with get_big_pool().try_hold(timeout=0) as got:
         assert got is True, "the stalled client still holds the cores"
     stream.close()
+
+
+def test_a_text_search_runs_next_to_a_conversation(tmp_path, monkeypatch):
+    """A text query is a fraction of a second: it need not wait.
+
+    It takes a reader's lease, so it can run while the model is
+    answering. A picture query cannot: it encodes the picture itself,
+    seconds of every core, and that is a writer's lease.
+    """
+    from app import image_search
+    from app.cpu_pool import get_big_pool
+
+    class FakeEmbedder:
+        def embed_text(self, text, prefix=""):
+            return [1.0, 0.0, 0.0, 0.0]
+
+        def embed_image(self, path):
+            return [1.0, 0.0, 0.0, 0.0]
+
+    monkeypatch.setattr("app.image_search.get_image_embedder", lambda: FakeEmbedder())
+
+    store = _store_with_one_picture(tmp_path, monkeypatch)
+
+    # The model is answering: it holds a reader's lease.
+    pool = get_big_pool()
+    with pool.hold(timeout=5, shared=True):
+        results = image_search.search_by_text("一张图")
+        assert [r["path"] for r in results] == ["photos/one.jpg"]
