@@ -6,6 +6,7 @@ import {
   pauseImageIndex,
   resumeImageIndex,
   searchImages,
+  searchSimilarImages,
   startImageIndex,
 } from '../api';
 import type { ImageHit, ImageIndexStatus } from '../api';
@@ -26,7 +27,7 @@ import { useToast } from './ui/Toast';
  * picture just to make the tile clickable would pull every result into
  * memory before anyone asked for it.
  */
-function HitTile({ hit }: { hit: ImageHit }) {
+function HitTile({ hit, onSimilar }: { hit: ImageHit; onSimilar?: (hit: ImageHit) => void }) {
   const [failed, setFailed] = useState(false);
   const [href, setHref] = useState<string | null>(null);
   const src = `/api/thumbnails?path=${encodeURIComponent(hit.path)}&size=256${
@@ -42,33 +43,48 @@ function HitTile({ hit }: { hit: ImageHit }) {
   }, [hit.path]);
 
   return (
-    <a
-      href={href ?? undefined}
-      target="_blank"
-      rel="noreferrer"
-      title={hit.path}
-      className="group block rounded-lg border border-slate-200 bg-white p-2 hover:border-indigo-300 hover:shadow-sm transition-all"
-    >
-      <div className="aspect-square rounded-md bg-slate-100 overflow-hidden flex items-center justify-center">
-        {failed ? (
-          <Icon name="file" size={28} className="text-slate-300" />
-        ) : (
-          <img
-            src={src}
-            alt={hit.name}
-            loading="lazy"
-            onError={() => setFailed(true)}
-            className="w-full h-full object-cover"
-          />
-        )}
-      </div>
-      <div className="mt-1.5 text-xs text-slate-600 truncate" title={hit.path}>
-        {hit.name}
-      </div>
-      <div className="text-[10px] text-slate-400">
-        {hit.is_source ? '参考图' : `相似度 ${hit.score.toFixed(3)}`}
-      </div>
-    </a>
+    <div className="group rounded-lg border border-slate-200 bg-white p-2 hover:border-indigo-300 hover:shadow-sm transition-all">
+      <a
+        href={href ?? undefined}
+        target="_blank"
+        rel="noreferrer"
+        title={hit.path}
+        className="block"
+      >
+        <div className="aspect-square rounded-md bg-slate-100 overflow-hidden flex items-center justify-center">
+          {failed ? (
+            <Icon name="file" size={28} className="text-slate-300" />
+          ) : (
+            <img
+              src={src}
+              alt={hit.name}
+              loading="lazy"
+              onError={() => setFailed(true)}
+              className="w-full h-full object-cover"
+            />
+          )}
+        </div>
+        <div className="mt-1.5 text-xs text-slate-600 truncate" title={hit.path}>
+          {hit.name}
+        </div>
+        <div className="text-[10px] text-slate-400">
+          {hit.is_source ? '参考图' : `相似度 ${hit.score.toFixed(3)}`}
+        </div>
+      </a>
+      {/* Find the neighbours of this picture. The search is the same one
+          the model uses; here it is one click away instead of a sentence
+          typed into a chat box. It sits next to the link rather than
+          inside it: a button inside a link is two controls in one. */}
+      {onSimilar && (
+        <button
+          type="button"
+          onClick={() => onSimilar(hit)}
+          className="mt-1 w-full px-2 py-1.5 rounded border border-slate-200 text-[11px] text-slate-600 hover:bg-slate-50 hover:border-indigo-300"
+        >
+          找相似
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -83,12 +99,22 @@ function IndexBar({ status, onChange, isAdmin }: { status: ImageIndexStatus | nu
   const { toast } = useToast();
   const [busy, setBusy] = useState(false);
 
-  const act = async (fn: () => Promise<unknown>, message: string) => {
+  // The server says whether it actually did the thing. A build that was
+  // already running answers "started: false" -- saying "已开始建立图片
+  // 索引" then would be a small lie the user reads straight away.
+  const act = async (
+    fn: () => Promise<{ started?: boolean; reason?: string }>,
+    message: string,
+  ) => {
     setBusy(true);
     try {
-      await fn();
+      const result = await fn();
       onChange();
-      toast(message, 'success');
+      if (result?.started === false) {
+        toast(result.reason || '操作没有生效', 'error');
+      } else {
+        toast(message, 'success');
+      }
     } catch (err) {
       toast(err instanceof Error ? err.message : '操作失败', 'error');
     } finally {
@@ -126,7 +152,7 @@ function IndexBar({ status, onChange, isAdmin }: { status: ImageIndexStatus | nu
             type="button"
             disabled={busy}
             onClick={() => act(pauseImageIndex, '已暂停，当前这张图处理完就停下')}
-            className="px-2.5 py-1 rounded border border-slate-200 hover:bg-slate-50 disabled:opacity-40"
+            className="px-3 py-2 rounded border border-slate-200 hover:bg-slate-50 disabled:opacity-40"
           >
             暂停
           </button>
@@ -135,7 +161,7 @@ function IndexBar({ status, onChange, isAdmin }: { status: ImageIndexStatus | nu
               type="button"
               disabled={busy}
               onClick={() => act(resumeImageIndex, '已继续')}
-              className="px-2.5 py-1 rounded border border-slate-200 hover:bg-slate-50 disabled:opacity-40"
+              className="px-3 py-2 rounded border border-slate-200 hover:bg-slate-50 disabled:opacity-40"
             >
               继续
             </button>
@@ -146,7 +172,7 @@ function IndexBar({ status, onChange, isAdmin }: { status: ImageIndexStatus | nu
           type="button"
           disabled={busy}
           onClick={() => act(() => startImageIndex(0, false), '已开始建立图片索引')}
-          className="px-2.5 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40"
+          className="px-3 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40"
         >
           建立图片索引
         </button>
@@ -170,6 +196,10 @@ export function ImageSearchPanel() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<ImageIndexStatus | null>(null);
+  // Which kind of search is on the screen. The picture-to-picture one
+  // starts from a picture the user picked, so it needs something to go
+  // back to.
+  const [source, setSource] = useState<ImageHit | null>(null);
   // Building the index is an administrator's job; the server says so.
   const [isAdmin, setIsAdmin] = useState(false);
 
@@ -195,10 +225,29 @@ export function ImageSearchPanel() {
     try {
       const res = await searchImages(query.trim(), 24);
       setHits(res.results);
+      setSource(null);
     } catch (err) {
       const message = err instanceof Error ? err.message : '未知错误';
       setError(message);
       setHits(null);
+      toast(message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // The neighbours of a picture the user picked.
+  const findSimilar = async (hit: ImageHit) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await searchSimilarImages(hit.path, 24);
+      setHits(res.results);
+      setSource(hit);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '未知错误';
+      setError(message);
       toast(message, 'error');
     } finally {
       setBusy(false);
@@ -262,10 +311,26 @@ export function ImageSearchPanel() {
 
         {!error && hits !== null && hits.length > 0 && (
           <>
+            {source && (
+              <div className="mb-3 flex items-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs text-indigo-700">
+                <Icon name="image" size={14} />
+                <span className="truncate">
+                  以图搜图：和 <span className="font-medium">{source.name}</span> 最像的 {hits.length} 张
+                </span>
+                <span className="flex-1" />
+                <button
+                  type="button"
+                  onClick={() => { setSource(null); setHits(null); }}
+                  className="px-2 py-1 rounded border border-indigo-200 bg-white hover:bg-indigo-50"
+                >
+                  回到文搜图
+                </button>
+              </div>
+            )}
             <div className="text-sm text-slate-500 mb-3">找到 {hits.length} 张，按相似度排序</div>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
               {hits.map(hit => (
-                <HitTile key={hit.path} hit={hit} />
+                <HitTile key={hit.path} hit={hit} onSimilar={findSimilar} />
               ))}
             </div>
           </>

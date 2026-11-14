@@ -1032,6 +1032,13 @@ export async function searchSimilarImages(path: string, topK: number = 12): Prom
   return res.json();
 }
 
+export interface ImageIndexStartResult extends ImageIndexStatus {
+  /** False when the server did not start a build (one was already running). */
+  started?: boolean;
+  /** Why it did not start. */
+  reason?: string;
+}
+
 export interface ImageIndexStatus {
   running: boolean;
   paused: boolean;
@@ -1059,7 +1066,7 @@ export async function fetchImageIndexStatus(): Promise<ImageIndexStatus> {
   return res.json();
 }
 
-export async function startImageIndex(limit = 0, rebuild = false): Promise<ImageIndexStatus> {
+export async function startImageIndex(limit = 0, rebuild = false): Promise<ImageIndexStartResult> {
   const res = await authFetch(`${API_BASE}/images/index/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1069,13 +1076,13 @@ export async function startImageIndex(limit = 0, rebuild = false): Promise<Image
   return res.json();
 }
 
-export async function pauseImageIndex(): Promise<ImageIndexStatus> {
+export async function pauseImageIndex(): Promise<ImageIndexStartResult> {
   const res = await authFetch(`${API_BASE}/images/index/pause`, { method: 'POST' });
   if (!res.ok) throw new Error((await detailOf(res)) || '暂停图片索引失败');
   return res.json();
 }
 
-export async function resumeImageIndex(): Promise<ImageIndexStatus> {
+export async function resumeImageIndex(): Promise<ImageIndexStartResult> {
   const res = await authFetch(`${API_BASE}/images/index/resume`, { method: 'POST' });
   if (!res.ok) throw new Error((await detailOf(res)) || '继续图片索引失败');
   return res.json();

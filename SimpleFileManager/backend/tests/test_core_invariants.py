@@ -359,3 +359,45 @@ def test_the_status_keeps_its_shape_between_runs(tmp_path, monkeypatch):
         time.sleep(0.05)
     after = set(indexer.status().keys())
     assert before == after, after - before
+
+
+def test_a_pause_does_not_outlive_the_build_it_was_meant_for(tmp_path,
+                                                             monkeypatch):
+    """Pausing a build that is not running must leave nothing behind.
+
+    The page can be a few seconds out of date, so the user can click
+    "pause" after the build has already finished. If that left the flag
+    set, the *next* build would report itself as paused while it was
+    working, and the page would say "已暂停" over a running build.
+    """
+    from app.deps import get_storage_root
+    from app.image_indexer import ImageIndexer
+
+    root = get_storage_root()
+    (root / "photos").mkdir(parents=True, exist_ok=True)
+    (root / "photos" / "one.jpg").write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 32)
+
+    class FakeEmbedder:
+        def embed_image(self, path):
+            return [1.0, 0.0, 0.0, 0.0]
+
+    monkeypatch.setattr("app.image_indexer.get_image_embedder", lambda: FakeEmbedder())
+    monkeypatch.setattr("app.image_indexer.interaction.is_busy", lambda: False)
+
+    indexer = ImageIndexer()
+    indexer.start()
+    for _ in range(100):
+        status = indexer.status()
+        if not status["running"] and status["finished_at"]:
+            break
+        time.sleep(0.05)
+
+    # The build is over; a pause now is a pause of nothing.
+    result = indexer.pause()
+    assert result.get("started") is False, result
+    assert indexer.status()["paused"] is False
+
+    # And the next build must not inherit the pause.
+    indexer.start(rebuild=True)
+    time.sleep(0.2)
+    assert indexer.status()["paused"] is False, indexer.status()

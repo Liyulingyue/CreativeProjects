@@ -10,7 +10,15 @@
 import { chromium } from 'playwright'
 
 const BASE = process.argv[2] ?? 'http://127.0.0.1:15173'
-const PASSWORD = process.env.SFM_PASSWORD ?? '20220924'
+// No default password on purpose: the one that was written here was
+// three changes old, so the login failed and every page below was
+// quietly measured on the login form. A tool that cannot see anything
+// and says "nothing is wrong" is worse than no tool.
+const PASSWORD = process.env.SFM_PASSWORD
+if (!PASSWORD) {
+  console.error('set SFM_PASSWORD to the password of the box you are measuring')
+  process.exit(2)
+}
 const VIEWPORT = { width: 375, height: 812 }
 
 const TABS = [
@@ -24,12 +32,17 @@ const TABS = [
 // Each view is reached the same way the sidebar does: click its nav item.
 // Must match the sidebar's own labels exactly; a mismatch silently leaves the
 // previous view on screen and every measurement below is then the same page.
-const NAV_LABEL = {
-  files: '文件管理',
-  chat: 'Agent 对话',
-  search: '搜索',
-  index: '索引管理',
-  settings: '设置',
+// Each view is reached by its own address. Clicking the sidebar's items
+// does not work on a phone: the sidebar is collapsed there, so the items
+// carry icons but no words, and the click finds nothing. The click was
+// wrapped in a catch, so every measurement below was quietly taken on
+// the page that happened to be open -- the same page five times.
+const PATHS = {
+  files: '/',
+  chat: '/chat',
+  search: '/search',
+  index: '/index',
+  settings: '/settings',
 }
 
 const audit = () => {
@@ -50,7 +63,10 @@ const audit = () => {
 
     // Horizontal bleed past the viewport. Ignore nodes that scroll internally.
     const scrollsX = cs.overflowX === 'auto' || cs.overflowX === 'scroll'
-    if (!scrollsX && (r.right > vw + 1 || r.left < -1)) {
+    // A drawer that is closed sits off the left of the screen on
+    // purpose. It is not "bleeding" anywhere.
+    const offScreen = r.right <= 0 || r.left >= vw
+    if (!scrollsX && !offScreen && (r.right > vw + 1 || r.left < -1)) {
       problems.overflow.push({
         el: describe(el),
         left: Math.round(r.left),
@@ -61,7 +77,10 @@ const audit = () => {
 
     // Content wider than the box it lives in, with no way to scroll to it.
     const hidesX = cs.overflowX === 'hidden' || cs.overflowX === 'clip'
-    if (hidesX && el.scrollWidth > el.clientWidth + 1) {
+    // An element with "truncate" on it is meant to be cut short: the
+    // ellipsis is the point. Only real clipping is a problem.
+    const meantToBeShort = (el.className || '').toString().includes('truncate')
+    if (hidesX && !meantToBeShort && el.scrollWidth > el.clientWidth + 1) {
       problems.clipped.push({
         el: describe(el),
         scrollW: el.scrollWidth,
@@ -105,16 +124,25 @@ const run = async () => {
     await page.fill('input[type="password"]', PASSWORD)
     await page.keyboard.press('Enter')
     await page.waitForTimeout(2500)
+    if (await page.locator('input[type="password"]').count()) {
+      throw new Error('the login did not work -- every page below would be ' +
+        'measured on the login form')
+    }
   }
 
   const out = {}
-  for (const [key, label] of TABS) {
-    const nav = page.locator(`nav >> text=${label}`).first()
-    if (await nav.count()) {
-      await nav.click({ timeout: 5000 }).catch(() => {})
-      await page.waitForTimeout(1200)
-    }
+  for (const [key] of TABS) {
+    await page.goto(BASE + PATHS[key], { waitUntil: 'networkidle' })
+    await page.waitForTimeout(1200)
     out[key] = await page.evaluate(audit)
+    // The address has to be the one we asked for: a page that redirects
+    // would be measured under the wrong name. The first words of the
+    // page say what was really measured -- a script that silently
+    // measures the same page five times looks exactly like one that
+    // found nothing wrong.
+    out[key].at = new URL(page.url()).pathname
+    out[key].page = await page.evaluate(() =>
+      (document.body.innerText || '').trim().split('\n').slice(0, 2).join(' / ').slice(0, 60))
   }
 
   console.log(JSON.stringify(out, null, 2))

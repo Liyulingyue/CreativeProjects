@@ -105,7 +105,7 @@ export function SearchPage() {
               type="button"
               onClick={() => setKind(k)}
               aria-pressed={kind === k}
-              className={`pb-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              className={`pt-2 pb-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
                 kind === k
                   ? 'border-indigo-600 text-indigo-600'
                   : 'border-transparent text-slate-500 hover:text-slate-700'

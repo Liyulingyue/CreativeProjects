@@ -118,6 +118,11 @@ class ImageIndexer:
             self._paused = False
             self._resume_event.set()
             self._status["running"] = True
+            # A build that was paused earlier left this behind. Without
+            # clearing it, the new build would report itself as paused
+            # while it was running, and the page would show "已暂停"
+            # over a build that was working.
+            self._status["paused"] = False
             self._thread = threading.Thread(
                 target=self._run, args=(limit, rebuild), daemon=True,
                 name="image-indexer")
@@ -126,17 +131,25 @@ class ImageIndexer:
 
     def pause(self) -> dict:
         with self._lock:
+            if not (self._thread and self._thread.is_alive()):
+                # Nothing is running. Setting the flag anyway would leave
+                # a pause behind that the next build would inherit.
+                return {**self._status, "paused": False, "started": False,
+                        "reason": "没有正在建立的索引"}
             self._paused = True
             self._status["paused"] = True
             self._resume_event.clear()
-        return self.status()
+        return {**self.status(), "started": True}
 
     def resume(self) -> dict:
         with self._lock:
+            if not (self._thread and self._thread.is_alive()):
+                return {**self._status, "paused": False, "started": False,
+                        "reason": "没有正在建立的索引"}
             self._paused = False
             self._status["paused"] = False
             self._resume_event.set()
-        return self.status()
+        return {**self.status(), "started": True}
 
     def stop(self) -> dict:
         with self._lock:
