@@ -227,7 +227,7 @@ def search_by_text(query: str, limit: int = 12) -> list[dict]:
     with get_big_pool().try_hold(timeout=_search_timeout(), shared=True) as got:
         if not got:
             raise SearchUnavailable(
-                "服务器正在忙（模型生成或图片索引构建中），以文搜图暂时不可用，请稍后重试"
+                "图片索引正在建（它占着整台机器），以文搜图暂时不可用，等它建完再试"
             )
         try:
             vector = embedder.embed_text(query, prefix=QUERY_PREFIX)
@@ -282,7 +282,7 @@ def search_by_image(image_path: str, limit: int = 12) -> list[dict]:
     with get_big_pool().try_hold(timeout=_search_timeout(True)) as got:
         if not got:
             raise SearchUnavailable(
-                "服务器正在忙（模型生成或图片索引构建中），以图搜图暂时不可用，请稍后重试"
+                "服务器正在忙（模型正在生成，或图片索引正在建），以图搜图要占住整台机器，暂时不可用，请稍后重试"
             )
         try:
             vector = embedder.embed_image(source)
