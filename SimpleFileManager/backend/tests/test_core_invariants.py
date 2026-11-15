@@ -880,3 +880,37 @@ def test_a_busy_store_answers_with_a_sentence_and_not_a_crash(tmp_path):
     r = client.get("/api/_test_busy")
     assert r.status_code == 503
     assert "忙" in r.json().get("detail", "")
+
+
+def test_a_failure_to_restart_the_models_reaches_the_log(tmp_path, monkeypatch):
+    """The message has to be in the log, not on the console.
+
+    When the settings change and the models are restarted, the restart
+    is the thing that goes wrong -- and it went to a print, which goes
+    nowhere once the server runs as a service. The log is where one
+    looks for it afterwards.
+    """
+    import logging
+
+    from app import deps
+
+    records = []
+
+    class Catch(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    handler = Catch()
+    deps.log.addHandler(handler)
+    deps.log.setLevel(logging.DEBUG)
+    try:
+        # serve.sh is not there, so there is nothing to restart -- and
+        # that has to be said in the log.
+        monkeypatch.setattr(deps, "BASE_DIR", tmp_path / "backend")
+        (tmp_path / "backend").mkdir(parents=True, exist_ok=True)
+        deps.state._apply_thinking_setting(False)
+    finally:
+        deps.log.removeHandler(handler)
+
+    assert any("serve.sh" in m for m in records), \
+        f"日志里没有这件事: {records[-5:]}"

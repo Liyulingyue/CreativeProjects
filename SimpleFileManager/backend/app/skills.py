@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import re
 import shutil
 import threading
@@ -29,6 +30,8 @@ from typing import Any, Optional
 
 from .deps import state, can_access, visible_children
 from .trash import TrashService
+
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Tool definitions (OpenAI function-calling format)
@@ -928,8 +931,12 @@ class SkillRegistry:
                 self._overrides = data.get("enabled", {})
                 self._tool_overrides = data.get("tools", {})
                 self._exec_overrides = data.get("exec", {})
-            except Exception:
-                pass
+            except Exception as e:
+                # A skills file that cannot be read means the skills are
+                # not there. Saying so matters: otherwise the page shows
+                # an empty list and the person thinks their skills are
+                # gone.
+                log.warning("could not read the skills file %s: %s", p, e)
 
     def _save(self):
         with self._lock:

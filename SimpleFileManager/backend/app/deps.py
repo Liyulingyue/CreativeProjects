@@ -23,6 +23,8 @@ from .models import (
     DEFAULT_REASONING_BUDGET,
 )
 
+log = logging.getLogger(__name__)
+
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -91,7 +93,6 @@ def _load_json(path: Path, default=None, strict: bool = False):
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
         if strict:
             raise
-        log = logging.getLogger(__name__)
         log.error("%s is not readable (%s); keeping it aside and using the defaults",
                   path, e)
         try:
@@ -2016,10 +2017,13 @@ class AppState:
         try:
             _update_env_value(env_path, "THINKING_ENABLED", "true" if enabled else "false")
         except Exception as e:
-            print(f"[settings] failed to update .env: {e}")
+            # The log, not the console: this is exactly the kind of
+            # thing one looks for in the log afterwards, and a print
+            # goes nowhere once the server is started as a service.
+            log.error("could not update .env: %s", e)
         serve_sh = BASE_DIR.parent / "LLMServices" / "serve.sh"
         if not serve_sh.is_file():
-            print(f"[settings] serve.sh not found at {serve_sh}; skipping restart")
+            log.warning("serve.sh is not at %s; not restarting the models", serve_sh)
             return
         try:
             import subprocess
@@ -2032,7 +2036,7 @@ class AppState:
                 timeout=120,
             )
         except Exception as e:
-            print(f"[settings] serve.sh restart failed: {e}")
+            log.error("could not restart the models: %s", e)
 
     def get_index_stats(self) -> IndexStats:
         self._index_stats.storage_used = _calc_storage_used()
