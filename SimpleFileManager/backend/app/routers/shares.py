@@ -27,6 +27,9 @@ class CreateShareRequest(BaseModel):
     # on its own, though it can still be revoked.
     expiry_days: int = DEFAULT_EXPIRY_DAYS
     # Optional password, so a link that leaks is not enough on its own.
+    # It has to be worth something: a link that is out on the internet
+    # with a one-letter password is not protected by the password, it
+    # is only slowed down.
     password: str = ""
     # Optional cap on how many times it can be fetched. Zero means no cap.
     max_downloads: int = 0
@@ -34,6 +37,12 @@ class CreateShareRequest(BaseModel):
 
 class UpdateShareRequest(BaseModel):
     expiry_days: Optional[int] = None
+
+
+# The shortest password a share may have. The password is the only
+# thing between a link that is out on the internet and the file behind
+# it, and a one-letter password is not a password.
+MIN_SHARE_PASSWORD = 4
 
 
 def _store():
@@ -67,14 +76,26 @@ def create_share(req: CreateShareRequest) -> dict:
     else:
         size = target.stat().st_size
 
-    days = max(0, min(int(req.expiry_days or 0), MAX_EXPIRY_DAYS))
+    password = (req.password or "").strip()
+    if password and len(password) < MIN_SHARE_PASSWORD:
+        raise HTTPException(
+            status_code=400,
+            detail=f"分享密码至少要 {MIN_SHARE_PASSWORD} 个字符")
+
+    days = int(req.expiry_days or 0)
+    if days < 0:
+        # A negative number used to be quietly turned into zero, and
+        # zero means "never expires". A link that was supposed to have
+        # expired yesterday would have lived for ever.
+        raise HTTPException(status_code=400, detail="有效期不能是负数")
+    days = min(days, MAX_EXPIRY_DAYS)
     share = _store().create(
         path=str(target),
         is_dir=target.is_dir(),
         size=size,
         name=target.name,
         expiry_days=days,
-        password=req.password or "",
+        password=password,
         max_downloads=int(req.max_downloads or 0),
     )
     return {k: v for k, v in share.items() if k != "path"} | {"path": str(target)}

@@ -12,6 +12,7 @@ does not say where the file lives on the NAS.
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -28,6 +29,53 @@ share_public = APIRouter()
 # How long a visitor stays unlocked after typing the password.
 UNLOCK_TTL = 3600
 UNLOCK_COOKIE = "sfm_share"
+
+# How many wrong passwords are allowed before the door is closed for a
+# while. The password of a share is the only thing between a link that
+# is out on the internet and the file behind it, and the hash is slow
+# enough that guessing is cheap for whoever is in a hurry.
+UNLOCK_MAX_FAILURES = 5
+UNLOCK_COOLDOWN_SECONDS = 60
+
+# Failed attempts, by share and by address.
+_unlock_failures: dict[tuple[str, str], list[float]] = {}
+_unlock_lock = threading.Lock()
+
+
+def _unlock_key(request: Request, share_id: str) -> tuple[str, str]:
+    """The share and where the attempt came from."""
+    client = request.client.host if request.client else "-"
+    return (share_id, client)
+
+
+def _unlock_blocked(request: Request, share_id: str) -> int:
+    """How long the door is closed for, in seconds. Zero means open."""
+    key = _unlock_key(request, share_id)
+    now = time.time()
+    with _unlock_lock:
+        attempts = [t for t in _unlock_failures.get(key, []) if now - t < UNLOCK_COOLDOWN_SECONDS]
+        if not attempts:
+            _unlock_failures.pop(key, None)
+            return 0
+        _unlock_failures[key] = attempts
+        if len(attempts) < UNLOCK_MAX_FAILURES:
+            return 0
+        return int(UNLOCK_COOLDOWN_SECONDS - (now - attempts[0]))
+
+
+def _unlock_failed(request: Request, share_id: str) -> None:
+    key = _unlock_key(request, share_id)
+    now = time.time()
+    with _unlock_lock:
+        attempts = _unlock_failures.setdefault(key, [])
+        attempts.append(now)
+        # Old attempts are not interesting any more.
+        _unlock_failures[key] = [t for t in attempts if now - t < UNLOCK_COOLDOWN_SECONDS]
+
+
+def _unlock_succeeded(request: Request, share_id: str) -> None:
+    with _unlock_lock:
+        _unlock_failures.pop(_unlock_key(request, share_id), None)
 
 
 def _store():
@@ -104,18 +152,26 @@ class UnlockRequest(BaseModel):
 
 
 @share_public.post("/{share_id}/unlock")
-def unlock(share_id: str, req: UnlockRequest, response: Response):
+def unlock(share_id: str, req: UnlockRequest, response: Response, request: Request):
     """Check the password and let the visitor through."""
     share, _target = _resolve(share_id)
     if not share["has_password"]:
         return {"ok": True}
+    blocked = _unlock_blocked(request, share_id)
+    if blocked:
+        raise HTTPException(
+            status_code=429,
+            detail=f"密码猜得太多了，请等 {blocked} 秒再试")
     # The hash is never handed out by the public view, so it is read
     # here, only for the moment it takes to check it.
     raw_hash = _store().get_password_hash(share_id)
     if raw_hash is None:
         raise HTTPException(status_code=500, detail="分享信息不完整")
     if not check_password(req.password, raw_hash):
+        _unlock_failed(request, share_id)
         raise HTTPException(status_code=401, detail="密码不正确")
+
+    _unlock_succeeded(request, share_id)
 
     expires = int(time.time()) + UNLOCK_TTL
     import hashlib
