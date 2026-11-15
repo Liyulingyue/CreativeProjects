@@ -42,7 +42,7 @@ def test_something_that_is_not_a_window_is_all_day():
 
 def test_the_picture_window_insists_on_real_hours():
     """The picture index cannot start a build at hour 24."""
-    from app.image_indexer import _sane_window
+    from app.image_index_scheduler import _sane_window
 
     assert _sane_window("09:00-09:30") is True
     assert _sane_window("24:00-06:00") is False

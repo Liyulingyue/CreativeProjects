@@ -16,7 +16,7 @@ from .deps import PathNotAllowed, resolve_under_root
 from .indexer import indexer
 from .auto_digest import auto_digest
 from .trash_retention import trash_retention
-from .image_indexer import image_index_schedule
+from .image_index_scheduler import image_index_schedule
 from .routers import providers as providers_router  # noqa: E402
 from .routers import embedding_providers as embedding_providers_router  # noqa: E402
 from .routers.shares import shares as shares_router  # noqa: E402

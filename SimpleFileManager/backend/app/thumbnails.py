@@ -53,6 +53,12 @@ def _pillow():
         return None
 
 
+# How many little pictures are kept. Each one is a few kilobytes, so
+# this is a few megabytes: enough to keep a page of pictures and the
+# page before it warm, not enough to fill a disk.
+THUMBNAIL_CACHE_FILES = 2000
+
+
 class ThumbnailStore:
     """The little pictures, and where they are kept."""
 
@@ -67,6 +73,9 @@ class ThumbnailStore:
         # does not have to wait for each other.
         self._locks: dict[str, threading.Lock] = {}
         self._locks_lock = threading.Lock()
+        # How many little pictures have been made since the last look at
+        # the cache directory.
+        self._made = 0
 
     def cache_path(self, target: Path, size: int) -> Path:
         """Where the little picture for a file is kept.
@@ -132,7 +141,26 @@ class ThumbnailStore:
                 tmp.replace(cached)
             except OSError:
                 pass
+            self._maybe_prune()
             return data
+
+    def _maybe_prune(self) -> None:
+        """Keep the cache from growing for ever.
+
+        The directory is only looked at now and then: a page of
+        pictures asks for two dozen of them at once, and walking the
+        directory every time would be the slowest part of the page.
+        """
+        with self._locks_lock:
+            self._made += 1
+            due = self._made >= 200
+            if due:
+                self._made = 0
+        if due:
+            try:
+                self.prune()
+            except Exception:  # noqa: BLE001
+                log.debug("could not prune the thumbnail cache", exc_info=True)
 
     def _lock_for(self, key: str) -> threading.Lock:
         """The lock for one picture."""
@@ -157,6 +185,35 @@ class ThumbnailStore:
                 return buffer.getvalue()
         except Exception:
             return None
+
+    def prune(self, limit: Optional[int] = None) -> int:
+        """Throw away the little pictures that are not wanted any more.
+
+        The name of a cached picture carries the size and the moment the
+        file was last changed, so a picture that has been replaced leaves
+        its old version behind. Nothing else ever removes them, and on a
+        machine with many photographs the cache grows until the disk is
+        full. The oldest ones go first: they are the ones least likely
+        to be asked for again.
+        """
+        limit = THUMBNAIL_CACHE_FILES if limit is None else limit
+        if not self.cache_root.exists():
+            return 0
+        try:
+            entries = [e for e in self.cache_root.iterdir() if e.is_file()]
+        except OSError:
+            return 0
+        if len(entries) <= limit:
+            return 0
+        entries.sort(key=lambda e: e.stat().st_mtime if e.exists() else 0)
+        removed = 0
+        for entry in entries[:len(entries) - limit]:
+            try:
+                entry.unlink()
+                removed += 1
+            except OSError:
+                continue
+        return removed
 
     def clear(self) -> int:
         """Throw the little pictures away. They are made again on demand."""

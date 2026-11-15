@@ -641,3 +641,31 @@ def test_a_text_search_runs_next_to_a_conversation(tmp_path, monkeypatch):
     with pool.hold(timeout=5, shared=True):
         results = image_search.search_by_text("一张图")
         assert [r["path"] for r in results] == ["photos/one.jpg"]
+
+
+def test_the_thumbnail_cache_does_not_grow_for_ever(tmp_path):
+    """A picture that was replaced leaves its old little picture behind.
+
+    The name of a cached picture carries the size and the moment the file
+    was changed, so every version of a photograph is a file of its own.
+    Nothing else ever removed them, and on a machine with many
+    photographs the cache would grow until the disk was full.
+    """
+    from app.thumbnails import ThumbnailStore
+
+    store = ThumbnailStore(tmp_path, tmp_path / "thumbs")
+    store.cache_root.mkdir(parents=True, exist_ok=True)
+    for i in range(30):
+        old = time.time() - (100 - i)
+        path = store.cache_root / f"pic{i}.jpg"
+        path.write_bytes(b"\xff\xd8\xff")
+        import os
+        os.utime(path, (old, old))
+
+    removed = store.prune(limit=10)
+    assert removed == 20, removed
+    left = list(store.cache_root.iterdir())
+    assert len(left) == 10
+    # The oldest are the ones that went.
+    assert "pic29.jpg" in {p.name for p in left}
+    assert "pic0.jpg" not in {p.name for p in left}

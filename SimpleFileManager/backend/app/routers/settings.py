@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from ..deps import state
 from .auth import require_admin
 from ..cpu_pool import CpuPoolBusy
-from ..image_indexer import _sane_window
+from ..image_index_scheduler import _sane_window
 from ..indexer import ACTIVE_HOURS_ALL, _parse_window, indexer
 from ..models import AppSettings, IndexStats, IndexStatus, AutoIndexStatus
 

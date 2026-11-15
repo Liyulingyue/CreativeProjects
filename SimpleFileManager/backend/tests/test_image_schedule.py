@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from app.image_indexer import ImageIndexScheduler, _window_end
+from app.image_index_scheduler import ImageIndexScheduler, _window_end
 
 
 class FakeIndexer:
@@ -29,8 +29,11 @@ class FakeIndexer:
 @pytest.fixture
 def scheduler(monkeypatch):
     fake = FakeIndexer()
-    monkeypatch.setattr("app.image_indexer.image_indexer", fake)
-    monkeypatch.setattr("app.image_indexer.datetime", _FrozenClock(datetime(2026, 11, 14, 9, 5)))
+    # The scheduler and the builder are two files now, so each of them
+    # is patched where it lives.
+    monkeypatch.setattr("app.image_index_scheduler.image_indexer", fake)
+    monkeypatch.setattr("app.image_index_scheduler.datetime",
+                        _FrozenClock(datetime(2026, 11, 14, 9, 5)))
     sch = ImageIndexScheduler()
     sch.fake = fake
     return sch
@@ -58,7 +61,7 @@ def test_a_window_that_wraps_past_midnight():
 def test_the_build_starts_when_the_window_opens(scheduler, monkeypatch):
     monkeypatch.setattr("app.deps.state.get_settings",
                         lambda: _settings(window="09:00-09:30"))
-    monkeypatch.setattr("app.image_indexer.datetime", _FrozenClock(datetime(2026, 11, 14, 9, 5)))
+    monkeypatch.setattr("app.image_index_scheduler.datetime", _FrozenClock(datetime(2026, 11, 14, 9, 5)))
     scheduler._tick()
     assert scheduler.fake.starts == 1
     assert scheduler.fake.stops == 0
@@ -67,7 +70,7 @@ def test_the_build_starts_when_the_window_opens(scheduler, monkeypatch):
 def test_nothing_happens_outside_the_window(scheduler, monkeypatch):
     monkeypatch.setattr("app.deps.state.get_settings",
                         lambda: _settings(window="09:00-09:30"))
-    monkeypatch.setattr("app.image_indexer.datetime", _FrozenClock(datetime(2026, 11, 14, 8, 30)))
+    monkeypatch.setattr("app.image_index_scheduler.datetime", _FrozenClock(datetime(2026, 11, 14, 8, 30)))
     scheduler._tick()
     assert scheduler.fake.starts == 0
 
@@ -76,7 +79,7 @@ def test_the_build_stops_when_the_window_closes(scheduler, monkeypatch):
     monkeypatch.setattr("app.deps.state.get_settings",
                         lambda: _settings(window="09:00-09:30"))
     clock = _FrozenClock(datetime(2026, 11, 14, 9, 5))
-    monkeypatch.setattr("app.image_indexer.datetime", clock)
+    monkeypatch.setattr("app.image_index_scheduler.datetime", clock)
     scheduler._tick()
     assert scheduler.fake.starts == 1
 
@@ -89,7 +92,7 @@ def test_the_build_is_not_started_twice_in_one_window(scheduler, monkeypatch):
     monkeypatch.setattr("app.deps.state.get_settings",
                         lambda: _settings(window="09:00-09:30"))
     clock = _FrozenClock(datetime(2026, 11, 14, 9, 5))
-    monkeypatch.setattr("app.image_indexer.datetime", clock)
+    monkeypatch.setattr("app.image_index_scheduler.datetime", clock)
     scheduler._tick()
     scheduler._tick()
     scheduler._tick()
@@ -100,7 +103,7 @@ def test_the_next_window_starts_a_new_build(scheduler, monkeypatch):
     monkeypatch.setattr("app.deps.state.get_settings",
                         lambda: _settings(window="09:00-09:30"))
     clock = _FrozenClock(datetime(2026, 11, 14, 9, 5))
-    monkeypatch.setattr("app.image_indexer.datetime", clock)
+    monkeypatch.setattr("app.image_index_scheduler.datetime", clock)
     scheduler._tick()
     clock.move_to(datetime(2026, 11, 14, 9, 31))
     scheduler._tick()
@@ -113,7 +116,7 @@ def test_the_next_window_starts_a_new_build(scheduler, monkeypatch):
 def test_a_disabled_schedule_does_nothing(scheduler, monkeypatch):
     monkeypatch.setattr("app.deps.state.get_settings",
                         lambda: _settings(enabled=False))
-    monkeypatch.setattr("app.image_indexer.datetime", _FrozenClock(datetime(2026, 11, 14, 9, 5)))
+    monkeypatch.setattr("app.image_index_scheduler.datetime", _FrozenClock(datetime(2026, 11, 14, 9, 5)))
     scheduler._tick()
     assert scheduler.fake.starts == 0
 
@@ -122,7 +125,7 @@ def test_an_all_day_window_never_stops_the_build(scheduler, monkeypatch):
     monkeypatch.setattr("app.deps.state.get_settings",
                         lambda: _settings(window="all"))
     clock = _FrozenClock(datetime(2026, 11, 14, 9, 5))
-    monkeypatch.setattr("app.image_indexer.datetime", clock)
+    monkeypatch.setattr("app.image_index_scheduler.datetime", clock)
     scheduler._tick()
     clock.move_to(datetime(2026, 11, 14, 23, 59))
     scheduler._tick()
@@ -135,7 +138,7 @@ def test_an_all_day_window_picks_up_new_pictures_later(scheduler, monkeypatch):
     monkeypatch.setattr("app.deps.state.get_settings",
                         lambda: _settings(window="all"))
     clock = _FrozenClock(datetime(2026, 11, 14, 9, 5))
-    monkeypatch.setattr("app.image_indexer.datetime", clock)
+    monkeypatch.setattr("app.image_index_scheduler.datetime", clock)
     scheduler._tick()
     assert scheduler.fake.starts == 1
 
