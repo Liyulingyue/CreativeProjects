@@ -28,6 +28,7 @@ import sqlite3
 import threading
 import time
 from typing import Optional
+from . import db
 
 log = logging.getLogger(__name__)
 
@@ -91,7 +92,6 @@ class ShareStore:
             conn.close()
 
     def _get_conn(self) -> sqlite3.Connection:
-        from . import db
 
         return db.connect(self.db_path)
 
@@ -111,7 +111,9 @@ class ShareStore:
         now = int(time.time())
         days = max(0, min(int(expiry_days or 0), MAX_EXPIRY_DAYS))
         expires_at = now + days * 86400 if days else 0
-        with self._lock:
+        # The hash is slow and it is done before the lock is taken.
+        secret = hash_password(password) if password else None
+        with db.write_lock(self._lock, what="共享表"):
             conn = self._get_conn()
             try:
                 conn.execute(
@@ -121,7 +123,7 @@ class ShareStore:
                     (
                         share_id, path, 1 if is_dir else 0, int(size), name, now,
                         expires_at,
-                        hash_password(password) if password else None,
+                        secret,
                         int(max_downloads or 0),
                     ),
                 )
@@ -132,17 +134,16 @@ class ShareStore:
         return self.get(share_id)
 
     def get(self, share_id: str) -> Optional[dict]:
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                row = conn.execute(
-                    "SELECT id, path, is_dir, size, name, created_at, expires_at,"
-                    " password_hash, max_downloads, downloads, last_access, revoked"
-                    " FROM shares WHERE id = ?",
-                    (share_id,),
-                ).fetchone()
-            finally:
-                conn.close()
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT id, path, is_dir, size, name, created_at, expires_at,"
+                " password_hash, max_downloads, downloads, last_access, revoked"
+                " FROM shares WHERE id = ?",
+                (share_id,),
+            ).fetchone()
+        finally:
+            conn.close()
         return self._row(row) if row else None
 
     def get_password_hash(self, share_id: str) -> Optional[str]:
@@ -151,34 +152,32 @@ class ShareStore:
         Kept apart from the listing so the hash is never handed out by
         accident -- the public view reports only whether there is one.
         """
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                row = conn.execute(
-                    "SELECT password_hash FROM shares WHERE id = ?", (share_id,)
-                ).fetchone()
-            finally:
-                conn.close()
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT password_hash FROM shares WHERE id = ?", (share_id,)
+            ).fetchone()
+        finally:
+            conn.close()
         return row[0] if row else None
 
     def list(self, only_active: bool = False) -> list[dict]:
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                rows = conn.execute(
-                    "SELECT id, path, is_dir, size, name, created_at, expires_at,"
-                    " password_hash, max_downloads, downloads, last_access, revoked"
-                    " FROM shares ORDER BY created_at DESC"
-                ).fetchall()
-            finally:
-                conn.close()
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT id, path, is_dir, size, name, created_at, expires_at,"
+                " password_hash, max_downloads, downloads, last_access, revoked"
+                " FROM shares ORDER BY created_at DESC"
+            ).fetchall()
+        finally:
+            conn.close()
         out = [self._row(r) for r in rows]
         if only_active:
             out = [s for s in out if s["active"]]
         return out
 
     def revoke(self, share_id: str) -> bool:
-        with self._lock:
+        with db.write_lock(self._lock, what="共享表"):
             conn = self._get_conn()
             try:
                 cur = conn.execute(
@@ -193,7 +192,7 @@ class ShareStore:
         now = int(time.time())
         days = max(0, min(int(expiry_days or 0), MAX_EXPIRY_DAYS))
         expires_at = now + days * 86400 if days else 0
-        with self._lock:
+        with db.write_lock(self._lock, what="共享表"):
             conn = self._get_conn()
             try:
                 cur = conn.execute(
@@ -206,7 +205,7 @@ class ShareStore:
 
     def note_access(self, share_id: str) -> None:
         """Record that a share was fetched."""
-        with self._lock:
+        with db.write_lock(self._lock, what="共享表"):
             conn = self._get_conn()
             try:
                 conn.execute(
@@ -221,7 +220,7 @@ class ShareStore:
     def purge_expired(self) -> int:
         """Remove shares that have expired and been left alone."""
         now = int(time.time())
-        with self._lock:
+        with db.write_lock(self._lock, what="共享表"):
             conn = self._get_conn()
             try:
                 cur = conn.execute(

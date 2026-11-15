@@ -24,6 +24,7 @@ from typing import Optional
 
 from .deps import DATA_DIR, get_storage_root, state
 from .trash import TrashService
+from . import db
 
 log = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ class TrashLog:
             return 0
         import uuid
         now = int(time.time())
-        with self._lock:
+        with db.write_lock(self._lock, what="回收站记录"):
             conn = self._get_conn()
             for e in entries:
                 conn.execute(
@@ -82,13 +83,12 @@ class TrashLog:
         return len(entries)
 
     def list(self, limit: int = 50) -> list[dict]:
-        with self._lock:
-            conn = self._get_conn()
-            rows = conn.execute(
-                "SELECT id, ts, entry_id, name, rel_path, size, reason FROM trash_log "
-                "ORDER BY ts DESC LIMIT ?", (int(limit),),
-            ).fetchall()
-            conn.close()
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT id, ts, entry_id, name, rel_path, size, reason FROM trash_log "
+            "ORDER BY ts DESC LIMIT ?", (int(limit),),
+        ).fetchall()
+        conn.close()
         return [
             {"id": r[0], "ts": r[1], "entry_id": r[2], "name": r[3],
              "rel_path": r[4], "size": r[5], "reason": r[6]}
@@ -96,7 +96,7 @@ class TrashLog:
         ]
 
     def clear(self) -> int:
-        with self._lock:
+        with db.write_lock(self._lock, what="回收站记录"):
             conn = self._get_conn()
             count = conn.execute("SELECT COUNT(*) FROM trash_log").fetchone()[0]
             conn.execute("DELETE FROM trash_log")

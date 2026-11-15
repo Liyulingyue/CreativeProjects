@@ -759,3 +759,79 @@ def test_a_broken_row_does_not_break_the_whole_list(tmp_path):
     sessions = service.get_sessions()
     assert len(sessions) == 1
     assert sessions[0].messages[0].sources is None
+
+
+def test_a_read_does_not_stand_in_front_of_a_write(tmp_path):
+    """Every store that has a lock used to take it for reading too.
+
+    The database is opened in WAL mode -- a reader works while a writer
+    works -- so the reads do not need the lock, and taking it meant
+    that one slow list of conversations could stop the service talking.
+    The user table is the worst case: every request checks a token
+    through it.
+    """
+    from app.users import UserStore
+
+    store = UserStore(str(tmp_path / "users.db"))
+    store.create_user("someone", "password123", role="user")
+    store.store_token("tok", "someone", 0)
+
+    # A read is at work.
+    reading = threading.Event()
+    finished = threading.Event()
+
+    def reader():
+        reading.set()
+        for _ in range(50):
+            store.get_by_username("someone")
+        finished.set()
+
+    t = threading.Thread(target=reader)
+    t.start()
+    reading.wait(2)
+
+    # The write must not wait for the reader.
+    started = time.time()
+    store.set_password(store.list_users()[0]["id"], "another-password")
+    assert time.time() - started < 2.0, "the write waited for a reader"
+    t.join(5)
+    assert finished.is_set()
+
+
+def test_a_password_is_not_hashed_inside_the_lock(tmp_path):
+    """Hashing a password is a hundred thousand rounds of sha256.
+
+    It was done while the user table's lock was held, and every request
+    that checks a token waits for that lock -- so creating a user made
+    the whole service slower for as long as the hash took.
+    """
+    import app.users as users_mod
+
+    store = users_mod.UserStore(str(tmp_path / "users.db"))
+    user = store.create_user("someone", "password123", role="user")
+
+    # The lock is taken for a moment; if the hash were inside it, the
+    # lock would still be held while the hash runs.
+    held = threading.Event()
+    release = threading.Event()
+
+    original = users_mod.hash_password
+
+    def slow_hash(password, salt):
+        held.set()
+        release.wait(5)
+        return original(password, salt)
+
+    users_mod.hash_password = slow_hash
+    try:
+        t = threading.Thread(target=lambda: store.set_password(user["id"], "another-one"))
+        t.start()
+        assert held.wait(5), "the hash was never reached"
+        # While the hash runs, a read must not be waiting for the lock.
+        started = time.time()
+        store.get_by_username("someone")
+        assert time.time() - started < 1.0, "a read waited for the password hash"
+        release.set()
+        t.join(10)
+    finally:
+        users_mod.hash_password = original

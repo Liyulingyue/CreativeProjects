@@ -27,6 +27,7 @@ The lock itself lives with the service that owns the database -- see
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 import threading
 
 # How long a statement waits for a lock before giving up. A reindex of
@@ -40,6 +41,27 @@ _conn_options = {
     "timeout": BUSY_TIMEOUT_MS / 1000,
     "check_same_thread": False,
 }
+
+
+@contextmanager
+def write_lock(lock: threading.Lock, timeout: float = 10.0, what: str = "数据库"):
+    """Hold a store's lock for a write, or give up.
+
+    The lock is only for writes. The database is opened in WAL mode, so
+    a reader works while a writer works, and there is no reason to make
+    a reader wait for a writer -- or a writer wait for a reader.
+
+    The wait is bounded anyway: a lock held by something that will never
+    let go would otherwise take every request that has to pass through
+    the same door with it, and the service would stop answering without
+    saying why.
+    """
+    if not lock.acquire(timeout=timeout):
+        raise TimeoutError(f"{what}忙，{timeout} 秒内没有拿到写锁")
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def connect(path, **overrides) -> sqlite3.Connection:

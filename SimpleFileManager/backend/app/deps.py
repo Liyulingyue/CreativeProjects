@@ -1579,7 +1579,7 @@ class PlanStore:
             conn.close()
 
     def create_plan(self, title: str, summary: str, source: str, actions: list[dict], owner: str = "") -> AgentPlan:
-        with self._lock:
+        with db.write_lock(self._lock, what="计划表"):
             plan_id = uuid.uuid4().hex
             now = int(time.time() * 1000)
             conn = self._get_conn()
@@ -1629,46 +1629,44 @@ class PlanStore:
         )
 
     def list_plans(self, status: Optional[str] = None, limit: int = 50) -> list[AgentPlan]:
-        with self._lock:
-            conn = self._get_conn()
-            if status:
-                rows = conn.execute(
-                    "SELECT id, title, summary, status, source, created_at, decided_at, executed_at, owner FROM plans WHERE status = ? ORDER BY created_at DESC LIMIT ?",
-                    (status, limit)
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT id, title, summary, status, source, created_at, decided_at, executed_at, owner FROM plans ORDER BY created_at DESC LIMIT ?",
-                    (limit,)
-                ).fetchall()
-            plans = [
-                self._row_to_plan(conn, r)
-                for r in rows
-                if _plan_visible_to(r[8])
-            ]
-            conn.close()
+        conn = self._get_conn()
+        if status:
+            rows = conn.execute(
+                "SELECT id, title, summary, status, source, created_at, decided_at, executed_at, owner FROM plans WHERE status = ? ORDER BY created_at DESC LIMIT ?",
+                (status, limit)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, title, summary, status, source, created_at, decided_at, executed_at, owner FROM plans ORDER BY created_at DESC LIMIT ?",
+                (limit,)
+            ).fetchall()
+        plans = [
+            self._row_to_plan(conn, r)
+            for r in rows
+            if _plan_visible_to(r[8])
+        ]
+        conn.close()
         return plans
 
     def get_plan(self, plan_id: str) -> Optional[AgentPlan]:
-        with self._lock:
-            conn = self._get_conn()
-            row = conn.execute(
-                "SELECT id, title, summary, status, source, created_at, decided_at, executed_at, owner FROM plans WHERE id = ?",
-                (plan_id,)
-            ).fetchone()
-            if not row:
-                conn.close()
-                return None
-            if not _plan_visible_to(row[8]):
-                conn.close()
-                return None
-            plan = self._row_to_plan(conn, row)
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT id, title, summary, status, source, created_at, decided_at, executed_at, owner FROM plans WHERE id = ?",
+            (plan_id,)
+        ).fetchone()
+        if not row:
             conn.close()
+            return None
+        if not _plan_visible_to(row[8]):
+            conn.close()
+            return None
+        plan = self._row_to_plan(conn, row)
+        conn.close()
         return plan
 
     def update_status(self, plan_id: str, status: str, decided: bool = False, executed: bool = False) -> Optional[AgentPlan]:
         now = int(time.time() * 1000)
-        with self._lock:
+        with db.write_lock(self._lock, what="计划表"):
             conn = self._get_conn()
             sets, args = ["status = ?"], [status]
             if decided:
@@ -1684,7 +1682,7 @@ class PlanStore:
         return self.get_plan(plan_id)
 
     def update_action(self, action_id: str, status: str, result: Optional[str] = None):
-        with self._lock:
+        with db.write_lock(self._lock, what="计划表"):
             conn = self._get_conn()
             conn.execute(
                 "UPDATE plan_actions SET status = ?, result = ? WHERE id = ?",
@@ -1695,7 +1693,7 @@ class PlanStore:
 
     def add_log(self, plan_id: str, action_id: Optional[str], action_type: str,
                 source_path: Optional[str], target_path: Optional[str], success: bool, message: str):
-        with self._lock:
+        with db.write_lock(self._lock, what="计划表"):
             conn = self._get_conn()
             conn.execute(
                 "INSERT INTO execution_log (id, plan_id, action_id, action_type, source_path, target_path, success, message, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1706,13 +1704,12 @@ class PlanStore:
             conn.close()
 
     def get_log(self, plan_id: str) -> list[dict]:
-        with self._lock:
-            conn = self._get_conn()
-            rows = conn.execute(
-                "SELECT id, action_id, action_type, source_path, target_path, success, message, timestamp FROM execution_log WHERE plan_id = ? ORDER BY timestamp ASC",
-                (plan_id,)
-            ).fetchall()
-            conn.close()
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT id, action_id, action_type, source_path, target_path, success, message, timestamp FROM execution_log WHERE plan_id = ? ORDER BY timestamp ASC",
+            (plan_id,)
+        ).fetchall()
+        conn.close()
         return [
             {"id": r[0], "action_id": r[1], "action_type": r[2], "source_path": r[3],
              "target_path": r[4], "success": bool(r[5]), "message": r[6], "timestamp": r[7]}
@@ -1720,7 +1717,7 @@ class PlanStore:
         ]
 
     def delete_plan(self, plan_id: str):
-        with self._lock:
+        with db.write_lock(self._lock, what="计划表"):
             conn = self._get_conn()
             conn.execute("DELETE FROM plan_actions WHERE plan_id = ?", (plan_id,))
             conn.execute("DELETE FROM execution_log WHERE plan_id = ?", (plan_id,))

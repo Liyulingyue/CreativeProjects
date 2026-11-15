@@ -25,6 +25,7 @@ import sqlite3
 import threading
 import time
 from typing import Optional
+from . import db
 
 # How long an entry is kept, and how many there may be at most. A
 # household does not need years of "who uploaded this", and the
@@ -67,7 +68,6 @@ class UploadLog:
                 conn.close()
 
     def _get_conn(self) -> sqlite3.Connection:
-        from . import db
 
         return db.connect(self.db_path)
 
@@ -95,7 +95,7 @@ class UploadLog:
             user_id = str(user.get("id") or "")
         when = time.time() if at is None else at
 
-        with self._lock:
+        with db.write_lock(self._lock, what="上传记录"):
             conn = self._get_conn()
             try:
                 cur = conn.execute(
@@ -171,7 +171,7 @@ class UploadLog:
         cutoff = time.time() - max(0, int(retention_days)) * 86400
         removed_old = 0
         removed_over = 0
-        with self._lock:
+        with db.write_lock(self._lock, what="上传记录"):
             conn = self._get_conn()
             try:
                 if retention_days > 0:
@@ -200,7 +200,7 @@ class UploadLog:
         }
 
     def clear(self) -> int:
-        with self._lock:
+        with db.write_lock(self._lock, what="上传记录"):
             conn = self._get_conn()
             try:
                 cur = conn.execute("DELETE FROM upload_log")

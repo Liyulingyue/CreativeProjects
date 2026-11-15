@@ -26,6 +26,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Optional
+from . import db
 
 log = logging.getLogger(__name__)
 
@@ -115,7 +116,6 @@ class UserStore:
             conn.close()
 
     def _get_conn(self) -> sqlite3.Connection:
-        from . import db
 
         return db.connect(self.db_path)
 
@@ -139,7 +139,12 @@ class UserStore:
 
         user_id = secrets.token_hex(16)
         salt = secrets.token_hex(16)
-        with self._lock:
+        # The hash is slow -- a hundred thousand rounds -- and it is
+        # done before the lock is taken: every request that checks a
+        # token waits for this lock, and it should not have to wait for
+        # a password to be hashed.
+        digest = hash_password(password, salt)
+        with db.write_lock(self._lock, what="用户表"):
             conn = self._get_conn()
             try:
                 existing = conn.execute(
@@ -150,7 +155,7 @@ class UserStore:
                 conn.execute(
                     "INSERT INTO users (id, username, password_hash, salt, role,"
                     " disabled, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)",
-                    (user_id, username, hash_password(password, salt), salt, role,
+                    (user_id, username, digest, salt, role,
                      int(time.time())),
                 )
                 conn.commit()
@@ -160,41 +165,38 @@ class UserStore:
         return self.get_user(user_id) or {}
 
     def get_user(self, user_id: str) -> Optional[dict]:
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                row = conn.execute(
-                    "SELECT id, username, password_hash, salt, role, disabled, created_at"
-                    " FROM users WHERE id = ?",
-                    (user_id,),
-                ).fetchone()
-            finally:
-                conn.close()
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT id, username, password_hash, salt, role, disabled, created_at"
+                " FROM users WHERE id = ?",
+                (user_id,),
+            ).fetchone()
+        finally:
+            conn.close()
         return self._user(row) if row else None
 
     def get_by_username(self, username: str) -> Optional[dict]:
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                row = conn.execute(
-                    "SELECT id, username, password_hash, salt, role, disabled, created_at"
-                    " FROM users WHERE username = ?",
-                    ((username or "").strip(),),
-                ).fetchone()
-            finally:
-                conn.close()
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT id, username, password_hash, salt, role, disabled, created_at"
+                " FROM users WHERE username = ?",
+                ((username or "").strip(),),
+            ).fetchone()
+        finally:
+            conn.close()
         return self._user(row) if row else None
 
     def list_users(self) -> list[dict]:
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                rows = conn.execute(
-                    "SELECT id, username, password_hash, salt, role, disabled, created_at"
-                    " FROM users ORDER BY created_at ASC"
-                ).fetchall()
-            finally:
-                conn.close()
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT id, username, password_hash, salt, role, disabled, created_at"
+                " FROM users ORDER BY created_at ASC"
+            ).fetchall()
+        finally:
+            conn.close()
         return [self._user(r) for r in rows]
 
     def verify(self, username: str, password: str) -> Optional[dict]:
@@ -211,12 +213,14 @@ class UserStore:
         if not password or len(password) < 4:
             raise UserError("密码至少 4 个字符")
         salt = secrets.token_hex(16)
-        with self._lock:
+        # Outside the lock, like the one above.
+        digest = hash_password(password, salt)
+        with db.write_lock(self._lock, what="用户表"):
             conn = self._get_conn()
             try:
                 cur = conn.execute(
                     "UPDATE users SET password_hash = ?, salt = ? WHERE id = ?",
-                    (hash_password(password, salt), salt, user_id),
+                    (digest, salt, user_id),
                 )
                 conn.commit()
                 return cur.rowcount > 0
@@ -224,7 +228,7 @@ class UserStore:
                 conn.close()
 
     def set_disabled(self, user_id: str, disabled: bool) -> bool:
-        with self._lock:
+        with db.write_lock(self._lock, what="用户表"):
             conn = self._get_conn()
             try:
                 cur = conn.execute(
@@ -237,7 +241,7 @@ class UserStore:
                 conn.close()
 
     def delete_user(self, user_id: str) -> bool:
-        with self._lock:
+        with db.write_lock(self._lock, what="用户表"):
             conn = self._get_conn()
             try:
                 cur = conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
@@ -248,15 +252,14 @@ class UserStore:
                 conn.close()
 
     def count_admins(self) -> int:
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                return conn.execute(
-                    "SELECT COUNT(*) FROM users WHERE role = ? AND disabled = 0",
-                    (ROLE_ADMIN,),
-                ).fetchone()[0]
-            finally:
-                conn.close()
+        conn = self._get_conn()
+        try:
+            return conn.execute(
+                "SELECT COUNT(*) FROM users WHERE role = ? AND disabled = 0",
+                (ROLE_ADMIN,),
+            ).fetchone()[0]
+        finally:
+            conn.close()
 
     # ---- grants ----
 
@@ -269,7 +272,7 @@ class UserStore:
         if restriction not in RESTRICTIONS:
             raise UserError("未知的限制类型")
         path = (path or "").strip().strip("/")
-        with self._lock:
+        with db.write_lock(self._lock, what="用户表"):
             conn = self._get_conn()
             try:
                 conn.execute(
@@ -286,7 +289,7 @@ class UserStore:
     def lift(self, path: str, user_id: str) -> bool:
         """Let somebody back in."""
         path = (path or "").strip().strip("/")
-        with self._lock:
+        with db.write_lock(self._lock, what="用户表"):
             conn = self._get_conn()
             try:
                 cur = conn.execute(
@@ -298,22 +301,21 @@ class UserStore:
                 conn.close()
 
     def list_restrictions(self, user_id: Optional[str] = None) -> list[dict]:
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                if user_id:
-                    rows = conn.execute(
-                        "SELECT path, user_id, restriction, created_at FROM restrictions"
-                        " WHERE user_id = ? ORDER BY path",
-                        (user_id,),
-                    ).fetchall()
-                else:
-                    rows = conn.execute(
-                        "SELECT path, user_id, restriction, created_at FROM restrictions"
-                        " ORDER BY path"
-                    ).fetchall()
-            finally:
-                conn.close()
+        conn = self._get_conn()
+        try:
+            if user_id:
+                rows = conn.execute(
+                    "SELECT path, user_id, restriction, created_at FROM restrictions"
+                    " WHERE user_id = ? ORDER BY path",
+                    (user_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT path, user_id, restriction, created_at FROM restrictions"
+                    " ORDER BY path"
+                ).fetchall()
+        finally:
+            conn.close()
         return [
             {"path": r[0], "user_id": r[1], "restriction": r[2], "created_at": r[3]}
             for r in rows
@@ -359,7 +361,7 @@ class UserStore:
 
     def store_token(self, token: str, username: str, expires: float) -> None:
         """Remember a session token."""
-        with self._lock:
+        with db.write_lock(self._lock, what="用户表"):
             conn = self._get_conn()
             try:
                 conn.execute(
@@ -373,14 +375,13 @@ class UserStore:
 
     def token_username(self, token: str) -> Optional[str]:
         """The user a token belongs to, or None if it is expired or unknown."""
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                row = conn.execute(
-                    "SELECT username, expires FROM tokens WHERE token = ?", (token,)
-                ).fetchone()
-            finally:
-                conn.close()
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT username, expires FROM tokens WHERE token = ?", (token,)
+            ).fetchone()
+        finally:
+            conn.close()
         if row is None:
             return None
         if time.time() > row[1]:
@@ -389,7 +390,7 @@ class UserStore:
         return row[0]
 
     def revoke_token(self, token: str) -> bool:
-        with self._lock:
+        with db.write_lock(self._lock, what="用户表"):
             conn = self._get_conn()
             try:
                 cur = conn.execute("DELETE FROM tokens WHERE token = ?", (token,))
@@ -405,7 +406,7 @@ class UserStore:
         forgets to sign out -- would otherwise leave the table growing
         for as long as the service runs.
         """
-        with self._lock:
+        with db.write_lock(self._lock, what="用户表"):
             conn = self._get_conn()
             try:
                 cur = conn.execute("DELETE FROM tokens WHERE expires < ?", (time.time(),))
@@ -430,17 +431,16 @@ class UserStore:
                 conn.close()
 
     def count_tokens(self) -> int:
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                row = conn.execute("SELECT COUNT(*) FROM tokens").fetchone()
-            finally:
-                conn.close()
+        conn = self._get_conn()
+        try:
+            row = conn.execute("SELECT COUNT(*) FROM tokens").fetchone()
+        finally:
+            conn.close()
         return int(row[0]) if row else 0
 
     def revoke_all_tokens(self) -> int:
         """Sign everybody out. Used when the password changes."""
-        with self._lock:
+        with db.write_lock(self._lock, what="用户表"):
             conn = self._get_conn()
             try:
                 cur = conn.execute("DELETE FROM tokens")
