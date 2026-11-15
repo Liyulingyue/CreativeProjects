@@ -23,6 +23,10 @@ npm test
 | `picture-search.test.mjs` | 搜图、排序、缩略图、找相似、服务器的错话 |
 | `index-controls.test.mjs` | 建索引的按钮、管理员门控、「已经在跑了」 |
 | `pages.test.mjs` | 设置页的图片索引卡片、文本搜索、Agent 对话 |
+| `file-manager.test.mjs` | 文件列表、删除按钮的禁用、右键重命名真的改了名字 |
+| `upload-trash.test.mjs` | 上传的文件出现在列表里、删掉进回收站、还原真的回来了 |
+
+共 23 个。
 
 ## 写测试时注意
 
