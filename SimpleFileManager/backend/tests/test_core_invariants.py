@@ -914,3 +914,80 @@ def test_a_failure_to_restart_the_models_reaches_the_log(tmp_path, monkeypatch):
 
     assert any("serve.sh" in m for m in records), \
         f"日志里没有这件事: {records[-5:]}"
+
+
+def test_the_picture_tools_are_wired_to_the_right_function(monkeypatch):
+    """The agent's tools have to reach the right search.
+
+    A tool that is dispatched to the wrong function still returns a
+    result -- the wrong one -- and the model answers from it. Nothing
+    else would notice: the search itself is tested, the agent is
+    tested, and the join between them is what goes wrong.
+    """
+    import importlib
+
+    agent_mod = importlib.import_module("app.routers.agent")
+
+    calls = []
+
+    def fake_text(query, limit=8):
+        calls.append(("text", query, limit))
+        return [{"path": "photos/one.jpg", "score": 0.9}]
+
+    def fake_image(path, limit=8):
+        calls.append(("image", path, limit))
+        return [{"path": "photos/one.jpg", "score": 1.0}]
+
+    monkeypatch.setattr("app.image_search.search_by_text", fake_text)
+    monkeypatch.setattr("app.image_search.search_by_image", fake_image)
+
+    r = agent_mod.execute_tool("search_images", {"query": "海边日落", "top_k": 5})
+    assert r["success"] is True, r
+    assert calls == [("text", "海边日落", 5)], calls
+
+    calls.clear()
+    r = agent_mod.execute_tool("find_similar_images", {"path": "photos/one.jpg"})
+    assert r["success"] is True, r
+    assert calls == [("image", "photos/one.jpg", 8)], calls
+
+
+def test_the_picture_tools_say_what_went_wrong(monkeypatch):
+    """A busy machine is told to the model in words it can pass on."""
+    import importlib
+
+    agent_mod = importlib.import_module("app.routers.agent")
+    from app.image_search import SearchUnavailable
+
+    def busy(query, limit=8):
+        raise SearchUnavailable("服务器正在忙，请稍后重试")
+
+    def busy_image(path, limit=8):
+        raise SearchUnavailable("服务器正在忙，请稍后重试")
+
+    monkeypatch.setattr("app.image_search.search_by_text", busy)
+    monkeypatch.setattr("app.image_search.search_by_image", busy_image)
+
+    r = agent_mod.execute_tool("search_images", {"query": "海边日落"})
+    assert r["success"] is False
+    assert "忙" in r["error"], r
+
+    r = agent_mod.execute_tool("find_similar_images", {"path": "photos/one.jpg"})
+    assert r["success"] is False
+    assert "忙" in r["error"], r
+
+
+def test_a_picture_tool_with_an_empty_index_says_so(monkeypatch):
+    """An empty index is not "no picture matches" -- it is "no index".
+
+    The model has to tell the user which one it is, or the user goes
+    looking for a picture that is not there.
+    """
+    import importlib
+
+    agent_mod = importlib.import_module("app.routers.agent")
+
+    monkeypatch.setattr("app.image_search.search_by_text",
+                        lambda query, limit=8: [])
+    r = agent_mod.execute_tool("search_images", {"query": "海边日落"})
+    assert r["success"] is True
+    assert "索引" in r.get("note", ""), r
