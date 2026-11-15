@@ -5,6 +5,7 @@ import os
 import time
 import sqlite3
 import threading
+from contextlib import contextmanager
 import uuid
 from contextvars import ContextVar
 from pathlib import Path
@@ -535,16 +536,53 @@ class RAGService:
 
 
 class ChatHistoryService:
+    """The conversations, the providers, and the messages in them.
+
+    The database is opened in WAL mode, which lets a reader work while a
+    writer is writing. So the reads here do not take the service lock
+    at all: they let SQLite sort it out, and in exchange a slow read can
+    never stand in front of a write.
+
+    That used to be the other way round. One lock covered everything,
+    and the page that lists the conversations reads every message of
+    every conversation -- so a page load held the lock for as long as it
+    took, and the agent's answer, which has to be written down before
+    the turn can end, waited behind it. One slow list of conversations
+    could stop the whole service from talking.
+    """
+
+    # How long a write waits for the lock. A write is short; a writer
+    # that cannot get in gives up rather than waiting for ever, and the
+    # caller is told.
+    WRITE_LOCK_TIMEOUT = 10.0
+
     def __init__(self, db_path: str):
         self.db_path = db_path
         self._lock = threading.Lock()
         self._init_db()
 
+    @contextmanager
+    def _writing(self, timeout: Optional[float] = None):
+        """Hold the service lock for a write, or give up.
+
+        The lock is only for writes now, and a write is short, so the
+        wait is short too. But it is bounded: a lock held by something
+        that will never let go would otherwise take the whole service
+        down with it.
+        """
+        limit = self.WRITE_LOCK_TIMEOUT if timeout is None else timeout
+        if not self._lock.acquire(timeout=limit):
+            raise TimeoutError(f"聊天记录忙，{limit} 秒内没有拿到写锁")
+        try:
+            yield
+        finally:
+            self._lock.release()
+
     def _get_conn(self) -> sqlite3.Connection:
         return db.connect(self.db_path)
 
     def _init_db(self):
-        with self._lock:
+        with self._writing():
             conn = self._get_conn()
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS llm_providers (
@@ -691,42 +729,39 @@ class ChatHistoryService:
     # like "WHERE is_main=1" can rely on returning at most one row.
 
     def list_providers(self) -> list[LLMProvider]:
-        with self._lock:
-            conn = self._get_conn()
-            # Sort by creation order only. The is_main flag is
-            # surfaced via the MAIN badge on the row, so reordering
-            # when main flips would only move an already-marked
-            # row — the user expects "set as main" to flip the
-            # badge, not to jump the row to the top.
-            rows = conn.execute(
-                "SELECT id, name, base_url, model, api_key, is_main, max_tokens,"
-                " reasoning_budget, created_at, updated_at"
-                " FROM llm_providers ORDER BY created_at ASC"
-            ).fetchall()
-            conn.close()
+        conn = self._get_conn()
+        # Sort by creation order only. The is_main flag is
+        # surfaced via the MAIN badge on the row, so reordering
+        # when main flips would only move an already-marked
+        # row — the user expects "set as main" to flip the
+        # badge, not to jump the row to the top.
+        rows = conn.execute(
+            "SELECT id, name, base_url, model, api_key, is_main, max_tokens,"
+            " reasoning_budget, created_at, updated_at"
+            " FROM llm_providers ORDER BY created_at ASC"
+        ).fetchall()
+        conn.close()
         return [self._row_to_provider(r) for r in rows]
 
     def get_provider(self, provider_id: str) -> Optional[LLMProvider]:
-        with self._lock:
-            conn = self._get_conn()
-            row = conn.execute(
-                "SELECT id, name, base_url, model, api_key, is_main, max_tokens,"
-                " reasoning_budget, created_at, updated_at"
-                " FROM llm_providers WHERE id = ?",
-                (provider_id,),
-            ).fetchone()
-            conn.close()
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT id, name, base_url, model, api_key, is_main, max_tokens,"
+            " reasoning_budget, created_at, updated_at"
+            " FROM llm_providers WHERE id = ?",
+            (provider_id,),
+        ).fetchone()
+        conn.close()
         return self._row_to_provider(row) if row else None
 
     def get_main_provider(self) -> Optional[LLMProvider]:
-        with self._lock:
-            conn = self._get_conn()
-            row = conn.execute(
-                "SELECT id, name, base_url, model, api_key, is_main, max_tokens,"
-                " reasoning_budget, created_at, updated_at"
-                " FROM llm_providers WHERE is_main = 1 LIMIT 1"
-            ).fetchone()
-            conn.close()
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT id, name, base_url, model, api_key, is_main, max_tokens,"
+            " reasoning_budget, created_at, updated_at"
+            " FROM llm_providers WHERE is_main = 1 LIMIT 1"
+        ).fetchone()
+        conn.close()
         return self._row_to_provider(row) if row else None
 
     def create_provider(self, name: str, base_url: str, model: str,
@@ -735,7 +770,7 @@ class ChatHistoryService:
                         reasoning_budget: Optional[int] = None) -> LLMProvider:
         provider_id = uuid.uuid4().hex
         now = int(time.time() * 1000)
-        with self._lock:
+        with self._writing():
             conn = self._get_conn()
             # If this is the very first provider the system has seen,
             # promote it to main automatically — new sessions need a
@@ -773,7 +808,7 @@ class ChatHistoryService:
                          max_tokens: Optional[int] = None,
                          reasoning_budget: Any = _UNSET
                          ) -> Optional[LLMProvider]:
-        with self._lock:
+        with self._writing():
             conn = self._get_conn()
             existing = conn.execute(
                 "SELECT id FROM llm_providers WHERE id = ?", (provider_id,)
@@ -826,7 +861,7 @@ class ChatHistoryService:
         # referencing this provider will have their provider_id set to
         # NULL via ON DELETE SET NULL and the agent flow will backfill
         # from the main at read time.
-        with self._lock:
+        with self._writing():
             conn = self._get_conn()
             cur = conn.execute(
                 "DELETE FROM llm_providers WHERE id = ?", (provider_id,)
@@ -851,7 +886,7 @@ class ChatHistoryService:
         )
 
     def create_session(self, session_type: str = "chat", owner: str = "") -> ChatSession:
-        with self._lock:
+        with self._writing():
             session_id = uuid.uuid4().hex
             now = int(time.time() * 1000)
             conn = self._get_conn()
@@ -878,36 +913,35 @@ class ChatHistoryService:
         `owner` is who is asking. A person sees their own; the
         administrator sees everybody's. `owner` of None means everybody.
         """
-        with self._lock:
-            conn = self._get_conn()
-            where = []
-            params: list = []
-            if session_type:
-                where.append("session_type = ?")
-                params.append(session_type)
-            clause = (" WHERE " + " AND ".join(where)) if where else ""
-            rows = conn.execute(
-                "SELECT id, title, session_type, updated_at, provider_id, owner"
-                f" FROM chat_sessions{clause} ORDER BY updated_at DESC",
-                tuple(params),
-            ).fetchall()
+        conn = self._get_conn()
+        where = []
+        params: list = []
+        if session_type:
+            where.append("session_type = ?")
+            params.append(session_type)
+        clause = (" WHERE " + " AND ".join(where)) if where else ""
+        rows = conn.execute(
+            "SELECT id, title, session_type, updated_at, provider_id, owner"
+            f" FROM chat_sessions{clause} ORDER BY updated_at DESC",
+            tuple(params),
+        ).fetchall()
 
-            sessions = []
-            for row in rows:
-                session_id, title, sess_type, updated_at, provider_id, owner = row
-                # A conversation belongs to the person who started it.
-                if not _session_visible_to(owner):
-                    continue
-                messages = self._get_messages(conn, session_id)
-                sessions.append(ChatSession(
-                    id=session_id,
-                    title=title or "",
-                    messages=messages,
-                    updated_at=updated_at,
-                    session_type=sess_type,
-                    provider_id=provider_id,
-                ))
-            conn.close()
+        sessions = []
+        for row in rows:
+            session_id, title, sess_type, updated_at, provider_id, owner = row
+            # A conversation belongs to the person who started it.
+            if not _session_visible_to(owner):
+                continue
+            messages = self._get_messages(conn, session_id)
+            sessions.append(ChatSession(
+                id=session_id,
+                title=title or "",
+                messages=messages,
+                updated_at=updated_at,
+                session_type=sess_type,
+                provider_id=provider_id,
+            ))
+        conn.close()
         return sessions
 
     def _get_messages(self, conn: sqlite3.Connection, session_id: str) -> list[ChatMessage]:
@@ -921,7 +955,14 @@ class ChatHistoryService:
         for row in rows:
             (msg_id, role, content, reasoning, activity, sources, timestamp,
              ttft_ms, total_ms, tokens, tps, use_fast, provider_id, plans) = row
-            sources_list = json.loads(sources) if sources else None
+            # A malformed blob is treated as no sources rather than
+            # breaking the reading of the whole conversation. The other
+            # two columns are guarded the same way; this one was not,
+            # and one bad row took the list of conversations with it.
+            try:
+                sources_list = json.loads(sources) if sources else None
+            except (TypeError, ValueError):
+                sources_list = None
             try:
                 activity_list = json.loads(activity) if activity else []
             except (TypeError, ValueError):
@@ -964,27 +1005,26 @@ class ChatHistoryService:
         `owner` is who is asking: a person may open their own, and the
         administrator may open anybody's.
         """
-        with self._lock:
-            conn = self._get_conn()
-            row = conn.execute(
-                "SELECT id, title, session_type, updated_at, owner FROM chat_sessions WHERE id = ?",
-                (session_id,)
-            ).fetchone()
-            if not row:
-                conn.close()
-                return None
-            session_id, title, sess_type, updated_at, owner = row
-            if not _session_visible_to(owner):
-                conn.close()
-                return None
-            messages = self._get_messages(conn, session_id)
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT id, title, session_type, updated_at, owner FROM chat_sessions WHERE id = ?",
+            (session_id,)
+        ).fetchone()
+        if not row:
             conn.close()
+            return None
+        session_id, title, sess_type, updated_at, owner = row
+        if not _session_visible_to(owner):
+            conn.close()
+            return None
+        messages = self._get_messages(conn, session_id)
+        conn.close()
         return ChatSession(
-            id=session_id,
-            title=title or "",
-            messages=messages,
-            updated_at=updated_at,
-            session_type=sess_type
+        id=session_id,
+        title=title or "",
+        messages=messages,
+        updated_at=updated_at,
+        session_type=sess_type
         )
 
     def add_message(self, session_id: str, role: str, content: str, sources: Optional[list] = None,
@@ -996,7 +1036,7 @@ class ChatHistoryService:
         now = int(time.time() * 1000)
         sources_json = json.dumps(sources) if sources else None
         plans_json = json.dumps(plans, ensure_ascii=False) if plans else None
-        with self._lock:
+        with self._writing():
             conn = self._get_conn()
             # use_fast is no longer written — the column stays for
             # back-compat with rows saved before the providers
@@ -1024,7 +1064,7 @@ class ChatHistoryService:
         )
 
     def delete_session(self, session_id: str):
-        with self._lock:
+        with self._writing():
             conn = self._get_conn()
             conn.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
@@ -1032,7 +1072,7 @@ class ChatHistoryService:
             conn.close()
 
     def update_session_title(self, session_id: str, title: str):
-        with self._lock:
+        with self._writing():
             conn = self._get_conn()
             conn.execute("UPDATE chat_sessions SET title = ? WHERE id = ?", (title, session_id))
             conn.commit()
@@ -1046,7 +1086,7 @@ class ChatHistoryService:
         same provider. Takes the lock so concurrent reads see a coherent
         row state.
         """
-        with self._lock:
+        with self._writing():
             conn = self._get_conn()
             conn.execute(
                 "UPDATE chat_sessions SET provider_id = ? WHERE id = ?",
@@ -1073,63 +1113,59 @@ class ChatHistoryService:
     # LanceDB itself models schema changes.
 
     def list_embedding_providers(self) -> list[EmbeddingProvider]:
-        with self._lock:
-            conn = self._get_conn()
-            # Sort by creation order only. The roles (is_index /
-            # is_search) are surfaced via badges on each row, so
-            # reordering the list when a role flips would only
-            # move the visual position of an already-marked row,
-            # which is jarring — the user expects "set as index"
-            # to flip a badge, not to jump the row to the top.
-            rows = conn.execute(
-                "SELECT id, name, base_url, model, dim, api_key,"
-                " is_index, is_search, created_at, updated_at"
-                " FROM embedding_providers ORDER BY created_at ASC"
-            ).fetchall()
-            conn.close()
+        conn = self._get_conn()
+        # Sort by creation order only. The roles (is_index /
+        # is_search) are surfaced via badges on each row, so
+        # reordering the list when a role flips would only
+        # move the visual position of an already-marked row,
+        # which is jarring — the user expects "set as index"
+        # to flip a badge, not to jump the row to the top.
+        rows = conn.execute(
+            "SELECT id, name, base_url, model, dim, api_key,"
+            " is_index, is_search, created_at, updated_at"
+            " FROM embedding_providers ORDER BY created_at ASC"
+        ).fetchall()
+        conn.close()
         return [self._row_to_embedding_provider(r) for r in rows]
 
     def get_embedding_provider(self, provider_id: str) -> Optional[EmbeddingProvider]:
-        with self._lock:
-            conn = self._get_conn()
-            row = conn.execute(
-                "SELECT id, name, base_url, model, dim, api_key,"
-                " is_index, is_search, created_at, updated_at"
-                " FROM embedding_providers WHERE id = ?",
-                (provider_id,),
-            ).fetchone()
-            conn.close()
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT id, name, base_url, model, dim, api_key,"
+            " is_index, is_search, created_at, updated_at"
+            " FROM embedding_providers WHERE id = ?",
+            (provider_id,),
+        ).fetchone()
+        conn.close()
         return self._row_to_embedding_provider(row) if row else None
 
     def get_index_embedding_provider(self) -> Optional[EmbeddingProvider]:
-        with self._lock:
-            conn = self._get_conn()
-            row = conn.execute(
-                "SELECT id, name, base_url, model, dim, api_key,"
-                " is_index, is_search, created_at, updated_at"
-                " FROM embedding_providers WHERE is_index = 1 LIMIT 1"
-            ).fetchone()
-            conn.close()
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT id, name, base_url, model, dim, api_key,"
+            " is_index, is_search, created_at, updated_at"
+            " FROM embedding_providers WHERE is_index = 1 LIMIT 1"
+        ).fetchone()
+        conn.close()
         return self._row_to_embedding_provider(row) if row else None
 
     def get_search_embedding_provider(self) -> Optional[EmbeddingProvider]:
         """Search path's provider. Prefers is_search=1; falls back to
         the is_index row when search is unset (cloud-only deployments
         share one endpoint)."""
-        with self._lock:
-            conn = self._get_conn()
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT id, name, base_url, model, dim, api_key,"
+            " is_index, is_search, created_at, updated_at"
+            " FROM embedding_providers WHERE is_search = 1 LIMIT 1"
+        ).fetchone()
+        if not row:
             row = conn.execute(
                 "SELECT id, name, base_url, model, dim, api_key,"
                 " is_index, is_search, created_at, updated_at"
-                " FROM embedding_providers WHERE is_search = 1 LIMIT 1"
+                " FROM embedding_providers WHERE is_index = 1 LIMIT 1"
             ).fetchone()
-            if not row:
-                row = conn.execute(
-                    "SELECT id, name, base_url, model, dim, api_key,"
-                    " is_index, is_search, created_at, updated_at"
-                    " FROM embedding_providers WHERE is_index = 1 LIMIT 1"
-                ).fetchone()
-            conn.close()
+        conn.close()
         return self._row_to_embedding_provider(row) if row else None
 
     def create_embedding_provider(
@@ -1138,7 +1174,7 @@ class ChatHistoryService:
     ) -> EmbeddingProvider:
         provider_id = uuid.uuid4().hex
         now = int(time.time() * 1000)
-        with self._lock:
+        with self._writing():
             conn = self._get_conn()
             # First provider auto-promotes to is_index. is_search is
             # opt-in via PATCH so the user explicitly chooses whether
@@ -1170,7 +1206,7 @@ class ChatHistoryService:
                                   api_key: Optional[str] = None,
                                   is_index: Optional[bool] = None,
                                   is_search: Optional[bool] = None) -> Optional[EmbeddingProvider]:
-        with self._lock:
+        with self._writing():
             conn = self._get_conn()
             existing = conn.execute(
                 "SELECT id FROM embedding_providers WHERE id = ?", (provider_id,)
@@ -1224,7 +1260,7 @@ class ChatHistoryService:
         return self.get_embedding_provider(provider_id)
 
     def delete_embedding_provider(self, provider_id: str) -> bool:
-        with self._lock:
+        with self._writing():
             conn = self._get_conn()
             # Refuse silently: router layer is responsible for the
             # "is_index" guard since it knows whether this is the

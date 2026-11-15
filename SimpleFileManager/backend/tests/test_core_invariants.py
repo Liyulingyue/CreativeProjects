@@ -701,3 +701,61 @@ def test_the_text_table_opens_again_after_a_restore(tmp_path):
     assert store.count() == 1
     rows = store.table.to_arrow().select(["file_path"]).to_pylist()
     assert [r["file_path"] for r in rows] == ["b.txt"], rows
+
+
+def test_the_conversations_are_listed_without_holding_the_write_lock(tmp_path):
+    """A page that lists the conversations must not stand in front of a
+    write.
+
+    The lock used to cover the reads as well, and the list reads every
+    message of every conversation -- so a page load held the lock for as
+    long as it took, and the agent's answer, which has to be written
+    down before the turn can end, waited behind it. One slow list of
+    conversations could stop the whole service from talking.
+    """
+    from app.deps import ChatHistoryService
+
+    service = ChatHistoryService(str(tmp_path / "chat.db"))
+    service.create_session("t")
+    service.add_message(service.get_sessions()[0].id, role="user", content="hello")
+
+    # A reader is at work.
+    reading = threading.Event()
+    done = threading.Event()
+
+    def reader():
+        reading.set()
+        service.get_sessions()
+        done.set()
+
+    t = threading.Thread(target=reader)
+    t.start()
+    reading.wait(2)
+    # The write must not wait for the reader.
+    started = time.time()
+    service.add_message(service.get_sessions()[0].id, role="assistant", content="hi")
+    assert time.time() - started < 2.0, "the write waited for a reader"
+    t.join(5)
+    assert done.is_set()
+
+
+def test_a_broken_row_does_not_break_the_whole_list(tmp_path):
+    """One conversation with a malformed column must not take the rest
+    of the list with it."""
+    import sqlite3
+
+    from app.deps import ChatHistoryService
+
+    service = ChatHistoryService(str(tmp_path / "chat.db"))
+    session = service.create_session("t")
+    service.add_message(session.id, role="user", content="hello")
+
+    # A row with a blob that is not JSON.
+    conn = sqlite3.connect(str(tmp_path / "chat.db"))
+    conn.execute("UPDATE chat_messages SET sources = 'not json at all'")
+    conn.commit()
+    conn.close()
+
+    sessions = service.get_sessions()
+    assert len(sessions) == 1
+    assert sessions[0].messages[0].sources is None
