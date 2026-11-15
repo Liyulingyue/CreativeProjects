@@ -669,3 +669,35 @@ def test_the_thumbnail_cache_does_not_grow_for_ever(tmp_path):
     # The oldest are the ones that went.
     assert "pic29.jpg" in {p.name for p in left}
     assert "pic0.jpg" not in {p.name for p in left}
+
+
+def test_the_text_table_opens_again_after_a_restore(tmp_path):
+    """A handle to a table whose directory was replaced is a handle to
+    nothing.
+
+    Putting a backup back, or moving the data directory underneath a
+    running server, replaces the directory. The old handle keeps
+    reading the old rows and refuses to write, and the search answers
+    with files that are not there any more.
+    """
+    import shutil
+
+    from app.deps import LanceDBVectorStore
+
+    db_path = tmp_path / "vectors"
+    store = LanceDBVectorStore(str(db_path), dim=4)
+    store.add([1.0, 0.0, 0.0, 0.0], {"file_path": "a.txt", "content": "a",
+                                      "chunk_idx": 0})
+    assert store.count() == 1
+
+    # The directory is replaced, the way a restore does it.
+    moved = tmp_path / "vectors-old"
+    shutil.move(str(db_path), str(moved))
+    fresh = LanceDBVectorStore(str(db_path), dim=4)
+    fresh.add([0.0, 1.0, 0.0, 0.0], {"file_path": "b.txt", "content": "b",
+                                      "chunk_idx": 0})
+
+    # The old handle must notice and open the new table.
+    assert store.count() == 1
+    rows = store.table.to_arrow().select(["file_path"]).to_pylist()
+    assert [r["file_path"] for r in rows] == ["b.txt"], rows

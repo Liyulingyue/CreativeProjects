@@ -179,6 +179,22 @@ class EmbeddingService:
         )
 
 
+def _directory_mark(db_path: str) -> tuple:
+    """What the table's directory looks like right now.
+
+    A handle to a table whose directory was deleted and recreated still
+    reads the old rows and refuses to write. The identity of the
+    directory catches that.
+    """
+    import os
+
+    try:
+        st = os.stat(db_path)
+        return (st.st_dev, st.st_ino)
+    except OSError:
+        return (0, 0)
+
+
 class LanceDBVectorStore:
     def __init__(self, db_path: str, dim: Optional[int] = None):
         """Open (or create) the vector table.
@@ -193,6 +209,8 @@ class LanceDBVectorStore:
         self.dim = dim
         self.db = lancedb.connect(db_path)
         self._table = None
+        # What the table's directory looked like when it was opened.
+        self._mark = _directory_mark(db_path)
         self._ensure_table()
 
     def _ensure_table(self):
@@ -236,6 +254,25 @@ class LanceDBVectorStore:
             self.db.create_table("file_embeddings", schema=schema, mode="create")
         self._table = self.db.open_table("file_embeddings")
 
+    @property
+    def table(self):
+        """The table, reopened if the directory underneath it was replaced.
+
+        A handle to a table whose directory was deleted and recreated
+        still reads the old rows and refuses to write. That happens when
+        a backup is put back, or when the data directory is moved
+        underneath a running server. The identity of the directory
+        catches it.
+        """
+        import lancedb
+
+        mark = _directory_mark(self.db_path)
+        if self._table is None or mark != self._mark:
+            self.db = lancedb.connect(self.db_path)
+            self._ensure_table()
+            self._mark = mark
+        return self._table
+
     def _probe_dim(self) -> list[float]:
         from .llm_client import get_embedding
         return get_embedding("dim probe")
@@ -258,7 +295,7 @@ class LanceDBVectorStore:
             "vector": vec,
         } for vec, r in zip(vectors, records)]
         if rows:
-            (self._table.merge_insert("id")
+            (self.table.merge_insert("id")
              .when_matched_update_all()
              .when_not_matched_insert_all()
              .execute(rows))
@@ -279,7 +316,7 @@ class LanceDBVectorStore:
         from datetime import timedelta
 
         try:
-            stats = self._table.cleanup_old_versions(
+            stats = self.table.cleanup_old_versions(
                 older_than=timedelta(days=older_than_days)
             )
             return {
@@ -294,7 +331,7 @@ class LanceDBVectorStore:
     def search(self, query_vector: list[float], top_k: int = 5) -> list[dict]:
         if self.count() == 0:
             return []
-        results = self._table.search(query_vector, vector_column_name="vector").limit(top_k).to_list()
+        results = self.table.search(query_vector, vector_column_name="vector").limit(top_k).to_list()
         return [{"score": 1.0 - r.get("_distance", 0), **r} for r in results]
 
     def delete_by_file(self, file_path: str):
@@ -304,13 +341,13 @@ class LanceDBVectorStore:
         final WHERE clause is safe."""
         import re as _re
         try:
-            rows = self._table.to_arrow().to_pylist()
+            rows = self.table.to_arrow().to_pylist()
         except Exception:
             return
         ids = [r["id"] for r in rows if r.get("file_path") == file_path]
         valid = [i for i in ids if _re.fullmatch(r"[a-f0-9]+#[0-9]+", i)]
         if valid:
-            self._table.delete(" OR ".join(f"id = '{i}'" for i in valid))
+            self.table.delete(" OR ".join(f"id = '{i}'" for i in valid))
 
     def rename_file(self, old: str, new: str):
         """Rewrite the file_path column for every chunk of a renamed file.
@@ -329,7 +366,7 @@ class LanceDBVectorStore:
         with the path it encodes.
         """
         try:
-            rows = (self._table.to_arrow()
+            rows = (self.table.to_arrow()
                     .select(["id", "file_path", "content", "chunk_idx", "vector"])
                     .to_pylist())
         except Exception:
@@ -347,7 +384,7 @@ class LanceDBVectorStore:
             "chunk_idx": int(r.get("chunk_idx", 0)),
             "vector": r.get("vector"),
         } for r in moved]
-        (self._table.merge_insert("id")
+        (self.table.merge_insert("id")
          .when_matched_update_all()
          .when_not_matched_insert_all()
          .execute(rekeyed))
@@ -359,11 +396,11 @@ class LanceDBVectorStore:
 
     def count(self) -> int:
         try:
-            return self._table.count_rows()
+            return self.table.count_rows()
         except Exception:
             if "file_embeddings" in self.table_names():
                 # Arrow only; pandas is not a dependency of this project.
-                return self._table.to_arrow().num_rows
+                return self.table.to_arrow().num_rows
             return 0
 
     def list_files(self) -> list[dict]:
@@ -376,7 +413,7 @@ class LanceDBVectorStore:
         """
         if "file_embeddings" not in self.table_names() or self.count() == 0:
             return []
-        rows = self._table.to_arrow().select(["id", "file_path", "content"]).to_pylist()
+        rows = self.table.to_arrow().select(["id", "file_path", "content"]).to_pylist()
 
         merged: dict[str, dict] = {}
         for row in rows:
