@@ -1739,7 +1739,7 @@ export async function fetchPublicShareListing(id: string, path = ''): Promise<{
 }> {
   const query = path ? `?path=${encodeURIComponent(path)}` : '';
   const res = await fetch(`${API_BASE}/share/${encodeURIComponent(id)}/list${query}`);
-  if (!res.ok) throw new Error('无法读取目录');
+  if (!res.ok) throw await apiError(res, '无法读取目录');
   return res.json();
 }
 

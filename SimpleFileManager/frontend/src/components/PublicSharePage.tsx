@@ -112,13 +112,22 @@ export function PublicSharePage() {
               <div className="flex items-center justify-center py-10 text-slate-400">
                 <div className="loading-spinner mr-3" /><span>加载中...</span>
               </div>
-            ) : error ? (
+            ) : error && !info?.locked ? (
               <div className="text-center py-10">
                 <Icon name="alert" size={36} className="text-slate-300 mb-3" />
                 <div className="text-sm text-slate-600">{error}</div>
               </div>
             ) : info?.locked ? (
               <div className="py-6">
+                {/* A wrong password is a word above the field, not a
+                    page that replaces it. The visitor has to be able to
+                    try again without reloading -- and with the rate
+                    limit on guessing, reloading would not help. */}
+                {error && (
+                  <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
+                    {error}
+                  </div>
+                )}
                 <div className="text-sm text-slate-600 mb-3">这个链接需要密码。</div>
                 <div className="flex gap-2">
                   <input
