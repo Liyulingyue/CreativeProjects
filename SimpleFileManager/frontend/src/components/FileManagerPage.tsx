@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { collectDroppedFiles, relDirFromWebkitPath, type DroppedFile } from '../dropFiles';
 import { useUploadQueue } from '../hooks/useUploadQueue';
-import { addFavorite, fetchBrowse, fetchTree, createFolder, movePath, removeFavorite, searchFiles, uploadFileChunked, UploadConflictError, batchOperation, downloadFile, downloadZip, copyPath, type BrowseResult, type FileNode, type TreeNode } from '../api';
+import { addFavorite, fetchBrowse, fetchCurrentUser, fetchTree, createFolder, movePath, removeFavorite, searchFiles, uploadFileChunked, UploadConflictError, batchOperation, downloadFile, downloadZip, copyPath, type BrowseResult, type FileNode, type TreeNode } from '../api';
 import { FileGrid, FileList, FileCompactList, Toolbar, Breadcrumb, isPreviewable, formatSize } from './FileExplorer';
 import { Sidebar } from './Sidebar';
 import { FilePreview } from './FilePreview';
@@ -96,6 +96,9 @@ export function FileManagerPage() {
   const [confirmDialog, setConfirmDialog] = useState<{ open: boolean; title: string; message: string; onConfirm: () => void } | null>(null);
   // The file a share is being made for.
   const [shareTarget, setShareTarget] = useState<FileNode | null>(null);
+  // Making a share is the administrator's business: the link works for
+  // anybody who has it, including people with no account here.
+  const [isAdmin, setIsAdmin] = useState(false);
   // The file whose history is being looked at.
   const [versionTarget, setVersionTarget] = useState<FileNode | null>(null);
   // An upload that stopped because a name was already taken. The whole
@@ -152,6 +155,10 @@ export function FileManagerPage() {
     loadBrowse();
     loadTree();
   }, [loadBrowse, loadTree]);
+
+  useEffect(() => {
+    fetchCurrentUser().then(u => setIsAdmin(!!u.is_admin)).catch(() => setIsAdmin(false));
+  }, []);
 
   const handleNavigate = (path: string) => {
     setSelectedPaths(new Set());
@@ -956,7 +963,7 @@ export function FileManagerPage() {
             { label: '下载', icon: 'download', onClick: () => handleDownload(contextMenu.node) },
             { label: '复制', icon: 'copy', onClick: () => { setSelectedPaths(new Set([contextMenu.node.path])); setClipboard([contextMenu.node.path]); clipboardRef.current = [contextMenu.node.path]; toast('已复制到剪贴板', 'info'); } },
             { label: '重命名', icon: 'edit', onClick: () => handleRename(contextMenu.node) },
-            { label: '分享', icon: 'share', onClick: () => setShareTarget(contextMenu.node) },
+            ...(isAdmin ? [{ label: '分享', icon: 'share' as const, onClick: () => setShareTarget(contextMenu.node) }] : []),
             { label: '历史版本', icon: 'clock', onClick: () => setVersionTarget(contextMenu.node) },
             {
               label: isFavorite(contextMenu.node.path) ? '取消收藏' : '收藏',

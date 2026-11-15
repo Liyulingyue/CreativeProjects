@@ -189,3 +189,33 @@ def test_the_public_page_does_not_hold_the_path_of_the_file(client, storage):
     body = r.text
     assert "storage" not in body.lower()
     assert "/home/" not in body
+
+
+def test_only_the_administrator_makes_a_share(client, storage, monkeypatch):
+    """A share is a door left open, and it is the administrator's to open.
+
+    The link works for anybody who has it -- including people with no
+    account here -- and it is the one thing that lets a file leave the
+    permission model altogether. An ordinary person may read a folder;
+    that is not a reason to publish it to the internet.
+    """
+    import app.deps as deps_mod
+
+    # The check asks the module for the user, so patching it there is
+    # what the request will see.
+    monkeypatch.setattr(deps_mod, "current_user", lambda: {
+        "id": "u1", "username": "someone", "role": "user",
+    })
+    r = client.post("/api/shares", json={"path": "公开测试/a.txt"})
+    assert r.status_code in (401, 403), r.text
+
+
+def test_the_administrator_makes_a_share(client, storage, monkeypatch):
+    import app.deps as deps_mod
+
+    monkeypatch.setattr(deps_mod, "current_user", lambda: {
+        "id": "u0", "username": "admin", "role": "admin",
+    })
+    r = client.post("/api/shares", json={"path": "公开测试/a.txt"})
+    assert r.status_code == 200, r.text
+    assert r.json()["id"]

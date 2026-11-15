@@ -12,6 +12,7 @@ from .routers import fs, search, settings, rag, chat, chat_history_router, agent
 
 bearer_scheme = HTTPBearer(auto_error=False)
 from .routers.auth import is_auth_enabled, set_password, verify_stream_token
+from .routers.auth import require_admin
 from .deps import PathNotAllowed, resolve_under_root
 from .indexer import indexer
 from .auto_digest import auto_digest
@@ -223,7 +224,12 @@ app.include_router(agent, prefix="/api/agent", tags=["agent"], dependencies=[aut
 app.include_router(organizer, prefix="/api/organizer", tags=["organizer"], dependencies=[auth_dep])
 app.include_router(plans, tags=["plans"], dependencies=[auth_dep])
 app.include_router(digest, tags=["digest"], dependencies=[auth_dep])
-app.include_router(shares_router, prefix="/api/shares", tags=["shares"], dependencies=[auth_dep])
+# A share is a door left open: the link works for anybody, including
+# people who have no account here. It is also the one thing that lets
+# a file leave the permission model altogether, so making one is the
+# administrator's business.
+app.include_router(shares_router, prefix="/api/shares", tags=["shares"],
+                   dependencies=[auth_dep, Depends(require_admin)])
 app.include_router(favorites_router, dependencies=[auth_dep])
 
 # The public side of a share. It has to be reachable without a login

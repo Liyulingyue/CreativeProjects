@@ -40,7 +40,10 @@ function PageLoading() {
 // whole machine. The index page is not one of them -- it shows what
 // has been indexed, which a person is entitled to know about their
 // own files -- but rebuilding it from there is the administrator's.
-const ADMIN_ONLY = new Set(['/organizer', '/digest']);
+// A share is a door left open: the link works for anybody, including
+// people who have no account here. Making one is the administrator's
+// business, like the pages that look at the whole machine.
+const ADMIN_ONLY = new Set(['/organizer', '/digest', '/shares']);
 
 const NAV_ITEMS = [
   { to: '/', label: '文件管理', icon: 'folder' as const },
