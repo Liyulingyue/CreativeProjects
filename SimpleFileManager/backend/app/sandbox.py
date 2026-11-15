@@ -39,6 +39,14 @@ MAX_TIMEOUT = 120
 MAX_COMMAND_CHARS = 8000
 MAX_OUTPUT_CHARS = 64 * 1024
 MAX_FILE_BYTES = 4 * 1024 * 1024 * 1024  # 4 GB: stops a runaway fill, not a real job
+# How much memory a command may take. Without it, one command could
+# take the whole machine: this box has 30 GB of RAM and 8 GB of swap,
+# and a python that asks for 20 GB of it takes the server down with it
+# -- the killer does not know that the backend is more important than
+# the command. The limit is on the address space, which is what the
+# kernel can refuse; 4 GB is plenty for real work (numpy reserves half
+# a gigabyte of address space before it has done anything).
+MAX_MEMORY_BYTES = 4 * 1024 * 1024 * 1024
 BWRAP = shutil.which("bwrap")
 
 # Read-only system directories. Anything not listed here does not exist
@@ -99,6 +107,10 @@ def _preexec(timeout: int):
             pass
         try:
             resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_FILE_BYTES, MAX_FILE_BYTES))
+        except (ValueError, OSError):
+            pass
+        try:
+            resource.setrlimit(resource.RLIMIT_AS, (MAX_MEMORY_BYTES, MAX_MEMORY_BYTES))
         except (ValueError, OSError):
             pass
     return apply

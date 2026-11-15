@@ -2,6 +2,7 @@
 
 import os
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -284,3 +285,94 @@ def test_bulk_toggle_leaves_the_command_tool_alone():
     finally:
         reg.set_all_tools(False)
         reg.set_master(was_master)
+
+
+def test_the_command_cannot_take_the_machine_with_it():
+    """One command must not be able to take the whole box.
+
+    This machine has 30 GB of RAM and 8 GB of swap. A python that asks
+    for twenty gigabytes of it would starve the server, and the killer
+    does not know that the backend matters more than the command. The
+    limit is on the address space, which the kernel can refuse.
+    """
+    root, _ = _root()
+    cwd = resolve_cwd(root, _root()[1], "")
+    result = run(
+        "python3 -c \"x=bytearray(8*1024*1024*1024)\"",
+        cwd, timeout=60,
+    )
+    assert result["returncode"] != 0, "8 GB was allocated without complaint"
+    assert "MemoryError" in result["stderr"] or "Cannot allocate" in result["stderr"], \
+        result["stderr"][:200]
+
+
+def test_an_ordinary_command_still_fits_in_the_memory():
+    """The limit must not get in the way of real work."""
+    root, _ = _root()
+    cwd = resolve_cwd(root, _root()[1], "")
+    result = run("python3 -c 'print(1+1)'", cwd, timeout=30)
+    assert result["returncode"] == 0
+    assert result["stdout"].strip() == "2"
+
+
+def test_the_command_has_no_network():
+    """The sandbox has no network at all."""
+    root, _ = _root()
+    cwd = resolve_cwd(root, _root()[1], "")
+    result = run(
+        "python3 - <<'EOF'\n"
+        "import socket\n"
+        "try:\n"
+        "    socket.create_connection(('1.1.1.1', 53), timeout=3)\n"
+        "    print('REACHED')\n"
+        "except Exception as e:\n"
+        "    print('NO NETWORK:', type(e).__name__)\n"
+        "EOF",
+        cwd, timeout=30,
+    )
+    assert "REACHED" not in result["stdout"], result["stdout"][:200]
+
+
+def test_the_system_directories_are_read_only():
+    """A command may write to the storage root and nowhere else."""
+    root, _ = _root()
+    cwd = resolve_cwd(root, _root()[1], "")
+    result = run("touch /etc/sfm-should-not-be-here 2>&1; ls /etc/sfm-should-not-be-here 2>&1",
+                 cwd, timeout=30)
+    assert "No such file" in result["stdout"] or "Read-only" in result["stdout"], \
+        result["stdout"][:200]
+    assert not Path("/etc/sfm-should-not-be-here").exists()
+
+
+def test_a_command_cannot_write_an_endless_file():
+    """The size of a file a command writes is limited."""
+    root, _ = _root()
+    cwd = resolve_cwd(root, _root()[1], "")
+    # Written in pieces: one big allocation would be refused by the
+    # memory limit before the file limit ever came up.
+    result = run(
+        "python3 -c \"\n"
+        "f=open('big.bin','wb')\n"
+        "chunk=b'x'*(1024*1024)\n"
+        "try:\n"
+        "    for i in range(12000): f.write(chunk)\n"
+        "except Exception as e:\n"
+        "    print('STOPPED:', e)\n"
+        "\" 2>&1; echo done",
+        cwd, timeout=120,
+    )
+    big = cwd / "big.bin"
+    try:
+        assert big.exists() and big.stat().st_size <= 5 * 1024 * 1024 * 1024, \
+            "写出来的文件太大了"
+    finally:
+        big.unlink(missing_ok=True)
+
+
+def test_the_output_is_capped():
+    """A command that prints for ever does not fill the page."""
+    root, _ = _root()
+    cwd = resolve_cwd(root, _root()[1], "")
+    result = run("python3 -c \"print('x'*20000000)\"", cwd, timeout=60)
+    assert len(result["stdout"]) <= 64 * 1024 + 10, len(result["stdout"])
+    assert result["truncated"] is True
