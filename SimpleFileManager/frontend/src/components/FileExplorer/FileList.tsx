@@ -98,6 +98,11 @@ export default function FileList({
           <div
             key={file.path}
             draggable
+            // The name is on the element itself so that a test (or a
+            // person with a script) can point at a file without
+            // guessing from the text.
+            data-file-name={file.name}
+            data-file-path={file.path}
             onDragStart={(e) => onDragStart(e, file)}
             onClick={(e) => onSelect(file, e)}
             onDoubleClick={() => onDoubleClick(file)}

@@ -128,6 +128,8 @@ export default function FileGrid({
           <div
             key={file.path}
             draggable
+            data-file-name={file.name}
+            data-file-path={file.path}
             onDragStart={(e) => onDragStart(e, file)}
             onClick={(e) => onSelect(file, e)}
             onDoubleClick={() => onDoubleClick(file)}
