@@ -835,3 +835,48 @@ def test_a_password_is_not_hashed_inside_the_lock(tmp_path):
         t.join(10)
     finally:
         users_mod.hash_password = original
+
+
+def test_an_unplanned_error_answers_in_words(tmp_path):
+    """A failure nobody planned for still says something.
+
+    Without a handler the answer is FastAPI's plain "Internal Server
+    Error", and the page shows a sentence with nothing in it. The
+    traceback belongs in the log; the person in front of the screen
+    gets a sentence they can act on.
+    """
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    @app.get("/api/_test_boom")
+    def _boom():
+        raise RuntimeError("something nobody planned for")
+
+    client = TestClient(app, raise_server_exceptions=False)
+    r = client.get("/api/_test_boom")
+    assert r.status_code == 500
+    detail = r.json().get("detail", "")
+    assert detail, "没有给用户任何话"
+    assert "Internal Server Error" not in detail
+    assert "服务器" in detail or "稍后" in detail, detail
+
+
+def test_a_busy_store_answers_with_a_sentence_and_not_a_crash(tmp_path):
+    """The stores take a lock with a deadline.
+
+    When the deadline passes the caller is told, in words it can show:
+    the machine is busy, and trying again in a moment will work.
+    """
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    @app.get("/api/_test_busy")
+    def _busy():
+        raise TimeoutError("用户表忙，10 秒内没有拿到写锁")
+
+    client = TestClient(app, raise_server_exceptions=False)
+    r = client.get("/api/_test_busy")
+    assert r.status_code == 503
+    assert "忙" in r.json().get("detail", "")

@@ -110,6 +110,34 @@ async def path_not_allowed_handler(request: Request, exc: PathNotAllowed):
     return JSONResponse(status_code=403, content={"detail": str(exc) or "没有访问这个位置的权限"})
 
 
+@app.exception_handler(TimeoutError)
+async def busy_handler(request: Request, exc: TimeoutError):
+    """Something was busy and did not wait.
+
+    The stores take a lock with a deadline, so that a lock held by
+    something that will never let go cannot take the whole service
+    down. When the deadline passes the caller is told, in words it can
+    show: the machine is busy, and trying again in a moment will work.
+    """
+    return JSONResponse(status_code=503, content={"detail": str(exc) or "服务器忙，请稍后再试"})
+
+
+@app.exception_handler(Exception)
+async def unexpected_handler(request: Request, exc: Exception):
+    """An error nobody planned for.
+
+    Without this the answer is FastAPI's plain "Internal Server Error",
+    which the page shows as a sentence with nothing in it. The traceback
+    is in the log; the person in front of the screen gets a sentence
+    they can act on.
+    """
+    log.exception("unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "服务器出了点问题，请稍后再试。如果一直这样，看看日志里的请求编号。"},
+    )
+
+
 @app.middleware("http")
 async def request_context(request: Request, call_next):
     """Give every request an id and a line in the log.

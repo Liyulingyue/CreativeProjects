@@ -60,7 +60,7 @@ export async function authFetch(url: string, options: RequestInit = {}): Promise
     // would otherwise trigger multiple reloads; the event model is
     // idempotent — handlers just set a state flag.
     window.dispatchEvent(new CustomEvent(AUTH_LOGOUT_EVENT));
-    throw new Error('Unauthorized');
+    throw new Error('登录已过期，请重新登录');
   }
   return res;
 }
@@ -69,7 +69,7 @@ export async function authFetch(url: string, options: RequestInit = {}): Promise
 
 export async function checkAuthStatus(): Promise<{ requires_auth: boolean; has_password: boolean }> {
   const res = await fetch('/api/auth/status');
-  if (!res.ok) throw new Error('Failed to check auth status');
+  if (!res.ok) throw new Error('读取登录状态失败');
   return res.json();
 }
 

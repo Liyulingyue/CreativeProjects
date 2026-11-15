@@ -11,6 +11,7 @@ import indexControls from './index-controls.test.mjs'
 import pages from './pages.test.mjs'
 import fileManager from './file-manager.test.mjs'
 import uploadTrash from './upload-trash.test.mjs'
+import errors from './errors.test.mjs'
 
-const failures = await run([pictureSearch, indexControls, pages, fileManager, uploadTrash])
+const failures = await run([pictureSearch, indexControls, pages, fileManager, uploadTrash, errors])
 process.exit(failures ? 1 : 0)

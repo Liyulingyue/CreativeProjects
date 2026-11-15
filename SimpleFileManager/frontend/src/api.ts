@@ -11,7 +11,7 @@ const API_BASE = '/api';
 export async function fetchBrowse(path?: string): Promise<BrowseResult> {
   const url = path ? `${API_BASE}/fs/browse?path=${encodeURIComponent(path)}` : `${API_BASE}/fs/browse`;
   const res = await authFetch(url);
-  if (!res.ok) throw new Error('Failed to fetch directory');
+  if (!res.ok) throw await apiError(res, '读取目录失败');
   return res.json();
 }
 
@@ -20,7 +20,7 @@ export async function fetchTree(path?: string, depth?: number): Promise<TreeNode
   if (path) params.set('path', path);
   if (depth !== undefined) params.set('depth', String(depth));
   const res = await authFetch(`${API_BASE}/fs/tree?${params}`);
-  if (!res.ok) throw new Error('Failed to fetch tree');
+  if (!res.ok) throw await apiError(res, '读取文件树失败');
   return res.json();
 }
 
@@ -30,7 +30,7 @@ export async function createFolder(path: string, name: string): Promise<FileOper
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path, name }),
   });
-  if (!res.ok) throw new Error('Failed to create folder');
+  if (!res.ok) throw await apiError(res, '新建文件夹失败');
   return res.json();
 }
 
@@ -40,7 +40,7 @@ export async function deletePath(path: string, permanent = false): Promise<FileO
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path, permanent }),
   });
-  if (!res.ok) throw new Error('Failed to delete');
+  if (!res.ok) throw await apiError(res, '删除失败');
   return res.json();
 }
 
@@ -82,7 +82,7 @@ export interface Favorite {
 
 export async function fetchFavorites(): Promise<{ favorites: Favorite[]; count: number }> {
   const res = await authFetch(`${API_BASE}/favorites`);
-  if (!res.ok) throw new Error('Failed to fetch the favorites');
+  if (!res.ok) throw await apiError(res, '读取收藏失败');
   return res.json();
 }
 
@@ -127,7 +127,7 @@ export interface DuplicateListing {
 
 export async function fetchDuplicates(): Promise<DuplicateListing> {
   const res = await authFetch(`${API_BASE}/fs/duplicates`);
-  if (!res.ok) throw new Error('Failed to find the duplicates');
+  if (!res.ok) throw await apiError(res, '操作失败');
   return res.json();
 }
 
@@ -144,13 +144,13 @@ export async function cleanDuplicates(hash: string, keep = ''): Promise<Duplicat
     (keep ? `?keep=${encodeURIComponent(keep)}` : ''),
     { method: 'POST' },
   );
-  if (!res.ok) throw new Error('Failed to clean up the duplicates');
+  if (!res.ok) throw await apiError(res, '清理重复文件失败');
   return res.json();
 }
 
 export async function scanForDuplicates(): Promise<{ hashed: number; remaining: number }> {
   const res = await authFetch(`${API_BASE}/fs/duplicates/scan`, { method: 'POST' });
-  if (!res.ok) throw new Error('Failed to scan');
+  if (!res.ok) throw await apiError(res, '扫描失败');
   return res.json();
 }
 
@@ -164,19 +164,19 @@ export interface TrashListing {
 
 export async function fetchTrash(): Promise<TrashListing> {
   const res = await authFetch(`${API_BASE}/fs/trash`);
-  if (!res.ok) throw new Error('Failed to fetch the recycle bin');
+  if (!res.ok) throw await apiError(res, '读取回收站失败');
   return res.json();
 }
 
 export async function restoreTrashEntry(id: string): Promise<FileOperation> {
   const res = await authFetch(`${API_BASE}/fs/trash/${id}/restore`, { method: 'POST' });
-  if (!res.ok) throw new Error('Failed to restore');
+  if (!res.ok) throw await apiError(res, '还原失败');
   return res.json();
 }
 
 export async function purgeTrashEntry(id: string): Promise<FileOperation> {
   const res = await authFetch(`${API_BASE}/fs/trash/${id}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error('Failed to delete permanently');
+  if (!res.ok) throw await apiError(res, '彻底删除失败');
   return res.json();
 }
 
@@ -187,19 +187,19 @@ export async function purgeExpiredTrash(): Promise<{
   entries: { id: string; name: string; size: number }[];
 }> {
   const res = await authFetch(`${API_BASE}/fs/trash/purge-expired`, { method: 'POST' });
-  if (!res.ok) throw new Error('Failed to purge expired entries');
+  if (!res.ok) throw await apiError(res, '清理过期回收站条目失败');
   return res.json();
 }
 
 export async function fetchTrashLog(): Promise<{ entries: TrashLogEntry[] }> {
   const res = await authFetch(`${API_BASE}/fs/trash/log`);
-  if (!res.ok) throw new Error('Failed to fetch the cleanup log');
+  if (!res.ok) throw await apiError(res, '读取清理日志失败');
   return res.json();
 }
 
 export async function emptyTrash(): Promise<FileOperation> {
   const res = await authFetch(`${API_BASE}/fs/trash/empty`, { method: 'POST' });
-  if (!res.ok) throw new Error('Failed to empty the recycle bin');
+  if (!res.ok) throw await apiError(res, '清空回收站失败');
   return res.json();
 }
 
@@ -244,7 +244,7 @@ export async function movePath(src: string, dest: string): Promise<FileOperation
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ src, dest }),
   });
-  if (!res.ok) throw new Error('Failed to move');
+  if (!res.ok) throw await apiError(res, '移动失败');
   return res.json();
 }
 
@@ -253,13 +253,13 @@ export async function searchFiles(query: string, path?: string, limit?: number):
   if (path) params.set('path', path);
   if (limit) params.set('limit', String(limit));
   const res = await authFetch(`${API_BASE}/search/query?${params}`);
-  if (!res.ok) throw new Error('Failed to search');
+  if (!res.ok) throw await apiError(res, '搜索失败');
   return res.json();
 }
 
 export async function fetchSettings(): Promise<AppSettings> {
   const res = await authFetch(`${API_BASE}/settings`);
-  if (!res.ok) throw new Error('Failed to fetch settings');
+  if (!res.ok) throw await apiError(res, '读取设置失败');
   return res.json();
 }
 
@@ -284,7 +284,7 @@ export async function updateSettings(updates: Partial<AppSettings>): Promise<App
 
 export async function checkHealth(): Promise<{ status: string }> {
   const res = await authFetch(`${API_BASE}/health`);
-  if (!res.ok) throw new Error('Failed to check health');
+  if (!res.ok) throw await apiError(res, '检查服务状态失败');
   return res.json();
 }
 
@@ -404,7 +404,7 @@ export interface ChatHistoryResponse {
 export async function fetchChatSessions(sessionType?: string): Promise<ChatHistoryResponse> {
   const params = sessionType ? `?session_type=${sessionType}` : '';
   const res = await authFetch(`${API_BASE}/chat_history/sessions${params}`);
-  if (!res.ok) throw new Error('Failed to fetch chat sessions');
+  if (!res.ok) throw await apiError(res, '读取对话列表失败');
   return res.json();
 }
 
@@ -414,13 +414,13 @@ export async function createChatSession(sessionType: string = 'chat'): Promise<C
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_type: sessionType }),
   });
-  if (!res.ok) throw new Error('Failed to create chat session');
+  if (!res.ok) throw await apiError(res, '新建对话失败');
   return res.json();
 }
 
 export async function fetchChatSession(sessionId: string): Promise<ChatSession> {
   const res = await authFetch(`${API_BASE}/chat_history/sessions/${sessionId}`);
-  if (!res.ok) throw new Error('Failed to fetch chat session');
+  if (!res.ok) throw await apiError(res, '读取对话失败');
   return res.json();
 }
 
@@ -428,7 +428,7 @@ export async function deleteChatSession(sessionId: string): Promise<void> {
   const res = await authFetch(`${API_BASE}/chat_history/sessions/${sessionId}`, {
     method: 'DELETE',
   });
-  if (!res.ok) throw new Error('Failed to delete chat session');
+  if (!res.ok) throw await apiError(res, '删除对话失败');
 }
 
 export async function addChatMessage(
@@ -459,7 +459,7 @@ export async function addChatMessage(
       plans: plans ?? null,
     }),
   });
-  if (!res.ok) throw new Error('Failed to add chat message');
+  if (!res.ok) throw await apiError(res, '发送消息失败');
   return res.json();
 }
 
@@ -469,7 +469,7 @@ export async function updateChatSessionTitle(sessionId: string, title: string): 
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId, title }),
   });
-  if (!res.ok) throw new Error('Failed to update chat session title');
+  if (!res.ok) throw await apiError(res, '重命名对话失败');
 }
 
 export interface AgentMessage {
@@ -501,7 +501,7 @@ export async function getAgentTools(): Promise<{
   display: AgentToolDisplay[];
 }> {
   const res = await authFetch(`${API_BASE}/agent/tools`);
-  if (!res.ok) throw new Error('Failed to get agent tools');
+  if (!res.ok) throw await apiError(res, '读取工具列表失败');
   return res.json();
 }
 
@@ -509,7 +509,7 @@ export async function getAgentTools(): Promise<{
 
 export async function listProviders(): Promise<LLMProvider[]> {
   const res = await authFetch(`${API_BASE}/providers`);
-  if (!res.ok) throw new Error('Failed to fetch providers');
+  if (!res.ok) throw await apiError(res, '读取模型服务列表失败');
   return res.json();
 }
 
@@ -564,7 +564,7 @@ export async function setMainProvider(id: string): Promise<LLMProvider> {
 
 export async function listEmbeddingProviders(): Promise<EmbeddingProvider[]> {
   const res = await authFetch(`${API_BASE}/embedding_providers`);
-  if (!res.ok) throw new Error('Failed to fetch embedding providers');
+  if (!res.ok) throw await apiError(res, '读取向量服务列表失败');
   return res.json();
 }
 
@@ -643,7 +643,7 @@ export async function abortAgentChat(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId, content }),
   });
-  if (!res.ok) throw new Error('Failed to report the stop');
+  if (!res.ok) throw await apiError(res, '停止失败');
   return res.json();
 }
 
@@ -705,14 +705,14 @@ export async function streamAgentMessage(
 export async function fetchPlans(status?: string): Promise<AgentPlan[]> {
   const params = status ? `?status=${encodeURIComponent(status)}` : '';
   const res = await authFetch(`${API_BASE}/plans${params}`);
-  if (!res.ok) throw new Error('Failed to fetch plans');
+  if (!res.ok) throw await apiError(res, '读取计划失败');
   const data = await res.json();
   return data.plans || [];
 }
 
 export async function fetchPlan(planId: string): Promise<AgentPlan> {
   const res = await authFetch(`${API_BASE}/plans/${planId}`);
-  if (!res.ok) throw new Error('Failed to fetch plan');
+  if (!res.ok) throw await apiError(res, '读取计划失败');
   return res.json();
 }
 
@@ -720,7 +720,7 @@ export async function fetchPlanLog(
   planId: string
 ): Promise<Array<Record<string, unknown>>> {
   const res = await authFetch(`${API_BASE}/plans/${planId}/log`);
-  if (!res.ok) throw new Error('Failed to fetch plan log');
+  if (!res.ok) throw await apiError(res, '读取计划日志失败');
   const data = await res.json();
   return data.log || [];
 }
@@ -743,7 +743,7 @@ export async function createPlan(input: CreatePlanInput): Promise<AgentPlan> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   });
-  if (!res.ok) throw new Error('Failed to create plan');
+  if (!res.ok) throw await apiError(res, '创建计划失败');
   return res.json();
 }
 
@@ -793,7 +793,7 @@ export async function deletePlan(planId: string): Promise<void> {
 
 export async function fetchAutoIndexStatus(): Promise<AutoIndexStatus> {
   const res = await authFetch(`${API_BASE}/settings/auto_index_status`);
-  if (!res.ok) throw new Error('Failed to fetch auto index status');
+  if (!res.ok) throw await apiError(res, '读取自动索引状态失败');
   return res.json();
 }
 
@@ -807,13 +807,13 @@ export interface ServiceProbe {
 
 export async function fetchServiceHealth(): Promise<Record<string, { ok: boolean }>> {
   const res = await authFetch(`${API_BASE}/settings/service_health`);
-  if (!res.ok) throw new Error('Failed to fetch service health');
+  if (!res.ok) throw await apiError(res, '读取服务状态失败');
   return res.json();
 }
 
 export async function testConnections(): Promise<Record<string, ServiceProbe>> {
   const res = await authFetch(`${API_BASE}/settings/test_connection`, { method: 'POST' });
-  if (!res.ok) throw new Error('Failed to test connections');
+  if (!res.ok) throw await apiError(res, '测试连接失败');
   return res.json();
 }
 
@@ -839,13 +839,13 @@ export interface IndexSkipped {
 
 export async function fetchIndexStats(): Promise<IndexStats> {
   const res = await authFetch(`${API_BASE}/settings/index_stats`);
-  if (!res.ok) throw new Error('Failed to fetch index stats');
+  if (!res.ok) throw await apiError(res, '读取索引统计失败');
   return res.json();
 }
 
 export async function fetchIndexSkipped(): Promise<IndexSkipped> {
   const res = await authFetch(`${API_BASE}/settings/index_skipped`);
-  if (!res.ok) throw new Error('Failed to fetch skipped files');
+  if (!res.ok) throw await apiError(res, '读取跳过列表失败');
   const raw = await res.json() as Partial<IndexSkipped>;
   // Defaults matter: a backend that predates a category returns no key for it,
   // and indexing it as undefined crashed the page into a blank screen.
@@ -863,19 +863,19 @@ export async function pauseAutoIndex(seconds: number): Promise<{ paused: boolean
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ seconds }),
   });
-  if (!res.ok) throw new Error('Failed to pause indexing');
+  if (!res.ok) throw await apiError(res, '暂停索引失败');
   return res.json();
 }
 
 export async function resumeAutoIndex(): Promise<{ paused: boolean }> {
   const res = await authFetch(`${API_BASE}/settings/auto_index/resume`, { method: 'POST' });
-  if (!res.ok) throw new Error('Failed to resume indexing');
+  if (!res.ok) throw await apiError(res, '继续索引失败');
   return res.json();
 }
 
 export async function runAutoIndexNow(): Promise<Record<string, number>> {
   const res = await authFetch(`${API_BASE}/settings/auto_index/run`, { method: 'POST' });
-  if (!res.ok) throw new Error('Failed to run auto index');
+  if (!res.ok) throw await apiError(res, '运行自动索引失败');
   return res.json();
 }
 
@@ -973,7 +973,7 @@ export async function hybridSearch(
 ): Promise<HybridSearchResponse> {
   const params = new URLSearchParams({ query, top_k: String(topK), mode });
   const res = await authFetch(`${API_BASE}/search/hybrid?${params}`, { method: 'POST' });
-  if (!res.ok) throw new Error('Failed to search');
+  if (!res.ok) throw await apiError(res, '搜索失败');
   return res.json();
 }
 
@@ -1104,26 +1104,26 @@ export interface Digest extends DigestMeta {
 export async function generateDigest(date?: string): Promise<{ success: boolean; message?: string; date?: string; files_count?: number }> {
   const params = date ? `?date=${date}` : '';
   const res = await authFetch(`${API_BASE}/digest/generate${params}`, { method: 'POST' });
-  if (!res.ok) throw new Error('Failed to generate digest');
+  if (!res.ok) throw await apiError(res, '生成日报失败');
   return res.json();
 }
 
 export async function fetchLatestDigest(): Promise<Digest> {
   const res = await authFetch(`${API_BASE}/digest/latest`);
-  if (!res.ok) throw new Error('Failed to fetch latest digest');
+  if (!res.ok) throw await apiError(res, '读取最新日报失败');
   return res.json();
 }
 
 export async function fetchDigestList(): Promise<DigestMeta[]> {
   const res = await authFetch(`${API_BASE}/digest/list`);
-  if (!res.ok) throw new Error('Failed to fetch digest list');
+  if (!res.ok) throw await apiError(res, '读取日报列表失败');
   const data = await res.json();
   return data.digests || [];
 }
 
 export async function fetchDigest(date: string): Promise<Digest> {
   const res = await authFetch(`${API_BASE}/digest/${date}`);
-  if (!res.ok) throw new Error('Failed to fetch digest');
+  if (!res.ok) throw await apiError(res, '读取日报失败');
   return res.json();
 }
 
@@ -1131,7 +1131,7 @@ export async function fetchDigest(date: string): Promise<Digest> {
 
 export async function downloadZip(path: string): Promise<void> {
   const res = await authFetch(`${API_BASE}/fs/download-zip?path=${encodeURIComponent(path)}`);
-  if (!res.ok) throw new Error('Failed to build the archive');
+  if (!res.ok) throw await apiError(res, '打包下载失败');
   const name = (path.split(/[/\\]/).pop() || 'archive') + '.zip';
 
   // A directory can be very large, and the browser's own download
@@ -1175,7 +1175,7 @@ export async function downloadFile(
   onProgress?: (loaded: number, total: number) => void,
 ): Promise<void> {
   const res = await authFetch(`${API_BASE}/fs/download?path=${encodeURIComponent(path)}`);
-  if (!res.ok) throw new Error('Failed to download');
+  if (!res.ok) throw await apiError(res, '下载失败');
 
   const name = path.split(/[/\\]/).pop() || 'download';
   const total = Number(res.headers.get('content-length') || 0);
@@ -1335,8 +1335,26 @@ async function detailOf(res: Response): Promise<string> {
     const d = body?.detail;
     if (typeof d === 'string') return d;
     if (d?.message) return d.message;
+    // FastAPI's validation errors are a list of objects; the first one
+    // says what was wrong.
+    if (Array.isArray(d) && d.length && typeof d[0]?.msg === 'string') {
+      return d[0].msg;
+    }
   } catch { /* the body was not json */ }
   return '';
+}
+
+/**
+ * The message to show when a request failed.
+ *
+ * The server says what went wrong in Chinese, and that is the message
+ * worth showing: "存储根读不了" says more than "Failed to fetch
+ * directory". The fallback is only used when the server said nothing
+ * useful -- and it is Chinese too, because the rest of the page is.
+ */
+export async function apiError(res: Response, fallback: string): Promise<Error> {
+  const detail = await detailOf(res);
+  return new Error(detail || fallback);
 }
 
 /** Throw away an upload that will not be finished, so the server
@@ -1801,6 +1819,6 @@ export async function copyPath(src: string, dest: string): Promise<FileOperation
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ src, dest }),
   });
-  if (!res.ok) throw new Error('Failed to copy');
+  if (!res.ok) throw await apiError(res, '复制失败');
   return res.json();
 }
