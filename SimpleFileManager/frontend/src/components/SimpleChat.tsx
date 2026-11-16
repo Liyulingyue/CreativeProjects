@@ -70,7 +70,18 @@ export function SimpleChat() {
   const { isLoading, streamingText, currentStep, livePerf, liveProviderName } = stream;
   const sendRef = useRef<((content: string) => Promise<void>) | null>(null);
 
-  const toolActivity = stream.sessionId ? stream.traces[stream.sessionId] : undefined;
+  // Is the running turn *this* conversation's turn? Both halves matter:
+  // the turn has to belong to the conversation on screen, and there has
+  // to be a turn at all.
+  //
+  // Without the first half, a turn running in one conversation showed
+  // its answer in another -- an answer that belongs to the other one,
+  // with a stop button that would stop a turn the user cannot see.
+  // Without the second half, an empty page (both ids null) looked busy
+  // -- which disabled the provider dropdown and showed a running state
+  // with nothing running.
+  const liveHere = stream.isLoading && stream.sessionId === currentSessionId;
+  const toolActivity = liveHere && stream.sessionId ? stream.traces[stream.sessionId] : undefined;
 
   const updateTrace = useCallback((sessionId: string, update: (prev: ToolActivity[]) => ToolActivity[]) => {
     agentStream.trace(sessionId, update);
@@ -334,8 +345,8 @@ export function SimpleChat() {
         onNewSession={handleNewSession}
         onDeleteSession={deleteSession}
         onSendMessage={handleSendMessage}
-        isLoading={isLoading}
-        streamingText={streamingText}
+        isLoading={liveHere}
+        streamingText={liveHere ? streamingText : ''}
         toolActivity={toolActivity}
         currentStep={currentStep}
         livePerf={livePerf ?? undefined}

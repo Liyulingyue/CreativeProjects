@@ -105,6 +105,9 @@ export async function run(suites) {
   const failures = []
   for (const suite of suites) {
     console.log(`\n${suite.name}`)
+    // A suite may need something of its own running -- a fake model
+    // server, say -- and may want to shut it down afterwards.
+    if (suite.setup) await suite.setup(page)
     for (const t of suite.tests) {
       const before = consoleErrors.length
       try {
@@ -119,6 +122,9 @@ export async function run(suites) {
         console.log(`      ${String(e.message || e).split('\n').slice(0, 5).join('\n      ')}`)
       }
     }
+    // The teardown runs even when a test failed, so a suite can put
+    // the system back the way it found it.
+    if (suite.teardown) await suite.teardown(page)
   }
   await browser.close()
 

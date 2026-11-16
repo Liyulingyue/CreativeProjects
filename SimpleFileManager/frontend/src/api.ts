@@ -668,7 +668,11 @@ export async function streamAgentMessage(
     signal,
   });
   if (!res.ok || !res.body) {
-    throw new Error(res.status === 401 ? '登录已过期' : `请求失败 (${res.status})`);
+    // The server knows what went wrong -- "模型正忙", "额度用尽了",
+    // "这条消息太长了" -- and it says it in Chinese. Keep that
+    // sentence; a bare status code throws it away.
+    if (res.status === 401) throw new Error('登录已过期');
+    throw await apiError(res, `请求失败 (${res.status})`);
   }
 
   const reader = res.body.getReader();
