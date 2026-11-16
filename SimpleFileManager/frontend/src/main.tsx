@@ -2,6 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
 import { ToastProvider } from './components/ui/Toast'
+import { ErrorBoundary } from './components/ui/ErrorBoundary'
 import './index.css'
 
 // Service workers only register on a secure context, so this silently does
@@ -24,7 +25,12 @@ if (import.meta.env.PROD && 'serviceWorker' in navigator) {
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <ToastProvider>
-      <App />
+      {/* The shell -- the sidebar, the header -- is outside the
+          boundary that guards the pages. If it falls over, the whole
+          window would go blank; here it says what happened instead. */}
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
     </ToastProvider>
   </React.StrictMode>,
 )
