@@ -9,6 +9,9 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import client
+from tests.test_permissions import _login, people  # noqa: F401  (the fixture)
+
 
 @pytest.fixture
 def trash(tmp_path):
@@ -138,3 +141,77 @@ def test_size_cache_does_not_walk_the_tree_twice(tmp_path):
     (d / "f5.txt").write_text("y" * 50, encoding="utf-8")
     invalidate(d)
     assert dir_size(d) == 550
+
+
+class TestTheBinRespectsTheHouseRules:
+    """The bin is shared, but a shut-out folder is still shut out.
+
+    The name of a file that came out of a private folder, and where it
+    came from, are that folder's business.
+    """
+
+    def test_a_file_from_a_shut_out_folder_is_not_in_the_list(self, people):
+        from app.deps import get_storage_root, state
+
+        root = get_storage_root()
+        (root / "私密").mkdir(exist_ok=True)
+        (root / "私密" / "日记.txt").write_text("秘密", encoding="utf-8")
+        (root / "公开").mkdir(exist_ok=True)
+        (root / "公开" / "随手.txt").write_text("随便", encoding="utf-8")
+        state.get_user_store().restrict("私密", people["one"]["id"], "none")
+
+        # The admin puts both files in the bin.
+        boss = _login("boss", "boss1234")
+        admin_headers = {"Authorization": f"Bearer {boss}"}
+        client.post("/api/fs/delete", json={"path": str(root / "私密" / "日记.txt")},
+                    headers=admin_headers)
+        client.post("/api/fs/delete", json={"path": str(root / "公开" / "随手.txt")},
+                    headers=admin_headers)
+
+        token = _login("甲", "jia1234")
+        res = client.get("/api/fs/trash", headers={"Authorization": f"Bearer {token}"})
+
+        names = [e["name"] for e in res.json()["entries"]]
+        assert "随手.txt" in names
+        assert "日记.txt" not in names, f"不该看见别人的文件: {names}"
+
+    def test_a_shut_out_person_cannot_restore_it(self, people):
+        from app.deps import get_storage_root, state
+
+        root = get_storage_root()
+        (root / "私密").mkdir(exist_ok=True)
+        (root / "私密" / "日记.txt").write_text("秘密", encoding="utf-8")
+        state.get_user_store().restrict("私密", people["one"]["id"], "none")
+
+        boss = _login("boss", "boss1234")
+        client.post("/api/fs/delete", json={"path": str(root / "私密" / "日记.txt")},
+                    headers={"Authorization": f"Bearer {boss}"})
+        entries = client.get("/api/fs/trash",
+                              headers={"Authorization": f"Bearer {boss}"}).json()["entries"]
+        entry = next(e for e in entries if e["name"] == "日记.txt")
+
+        token = _login("甲", "jia1234")
+        res = client.post(f"/api/fs/trash/{entry['id']}/restore",
+                          headers={"Authorization": f"Bearer {token}"})
+
+        assert res.status_code == 403
+        assert not (root / "私密" / "日记.txt").exists()
+
+    def test_emptying_the_bin_is_the_administrators_call(self, people):
+        from app.deps import get_storage_root
+
+        root = get_storage_root()
+        (root / "随手.txt").write_text("随便", encoding="utf-8")
+        boss = _login("boss", "boss1234")
+        client.post("/api/fs/delete", json={"path": str(root / "随手.txt")},
+                    headers={"Authorization": f"Bearer {boss}"})
+
+        token = _login("甲", "jia1234")
+        res = client.post("/api/fs/trash/empty",
+                          headers={"Authorization": f"Bearer {token}"})
+
+        assert res.status_code == 403
+        boss = _login("boss", "boss1234")
+        still_there = client.get("/api/fs/trash",
+                                  headers={"Authorization": f"Bearer {boss}"})
+        assert still_there.json()["count"] == 1

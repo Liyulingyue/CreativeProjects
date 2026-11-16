@@ -131,7 +131,7 @@ export function TrashPage() {
               <Icon name="clock" size={16} />{busyId === '__expired__' ? '清理中...' : '清理过期项'}
             </button>
           )}
-          {entries.length > 0 && (
+          {isAdmin && entries.length > 0 && (
             <button onClick={empty} disabled={busyId === '__all__'}
               className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:opacity-50 transition-colors flex-shrink-0">
               <Icon name="trash" size={16} />{busyId === '__all__' ? '清空中...' : '清空回收站'}

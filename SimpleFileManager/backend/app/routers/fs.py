@@ -509,12 +509,31 @@ def delete(req: DeleteRequest) -> FileOperation:
     )
 
 
+def _may_see(entry: dict, mode: str = "read") -> bool:
+    """Whether this person may know about a file in the bin.
+
+    The bin is shared, but a folder somebody is shut out of is shut
+    out: the name of the file that came out of it, and where it came
+    from, are that folder's business.
+    """
+    original = entry.get("original_path") or ""
+    if not original:
+        # An entry with no remembered origin cannot be placed, so it is
+        # everybody's business.
+        return True
+    try:
+        check_access(Path(original), mode)
+        return True
+    except PathNotAllowed:
+        return False
+
+
 @fs.get("/trash")
 def list_trash() -> dict:
     """Everything currently in the recycle bin, newest first."""
     svc = _trash_service()
     retention_days = trash_retention.retention_days()
-    entries = svc.list(retention_days=retention_days)
+    entries = [e for e in svc.list(retention_days=retention_days) if _may_see(e)]
     return {
         "entries": entries,
         "count": len(entries),
@@ -544,12 +563,30 @@ def trash_retention_log(limit: int = 50, _admin=Depends(require_admin)) -> dict:
 @fs.post("/trash/{entry_id}/restore")
 def restore_trash(entry_id: str) -> FileOperation:
     """Put a deleted file back where it came from."""
+    # Where it would go, and whether this person may put anything
+    # there. A file that goes back into a folder somebody else owns is
+    # not this person's call.
+    meta = _trash_service().meta(entry_id)
+    original = meta.get("original_path") or ""
+    if original:
+        try:
+            check_access(Path(original), "write")
+        except PathNotAllowed as e:
+            raise HTTPException(status_code=403, detail=str(e))
     try:
         result = _trash_service().restore(entry_id)
     except TrashError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"还原失败：{e}")
+    # The file may have come back under another name -- something else
+    # took its place while it was in the bin. The indexes have to know.
+    restored = result.get("path") or ""
+    if original and restored and original != restored:
+        try:
+            _follow_the_move(Path(original), Path(restored))
+        except Exception:
+            log.warning("the indexes did not follow the restore", exc_info=True)
     message = "已还原"
     if result.get("renamed"):
         message = f"原位置已有同名文件，已还原为 {result['path'].split('/')[-1]}"
@@ -563,6 +600,11 @@ def purge_trash(entry_id: str) -> FileOperation:
         # What was it, and where did it come from? The bin is about to
         # destroy it, and the picture index has to forget it too.
         original = _trash_service().meta(entry_id).get("original_path") or ""
+        if original:
+            try:
+                check_access(Path(original), "read")
+            except PathNotAllowed as e:
+                raise HTTPException(status_code=403, detail=str(e))
         result = _trash_service().purge(entry_id)
         # It lived in the bin, where it kept its vector so that putting
         # it back would make it findable at once. Now it is gone for
@@ -580,8 +622,13 @@ def purge_trash(entry_id: str) -> FileOperation:
 
 
 @fs.post("/trash/empty")
-def empty_trash() -> FileOperation:
-    """Destroy everything in the bin."""
+def empty_trash(_admin=Depends(require_admin)) -> FileOperation:
+    """Destroy everything in the bin.
+
+    Emptying the bin cannot be undone, and the bin is shared, so it is
+    the administrator's decision. Cleaning up what has outlived the
+    retention window is a different thing, and has its own endpoint.
+    """
     try:
         from ..image_indexer import _forget_the_file
         for entry in _trash_service().list():
@@ -1216,6 +1263,16 @@ def restore_version(version_id: int, path: str = ""):
     except VersionError as e:
         raise HTTPException(status_code=400, detail=str(e))
     invalidate_sizes(Path(result["path"]))
+    # The file now holds different words, so the search has to hear
+    # about it: until it does, a search for the old text finds nothing
+    # and a search for the new text finds the file that used to be
+    # there.
+    try:
+        from ..indexer import indexer
+        indexer.scan_async()
+    except Exception:
+        log.warning("could not start a scan after restoring a version",
+                    exc_info=True)
     return result
 
 

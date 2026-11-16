@@ -136,6 +136,36 @@ class TestTheIndexFollows:
         assert str(root / "去的地方" / "甲.txt") in hits, f"索引没跟上: {hits}"
 
 
+class TestTheIndexFollowsARestore:
+    def test_a_restored_file_that_came_back_under_another_name_is_still_findable(self):
+        """Something else took its place while it was in the bin.
+
+        The file comes back under a different name, and the indexes
+        have to know the new name -- otherwise a search keeps offering
+        a path that is not there.
+        """
+        from app.search_engine import search_engine
+
+        root = get_storage_root()
+        create_test_file("原来.txt", "zidiaozaizheli")
+        search_engine.upsert_file(str(root / "原来.txt"), "zidiaozaizheli")
+
+        res = client.post("/api/fs/delete", json={"path": str(root / "原来.txt")})
+        assert res.status_code == 200
+        # Something else takes the name.
+        create_test_file("原来.txt", "别人的文件")
+
+        entries = client.get("/api/fs/trash").json()["entries"]
+        entry = next(e for e in entries if e["name"] == "原来.txt")
+        restored = client.post(f"/api/fs/trash/{entry['id']}/restore")
+        assert restored.status_code == 200
+        new_path = restored.json()["path"]
+        assert new_path.endswith("原来(恢复1).txt")
+
+        hits = [h["path"] for h in search_engine.bm25_search("zidiao")]
+        assert new_path in hits, f"索引没跟上: {hits}"
+
+
 class TestBatch:
     def test_a_batch_copy_does_not_overwrite(self):
         root = get_storage_root()
