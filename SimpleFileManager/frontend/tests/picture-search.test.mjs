@@ -44,6 +44,46 @@ export default {
     },
 
     {
+      name: '索引还在建的时候，搜不到会说清楚是在建',
+      async fn(page) {
+        // The index is being built and the pictures are not in it yet.
+        // Telling the user to try other words sends them off looking
+        // for a better way to say it.
+        await page.route('**/api/images/index/status', async (route) => {
+          await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({
+              running: true, paused: false, total: 120, done: 37, skipped: 0,
+              encoded: 37, deferred: 0, failed: 0, not_pictures: 2,
+              current: '照片测试/cat.jpg', started_at: Date.now(), finished_at: 0,
+              last_error: '', indexed: 37,
+            }),
+          })
+        })
+        await page.route('**/api/images/search', async (route) => {
+          await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({ results: [] }),
+          })
+        })
+
+        await openPictureSearch(page)
+        await page.locator('input[placeholder*="海边"]').first().fill('海边的日落')
+        await page.locator('button', { hasText: /^搜图$/ }).first().click()
+        await page.waitForTimeout(1500)
+
+        const body = await page.evaluate(() => document.body.innerText)
+        ok(body.includes('索引还在建'), `没有说索引在建: ${body.slice(0, 200)}`)
+        ok(!body.includes('换个说法试试'),
+          '索引在建，却让用户换个说法试试')
+        await page.unroute('**/api/images/index/status')
+        await page.unroute('**/api/images/search')
+      },
+    },
+
+    {
       name: '「找相似」把画面换成这张图的邻居，原图标成参考图',
       async fn(page) {
         await openPictureSearch(page)
@@ -88,7 +128,7 @@ export default {
     },
 
     {
-      name: '服务器说忙的时候，把���的话原样说出来',
+      name: '服务器说忙的时候，把服务器的话原样说出来',
       async fn(page) {
         await openPictureSearch(page)
         // The server says the machine is busy.

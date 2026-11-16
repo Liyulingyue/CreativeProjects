@@ -300,11 +300,17 @@ export function ImageSearchPanel() {
           <div className="text-center py-16 text-slate-400">
             <div className="text-base">没有找到匹配的图片</div>
             <div className="text-sm mt-2">
-              {status && status.indexed === 0
-                ? (isAdmin
-                  ? '图片索引还是空的，点上面的「建立图片索引」先把图片收进来'
-                  : '图片索引还是空的，请管理员在设置里建立图片索引')
-                : '换个说法试试'}
+              {status && status.running
+                // The index is still being built. Saying "try other
+                // words" would send the user off looking for a better
+                // way to say it, when the pictures simply are not in
+                // the index yet.
+                ? `图片索引还在建（这轮 ${status.done}/${status.total}），建完再搜`
+                : status && status.indexed === 0
+                  ? (isAdmin
+                    ? '图片索引还是空的，点上面的「建立图片索引」先把图片收进来'
+                    : '图片索引还是空的，请管理员在设置里建立图片索引')
+                  : '换个说法试试'}
             </div>
           </div>
         )}
@@ -327,7 +333,10 @@ export function ImageSearchPanel() {
                 </button>
               </div>
             )}
-            <div className="text-sm text-slate-500 mb-3">找到 {hits.length} 张，按相似度排序</div>
+            <div className="text-sm text-slate-500 mb-3">
+              找到 {hits.length} 张，按相似度排序
+              {status?.running && ' · 索引还在建，结果可能不全'}
+            </div>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
               {hits.map(hit => (
                 <HitTile key={hit.path} hit={hit} onSimilar={findSimilar} />

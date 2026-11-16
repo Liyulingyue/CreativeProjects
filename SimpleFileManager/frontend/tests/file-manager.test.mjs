@@ -34,7 +34,7 @@ export default {
     },
 
     {
-      name: '选中一个文件之后，删除按钮才有���',
+      name: '选中一个文件之后，删除按钮才有用',
       async fn(page) {
         await files(page)
         await page.waitForTimeout(1200)
