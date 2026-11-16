@@ -113,13 +113,13 @@ async def get_thumbnail(
     try:
         target = resolve_under_root(path)
     except PathOutsideRoot:
-        raise HTTPException(status_code=400, detail="Path outside storage root")
+        raise HTTPException(status_code=400, detail="路径在存储根目录之外")
     if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail="找不到这个文件")
 
     if tt:
         if not verify_directory_token(str(target), tt):
-            raise HTTPException(status_code=401, detail="Not authorized")
+            raise HTTPException(status_code=401, detail="没有这个位置的权限")
     else:
         from ..routers.auth import get_current_auth
         await get_current_auth(request, credentials)
@@ -133,7 +133,7 @@ async def get_thumbnail(
     # search page asks for two dozen of them at once.
     data = await run_in_threadpool(_thumbnail_store().get, target, size)
     if not data:
-        raise HTTPException(status_code=404, detail="No thumbnail")
+        raise HTTPException(status_code=404, detail="这个文件没有缩略图")
     return Response(
         content=data,
         media_type="image/jpeg",

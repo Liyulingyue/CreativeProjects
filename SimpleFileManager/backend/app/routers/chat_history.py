@@ -16,7 +16,7 @@ def _require_session(session_id: str):
     """
     session = state.get_chat_history().get_session(session_id)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise HTTPException(status_code=404, detail="找不到这个会话")
     return session
 
 

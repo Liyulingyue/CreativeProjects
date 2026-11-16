@@ -203,7 +203,7 @@ def _execute_action(action_type: str, source: str, target: str,
 
     if action_type == "create_folder":
         if not target:
-            raise ValueError("create_folder requires target_path")
+            raise ValueError("建文件夹这个操作要说明建在哪儿")
         dest = _safe(target, "write")
         # Idempotent: a re-run of a partially-failed plan would otherwise
         # fail this action because the folder survived the first attempt.
@@ -216,7 +216,7 @@ def _execute_action(action_type: str, source: str, target: str,
 
     if action_type == "delete":
         if not source:
-            raise ValueError("delete requires source_path")
+            raise ValueError("删除这个操作要说明删的是哪个")
         source = _resolve_existing_source(source)
         src = _safe(source, "write")
         if not src.exists():
@@ -268,7 +268,7 @@ def _execute_run(command: str, cwd: str = "") -> str:
 
     command = (command or "").strip()
     if not command:
-        raise ValueError("run requires command")
+        raise ValueError("运行命令这个操作要说明跑什么")
     try:
         root = get_storage_root().resolve()
         target = resolve_cwd(root, DATA_DIR.resolve(), cwd or "")

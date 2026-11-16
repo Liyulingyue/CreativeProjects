@@ -36,7 +36,7 @@ def hybrid_search(
     if mode != "keyword":
         interaction.mark_active()
     if not query.strip():
-        raise HTTPException(status_code=400, detail="Query is empty")
+        raise HTTPException(status_code=400, detail="搜索词是空的")
     if mode not in ("hybrid", "keyword", "semantic"):
         raise HTTPException(status_code=400, detail=f"Unknown search mode: {mode}")
     payload = search_engine.hybrid_search(query, top_k, path_filter, mode)
@@ -102,11 +102,11 @@ def search_files(q: str, path: Optional[str] = None, limit: int = 50) -> SearchR
     interaction.mark_active()
     storage_path = state.get_settings().storage_path
     if not q or len(q) < 2:
-        raise HTTPException(status_code=400, detail="Query too short")
+        raise HTTPException(status_code=400, detail="搜索词太短了")
 
     search_root = Path(storage_path) if not path else Path(path)
     if not search_root.exists():
-        raise HTTPException(status_code=404, detail="Search path not found")
+        raise HTTPException(status_code=404, detail="找不到这个搜索路径")
 
     query_lower = q.lower()
     results = []

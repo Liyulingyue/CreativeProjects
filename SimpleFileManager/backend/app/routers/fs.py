@@ -133,9 +133,9 @@ def browse(path: Optional[str] = None) -> BrowseResult:
         target = _safe_path(storage_path, path)
 
     if not target.exists():
-        raise HTTPException(status_code=404, detail="Path not found")
+        raise HTTPException(status_code=404, detail="找不到这个路径")
     if not target.is_dir():
-        raise HTTPException(status_code=400, detail="Path is not a directory")
+        raise HTTPException(status_code=400, detail="这个路径不是一个目录")
 
     items = []
     dirs_count = 0
@@ -209,7 +209,7 @@ def create_folder(req: CreateFolderRequest) -> FileOperation:
         invalidate_sizes(target.parent)
         return FileOperation(success=True, message="Folder created", path=str(target))
     except FileExistsError:
-        raise HTTPException(status_code=409, detail="Folder already exists")
+        raise HTTPException(status_code=409, detail="这个文件夹已经在了")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -372,7 +372,7 @@ def batch(req: BatchRequest) -> dict:
     why.
     """
     if req.action not in ("delete", "move", "copy"):
-        raise HTTPException(status_code=400, detail="Unknown action")
+        raise HTTPException(status_code=400, detail="不认识的操作")
     if not req.paths:
         raise HTTPException(status_code=400, detail="没有要处理的文件")
     if len(req.paths) > 5000:
@@ -649,7 +649,7 @@ def get_info(path: str) -> FileNode:
     target = _safe_path(storage_path, path)
 
     if not target.exists():
-        raise HTTPException(status_code=404, detail="Path not found")
+        raise HTTPException(status_code=404, detail="找不到这个路径")
 
     return _path_to_filenode(target)
 
@@ -714,7 +714,7 @@ def download_file(path: str, request: Request = None):
     except PathOutsideRoot:
         raise HTTPException(status_code=400, detail="路径在存储根目录之外")
     if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail="找不到这个文件")
 
     size = target.stat().st_size
     range_header = request.headers.get("range") if request else None
@@ -806,9 +806,9 @@ def download_zip(path: str):
     except PathOutsideRoot:
         raise HTTPException(status_code=400, detail="路径在存储根目录之外")
     if not target.exists():
-        raise HTTPException(status_code=404, detail="Path not found")
+        raise HTTPException(status_code=404, detail="找不到这个路径")
     if not target.is_dir():
-        raise HTTPException(status_code=400, detail="Not a directory")
+        raise HTTPException(status_code=400, detail="不是一个目录")
 
     tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
     tmp_path = Path(tmp.name)
@@ -1064,7 +1064,7 @@ def preview_file(path: str):
     except PathOutsideRoot:
         raise HTTPException(status_code=400, detail="路径在存储根目录之外")
     if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail="找不到这个文件")
 
     suffix = target.suffix.lower()
     size = target.stat().st_size
@@ -1156,12 +1156,12 @@ def stream_token(req: StreamTokenRequest):
     except PathOutsideRoot:
         raise HTTPException(status_code=400, detail="路径在存储根目录之外")
     if not target.exists():
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail="找不到这个文件")
     if req.archive:
         if not target.is_dir():
-            raise HTTPException(status_code=400, detail="Not a directory")
+            raise HTTPException(status_code=400, detail="不是一个目录")
     elif not target.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail="找不到这个文件")
 
     from ..routers.auth import issue_stream_token
 
@@ -1193,12 +1193,12 @@ def thumbnail(path: str, size: int = 256):
     except PathOutsideRoot:
         raise HTTPException(status_code=400, detail="路径在存储根目录之外")
     if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail="找不到这个文件")
 
     size = max(32, min(int(size or DEFAULT_SIZE), 1024))
     data = _thumbnail_store().get(target, size)
     if not data:
-        raise HTTPException(status_code=404, detail="No thumbnail")
+        raise HTTPException(status_code=404, detail="这个文件没有缩略图")
     return Response(content=data, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
 
 
@@ -1298,7 +1298,7 @@ def get_content(path: str, limit: int = 50000, offset: int = 0):
     except PathOutsideRoot:
         raise HTTPException(status_code=400, detail="路径在存储根目录之外")
     if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail="找不到这个文件")
 
     size = target.stat().st_size
     if size > MAX_PREVIEW_BYTES:

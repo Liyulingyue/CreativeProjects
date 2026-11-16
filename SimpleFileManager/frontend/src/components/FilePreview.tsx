@@ -70,7 +70,7 @@ export function FilePreview({ node, onClose }: FilePreviewProps) {
     if (isTextFile(node)) {
       setLoading(true);
       loadSegment(0, false)
-        .catch(e => setError(e instanceof Error ? e.message : 'Failed to load'))
+        .catch(e => setError(e instanceof Error ? e.message : '读不出来'))
         .finally(() => setLoading(false));
     } else if (isDocumentFile(node)) {
       // A document is read on the server, which is the only place the
@@ -94,7 +94,7 @@ export function FilePreview({ node, onClose }: FilePreviewProps) {
       authFetch(`/api/fs/download?path=${encodeURIComponent(node.path)}`)
         .then(res => res.blob())
         .then(blob => { blobUrlRef.current = URL.createObjectURL(blob); setBlobUrl(blobUrlRef.current); })
-        .catch(e => setError(e instanceof Error ? e.message : 'Failed to load'))
+        .catch(e => setError(e instanceof Error ? e.message : '读不出来'))
         .finally(() => setLoading(false));
     }
 

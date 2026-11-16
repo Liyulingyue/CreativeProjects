@@ -170,7 +170,7 @@ class OrganizerService:
         snap_to = self.get_snapshot(date_to)
 
         if not snap_from or not snap_to:
-            raise HTTPException(status_code=404, detail="Snapshot not found")
+            raise HTTPException(status_code=404, detail="找不到这份快照")
 
         files_from = {f.path: f for f in snap_from.files}
         files_to = {f.path: f for f in snap_to.files}

@@ -520,7 +520,7 @@ export async function createProvider(input: LLMProviderCreate): Promise<LLMProvi
     body: JSON.stringify(input),
   });
   if (!res.ok) {
-    let detail = 'Failed to create provider';
+    let detail = '添加模型失败';
     try { const body = await res.json(); if (typeof body?.detail === 'string') detail = body.detail; } catch { /* keep default */ }
     throw new Error(detail);
   }
@@ -534,7 +534,7 @@ export async function updateProvider(id: string, patch: LLMProviderUpdate): Prom
     body: JSON.stringify(patch),
   });
   if (!res.ok) {
-    let detail = 'Failed to update provider';
+    let detail = '改模型失败';
     try { const body = await res.json(); if (typeof body?.detail === 'string') detail = body.detail; } catch { /* keep default */ }
     throw new Error(detail);
   }
@@ -544,7 +544,7 @@ export async function updateProvider(id: string, patch: LLMProviderUpdate): Prom
 export async function deleteProvider(id: string): Promise<void> {
   const res = await authFetch(`${API_BASE}/providers/${id}`, { method: 'DELETE' });
   if (!res.ok) {
-    let detail = 'Failed to delete provider';
+    let detail = '删模型失败';
     try { const body = await res.json(); if (typeof body?.detail === 'string') detail = body.detail; } catch { /* keep default */ }
     throw new Error(detail);
   }
@@ -553,7 +553,7 @@ export async function deleteProvider(id: string): Promise<void> {
 export async function setMainProvider(id: string): Promise<LLMProvider> {
   const res = await authFetch(`${API_BASE}/providers/${id}/set_main`, { method: 'POST' });
   if (!res.ok) {
-    let detail = 'Failed to set main';
+    let detail = '设为主模型失败';
     try { const body = await res.json(); if (typeof body?.detail === 'string') detail = body.detail; } catch { /* keep default */ }
     throw new Error(detail);
   }
@@ -575,7 +575,7 @@ export async function createEmbeddingProvider(input: EmbeddingProviderCreate): P
     body: JSON.stringify(input),
   });
   if (!res.ok) {
-    let detail = 'Failed to create embedding provider';
+    let detail = '添加向量模型失败';
     try { const body = await res.json(); if (typeof body?.detail === 'string') detail = body.detail; } catch { /* keep default */ }
     throw new Error(detail);
   }
@@ -589,7 +589,7 @@ export async function updateEmbeddingProvider(id: string, patch: EmbeddingProvid
     body: JSON.stringify(patch),
   });
   if (!res.ok) {
-    let detail = 'Failed to update embedding provider';
+    let detail = '改向量模型失败';
     try { const body = await res.json(); if (typeof body?.detail === 'string') detail = body.detail; } catch { /* keep default */ }
     throw new Error(detail);
   }
@@ -599,7 +599,7 @@ export async function updateEmbeddingProvider(id: string, patch: EmbeddingProvid
 export async function deleteEmbeddingProvider(id: string): Promise<void> {
   const res = await authFetch(`${API_BASE}/embedding_providers/${id}`, { method: 'DELETE' });
   if (!res.ok) {
-    let detail = 'Failed to delete embedding provider';
+    let detail = '删向量模型失败';
     try { const body = await res.json(); if (typeof body?.detail === 'string') detail = body.detail; } catch { /* keep default */ }
     throw new Error(detail);
   }
@@ -772,25 +772,25 @@ async function planError(res: Response, fallback: string): Promise<Error> {
 
 export async function approvePlan(planId: string): Promise<AgentPlan> {
   const res = await authFetch(`${API_BASE}/plans/${planId}/approve`, { method: 'POST' });
-  if (!res.ok) throw await planError(res, 'Failed to approve plan');
+  if (!res.ok) throw await planError(res, '批准计划失败');
   return res.json();
 }
 
 export async function rejectPlan(planId: string): Promise<AgentPlan> {
   const res = await authFetch(`${API_BASE}/plans/${planId}/reject`, { method: 'POST' });
-  if (!res.ok) throw await planError(res, 'Failed to reject plan');
+  if (!res.ok) throw await planError(res, '驳回计划失败');
   return res.json();
 }
 
 export async function executePlan(planId: string): Promise<AgentPlan> {
   const res = await authFetch(`${API_BASE}/plans/${planId}/execute`, { method: 'POST' });
-  if (!res.ok) throw await planError(res, 'Failed to execute plan');
+  if (!res.ok) throw await planError(res, '执行计划失败');
   return res.json();
 }
 
 export async function deletePlan(planId: string): Promise<void> {
   const res = await authFetch(`${API_BASE}/plans/${planId}`, { method: 'DELETE' });
-  if (!res.ok) throw await planError(res, 'Failed to delete plan');
+  if (!res.ok) throw await planError(res, '删除计划失败');
 }
 
 // ---- Auto Indexer ----
@@ -1432,7 +1432,7 @@ export async function uploadFiles(
         reject(new Error(`Upload failed: ${xhr.status}`));
       }
     };
-    xhr.onerror = () => reject(new Error('Upload failed'));
+    xhr.onerror = () => reject(new Error('上传失败'));
     xhr.send(formData);
   });
 }
@@ -1847,7 +1847,7 @@ export async function fetchFileContent(path: string, offset = 0, limit = 50000):
   const res = await authFetch(`${API_BASE}/fs/content?${params}`);
   if (!res.ok) {
     // Surface the server's reason (e.g. too large) instead of a generic line.
-    let detail = 'Failed to fetch file content';
+    let detail = '取文件内容失败';
     try {
       const body = await res.json();
       if (typeof body?.detail === 'string') detail = body.detail;

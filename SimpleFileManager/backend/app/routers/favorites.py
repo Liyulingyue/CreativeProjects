@@ -83,9 +83,9 @@ def add_favorite(req: FavoriteRequest) -> dict:
     try:
         target = resolve_under_root(req.path)
     except PathOutsideRoot:
-        raise HTTPException(status_code=400, detail="Path outside storage root")
+        raise HTTPException(status_code=400, detail="路径在存储根目录之外")
     if not target.exists():
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail="找不到这个文件")
 
     try:
         return state.get_favorite_store().add(
@@ -105,7 +105,7 @@ def remove_favorite(path: str = "") -> dict:
     try:
         target = resolve_under_root(path)
     except PathOutsideRoot:
-        raise HTTPException(status_code=400, detail="Path outside storage root")
+        raise HTTPException(status_code=400, detail="路径在存储根目录之外")
     relative = str(target.relative_to(get_storage_root()))
     if not state.get_favorite_store().remove(relative, user_id):
         raise HTTPException(status_code=404, detail="没有收藏这个文件")
@@ -119,6 +119,6 @@ def is_favorite(path: str = "") -> dict:
     try:
         target = resolve_under_root(path)
     except PathOutsideRoot:
-        raise HTTPException(status_code=400, detail="Path outside storage root")
+        raise HTTPException(status_code=400, detail="路径在存储根目录之外")
     relative = str(target.relative_to(get_storage_root()))
     return {"favorite": state.get_favorite_store().is_favorite(relative, user_id)}

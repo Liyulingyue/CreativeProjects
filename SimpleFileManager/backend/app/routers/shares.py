@@ -55,9 +55,9 @@ def create_share(req: CreateShareRequest) -> dict:
     try:
         target = resolve_under_root(req.path)
     except PathOutsideRoot:
-        raise HTTPException(status_code=400, detail="Path outside storage root")
+        raise HTTPException(status_code=400, detail="路径在存储根目录之外")
     if not target.exists():
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail="找不到这个文件")
 
     # A share is a window onto one thing. It never reaches above the
     # storage root, and never onto the program's own directory.

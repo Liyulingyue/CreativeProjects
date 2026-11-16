@@ -1296,7 +1296,7 @@ def _restore_session(session_id: str) -> Session:
 def _require_agent_session(session_id: str) -> None:
     """Reject arbitrary ids instead of silently creating shared contexts."""
     if session_id == "default" or not state.get_chat_history().get_session(session_id):
-        raise HTTPException(status_code=404, detail="Agent session not found")
+        raise HTTPException(status_code=404, detail="找不到这个对话")
 
 
 def _get_session(session_id: str) -> Session:

@@ -287,15 +287,15 @@ async def get_current_auth(request: Request, credentials: HTTPAuthorizationCrede
         set_current_user(None)
         return None
     if not credentials:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail="没有登录")
     token = credentials.credentials
     username = token_user(token)
     if username is None:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+        raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
 
     user = _lookup_user(username)
     if user is None:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+        raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
     if user.get("disabled"):
         raise HTTPException(status_code=401, detail="这个账号已被停用")
     set_current_user(user)
@@ -400,7 +400,7 @@ def verify(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
     if not is_auth_enabled():
         return {"valid": True, "requires_auth": False}
     if not credentials or not is_valid_token(credentials.credentials):
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail="没有登录")
     return {"valid": True, "requires_auth": True}
 
 
@@ -416,9 +416,9 @@ def change_password(req: ChangePasswordRequest, credentials: HTTPAuthorizationCr
     if not is_auth_enabled():
         # Password initialization is a deployment bootstrap operation, not a
         # first-visitor-wins public API. Set INIT_PASSWORD before startup.
-        raise HTTPException(status_code=503, detail="Authentication is not initialized; configure INIT_PASSWORD")
+        raise HTTPException(status_code=503, detail="还没有设置初始密码：请先设置 INIT_PASSWORD")
     if not credentials or not is_valid_token(credentials.credentials):
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail="没有登录")
     if not verify_password(req.old_password):
         raise HTTPException(status_code=401, detail="旧密码错误")
     set_password(req.new_password)

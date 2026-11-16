@@ -15,7 +15,7 @@ def generate_digest(date: Optional[str] = None, _admin=Depends(require_admin)) -
         try:
             datetime.strptime(date, "%Y-%m-%d")
         except ValueError:
-            raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+            raise HTTPException(status_code=400, detail="日期要写成 YYYY-MM-DD")
     return digest_service.generate(date)
 
 
@@ -34,5 +34,5 @@ def list_digests(limit: int = 30, _admin=Depends(require_admin)) -> dict:
 def get_digest(date: str, _admin=Depends(require_admin)) -> dict:
     d = digest_service.get(date)
     if not d:
-        raise HTTPException(status_code=404, detail="Digest not found")
+        raise HTTPException(status_code=404, detail="找不到这份日报")
     return d
