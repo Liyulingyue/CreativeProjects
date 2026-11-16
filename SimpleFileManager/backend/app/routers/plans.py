@@ -5,6 +5,7 @@ executed only through the /execute endpoint after explicit user approval.
 Every executed action is recorded in an execution log.
 """
 
+import logging
 import os
 import shutil
 from pathlib import Path
@@ -14,6 +15,8 @@ from fastapi import APIRouter, HTTPException
 from ..deps import (state, resolve_under_root, PathOutsideRoot, PathNotAllowed,
                     validate_plan_action, current_user, get_storage_root, session_owner)
 from ..models import AgentPlan, CreatePlanRequest
+
+log = logging.getLogger(__name__)
 
 plans = APIRouter(prefix="/api/plans", tags=["plans"])
 
@@ -27,14 +30,14 @@ def list_plans(status: str = None, limit: int = 50) -> dict:
 def get_plan(plan_id: str) -> AgentPlan:
     plan = state.get_plan_store().get_plan(plan_id)
     if not plan:
-        raise HTTPException(status_code=404, detail="Plan not found")
+        raise HTTPException(status_code=404, detail="找不到这份计划")
     return plan
 
 
 @plans.get("/{plan_id}/log")
 def get_plan_log(plan_id: str) -> dict:
     if not state.get_plan_store().get_plan(plan_id):
-        raise HTTPException(status_code=404, detail="Plan not found")
+        raise HTTPException(status_code=404, detail="找不到这份计划")
     return {"log": state.get_plan_store().get_log(plan_id)}
 
 
@@ -53,7 +56,7 @@ def _is_admin() -> bool:
 @plans.post("")
 def create_plan(req: CreatePlanRequest) -> AgentPlan:
     if not req.actions:
-        raise HTTPException(status_code=400, detail="Plan must contain at least one action")
+        raise HTTPException(status_code=400, detail="计划里至少要有一个操作")
     if any(a.action_type == "run" for a in req.actions) and not _is_admin():
         raise HTTPException(status_code=403, detail="只有管理员可以创建命令执行计划")
     for a in req.actions:
@@ -77,7 +80,7 @@ def approve_plan(plan_id: str) -> AgentPlan:
     # went stale, and the executor now resolves those. Re-running only
     # touches the actions that did not already succeed.
     if plan.status not in ("pending", "rejected", "failed", "executed_with_errors"):
-        raise HTTPException(status_code=400, detail=f"Plan is {plan.status}, cannot approve")
+        raise HTTPException(status_code=400, detail=f"计划现在是 {plan.status}，不能批准")
     updated = state.get_plan_store().update_status(plan_id, "approved", decided=True)
     assert updated is not None
     return updated
@@ -97,7 +100,7 @@ def reject_plan(plan_id: str) -> AgentPlan:
 def execute_plan(plan_id: str) -> AgentPlan:
     plan = _get_plan_or_404(plan_id)
     if plan.status != "approved":
-        raise HTTPException(status_code=400, detail=f"Plan must be approved before execution (current: {plan.status})")
+        raise HTTPException(status_code=400, detail=f"计划要先批准才能执行（现在是 {plan.status}）")
 
     if any(a.action_type == "run" for a in plan.actions) and not _is_admin():
         raise HTTPException(status_code=403, detail="只有管理员可以执行命令计划")
@@ -150,7 +153,7 @@ def delete_plan(plan_id: str) -> dict:
 def _get_plan_or_404(plan_id: str) -> AgentPlan:
     plan = state.get_plan_store().get_plan(plan_id)
     if not plan:
-        raise HTTPException(status_code=404, detail="Plan not found")
+        raise HTTPException(status_code=404, detail="找不到这份计划")
     return plan
 
 
@@ -205,11 +208,11 @@ def _execute_action(action_type: str, source: str, target: str,
         # Idempotent: a re-run of a partially-failed plan would otherwise
         # fail this action because the folder survived the first attempt.
         if dest.is_dir():
-            return f"Folder already exists: {target}"
+            return f"文件夹已经在了：{target}"
         if dest.exists():
-            raise FileExistsError(f"Already exists and is not a folder: {target}")
+            raise FileExistsError(f"那里已经有个不是文件夹的东西：{target}")
         dest.mkdir(parents=True, exist_ok=False)
-        return f"Created folder {target}"
+        return f"已建立文件夹 {target}"
 
     if action_type == "delete":
         if not source:
@@ -217,7 +220,7 @@ def _execute_action(action_type: str, source: str, target: str,
         source = _resolve_existing_source(source)
         src = _safe(source, "write")
         if not src.exists():
-            raise FileNotFoundError(f"Source not found: {source}")
+            raise FileNotFoundError(f"找不到这个文件：{source}")
         # To the bin, not to nowhere. A tidy-up plan that was approved
         # once should not be the last chance to get a file back.
         from ..trash import TrashError, TrashService
@@ -226,7 +229,7 @@ def _execute_action(action_type: str, source: str, target: str,
             TrashService(Path(get_storage_root())).trash(src)
         except TrashError as e:
             raise ValueError(str(e)) from e
-        return f"Deleted {source} (moved to the recycle bin)"
+        return f"已把 {source} 移进回收站"
 
     if action_type in ("move", "rename"):
         if not source or not target:
@@ -235,14 +238,21 @@ def _execute_action(action_type: str, source: str, target: str,
         src = _safe(source, "write")
         dest = _safe(target, "write")
         if not src.exists():
-            raise FileNotFoundError(f"Source not found: {source}")
+            raise FileNotFoundError(f"找不到这个文件：{source}")
         if dest.exists():
-            raise FileExistsError(f"Target already exists: {target}")
+            raise FileExistsError(f"那里已经有东西了：{target}")
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(src), str(dest))
-        return f"Moved {source} -> {target}"
+        # The indexes have to know the file has a new address, or a
+        # search keeps offering the path it came from.
+        try:
+            from .fs import _follow_the_move
+            _follow_the_move(src, dest)
+        except Exception:
+            log.warning("the indexes did not follow a plan's move", exc_info=True)
+        return f"已把 {source} 移到 {target}"
 
-    raise ValueError(f"Unknown action_type: {action_type}")
+    raise ValueError(f"不认识的操作类型：{action_type}")
 
 
 def _execute_run(command: str, cwd: str = "") -> str:
@@ -291,6 +301,6 @@ def _safe(path: str, mode: str = "read") -> Path:
     try:
         return resolve_under_root(path, mode)
     except PathOutsideRoot:
-        raise ValueError(f"Path outside storage root: {path}")
+        raise ValueError(f"路径在存储根目录之外：{path}")
     except PathNotAllowed as e:
         raise ValueError(str(e) or "没有访问这个位置的权限")

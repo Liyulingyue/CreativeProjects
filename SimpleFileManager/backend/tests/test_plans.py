@@ -150,3 +150,35 @@ class TestDeletePlan:
         res = client.delete(f"/api/plans/{plan_id}")
         assert res.status_code == 200
         assert client.get(f"/api/plans/{plan_id}").status_code == 404
+
+
+class TestTheIndexFollowsAPlan:
+    def test_a_file_a_plan_moved_is_found_under_its_new_name(self):
+        """A tidy-up plan moves real files.
+
+        If the indexes do not follow, a search keeps offering the path
+        the file came from -- a path that is no longer there.
+        """
+        from app.search_engine import search_engine
+
+        root = get_storage_root()
+        create_test_file("散着的.txt", "zidiaozaizheli")
+        search_engine.upsert_file(str(root / "散着的.txt"), "zidiaozaizheli")
+
+        created = client.post("/api/plans", json={
+            "title": "整理",
+            "summary": "",
+            "source": "manual",
+            "actions": [
+                {"action_type": "move", "source_path": "散着的.txt",
+                 "target_path": "收好的/散着的.txt", "reason": "整理"},
+            ],
+        })
+        assert created.status_code == 200
+        plan_id = created.json()["id"]
+        client.post(f"/api/plans/{plan_id}/approve")
+        executed = client.post(f"/api/plans/{plan_id}/execute")
+        assert executed.json()["status"] == "executed"
+
+        hits = [h["path"] for h in search_engine.bm25_search("zidiao")]
+        assert str(root / "收好的" / "散着的.txt") in hits, f"索引没跟上: {hits}"
