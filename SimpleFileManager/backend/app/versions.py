@@ -251,6 +251,33 @@ class VersionStore:
             self._collect_blobs()
         return removed
 
+    def forget(self, path: Path) -> int:
+        """Throw away the history of a file that is gone.
+
+        A file that was destroyed for good will not be restored, so its
+        old versions are dead weight: the blobs sit on the disk for
+        nothing. A directory takes everything under it with it.
+
+        Returns how many versions were removed.
+        """
+        target = str(Path(path))
+        prefix = target.rstrip("/") + "/"
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                rows = conn.execute(
+                    "SELECT id, path FROM versions WHERE path = ? OR path LIKE ?",
+                    (target, prefix + "%"),
+                ).fetchall()
+                for row in rows:
+                    conn.execute("DELETE FROM versions WHERE id = ?", (row[0],))
+                conn.commit()
+            finally:
+                conn.close()
+        if rows:
+            self._collect_blobs()
+        return len(rows)
+
     def clear(self) -> int:
         """Remove every version, and the blobs that went with them.
 

@@ -100,6 +100,74 @@ def test_two_people_see_the_same_files(people):
 # ---- the exception: a folder somebody is shut out of ----
 
 
+def test_a_person_shut_out_of_a_folder_cannot_copy_it_out(people):
+    """Copying reads the file.
+
+    A file somebody is not allowed to read must not become readable by
+    copying it to somewhere else.
+    """
+    from app.deps import state
+
+    _make("私密/日记.txt", "秘密")
+    _make("公开/放得下吗.txt", "")
+    state.get_user_store().restrict("私密", people["one"]["id"], "none")
+
+    token = _login("甲", "jia1234")
+    res = client.post("/api/fs/copy", json={
+        "src": "私密/日记.txt",
+        "dest": "公开/日记.txt",
+    }, headers={"Authorization": f"Bearer {token}"})
+
+    assert res.status_code == 403
+    from app.deps import get_storage_root
+    assert not (get_storage_root() / "公开" / "日记.txt").exists()
+
+
+def test_a_person_shut_out_of_a_folder_cannot_move_a_file_into_it(people):
+    from app.deps import state
+
+    _make("私密/日记.txt", "秘密")
+    _make("别处/随手.txt", "")
+    state.get_user_store().restrict("私密", people["one"]["id"], "none")
+
+    token = _login("甲", "jia1234")
+    res = client.post("/api/fs/move", json={
+        "src": "别处/随手.txt",
+        "dest": "私密/随手.txt",
+    }, headers={"Authorization": f"Bearer {token}"})
+
+    assert res.status_code == 403
+    from app.deps import get_storage_root
+    assert (get_storage_root() / "别处" / "随手.txt").exists()
+
+
+def test_a_person_shut_out_of_a_folder_cannot_move_a_batch_into_it(people):
+    """The batch endpoint moves a lot of files at once.
+
+    It has to ask about the destination just like the single move
+    does, or a restricted folder can be filled up from the file
+    list.
+    """
+    from app.deps import state
+
+    _make("私密/日记.txt", "秘密")
+    _make("别处/随手.txt", "")
+    # Read-only, not shut out: this person may look in there, but
+    # putting something in it is not theirs to do.
+    state.get_user_store().restrict("私密", people["one"]["id"], "read")
+
+    token = _login("甲", "jia1234")
+    res = client.post("/api/fs/batch", json={
+        "action": "move",
+        "paths": ["别处/随手.txt"],
+        "dest": "私密",
+    }, headers={"Authorization": f"Bearer {token}"})
+
+    assert res.json()["failed_count"] == 1
+    from app.deps import get_storage_root
+    assert (get_storage_root() / "别处" / "随手.txt").exists()
+
+
 def test_a_person_shut_out_of_a_folder_cannot_open_it(people):
     from app.deps import state
 

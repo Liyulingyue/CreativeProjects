@@ -59,6 +59,12 @@ class CreateFolderRequest(BaseModel):
 class MoveRequest(BaseModel):
     src: str
     dest: str
+    # What to do about a name that is already taken at the destination:
+    # "never" refuses, "replace" replaces it (the old one is kept so it
+    # can be undone), "rename" writes it under a name that is free.
+    # Copying over somebody's file without asking is how a day's work
+    # disappears.
+    overwrite: str = "never"
 
 
 class DeleteRequest(BaseModel):

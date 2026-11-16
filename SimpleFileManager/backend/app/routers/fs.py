@@ -1,3 +1,4 @@
+import logging
 import os
 import shutil
 import tempfile
@@ -28,6 +29,8 @@ from .. import uploads
 from ..storage_stats import dir_size, disk_info, invalidate as invalidate_sizes
 from ..trash import TrashError, TrashService
 from ..trash_retention import trash_retention
+
+log = logging.getLogger(__name__)
 
 fs = APIRouter()
 
@@ -230,6 +233,43 @@ def _relative_to_storage(*paths) -> str | tuple[str, ...]:
     return out[0] if len(paths) == 1 else tuple(out)
 
 
+def _describe(target: Path) -> dict:
+    """What is at this path, for the client to show the user."""
+    st = target.stat()
+    return {
+        "name": target.name,
+        "size": st.st_size,
+        "is_dir": target.is_dir(),
+        "modified": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(st.st_mtime)),
+    }
+
+
+def _follow_the_move(src: Path, dest: Path) -> None:
+    """Tell the indexes that a file has a new address.
+
+    The picture keeps its vector -- the picture did not change, only
+    where it is. The keyword index gets the new path, so a search does
+    not keep offering a path that is no longer there.
+    """
+    rel = _relative_to_storage(src, dest)
+    if not rel:
+        return
+    old_rel, new_rel = rel
+    try:
+        from ..image_indexer import _follow_the_file
+        _follow_the_file(old_rel, new_rel)
+    except Exception:  # noqa: BLE001
+        log.warning("the picture index did not follow the move", exc_info=True)
+    try:
+        # The keyword index knows files by their full path; the picture
+        # index by the path the user sees. Two different names for the
+        # same thing, so they are told apart here.
+        from ..indexer import indexer
+        indexer.rename_file(str(src), str(dest))
+    except Exception:  # noqa: BLE001
+        log.warning("the keyword index did not follow the move", exc_info=True)
+
+
 @fs.post("/move")
 def move(req: MoveRequest) -> FileOperation:
     storage_path = str(get_storage_root())
@@ -239,22 +279,28 @@ def move(req: MoveRequest) -> FileOperation:
     check_access(dest, "write")
 
     if not src.exists():
-        raise HTTPException(status_code=404, detail="Source not found")
+        raise HTTPException(status_code=404, detail="文件不存在")
+    if dest.exists():
+        # Moving over a file that is already there would take it away
+        # without a word. The client can ask the user what to do.
+        raise HTTPException(
+            status_code=409,
+            detail={"message": f"{dest.name} 已经存在", "existing": _describe(dest)},
+        )
+    if src.is_dir() and dest.is_relative_to(src):
+        # A folder cannot be moved into itself.
+        raise HTTPException(status_code=400, detail="不能把文件夹移进它自己里面")
 
     try:
         shutil.move(str(src), str(dest))
         invalidate_sizes(src)
         invalidate_sizes(dest)
-        # A picture that moved keeps its vector: the picture did not
-        # change, only where it is. Re-encoding it would cost three
-        # seconds of the big cores for nothing.
-        _rel = _relative_to_storage(src, dest)
-        if _rel:
-            from ..image_indexer import _follow_the_file
-            _follow_the_file(_rel[0], _rel[1])
-        return FileOperation(success=True, message="File moved", path=str(dest))
+        _follow_the_move(src, dest)
+        return FileOperation(success=True, message="已移动", path=str(dest))
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"移动失败：{e}")
 
 
 @fs.post("/copy")
@@ -263,9 +309,26 @@ def copy(req: MoveRequest) -> FileOperation:
     src = _safe_path(storage_path, req.src)
     dest = _safe_path(storage_path, req.dest)
     check_access(dest, "write")
+    # The source's read permission was already checked by _safe_path.
 
     if not src.exists():
-        raise HTTPException(status_code=404, detail="Source not found")
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    if dest.exists():
+        if req.overwrite == "never":
+            raise HTTPException(
+                status_code=409,
+                detail={"message": f"{dest.name} 已经存在", "existing": _describe(dest)},
+            )
+        if req.overwrite == "rename":
+            dest = uploads._free_name(dest.parent, dest.name)
+        elif req.overwrite == "replace":
+            if dest.is_dir():
+                raise HTTPException(status_code=409, detail=f"{dest.name} 是一个文件夹，不能用文件替换")
+            # What is there now is kept, so replacing it can be undone.
+            state.get_version_store().snapshot(dest, note="被复制的新文件覆盖")
+        else:
+            raise HTTPException(status_code=400, detail=f"不认识的覆盖方式：{req.overwrite}")
 
     try:
         if src.is_dir():
@@ -273,13 +336,19 @@ def copy(req: MoveRequest) -> FileOperation:
         else:
             shutil.copy2(str(src), str(dest))
         invalidate_sizes(dest)
-        return FileOperation(success=True, message="File copied", path=str(dest))
+        return FileOperation(success=True, message="已复制", path=str(dest))
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"复制失败：{e}")
 
 
 def _trash_service() -> TrashService:
     return TrashService(Path(get_storage_root()))
+
+
+class BatchError(Exception):
+    """A batch item could not be done, and the reason is in Chinese."""
 
 
 class BatchRequest(BaseModel):
@@ -335,20 +404,36 @@ def batch(req: BatchRequest) -> dict:
                 trash_svc.trash(src)
             else:
                 if not req.dest:
-                    raise ValueError("缺少目标目录")
+                    raise BatchError("没有说目标目录")
                 dest_dir = _safe_path(storage_path, req.dest)
+                # The destination has to be writable by this person, and
+                # copying reads the source -- a file somebody may not
+                # read must not become readable by copying it.
+                # The destination has to be writable by this person. The
+                # source's read permission was checked by _safe_path.
+                check_access(dest_dir, "write")
                 if not dest_dir.is_dir():
-                    raise ValueError("目标不是目录")
+                    raise BatchError("目标不是一个目录")
                 dest = dest_dir / src.name
                 if dest.exists() and req.action == "copy":
                     if req.overwrite == "never":
-                        raise ValueError("目标已存在")
+                        raise BatchError(f"{dest.name} 已经存在")
                     if req.overwrite == "rename":
                         dest = uploads._free_name(dest_dir, src.name)
+                    elif req.overwrite == "replace":
+                        if dest.is_dir():
+                            raise BatchError(f"{dest.name} 是一个文件夹，不能用文件替换")
+                        # What is there now is kept, so it can be undone.
+                        state.get_version_store().snapshot(dest, note="被复制的新文件覆盖")
+                    else:
+                        raise BatchError(f"不认识的覆盖方式：{req.overwrite}")
                 if req.action == "move":
                     if dest.exists():
-                        raise ValueError("目标已存在")
+                        raise BatchError(f"{dest.name} 已经存在")
+                    if src.is_dir() and dest.is_relative_to(src):
+                        raise BatchError("不能把文件夹移进它自己里面")
                     shutil.move(str(src), str(dest))
+                    _follow_the_move(src, dest)
                 else:
                     if src.is_dir():
                         shutil.copytree(str(src), str(dest), dirs_exist_ok=False)
@@ -356,8 +441,16 @@ def batch(req: BatchRequest) -> dict:
                         shutil.copy2(str(src), str(dest))
                 invalidate_sizes(dest)
             succeeded.append(str(src))
+        except BatchError as e:
+            failed.append({"path": raw, "error": str(e)})
+        except PathNotAllowed as e:
+            failed.append({"path": raw, "error": str(e)})
+        except HTTPException as e:
+            failed.append({"path": raw, "error": str(e.detail)})
         except Exception as e:
-            failed.append({"path": raw, "error": f"{type(e).__name__}: {str(e)[:160]}"})
+            # The message is in Chinese; the exception's own words are
+            # not, and the user is the one reading this.
+            failed.append({"path": raw, "error": f"操作失败：{e}"[:160]})
 
     return {
         "success": not failed,
@@ -381,7 +474,7 @@ def delete(req: DeleteRequest) -> FileOperation:
     check_access(target, "write")
 
     if not target.exists():
-        raise HTTPException(status_code=404, detail="Path not found")
+        raise HTTPException(status_code=404, detail="文件不存在")
 
     if getattr(req, "permanent", False):
         try:
@@ -392,9 +485,16 @@ def delete(req: DeleteRequest) -> FileOperation:
             # A picture that is gone for good does not keep its vector.
             from ..image_indexer import _forget_the_file
             _forget_the_file(_relative_to_storage(target))
+            # Nor its old versions: they cannot be restored into a
+            # file that is not there, and their blobs take up space.
+            try:
+                state.get_version_store().forget(target)
+            except Exception:
+                log.warning("could not forget the versions of %s", target,
+                            exc_info=True)
             return FileOperation(success=True, message="已永久删除", path=str(target))
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=f"删除失败：{e}")
 
     try:
         entry = _trash_service().trash(target)

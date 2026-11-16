@@ -136,7 +136,7 @@ export function FileManagerPage() {
       setCurrentPath(result.current_path);
       setFavoritePaths(new Set(result.favorite_paths ?? []));
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Unknown error');
+      setError(e instanceof Error ? e.message : '未知错误');
     } finally {
       setIsLoading(false);
     }
@@ -263,7 +263,7 @@ export function FileManagerPage() {
       loadBrowse(currentPath);
       loadTree();
     } catch (err) {
-      toast('移动失败: ' + (err instanceof Error ? err.message : 'Unknown error'), 'error');
+      toast('移动失败: ' + (err instanceof Error ? err.message : '未知错误'), 'error');
     }
   };
 
@@ -291,7 +291,7 @@ export function FileManagerPage() {
       });
       setSelectedPaths(new Set());
     } catch (err) {
-      toast('搜索失败: ' + (err instanceof Error ? err.message : 'Unknown error'), 'error');
+      toast('搜索失败: ' + (err instanceof Error ? err.message : '未知错误'), 'error');
     } finally {
       setIsLoading(false);
     }
@@ -473,7 +473,7 @@ export function FileManagerPage() {
       loadBrowse(currentPath);
       loadTree();
     } catch (err) {
-      toast('创建失败: ' + (err instanceof Error ? err.message : 'Unknown error'), 'error');
+      toast('创建失败: ' + (err instanceof Error ? err.message : '未知错误'), 'error');
     }
   };
 
@@ -488,13 +488,19 @@ export function FileManagerPage() {
         const sep = fullPath.includes('\\') ? '\\' : '/';
         const parentPath = fullPath.substring(0, fullPath.lastIndexOf(sep));
         const newPath = parentPath + sep + newName;
+        if (newName === node.name) {
+          // The same name is not a rename. Saying "already exists"
+          // would be true and unhelpful.
+          setPromptDialog(null);
+          return;
+        }
         try {
           await movePath(node.path, newPath);
           toast('已重命名', 'success');
           loadBrowse(currentPath);
           loadTree();
         } catch (err) {
-          toast('重命名失败: ' + (err instanceof Error ? err.message : 'Unknown error'), 'error');
+          toast('重命名失败: ' + (err instanceof Error ? err.message : '未知错误'), 'error');
         }
         setPromptDialog(null);
       },

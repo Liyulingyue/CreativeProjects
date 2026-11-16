@@ -304,6 +304,37 @@ class AutoIndexer:
             finally:
                 conn.close()
 
+    def rename_file(self, old: str, new: str) -> bool:
+        """Follow a file that has moved or been renamed.
+
+        The three indexes each keep the path: the manifest of what has
+        been indexed, the keyword index, and the vector store. A file
+        that moved keeps its content, so all three only need the new
+        address -- nothing is read again and nothing is embedded again.
+
+        Returns whether it worked. A failure here is not fatal: the
+        next scan notices the move by itself and fixes it.
+        """
+        ok = True
+        try:
+            self._rename_manifest(old, new)
+        except Exception:
+            log.exception("keyword indexing failed for a moved file")
+            ok = False
+        try:
+            search_engine.rename_file(old, new)
+        except Exception:
+            log.exception("renaming a file in the keyword index failed")
+            ok = False
+        try:
+            state.get_rag_service().vector_store.rename_file(old, new)
+        except Exception:
+            log.exception("renaming a file in the vector store failed")
+            ok = False
+        if ok:
+            log.info("index followed %s to %s", old, new)
+        return ok
+
     def _rename_manifest(self, old: str, new: str):
         """Rewrite path in the manifest. PK makes this atomic.
 
