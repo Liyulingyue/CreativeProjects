@@ -29,6 +29,18 @@ export default {
         const shown = await page.evaluate(() =>
           Array.from(document.querySelectorAll('[data-file-name]'))
             .map((el) => el.getAttribute('data-file-name')))
+        // Clean up: a test file should not stay in the person's storage.
+        await page.evaluate(async (n) => {
+          const token = localStorage.getItem('sfm_token')
+          await fetch('/api/fs/delete', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(token ? { Authorization: 'Bearer ' + token } : {}),
+            },
+            body: JSON.stringify({ path: n, permanent: true }),
+          })
+        }, name)
         ok(shown.includes(name), `列表里没有刚上传的文件: ${shown.join(', ')}`)
 
         // Tidy up.
@@ -88,6 +100,20 @@ export default {
         }, name)
         ok(String(content).includes('分块传上来的内容'),
           `传上去的内容不对: ${String(content).slice(0, 80)}`)
+
+        // Clean up after itself: a test file should not stay in the
+        // person's storage.
+        await page.evaluate(async (n) => {
+          const token = localStorage.getItem('sfm_token')
+          await fetch('/api/fs/delete', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(token ? { Authorization: 'Bearer ' + token } : {}),
+            },
+            body: JSON.stringify({ path: n, permanent: true }),
+          })
+        }, name)
       },
     },
 
