@@ -4,7 +4,7 @@ import type {
   EmbeddingProvider, EmbeddingProviderCreate, EmbeddingProviderUpdate,
   PlanActionType,
 } from './types';
-import { authFetch, getToken as getAuthToken } from './auth';
+import { authFetch } from './auth';
 
 const API_BASE = '/api';
 
@@ -282,12 +282,6 @@ export async function updateSettings(updates: Partial<AppSettings>): Promise<App
   return res.json();
 }
 
-export async function checkHealth(): Promise<{ status: string }> {
-  const res = await authFetch(`${API_BASE}/health`);
-  if (!res.ok) throw await apiError(res, '检查服务状态失败');
-  return res.json();
-}
-
 export interface BrowseResult {
   current_path: string;
   parent_path: string | null;
@@ -415,12 +409,6 @@ export async function createChatSession(sessionType: string = 'chat'): Promise<C
     body: JSON.stringify({ session_type: sessionType }),
   });
   if (!res.ok) throw await apiError(res, '新建对话失败');
-  return res.json();
-}
-
-export async function fetchChatSession(sessionId: string): Promise<ChatSession> {
-  const res = await authFetch(`${API_BASE}/chat_history/sessions/${sessionId}`);
-  if (!res.ok) throw await apiError(res, '读取对话失败');
   return res.json();
 }
 
@@ -720,13 +708,23 @@ export async function fetchPlan(planId: string): Promise<AgentPlan> {
   return res.json();
 }
 
-export async function fetchPlanLog(
-  planId: string
-): Promise<Array<Record<string, unknown>>> {
+/** One entry in a plan's execution log: a thing that was tried. */
+export interface PlanLogEntry {
+  id: string;
+  action_id?: string | null;
+  action_type: string;
+  source_path?: string | null;
+  target_path?: string | null;
+  success: boolean;
+  message?: string | null;
+  timestamp: number;
+}
+
+export async function fetchPlanLog(planId: string): Promise<PlanLogEntry[]> {
   const res = await authFetch(`${API_BASE}/plans/${planId}/log`);
   if (!res.ok) throw await apiError(res, '读取计划日志失败');
   const data = await res.json();
-  return data.log || [];
+  return (data.log || []) as PlanLogEntry[];
 }
 
 export interface CreatePlanInput {
@@ -1407,35 +1405,6 @@ export async function abandonUpload(uploadId: string): Promise<void> {
   await authFetch(`${API_BASE}/fs/upload?upload_id=${uploadId}`, { method: 'DELETE' }).catch(() => {});
 }
 
-export async function uploadFiles(
-  path: string,
-  files: FileList,
-  onProgress?: (loaded: number, total: number) => void,
-): Promise<{ success: boolean; uploaded: string[]; count: number }> {
-  const formData = new FormData();
-  for (const file of Array.from(files)) {
-    formData.append('files', file);
-  }
-  // XMLHttpRequest is used because fetch has no upload progress support
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${API_BASE}/fs/upload?path=${encodeURIComponent(path)}`);
-    const token = getAuthToken();
-    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable && onProgress) onProgress(e.loaded, e.total);
-    };
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try { resolve(JSON.parse(xhr.responseText)); } catch { resolve({ success: true, uploaded: [], count: 0 }); }
-      } else {
-        reject(new Error(`Upload failed: ${xhr.status}`));
-      }
-    };
-    xhr.onerror = () => reject(new Error('上传失败'));
-    xhr.send(formData);
-  });
-}
 
 export interface Share {
   id: string;

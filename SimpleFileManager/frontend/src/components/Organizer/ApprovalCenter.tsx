@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useState } from 'react';
-import { approvePlan, deletePlan, executePlan, fetchPlans, rejectPlan } from '../../api';
+import { approvePlan, deletePlan, executePlan, fetchPlanLog, fetchPlans, rejectPlan } from '../../api';
+import type { PlanLogEntry } from '../../api';
 import { useToast } from '../ui/Toast';
 import { ConfirmDialog } from '../ui/Dialog';
 import { Icon } from '../ui/Icon';
@@ -66,6 +67,45 @@ function ActionRow({ action }: { action: PlanAction }) {
   );
 }
 
+/** When each thing was actually tried, and what happened. */
+function ExecutionLog({ planId }: { planId: string }) {
+  const [entries, setEntries] = useState<PlanLogEntry[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    fetchPlanLog(planId)
+      .then((rows) => { if (alive) setEntries(rows); })
+      .catch(() => { if (alive) setEntries([]); });
+    return () => { alive = false; };
+  }, [planId]);
+
+  if (!entries) {
+    return <div className="text-xs text-slate-400 px-3 py-2">正在读执行记录…</div>;
+  }
+  if (entries.length === 0) {
+    return <div className="text-xs text-slate-400 px-3 py-2">还没有执行记录</div>;
+  }
+  return (
+    <div className="px-3 py-2 space-y-1">
+      {entries.map((e) => (
+        <div key={e.id} className="flex items-start gap-2 text-xs">
+          <span className={e.success ? 'text-green-600' : 'text-red-600'}>
+            {e.success ? '成功' : '失败'}
+          </span>
+          <span className="text-slate-400 tabular-nums flex-shrink-0">
+            {new Date(e.timestamp).toLocaleString('zh-CN', { hour12: false })}
+          </span>
+          <span className="text-slate-600 break-words">
+            {e.action_type}
+            {e.source_path ? ` · ${e.source_path}` : ''}
+            {e.target_path ? ` → ${e.target_path}` : ''}
+            {e.message ? ` · ${e.message}` : ''}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function PlanCard({ plan, onChanged }: { plan: AgentPlan; onChanged: () => void }) {
   const { toast } = useToast();
   const [expanded, setExpanded] = useState(false);
@@ -124,6 +164,16 @@ function PlanCard({ plan, onChanged }: { plan: AgentPlan; onChanged: () => void 
       {expanded && (
         <div className="px-4 pb-3 space-y-2">
           {plan.actions.map(a => <ActionRow key={a.id} action={a} />)}
+          {/* The actions above say what the plan wanted to do; the log
+              says when each of them was actually tried, and what came
+              of it. A plan that was run twice has two stories, and only
+              the log keeps both. */}
+          <details className="text-xs">
+            <summary className="cursor-pointer text-slate-400 hover:text-slate-500 select-none">
+              执行记录
+            </summary>
+            <ExecutionLog planId={plan.id} />
+          </details>
         </div>
       )}
       {/* The toggle sits below the details it controls. Above them it read
