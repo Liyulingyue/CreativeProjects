@@ -15,6 +15,11 @@ open, and copying a file out from under a running SQLite gives an
 archive that may not open at all; the backup API takes a consistent
 snapshot of a live database instead.
 
+The vector store is a directory that the indexer writes into while it
+runs, and copying it out from under a running write can catch a data
+file half way. So the indexing is asked to stop first, and only started
+again when the archive is done.
+
 Usage:
     scripts/backup.py [destination]     # default: /mnt/backup/sfm
 
@@ -22,12 +27,16 @@ Environment:
     BACKUP_DIR   where the archives go
     KEEP         how many to keep (default 7)
     SOURCE_DIR   what to back up (default: the backend's storage root)
+    SFM_API_URL  the running service (default: http://127.0.0.1:8000)
+    SFM_PASSWORD the administrator's password, so the indexing can be
+                 asked to stop while the vector store is copied
 
 To restore: untar the archive over the storage root. It is a plain
 tar.gz, so `tar xzf <archive> -C <storage root>` puts everything back
 where it was, including the hidden .simplefilemanager directory.
 """
 
+import json
 import os
 import shutil
 import sqlite3
@@ -35,6 +44,8 @@ import sys
 import tarfile
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -62,6 +73,77 @@ def snapshot_database(src: Path, dest: Path) -> bool:
     except sqlite3.Error as e:
         print(f"[backup] {src.name} 快照失败：{e}", file=sys.stderr)
         return False
+
+
+class Indexing:
+    """Ask the running service to hold its indexing still.
+
+    The vector store is written while the indexer runs. Copying it in
+    the middle of a write can catch a data file half way, and the
+    archive then holds a vector store that may not open. The service
+    knows how to stop; this asks it to, and to start again afterwards.
+    """
+
+    def __init__(self, api_url: str, password: str):
+        self.api_url = api_url.rstrip("/")
+        self.password = password
+        self.token = ""
+
+    def _call(self, path: str, method: str = "POST", body: dict | None = None):
+        data = json.dumps(body).encode() if body is not None else None
+        headers = {"Content-Type": "application/json"}
+        if self.token:
+            headers["Authorization"] = "Bearer " + self.token
+        req = urllib.request.Request(
+            self.api_url + path, data=data, headers=headers, method=method
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read()
+        return json.loads(raw) if raw else {}
+
+    def stop(self) -> bool:
+        """Stop the indexing. Returns whether it worked."""
+        try:
+            out = self._call("/api/auth/login", body={
+                "username": os.getenv("SFM_ADMIN_USER", "admin"),
+                "password": self.password,
+            })
+            self.token = out.get("access_token") or out.get("token") or ""
+        except urllib.error.HTTPError as e:
+            print(f"[backup] 登录失败：{e}（向量库可能拷得不完整）", file=sys.stderr)
+            return False
+        except Exception as e:
+            print(f"[backup] 连不上服务：{e}（向量库可能拷得不完整）", file=sys.stderr)
+            return False
+        if not self.token:
+            print("[backup] 没有拿到令牌（向量库可能拷得不完整）", file=sys.stderr)
+            return False
+        try:
+            self._call("/api/settings/auto_index/pause", body={"seconds": 0})
+            self._call("/api/images/index/pause")
+        except Exception as e:
+            print(f"[backup] 让索引停下来失败：{e}（向量库可能拷得不完整）", file=sys.stderr)
+            return False
+        return True
+
+    def start_again(self) -> None:
+        try:
+            self._call("/api/settings/auto_index/resume")
+            self._call("/api/images/index/resume")
+        except Exception as e:
+            print(f"[backup] 索引没能自动恢复，请手动恢复：{e}", file=sys.stderr)
+
+    def wait_until_idle(self, seconds: float = 30.0) -> None:
+        """Give the file that was being written a moment to finish."""
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            try:
+                status = self._call("/api/images/index/status", method="GET")
+            except Exception:
+                return
+            if not status.get("running"):
+                return
+            time.sleep(1.0)
 
 
 def build_archive(archive: Path) -> tuple[int, int]:
@@ -109,6 +191,22 @@ def main() -> int:
 
     print(f"[backup] 源目录 : {SOURCE_DIR}")
     print(f"[backup] 目标   : {archive}")
+
+    # The vector store is written while the indexer runs. Ask it to
+    # stop, so the archive holds a store that opens.
+    indexing = Indexing(
+        os.getenv("SFM_API_URL", "http://127.0.0.1:8000"),
+        os.getenv("SFM_PASSWORD", ""),
+    )
+    paused = False
+    if os.getenv("SFM_PASSWORD"):
+        paused = indexing.stop()
+        if paused:
+            indexing.wait_until_idle()
+            print("[backup] 索引   : 已暂停")
+    else:
+        print("[backup] 索引   : 没有密码，索引继续在跑（向量库可能拷得不完整）")
+
     try:
         files, size = build_archive(tmp)
         # Written to a temporary name and moved into place, so an
@@ -119,6 +217,10 @@ def main() -> int:
         tmp.unlink(missing_ok=True)
         print(f"备份失败：{e}", file=sys.stderr)
         return 1
+    finally:
+        if paused:
+            indexing.start_again()
+            print("[backup] 索引   : 已恢复")
 
     print(f"[backup] 完成   : {archive}（{files} 个文件，{size / 1024 / 1024:.1f} MB）")
 
