@@ -847,6 +847,26 @@ def _collect_entries(raw: dict[str, bytes], prefix: str) -> dict[str, bytes]:
     return entries
 
 
+def _read_at_most(zf: zipfile.ZipFile, info: zipfile.ZipInfo, limit: int) -> bytes:
+    """Read one entry, and refuse to read more than `limit` bytes.
+
+    The archive's own idea of how big the entry is cannot be trusted:
+    it is just a number in the file, and it does not have to match
+    what the entry really holds. So the bytes are counted as they come
+    out, and the reading stops at the limit.
+    """
+    try:
+        with zf.open(info) as src:
+            data = src.read(limit + 1)
+    except zipfile.BadZipFile as e:
+        # The archive says one thing and holds another. That is not a
+        # crash; it is a file that cannot be trusted.
+        raise ValueError(f"ZIP 里的文件对不上：{e}") from e
+    if len(data) > limit:
+        raise ValueError(f"技能包过大（上限 {limit // 1024 // 1024} MB）")
+    return data
+
+
 def import_zip_skill(data: bytes, skill_id: Optional[str] = None) -> dict:
     try:
         zf = zipfile.ZipFile(io.BytesIO(data))
@@ -866,8 +886,18 @@ def import_zip_skill(data: bytes, skill_id: Optional[str] = None) -> dict:
             raise ValueError("ZIP 中缺少 SKILL.md")
         prefix = str(PurePosixPath(md_name).parent)
         raw: dict[str, bytes] = {}
+        # Read the pieces one at a time, and stop as soon as the
+        # budget is used up. The sizes a ZIP file declares can be
+        # wrong -- a small archive can unpack into something enormous --
+        # so the limit is checked against what actually comes out, not
+        # against what the archive says about itself.
+        budget = MAX_SKILL_BYTES
         for info, name in zip(infos, names):
-            raw[name] = zf.read(info)
+            data = _read_at_most(zf, info, budget)
+            budget -= len(data)
+            if budget < 0:
+                raise ValueError(f"技能包过大（上限 {MAX_SKILL_BYTES // 1024 // 1024} MB）")
+            raw[name] = data
         entries = _collect_entries(raw, prefix)
         sid = _derive_skill_id(entries, prefix, skill_id)
         return _write_skill_tree(sid, entries)

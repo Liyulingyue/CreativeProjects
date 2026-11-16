@@ -635,3 +635,59 @@ def test_download_skill_file_nested_and_skill_md():
         assert client.get("/api/skills/dl_skill/download/../x").status_code in (400, 404)
     finally:
         reg.remove_custom("dl_skill")
+
+
+class TestTheZipBomb:
+    """A small archive can unpack into something enormous.
+
+    The size a ZIP file declares about itself is just a number in the
+    file. What matters is how many bytes actually come out.
+    """
+
+    def _zip_that_lies(self, real_size: int, declared_size: int) -> bytes:
+        """A ZIP whose directory claims the entry is much smaller.
+
+        The number in the central directory is patched by hand, which
+        is what an archive built to be malicious looks like.
+        """
+        import io
+        import zipfile
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("skill/SKILL.md", b"x" * real_size)
+        data = bytearray(buf.getvalue())
+        # The central directory header: the uncompressed size sits at
+        # offset 24, little-endian.
+        at = data.find(b"PK\x01\x02")
+        assert at > 0, "中央目录没找到"
+        data[at + 24:at + 28] = declared_size.to_bytes(4, "little")
+        return bytes(data)
+
+    def test_an_archive_that_lies_about_its_size_is_refused(self, monkeypatch):
+        from app import skills
+
+        # A small budget, so the test does not have to build a real
+        # bomb to prove the point.
+        monkeypatch.setattr(skills, "MAX_SKILL_BYTES", 1024)
+        archive = self._zip_that_lies(real_size=200 * 1024, declared_size=10)
+
+        with pytest.raises(ValueError) as e:
+            skills.import_zip_skill(archive)
+
+        # A refusal in Chinese, not a crash with an English name.
+        assert "过大" in str(e.value) or "对不上" in str(e.value)
+
+    def test_an_archive_that_tells_the_truth_still_works(self, monkeypatch):
+        from app import skills
+
+        monkeypatch.setattr(skills, "MAX_SKILL_BYTES", 1024 * 1024)
+        buf = __import__("io").BytesIO()
+        import zipfile
+
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("skill/SKILL.md", "---\nname: good-skill\n---\n正文")
+        archive = buf.getvalue()
+
+        result = skills.import_zip_skill(archive)
+        assert result["id"]
