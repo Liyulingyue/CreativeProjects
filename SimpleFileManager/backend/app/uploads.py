@@ -338,8 +338,11 @@ class UploadManager:
             # A folder is not a file. Replacing one with a file would
             # take the folder away, and the client did not ask for that.
             raise UploadError(f"{name} 是一个文件夹，不能用文件替换")
-        if dest.exists() and overwrite in ("replace", "rename"):
+        if dest.exists() and overwrite == "replace":
             # What is there now is kept, so replacing it can be undone.
+            # Only for a real replacement: a file written under a new
+            # name leaves the old one alone, and its history should not
+            # claim otherwise.
             from .deps import state
 
             state.get_version_store().snapshot(dest, note="被上传的新文件覆盖")

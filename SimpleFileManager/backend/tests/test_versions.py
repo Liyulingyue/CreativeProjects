@@ -103,3 +103,19 @@ def test_restoring_a_version_that_is_gone_fails(store):
 
     with pytest.raises(VersionError):
         svc.restore(9999)
+
+
+def test_clearing_removes_every_version_and_its_blob(store):
+    """The whole history can be thrown away in one go."""
+    svc, root = store
+    for name in ("a.txt", "b.txt"):
+        target = root / name
+        target.write_text("content", encoding="utf-8")
+        svc.snapshot(target)
+
+    removed = svc.clear()
+
+    assert removed == 2
+    assert svc.list(root / "a.txt") == []
+    assert svc.list(root / "b.txt") == []
+    assert list(svc.blobs.iterdir()) == []

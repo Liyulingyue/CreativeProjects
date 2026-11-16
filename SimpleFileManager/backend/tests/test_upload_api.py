@@ -150,6 +150,36 @@ class TestOverwrite:
         assert (root / "a.txt").read_text() == "old"
 
 
+class TestTheVersionHistory:
+    def test_a_replaced_file_keeps_its_old_version(self):
+        root = get_storage_root()
+        (root / "a.txt").write_text("old", encoding="utf-8")
+        info = start_upload(name="a.txt", size=3, total_chunks=1)
+        send_chunk(info["upload_id"], 0, b"new")
+        res = client.post(
+            "/api/fs/upload/complete",
+            params={"upload_id": info["upload_id"], "overwrite": "replace"},
+        )
+        assert res.status_code == 200
+        versions = client.get("/api/fs/versions", params={"path": str(root / "a.txt")})
+        assert versions.status_code == 200
+        assert versions.json()["versions"], "旧版本没有留下来"
+
+    def test_a_file_written_under_another_name_does_not_fake_a_version(self):
+        root = get_storage_root()
+        (root / "a.txt").write_text("old", encoding="utf-8")
+        info = start_upload(name="a.txt", size=3, total_chunks=1)
+        send_chunk(info["upload_id"], 0, b"new")
+        res = client.post(
+            "/api/fs/upload/complete",
+            params={"upload_id": info["upload_id"], "overwrite": "rename"},
+        )
+        assert res.status_code == 200
+        versions = client.get("/api/fs/versions", params={"path": str(root / "a.txt")})
+        assert versions.status_code == 200
+        assert not versions.json()["versions"], "原文件没被替换，却多了一条版本记录"
+
+
 class TestAFolderInTheWay:
     def test_a_folder_with_the_same_name_is_not_replaced(self):
         root = get_storage_root()

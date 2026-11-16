@@ -40,7 +40,25 @@ def reset_storage():
             shutil.rmtree(child)
         else:
             child.unlink()
+    # The version history lives in the program's own directory, which
+    # the reset above leaves alone. One test's snapshots would be
+    # sitting there for the next test to trip over.
+    _clear_versions()
     yield
+
+
+def _clear_versions():
+    """Empty the version history, blobs and all."""
+    try:
+        from app.deps import state
+
+        state.get_version_store().clear()
+    except Exception:
+        # The store may not be open yet; a leftover file is not worth
+        # failing a test over.
+        db_path = get_storage_root() / ".simplefilemanager" / "versions.db"
+        if db_path.exists():
+            db_path.unlink()
 
 
 def create_test_file(relative_path: str, content: str = "hello"):

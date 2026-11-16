@@ -730,8 +730,9 @@ async def upload_files(path: str = "", files: list[UploadFile] = File(...),
             # A folder is not a file, and replacing one with a file
             # would take the folder away.
             raise HTTPException(status_code=409, detail=f"{filename} 是一个文件夹，不能用文件替换")
-        if dest.exists() and overwrite in ("replace", "rename"):
+        if dest.exists() and overwrite == "replace":
             # What is there now is kept, so replacing it can be undone.
+            # A file written under a new name leaves the old one alone.
             state.get_version_store().snapshot(dest, note="被上传的新文件覆盖")
         if dest.exists() and overwrite == "never":
             st = dest.stat()

@@ -251,6 +251,24 @@ class VersionStore:
             self._collect_blobs()
         return removed
 
+    def clear(self) -> int:
+        """Remove every version, and the blobs that went with them.
+
+        Returns how many versions were removed. Used when the history
+        has to start over -- a test that wants a clean slate, or an
+        operator who wants the disk space back.
+        """
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                count = conn.execute("SELECT COUNT(*) FROM versions").fetchone()[0]
+                conn.execute("DELETE FROM versions")
+                conn.commit()
+            finally:
+                conn.close()
+        self._collect_blobs()
+        return count
+
     def stats(self) -> dict:
         with self._lock:
             conn = self._get_conn()
