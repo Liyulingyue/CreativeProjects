@@ -132,6 +132,8 @@ class UploadManager:
         size: int,
         total_chunks: int,
         rel_dir: str = "",
+        owner: str = "",
+        fingerprint: str = "",
     ) -> dict:
         """Start an upload and report what is already at the destination.
 
@@ -148,11 +150,23 @@ class UploadManager:
 
         target_dir = Path(target_dir)
         sub = safe_subdir(target_dir, rel_dir)
-        if rel_dir:
+        # The folder is made now, so a destination that cannot be
+        # written to is refused before anything is sent. Whether it was
+        # ours to make is remembered, so an upload that is given up
+        # does not leave an empty folder behind.
+        made_dir = False
+        if rel_dir and not sub.exists():
             try:
                 sub.mkdir(parents=True, exist_ok=True)
+                made_dir = True
             except OSError as e:
                 raise UploadError(f"无法创建目录 {rel_dir}: {e}") from e
+        try:
+            size = int(size)
+        except (TypeError, ValueError):
+            raise UploadError("文件大小不合法")
+        if size < 0:
+            raise UploadError("文件大小不合法")
         dest = sub / name
         existing = None
         if dest.exists():
@@ -164,19 +178,101 @@ class UploadManager:
                 "modified": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(st.st_mtime)),
             }
 
+        total_chunks = int(total_chunks)
+        # An upload of the same file to the same place may already be
+        # waiting there -- the last try, or one that lost its connection
+        # half way. Hand that one back instead of starting again: the
+        # pieces already sent are still good, and sending them twice is
+        # the difference between a 40MB upload surviving a bad line and
+        # not.
+        waiting = self._find_waiting(sub, name, size, total_chunks, owner, fingerprint)
+        if waiting:
+            upload_id = waiting
+            meta = self._read_meta(upload_id)
+            meta["resumed"] = True
+            return {
+                "upload_id": upload_id,
+                "existing": existing,
+                "received": self.received(upload_id),
+                **meta,
+            }
+
         upload_id = uuid.uuid4().hex
         meta = {
             "id": upload_id,
             "name": name,
             "target_dir": str(sub),
             "rel_dir": rel_dir,
-            "size": int(size),
-            "total_chunks": int(total_chunks),
+            "size": size,
+            "total_chunks": total_chunks,
+            "made_dir": made_dir,
+            "owner": owner,
+            "fingerprint": fingerprint,
             "created_at": int(time.time()),
         }
         (self._dir(upload_id)).mkdir(parents=True, exist_ok=True)
         self._write_meta(upload_id, meta)
-        return {"upload_id": upload_id, "existing": existing, **meta}
+        return {"upload_id": upload_id, "existing": existing, "received": [], **meta}
+
+    def _find_waiting(
+        self,
+        target_dir: Path,
+        name: str,
+        size: int,
+        total_chunks: int,
+        owner: str = "",
+        fingerprint: str = "",
+    ) -> Optional[str]:
+        """The upload of this file to this place that is still waiting.
+
+        Only the same person, the same file, the same size and the same
+        number of pieces counts. A different file must not inherit
+        another's pieces -- the pieces of two different files, joined
+        together, are a file nobody wanted.
+        """
+        if not fingerprint:
+            # Nothing to tell one file from another, so nothing is
+            # picked up. Resuming is a saving; mixing two files up is
+            # a loss.
+            return None
+        if not self.root.exists():
+            return None
+        best = None
+        best_mtime = 0.0
+        for entry in self.root.iterdir():
+            if not entry.is_dir():
+                continue
+            try:
+                meta = self._read_meta(entry.name)
+            except UploadError:
+                continue
+            if (
+                meta.get("name") != name
+                or meta.get("size") != size
+                or meta.get("total_chunks") != total_chunks
+                or meta.get("target_dir") != str(target_dir)
+                or meta.get("owner") != owner
+                or meta.get("fingerprint") != fingerprint
+            ):
+                continue
+            try:
+                mtime = entry.stat().st_mtime
+            except OSError:
+                continue
+            if mtime >= best_mtime:
+                best_mtime = mtime
+                best = entry.name
+        return best
+
+    def target_path(self, upload_id: str) -> Path:
+        """Where the upload will end up.
+
+        The caller checks that the person may write there. The path is
+        built from what the server recorded, never from what the client
+        says.
+        """
+        meta = self._read_meta(upload_id)
+        return Path(meta["target_dir"]) / meta["name"]
 
     def chunk_path(self, upload_id: str, index: int) -> Path:
         meta = self._read_meta(upload_id)
@@ -238,6 +334,10 @@ class UploadManager:
             raise UploadError(f"还有 {len(missing)} 个分片没有上传")
 
         dest = target_dir / name
+        if dest.exists() and dest.is_dir():
+            # A folder is not a file. Replacing one with a file would
+            # take the folder away, and the client did not ask for that.
+            raise UploadError(f"{name} 是一个文件夹，不能用文件替换")
         if dest.exists() and overwrite in ("replace", "rename"):
             # What is there now is kept, so replacing it can be undone.
             from .deps import state
@@ -257,6 +357,10 @@ class UploadManager:
                 )
             if overwrite == "rename":
                 dest = _free_name(target_dir, name)
+            elif overwrite != "replace":
+                # Anything else is a mistake, and a mistake here costs
+                # somebody a file. Refuse instead of replacing.
+                raise UploadError(f"不认识的覆盖方式：{overwrite}")
 
         # The pieces are joined in a temporary file beside the target and
         # moved into place, so the destination never holds a partial
@@ -279,6 +383,7 @@ class UploadManager:
             tmp.unlink(missing_ok=True)
             raise
 
+
         shutil.rmtree(self._dir(upload_id), ignore_errors=True)
         log.info("uploaded %s (%d bytes)", dest, total_bytes)
         return {
@@ -291,8 +396,28 @@ class UploadManager:
 
     def abandon(self, upload_id: str) -> dict:
         """Throw away an upload that will not be finished."""
+        self._forget(upload_id)
         shutil.rmtree(self._dir(upload_id), ignore_errors=True)
         return {"success": True}
+
+    def _forget(self, upload_id: str) -> None:
+        """Take away the folder this upload made, if it is still empty.
+
+        A dropped folder that never arrived should not leave an empty
+        folder in the file browser.
+        """
+        try:
+            meta = self._read_meta(upload_id)
+        except UploadError:
+            return
+        if not meta.get("made_dir"):
+            return
+        target = Path(meta["target_dir"])
+        try:
+            if target.is_dir() and not any(target.iterdir()):
+                target.rmdir()
+        except OSError:
+            pass
 
 
 def _free_name(target_dir: Path, name: str) -> Path:

@@ -173,6 +173,118 @@ def test_a_piece_out_of_range_is_refused(manager):
         svc.write_chunk(meta["upload_id"], -1, b"x")
 
 
+def test_the_same_file_going_to_the_same_place_keeps_its_pieces(tmp_path):
+    """A try that lost its connection is not thrown away.
+
+    The client comes back with the same file and the same destination,
+    and the pieces it already sent are still good -- so the upload
+    picks up where it left off instead of starting again.
+    """
+    from app.uploads import UploadManager
+
+    manager = UploadManager(str(tmp_path / "staging"))
+    target = tmp_path / "target"
+    target.mkdir()
+
+    first = manager.init(target, "a.txt", 6, 2, owner="ann", fingerprint="6:100")
+    manager.write_chunk(first["upload_id"], 0, b"abc")
+
+    second = manager.init(target, "a.txt", 6, 2, owner="ann", fingerprint="6:100")
+    assert second["upload_id"] == first["upload_id"]
+    assert second["received"] == [0]
+    assert second["resumed"] is True
+
+    # Only the missing piece has to be sent.
+    manager.write_chunk(second["upload_id"], 1, b"def")
+    out = manager.complete(second["upload_id"])
+    assert (target / "a.txt").read_bytes() == b"abcdef"
+    assert out["size"] == 6
+
+
+def test_a_different_file_does_not_inherit_the_pieces(tmp_path):
+    """The pieces belong to one file, not to one destination."""
+    from app.uploads import UploadManager
+
+    manager = UploadManager(str(tmp_path / "staging"))
+    target = tmp_path / "target"
+    target.mkdir()
+
+    first = manager.init(target, "a.txt", 6, 2, owner="ann", fingerprint="6:100")
+    manager.write_chunk(first["upload_id"], 0, b"abc")
+
+    # A different size: a different file.
+    other = manager.init(target, "a.txt", 9, 2, owner="ann", fingerprint="9:100")
+    assert other["upload_id"] != first["upload_id"]
+    assert other["received"] == []
+
+    # A different name: a different file.
+    named = manager.init(target, "b.txt", 6, 2, owner="ann", fingerprint="6:100")
+    assert named["upload_id"] != first["upload_id"]
+
+    # A different place: a different file.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    moved = manager.init(elsewhere, "a.txt", 6, 2, owner="ann", fingerprint="6:100")
+    assert moved["upload_id"] != first["upload_id"]
+
+
+def test_another_persons_pieces_are_not_picked_up(tmp_path):
+    """The staging area is shared; the pieces must not be.
+
+    One person's half-uploaded file must never be joined onto another
+    person's file, however alike the two names are.
+    """
+    from app.uploads import UploadManager
+
+    manager = UploadManager(str(tmp_path / "staging"))
+    target = tmp_path / "target"
+    target.mkdir()
+
+    mine = manager.init(target, "a.txt", 6, 2, owner="ann", fingerprint="6:100")
+    manager.write_chunk(mine["upload_id"], 0, b"abc")
+
+    theirs = manager.init(target, "a.txt", 6, 2, owner="bob", fingerprint="6:100")
+    assert theirs["upload_id"] != mine["upload_id"]
+    assert theirs["received"] == []
+
+
+def test_a_different_file_of_the_same_name_is_not_picked_up(tmp_path):
+    """Two files can share a name and a size and still differ.
+
+    The fingerprint is what tells them apart; without it, nothing is
+    picked up.
+    """
+    from app.uploads import UploadManager
+
+    manager = UploadManager(str(tmp_path / "staging"))
+    target = tmp_path / "target"
+    target.mkdir()
+
+    first = manager.init(target, "a.txt", 6, 2, owner="ann", fingerprint="6:100")
+    manager.write_chunk(first["upload_id"], 0, b"abc")
+
+    # The same file, edited since: a different fingerprint.
+    edited = manager.init(target, "a.txt", 6, 2, owner="ann", fingerprint="6:200")
+    assert edited["upload_id"] != first["upload_id"]
+    assert edited["received"] == []
+
+
+def test_without_a_fingerprint_nothing_is_picked_up(tmp_path):
+    """An old client that says nothing about the file starts fresh."""
+    from app.uploads import UploadManager
+
+    manager = UploadManager(str(tmp_path / "staging"))
+    target = tmp_path / "target"
+    target.mkdir()
+
+    first = manager.init(target, "a.txt", 6, 2)
+    manager.write_chunk(first["upload_id"], 0, b"abc")
+
+    again = manager.init(target, "a.txt", 6, 2)
+    assert again["upload_id"] != first["upload_id"]
+    assert again["received"] == []
+
+
 def test_a_dropped_folder_keeps_its_shape(tmp_path):
     """A folder dropped on the browser arrives as files below it."""
     from app.uploads import UploadManager

@@ -47,6 +47,51 @@ export default {
     },
 
     {
+      name: '用文件选择器上传，走的是分块那条路',
+      async fn(page) {
+        // The page uploads in pieces, not in one request. The earlier
+        // test posted the file itself; this one lets the page do it.
+        await page.goto(BASE, { waitUntil: 'networkidle' })
+        await page.waitForTimeout(1200)
+
+        const name = `分块上传-${Date.now()}.txt`
+        const seen = []
+        page.on('request', (r) => {
+          if (r.url().includes('/api/fs/upload/')) seen.push(r.url())
+        })
+        await page.setInputFiles('input[type="file"]:not([webkitdirectory])', {
+          name,
+          mimeType: 'text/plain',
+          buffer: Buffer.from('分块传上来的内容'),
+        })
+
+        // Wait for the file to turn up in the list.
+        let shown = []
+        for (let i = 0; i < 30; i++) {
+          await page.waitForTimeout(500)
+          shown = await page.evaluate(() =>
+            Array.from(document.querySelectorAll('[data-file-name]'))
+              .map((el) => el.getAttribute('data-file-name')))
+          if (shown.includes(name)) break
+        }
+        ok(shown.includes(name), `文件没有出现: ${shown.join(', ')}`)
+        ok(seen.some((u) => u.includes('/api/fs/upload/chunk')),
+          `没有走分块那条路: ${seen.join(' | ')}`)
+
+        // And the content is what was sent.
+        const content = await page.evaluate(async (n) => {
+          const token = localStorage.getItem('sfm_token')
+          const res = await fetch('/api/fs/content?path=' + encodeURIComponent(n),
+            { headers: token ? { Authorization: 'Bearer ' + token } : {} })
+          const body = await res.json()
+          return body?.content ?? body?.text ?? ''
+        }, name)
+        ok(String(content).includes('分块传上来的内容'),
+          `传上去的内容不对: ${String(content).slice(0, 80)}`)
+      },
+    },
+
+    {
       name: '删掉的文件进了回收站，能还原回来',
       async fn(page) {
         await page.goto(BASE, { waitUntil: 'networkidle' })

@@ -94,7 +94,7 @@ def _safe_path(base: str, target: str) -> Path:
     # other.
     target_path = (raw.resolve() if raw.is_absolute() else (base_path / raw).resolve())
     if not target_path.is_relative_to(base_path):
-        raise HTTPException(status_code=400, detail="Path outside storage root")
+        raise HTTPException(status_code=400, detail="路径在存储根目录之外")
     # The same permission check the other routes go through, so a path
     # cannot be reached by going around it.
     check_access(target_path, "read")
@@ -565,7 +565,7 @@ def download_file(path: str, request: Request = None):
     try:
         target = resolve_under_root(path)
     except PathOutsideRoot:
-        raise HTTPException(status_code=400, detail="Path outside storage root")
+        raise HTTPException(status_code=400, detail="路径在存储根目录之外")
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -657,7 +657,7 @@ def download_zip(path: str):
     try:
         target = resolve_under_root(path)
     except PathOutsideRoot:
-        raise HTTPException(status_code=400, detail="Path outside storage root")
+        raise HTTPException(status_code=400, detail="路径在存储根目录之外")
     if not target.exists():
         raise HTTPException(status_code=404, detail="Path not found")
     if not target.is_dir():
@@ -712,9 +712,9 @@ async def upload_files(path: str = "", files: list[UploadFile] = File(...),
     try:
         target_dir = resolve_under_root(path, "write")
     except PathOutsideRoot:
-        raise HTTPException(status_code=400, detail="Path outside storage root")
+        raise HTTPException(status_code=400, detail="路径在存储根目录之外")
     if not target_dir.is_dir():
-        raise HTTPException(status_code=400, detail="Destination is not a directory")
+        raise HTTPException(status_code=400, detail="目标不是一个目录")
 
     uploaded = []
     for f in files:
@@ -722,10 +722,14 @@ async def upload_files(path: str = "", files: list[UploadFile] = File(...),
         filename = Path(raw_filename.replace("\\", "/")).name
         if (not filename or filename in (".", "..")
                 or "/" in raw_filename or "\\" in raw_filename):
-            raise HTTPException(status_code=400, detail="Invalid upload filename")
+            raise HTTPException(status_code=400, detail="文件名不合法")
         dest = (target_dir / filename).resolve()
         if not dest.is_relative_to(target_dir.resolve()):
-            raise HTTPException(status_code=400, detail="Upload destination outside storage root")
+            raise HTTPException(status_code=400, detail="上传目标在存储根目录之外")
+        if dest.exists() and dest.is_dir():
+            # A folder is not a file, and replacing one with a file
+            # would take the folder away.
+            raise HTTPException(status_code=409, detail=f"{filename} 是一个文件夹，不能用文件替换")
         if dest.exists() and overwrite in ("replace", "rename"):
             # What is there now is kept, so replacing it can be undone.
             state.get_version_store().snapshot(dest, note="被上传的新文件覆盖")
@@ -744,9 +748,18 @@ async def upload_files(path: str = "", files: list[UploadFile] = File(...),
             )
         if dest.exists() and overwrite == "rename":
             dest = uploads._free_name(target_dir, filename)
-        with open(dest, "wb") as out:
-            while chunk := await f.read(1024 * 1024):
-                out.write(chunk)
+        # Into a temporary file first, then moved into place. A dropped
+        # connection used to leave half a file at the destination, under
+        # the name the user was going to open next.
+        tmp = dest.with_name(f".{dest.name}.uploading")
+        try:
+            with open(tmp, "wb") as out:
+                while chunk := await f.read(1024 * 1024):
+                    out.write(chunk)
+            tmp.replace(dest)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
         uploaded.append(dest.name)
         try:
             state.get_upload_log().record(
@@ -767,7 +780,8 @@ def _upload_manager() -> uploads.UploadManager:
 
 
 @fs.post("/upload/init")
-def upload_init(path: str = "", name: str = "", size: int = 0, total_chunks: int = 0, rel_dir: str = ""):
+def upload_init(path: str = "", name: str = "", size: int = 0, total_chunks: int = 0,
+                rel_dir: str = "", fingerprint: str = ""):
     """Begin an upload and ask what is already at the destination.
 
     `rel_dir` is where inside `path` the file goes -- the inside of a
@@ -777,14 +791,14 @@ def upload_init(path: str = "", name: str = "", size: int = 0, total_chunks: int
     try:
         target_dir = resolve_under_root(path, "write")
     except PathOutsideRoot:
-        raise HTTPException(status_code=400, detail="Path outside storage root")
+        raise HTTPException(status_code=400, detail="路径在存储根目录之外")
     if not target_dir.is_dir():
-        raise HTTPException(status_code=400, detail="Destination is not a directory")
+        raise HTTPException(status_code=400, detail="目标不是一个目录")
     filename = Path((name or "").replace("\\", "/")).name
     if not filename or filename in (".", ".."):
-        raise HTTPException(status_code=400, detail="Invalid upload filename")
+        raise HTTPException(status_code=400, detail="文件名不合法")
     if total_chunks <= 0 or total_chunks > 1_000_000:
-        raise HTTPException(status_code=400, detail="Invalid chunk count")
+        raise HTTPException(status_code=400, detail="分片数量不合法")
     try:
         sub = uploads.safe_subdir(target_dir, rel_dir)
     except uploads.UploadError as e:
@@ -792,18 +806,49 @@ def upload_init(path: str = "", name: str = "", size: int = 0, total_chunks: int
     # The file's own destination decides the permission, not the folder
     # it was dropped into -- a read-only subfolder stays read-only.
     check_access(sub / filename, "write")
+    # Who is uploading, and which file it is. Both are needed before
+    # the pieces of an earlier try can be picked up: without them, one
+    # person's upload could be joined onto another person's file.
+    user = current_user() or {}
+    owner = str(user.get("username") or user.get("id") or "")
     try:
-        return _upload_manager().init(target_dir, filename, size, total_chunks, rel_dir)
+        return _upload_manager().init(
+            target_dir, filename, size, total_chunks, rel_dir,
+            owner=owner, fingerprint=(fingerprint or "").strip()[:128],
+        )
     except uploads.UploadError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @fs.post("/upload/chunk")
 async def upload_chunk(upload_id: str, index: int = 0, request: Request = None):
-    """Receive one piece of an upload."""
-    body = await request.body()
+    """Receive one piece of an upload.
+
+    The body is read in pieces and stopped at the limit. Reading it all
+    in one go first would let one request ask for as much memory as it
+    liked, and the limit would only be checked after the memory was
+    already gone.
+    """
+    manager = _upload_manager()
+    limit = manager.MAX_CHUNK_BYTES
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > limit:
+        raise HTTPException(status_code=413, detail=f"块大小超过 {limit // 1024 // 1024} MB")
+    body = bytearray()
+    async for piece in request.stream():
+        body.extend(piece)
+        if len(body) > limit:
+            raise HTTPException(status_code=413, detail=f"块大小超过 {limit // 1024 // 1024} MB")
     try:
-        return _upload_manager().write_chunk(upload_id, index, body)
+        target = manager.target_path(upload_id)
+    except uploads.UploadError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    try:
+        check_access(target, "write")
+    except PathNotAllowed as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    try:
+        return manager.write_chunk(upload_id, index, bytes(body))
     except uploads.UploadError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -820,8 +865,15 @@ def upload_status(upload_id: str):
 @fs.post("/upload/complete")
 def upload_complete(upload_id: str, overwrite: str = "never"):
     """Put the file in place."""
+    manager = _upload_manager()
     try:
-        result = _upload_manager().complete(upload_id, overwrite)
+        check_access(manager.target_path(upload_id), "write")
+    except PathNotAllowed as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except uploads.UploadError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    try:
+        result = manager.complete(upload_id, overwrite)
         try:
             state.get_upload_log().record(
                 path=str(result.get("path", "")),
@@ -862,7 +914,7 @@ def preview_file(path: str):
     try:
         target = resolve_under_root(path)
     except PathOutsideRoot:
-        raise HTTPException(status_code=400, detail="Path outside storage root")
+        raise HTTPException(status_code=400, detail="路径在存储根目录之外")
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -954,7 +1006,7 @@ def stream_token(req: StreamTokenRequest):
     try:
         target = resolve_under_root(req.path)
     except PathOutsideRoot:
-        raise HTTPException(status_code=400, detail="Path outside storage root")
+        raise HTTPException(status_code=400, detail="路径在存储根目录之外")
     if not target.exists():
         raise HTTPException(status_code=404, detail="File not found")
     if req.archive:
@@ -991,7 +1043,7 @@ def thumbnail(path: str, size: int = 256):
     try:
         target = resolve_under_root(path)
     except PathOutsideRoot:
-        raise HTTPException(status_code=400, detail="Path outside storage root")
+        raise HTTPException(status_code=400, detail="路径在存储根目录之外")
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -1044,7 +1096,7 @@ def list_versions(path: str):
     try:
         target = resolve_under_root(path)
     except PathOutsideRoot:
-        raise HTTPException(status_code=400, detail="Path outside storage root")
+        raise HTTPException(status_code=400, detail="路径在存储根目录之外")
     store = state.get_version_store()
     return {"path": str(target), "versions": store.list(target)}
 
@@ -1057,7 +1109,7 @@ def restore_version(version_id: int, path: str = ""):
     try:
         target = resolve_under_root(path) if path else None
     except PathOutsideRoot:
-        raise HTTPException(status_code=400, detail="Path outside storage root")
+        raise HTTPException(status_code=400, detail="路径在存储根目录之外")
     try:
         result = state.get_version_store().restore(version_id, target)
     except VersionError as e:
@@ -1086,7 +1138,7 @@ def get_content(path: str, limit: int = 50000, offset: int = 0):
     try:
         target = resolve_under_root(path)
     except PathOutsideRoot:
-        raise HTTPException(status_code=400, detail="Path outside storage root")
+        raise HTTPException(status_code=400, detail="路径在存储根目录之外")
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 

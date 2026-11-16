@@ -1290,18 +1290,58 @@ export async function uploadFileChunked(
   signal?: AbortSignal,
 ): Promise<{ name: string; path: string; size: number }> {
   const total = Math.max(1, Math.ceil(file.size / UPLOAD_CHUNK_SIZE));
+  // Which file this is. The size and the time it was last changed are
+  // enough to tell one file from another: two files with the same
+  // name and the same size but different content are different files,
+  // and the server must not join one's pieces onto the other's.
+  const fingerprint = `${file.size}:${file.lastModified}`;
   const initRes = await authFetch(
     `${API_BASE}/fs/upload/init?path=${encodeURIComponent(path)}` +
     `&name=${encodeURIComponent(file.name)}&size=${file.size}&total_chunks=${total}` +
+    `&fingerprint=${encodeURIComponent(fingerprint)}` +
     (relDir ? `&rel_dir=${encodeURIComponent(relDir)}` : ''),
     { method: 'POST', signal },
   );
   if (!initRes.ok) throw new Error((await detailOf(initRes)) || '无法开始上传');
   const init = await initRes.json();
   const uploadId: string = init.upload_id;
+  try {
+    return await sendThePieces(init, uploadId, file, total, onProgress, overwrite, signal);
+  } catch (err) {
+    // The user stopped it. The pieces would sit in the staging area
+    // until the sweep comes, so they are taken away now.
+    if (signal?.aborted) await abandonUpload(uploadId);
+    throw err;
+  }
+}
+
+/** Send the pieces of one file, skipping the ones already on the server. */
+async function sendThePieces(
+  init: { received?: number[] },
+  uploadId: string,
+  file: File,
+  total: number,
+  onProgress: ((loaded: number, total: number) => void) | undefined,
+  overwrite: OverwritePolicy,
+  signal?: AbortSignal,
+): Promise<{ name: string; path: string; size: number }> {
+
+  // Pieces that are already on the server -- from a try that lost its
+  // connection -- are not sent again. The server hands back the same
+  // upload when the same file is going to the same place.
+  const have = new Set<number>(Array.isArray(init.received) ? init.received : []);
+  const sizeOf = (index: number) => {
+    const start = index * UPLOAD_CHUNK_SIZE;
+    return Math.min(start + UPLOAD_CHUNK_SIZE, file.size) - start;
+  };
 
   let sent = 0;
   for (let index = 0; index < total; index++) {
+    if (have.has(index)) {
+      sent += sizeOf(index);
+      onProgress?.(sent, file.size);
+      continue;
+    }
     const start = index * UPLOAD_CHUNK_SIZE;
     const blob = file.slice(start, Math.min(start + UPLOAD_CHUNK_SIZE, file.size));
     const res = await authFetch(
