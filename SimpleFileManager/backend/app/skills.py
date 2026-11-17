@@ -347,7 +347,13 @@ def _handle_read_file(path: str, limit: int | None = None) -> dict:
 
 def _handle_write_file(path: str, content: str) -> dict:
     target = _abs_path(path)
-    if target.exists() and not can_access(target, "write"):
+    # The permission is asked about the file itself and about the
+    # folder it goes into. A file that is not there yet cannot be
+    # checked -- there is nothing to check -- so the folder is what
+    # decides. Without that, a new file could be put into a folder
+    # that is somebody else's, while overwriting a file in it was
+    # refused.
+    if not can_access(target, "write") or not can_access(target.parent, "write"):
         return {"error": f"无权写入: {path}"}
     if target.exists():
         # Keep what is there now, so overwriting can be undone.

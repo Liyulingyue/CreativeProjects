@@ -530,3 +530,58 @@ def test_a_path_outside_the_root_is_refused(people):
                      headers={"Authorization": f"Bearer {token}"})
 
     assert res.status_code == 400
+
+
+# ---- the Agent's own hands ----
+
+
+def test_the_agent_cannot_put_a_new_file_into_a_private_folder(people):
+    """The Agent writes files as the person who asked it to.
+
+    A folder somebody is shut out of must stay shut: the check used
+    to be made about the file, and a file that is not there yet cannot
+    be checked -- so a *new* file went into somebody else's folder,
+    while overwriting a file in it was refused.
+    """
+    import app.deps as deps
+    from app.deps import get_storage_root, state
+    from app.skills import _handle_write_file
+
+    _make("私密/已存在的.txt", "原来的")
+    state.get_user_store().restrict("私密", people["one"]["id"], "none")
+
+    deps.set_current_user({
+        "id": people["one"]["id"], "username": "甲", "role": "user",
+    })
+    try:
+        # A file that is not there yet.
+        result = _handle_write_file("私密/偷放的文件.txt", "我进来了")
+        assert "error" in result, f"the agent wrote into a private folder: {result}"
+        assert not (get_storage_root() / "私密" / "偷放的文件.txt").exists()
+
+        # And one that is.
+        result = _handle_write_file("私密/已存在的.txt", "被改了")
+        assert "error" in result, f"the agent overwrote a private file: {result}"
+        assert (get_storage_root() / "私密" / "已存在的.txt").read_text() == "原来的"
+    finally:
+        deps.set_current_user(None)
+
+
+def test_the_agent_can_still_write_where_it_is_allowed(people):
+    """The fix above must not stop the Agent from working."""
+    import app.deps as deps
+    from app.deps import get_storage_root, state
+    from app.skills import _handle_write_file
+
+    _make("公开/随便.txt", "")
+    state.get_user_store().restrict("私密", people["one"]["id"], "none")
+
+    deps.set_current_user({
+        "id": people["one"]["id"], "username": "甲", "role": "user",
+    })
+    try:
+        result = _handle_write_file("公开/新文件.txt", "内容")
+        assert "error" not in result, result
+        assert (get_storage_root() / "公开" / "新文件.txt").read_text() == "内容"
+    finally:
+        deps.set_current_user(None)
