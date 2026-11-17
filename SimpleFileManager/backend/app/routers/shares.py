@@ -12,11 +12,12 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from ..deps import get_storage_root, resolve_under_root, PathOutsideRoot, state
 from ..shares import DEFAULT_EXPIRY_DAYS, MAX_EXPIRY_DAYS
+from .auth import require_admin
 
 shares = APIRouter()
 
@@ -109,8 +110,13 @@ def list_shares() -> dict:
 
 
 @shares.patch("/{share_id}")
-def update_share(share_id: str, req: UpdateShareRequest) -> dict:
-    """Change when a share stops working."""
+def update_share(share_id: str, req: UpdateShareRequest, _admin=Depends(require_admin)) -> dict:
+    """Change when a share stops working.
+
+    Making a link is the administrator's business, so changing one is
+    too -- otherwise anybody could quietly un-share a file, or make a
+    link that lasts longer than the one the administrator meant.
+    """
     if req.expiry_days is not None:
         if not _store().set_expiry(share_id, req.expiry_days):
             raise HTTPException(status_code=404, detail="分享不存在")
@@ -121,7 +127,7 @@ def update_share(share_id: str, req: UpdateShareRequest) -> dict:
 
 
 @shares.delete("/{share_id}")
-def revoke_share(share_id: str) -> dict:
+def revoke_share(share_id: str, _admin=Depends(require_admin)) -> dict:
     """Stop a share working, now."""
     if not _store().revoke(share_id):
         raise HTTPException(status_code=404, detail="分享不存在")

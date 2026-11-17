@@ -1268,13 +1268,32 @@ def list_versions(path: str):
 
 @fs.post("/versions/{version_id}/restore")
 def restore_version(version_id: int, path: str = ""):
-    """Put a version back."""
+    """Put a version back.
+
+    Restoring writes a file, so it needs the permission to write where
+    the file goes -- not merely to read it.
+    """
     from ..versions import VersionError
 
+    store = state.get_version_store()
     try:
-        target = resolve_under_root(path) if path else None
+        target = resolve_under_root(path, "write") if path else None
     except PathOutsideRoot:
         raise HTTPException(status_code=400, detail="路径在存储根目录之外")
+    except PathNotAllowed as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    if target is None:
+        # No path given: the version goes back where it came from,
+        # and that place still has to be one this person may write.
+        version = store.get(version_id)
+        if version is None:
+            raise HTTPException(status_code=404, detail="找不到这个版本")
+        try:
+            target = resolve_under_root(version["path"], "write")
+        except PathOutsideRoot:
+            raise HTTPException(status_code=400, detail="路径在存储根目录之外")
+        except PathNotAllowed as e:
+            raise HTTPException(status_code=403, detail=str(e))
     try:
         result = state.get_version_store().restore(version_id, target)
     except VersionError as e:
@@ -1296,7 +1315,19 @@ def restore_version(version_id: int, path: str = ""):
 @fs.delete("/versions/{version_id}")
 def delete_version(version_id: int):
     """Throw a version away."""
-    if not state.get_version_store().delete(version_id):
+    store = state.get_version_store()
+    version = store.get(version_id)
+    if version is None:
+        raise HTTPException(status_code=404, detail="找不到这个版本")
+    # The version belongs to a file. Only somebody who may reach that
+    # file may throw its history away.
+    try:
+        resolve_under_root(version["path"])
+    except PathOutsideRoot:
+        raise HTTPException(status_code=400, detail="路径在存储根目录之外")
+    except PathNotAllowed as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    if not store.delete(version_id):
         raise HTTPException(status_code=404, detail="找不到这个版本")
     return {"success": True}
 

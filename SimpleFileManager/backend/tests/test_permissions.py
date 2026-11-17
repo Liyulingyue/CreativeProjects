@@ -168,6 +168,58 @@ def test_a_person_shut_out_of_a_folder_cannot_move_a_batch_into_it(people):
     assert (get_storage_root() / "别处" / "随手.txt").exists()
 
 
+def test_only_the_administrator_can_change_a_share(people):
+    """Making a link is the administrator's business.
+
+    So is changing one: otherwise anybody could quietly un-share a
+    file, or make a link that outlives the one the administrator meant.
+    """
+    from app.deps import get_storage_root
+
+    root = get_storage_root()
+    (root / "要分享.txt").write_text("内容", encoding="utf-8")
+    boss = _login("boss", "boss1234")
+    created = client.post("/api/shares", json={
+        "path": str(root / "要分享.txt"), "expiry_days": 1,
+    }, headers={"Authorization": f"Bearer {boss}"})
+    assert created.status_code == 200, created.text
+    share_id = created.json()["id"]
+
+    token = _login("甲", "jia1234")
+    changed = client.patch(f"/api/shares/{share_id}", json={"expiry_days": 30},
+                           headers={"Authorization": f"Bearer {token}"})
+    assert changed.status_code == 403
+
+    revoked = client.delete(f"/api/shares/{share_id}",
+                            headers={"Authorization": f"Bearer {token}"})
+    assert revoked.status_code == 403
+    # The link still works.
+    assert client.get(f"/api/share/{share_id}").status_code == 200
+
+
+def test_restoring_a_version_needs_the_right_to_write(people):
+    """Restoring a version writes a file.
+
+    Somebody who may look at a file but not change it must not be able
+    to put an old version back into it.
+    """
+    from app.deps import get_storage_root, state
+
+    root = get_storage_root()
+    (root / "只读.txt").write_text("现在这样", encoding="utf-8")
+    state.get_version_store().snapshot(root / "只读.txt")
+    state.get_user_store().restrict("只读.txt", people["one"]["id"], "read")
+
+    token = _login("甲", "jia1234")
+    version = state.get_version_store().list(root / "只读.txt")[0]
+    res = client.post(f"/api/fs/versions/{version['id']}/restore",
+                      json={"path": str(root / "只读.txt")},
+                      headers={"Authorization": f"Bearer {token}"})
+
+    assert res.status_code == 403
+    assert (root / "只读.txt").read_text() == "现在这样"
+
+
 def test_only_the_administrator_can_empty_the_index(people):
     """The index is hours of work to rebuild.
 
