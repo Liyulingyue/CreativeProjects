@@ -84,6 +84,10 @@ class SearchResult(BaseModel):
     items: list[FileNode]
     total: int
     query: str
+    # True when the walk stopped before it had seen everything. The
+    # page says so, because a search that found nothing may simply
+    # not have looked far enough.
+    truncated: bool = False
 
 
 class AppSettings(BaseModel):

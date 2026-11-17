@@ -329,6 +329,8 @@ export interface SearchResult {
   items: FileNode[];
   total: number;
   query: string;
+  /** True when the search stopped before it had looked everywhere. */
+  truncated?: boolean;
 }
 
 export interface TreeNode {

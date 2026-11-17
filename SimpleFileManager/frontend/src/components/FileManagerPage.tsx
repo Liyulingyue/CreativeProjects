@@ -281,6 +281,11 @@ export function FileManagerPage() {
     setVisibleCount(PAGE_SIZE);
     try {
       const result = await searchFiles(searchQuery, currentPath);
+      if (result.truncated) {
+        // The search looked at a lot of files and gave up. Saying so
+        // is better than a list that looks like the whole truth.
+        toast('这次只看了前面一部分文件，可能还有没搜到的', 'info');
+      }
       setBrowseResult({
         current_path: currentPath,
         parent_path: null,

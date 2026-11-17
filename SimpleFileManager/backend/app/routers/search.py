@@ -97,6 +97,12 @@ def _path_to_filenode(path: Path) -> FileNode:
     )
 
 
+# How many entries one search may look at. A NAS can hold a hundred
+# thousand files, and a keyword that matches nothing would otherwise
+# mean walking all of them, every time, on a spinning disk.
+MAX_SEARCH_ENTRIES = 50_000
+
+
 @search.get("/query")
 def search_files(q: str, path: Optional[str] = None, limit: int = 50) -> SearchResult:
     interaction.mark_active()
@@ -110,8 +116,16 @@ def search_files(q: str, path: Optional[str] = None, limit: int = 50) -> SearchR
 
     query_lower = q.lower()
     results = []
+    examined = 0
+    truncated = False
 
     for entry in search_root.rglob("*"):
+        examined += 1
+        if examined > MAX_SEARCH_ENTRIES:
+            # The walk stops here. Saying so is better than looking like
+            # the search had found everything there is.
+            truncated = True
+            break
         try:
             if query_lower in entry.name.lower():
                 # The name of a file this person may not open is not
@@ -128,6 +142,7 @@ def search_files(q: str, path: Optional[str] = None, limit: int = 50) -> SearchR
         items=results,
         total=len(results),
         query=q,
+        truncated=truncated,
     )
 
 
@@ -141,7 +156,11 @@ def suggest(q: str, limit: int = Query(10, ge=1, le=50)) -> list[str]:
     suggestions = set()
     query_lower = q.lower()
 
+    examined = 0
     for entry in search_root.rglob("*"):
+        examined += 1
+        if examined > MAX_SEARCH_ENTRIES:
+            break
         try:
             if query_lower in entry.name.lower():
                 if not can_access(entry, "read"):
