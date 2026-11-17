@@ -93,6 +93,74 @@ def staging_root(storage_root: Path) -> Path:
     return Path(storage_root) / STAGING_DIR_NAME
 
 
+def temp_name_for(dest: Path) -> Path:
+    """The temporary file an upload is written to before it is put in place.
+
+    The name has to be unique. Two people uploading the same file name
+    at the same time used to share one temporary file: the second one
+    overwrote what the first had written, and then the first put the
+    second's half-file at the destination -- or failed with "no such
+    file" because the other had already moved it away.
+
+    The name still starts with a dot and ends with ".uploading", so the
+    file browser, the indexer and the backup all skip it, and so a
+    temporary file left behind by a dead process can still be found and
+    cleaned up.
+    """
+    return dest.with_name(f".{dest.name}.{uuid.uuid4().hex[:12]}.uploading")
+
+
+def place_the_file(tmp: Path, dest: Path, overwrite: bool) -> None:
+    """Move a finished upload to its name.
+
+    When the file must not replace anything, the move is done with a
+    hard link rather than a rename: a link fails if the name is taken,
+    while a rename silently takes the other file away. Two uploads of
+    the same name at the same time therefore end with one file and one
+    refusal, instead of one file and one person who believes their
+    upload is there.
+
+    A filesystem that does not allow hard links (some network mounts)
+    falls back to a rename, and to a check first. That fallback is not
+    atomic, so it is a last resort rather than the normal path.
+    """
+    if overwrite:
+        tmp.replace(dest)
+        return
+    try:
+        os.link(tmp, dest)
+    except FileExistsError:
+        raise UploadConflict(
+            f"{dest.name} 已经存在",
+            {
+                "name": dest.name,
+                "size": dest.stat().st_size if dest.exists() else 0,
+                "is_dir": dest.is_dir(),
+                "modified": time.strftime(
+                    "%Y-%m-%d %H:%M:%S", time.localtime(dest.stat().st_mtime)
+                ) if dest.exists() else "",
+            },
+        )
+    except OSError:
+        # No hard links here. Check, then move: not atomic, but it is
+        # better than taking somebody's file away.
+        if dest.exists():
+            raise UploadConflict(
+                f"{dest.name} 已经存在",
+                {
+                    "name": dest.name,
+                    "size": dest.stat().st_size,
+                    "is_dir": dest.is_dir(),
+                    "modified": time.strftime(
+                        "%Y-%m-%d %H:%M:%S", time.localtime(dest.stat().st_mtime)
+                    ),
+                },
+            )
+        tmp.replace(dest)
+        return
+    tmp.unlink(missing_ok=True)
+
+
 class UploadManager:
     """Prepares, receives and finishes uploads."""
 
@@ -385,8 +453,10 @@ class UploadManager:
 
         # The pieces are joined in a temporary file beside the target and
         # moved into place, so the destination never holds a partial
-        # file -- not even if the process dies mid-join.
-        tmp = target_dir / f".{name}.uploading"
+        # file -- not even if the process dies mid-join. The temporary
+        # file's name is unique, so two uploads of the same name at the
+        # same time do not write over each other.
+        tmp = temp_name_for(dest)
         total_bytes = 0
         try:
             with open(tmp, "wb") as out:
@@ -399,7 +469,7 @@ class UploadManager:
                 raise UploadError(
                     f"文件大小不符：预期 {meta['size']} 字节，实际 {total_bytes} 字节"
                 )
-            tmp.replace(dest)
+            place_the_file(tmp, dest, overwrite=(overwrite == "replace"))
         except OSError as e:
             tmp.unlink(missing_ok=True)
             if _out_of_disk(e):

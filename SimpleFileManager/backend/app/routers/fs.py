@@ -916,12 +916,31 @@ async def upload_files(path: str = "", files: list[UploadFile] = File(...),
         # Into a temporary file first, then moved into place. A dropped
         # connection used to leave half a file at the destination, under
         # the name the user was going to open next.
-        tmp = dest.with_name(f".{dest.name}.uploading")
+        #
+        # The temporary file's name is unique, and the move into place
+        # refuses to take an existing file away: two people uploading
+        # the same name at the same time used to end up with one file
+        # and one upload that failed with "no such file".
+        tmp = uploads.temp_name_for(dest)
         try:
             with open(tmp, "wb") as out:
                 while chunk := await f.read(1024 * 1024):
                     out.write(chunk)
-            tmp.replace(dest)
+            uploads.place_the_file(tmp, dest, overwrite=(overwrite == "replace"))
+        except uploads.UploadConflict as e:
+            tmp.unlink(missing_ok=True)
+            st = dest.stat() if dest.exists() else None
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": e.existing.get("message") or f"{filename} 已经存在",
+                    "name": filename,
+                    "size": st.st_size if st else 0,
+                    "modified": time.strftime(
+                        "%Y-%m-%d %H:%M:%S", time.localtime(st.st_mtime)
+                    ) if st else "",
+                },
+            )
         except OSError as e:
             tmp.unlink(missing_ok=True)
             if uploads._out_of_disk(e):
