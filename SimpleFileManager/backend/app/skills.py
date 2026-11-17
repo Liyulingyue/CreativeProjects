@@ -309,6 +309,12 @@ def _handle_list_directory(path: str) -> dict:
     target = _abs_path(path) if path.strip() else Path(state.get_settings().storage_path)
     if not target.exists():
         return {"error": f"目录不存在: {path}"}
+    # The folder itself may be out of bounds. The entries inside are
+    # filtered either way, but the folder's own name is a thing the
+    # caller may not know -- so it is refused rather than echoed back
+    # with nothing in it.
+    if not can_access(target, "read"):
+        return {"error": f"无权访问: {path}"}
     all_children = list(target.iterdir())
     allowed = visible_children(target, all_children)
     entries = []

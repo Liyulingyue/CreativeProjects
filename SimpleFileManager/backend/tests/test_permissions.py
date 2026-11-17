@@ -585,3 +585,48 @@ def test_the_agent_can_still_write_where_it_is_allowed(people):
         assert (get_storage_root() / "公开" / "新文件.txt").read_text() == "内容"
     finally:
         deps.set_current_user(None)
+
+
+def test_the_agent_cannot_list_a_private_folder(people):
+    """A folder somebody is shut out of should not even be named.
+
+    The entries inside were filtered, so the listing came back empty --
+    but it still said the folder's name, which is itself something the
+    caller was not allowed to know.
+    """
+    import app.deps as deps
+    from app.deps import state
+    from app.skills import _handle_list_directory
+
+    _make("私密/日记.txt", "秘密")
+    state.get_user_store().restrict("私密", people["one"]["id"], "none")
+
+    deps.set_current_user({
+        "id": people["one"]["id"], "username": "甲", "role": "user",
+    })
+    try:
+        result = _handle_list_directory("私密")
+        assert "error" in result, f"the agent listed a private folder: {result}"
+        assert "日记" not in str(result)
+    finally:
+        deps.set_current_user(None)
+
+
+def test_the_agent_can_still_list_an_open_folder(people):
+    import app.deps as deps
+    from app.deps import state
+    from app.skills import _handle_list_directory
+
+    _make("公开/随手.txt", "")
+    state.get_user_store().restrict("私密", people["one"]["id"], "none")
+
+    deps.set_current_user({
+        "id": people["one"]["id"], "username": "甲", "role": "user",
+    })
+    try:
+        result = _handle_list_directory("公开")
+        assert "error" not in result, result
+        names = {e["name"] for e in result["entries"]}
+        assert "随手.txt" in names
+    finally:
+        deps.set_current_user(None)
