@@ -5,7 +5,7 @@
 // and did not. The backend's own tests cannot see those, because they
 // stop at the API.
 
-import { BASE, ok, equal, contains } from './harness.mjs'
+import { BASE, ok, equal, contains, waitUntil } from './harness.mjs'
 
 const files = (page) => page.goto(`${BASE}/`, { waitUntil: 'networkidle' })
 
@@ -88,23 +88,32 @@ export default {
         const newName = `改名测试-${Date.now()}.txt`
         await input.fill(newName)
         await input.press('Enter')
-        await page.waitForTimeout(1500)
+        // Renaming a file also tells the indexes about it, so the
+        // server needs a moment. Wait for the name to show up instead
+        // of guessing how long that takes.
+        await waitUntil(
+          async () => (await names(page)).includes(newName),
+          { what: `the file to be called ${newName}` })
 
         const after = await names(page)
         ok(after.includes(newName), `改名没有生效: ${after.join(', ')}`)
 
-        // Tidy up: the file was only there for the test.
-        await page.evaluate(async (name) => {
+        // Tidy up: the file was only there for the test. Both names are
+        // removed, so a failed rename does not leave its scratch file
+        // behind for the next run to trip over.
+        await page.evaluate(async (names) => {
           const token = localStorage.getItem('sfm_token')
-          await fetch('/api/fs/delete', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...(token ? { Authorization: 'Bearer ' + token } : {}),
-            },
-            body: JSON.stringify({ path: name, permanent: true }),
-          })
-        }, newName)
+          for (const name of names) {
+            await fetch('/api/fs/delete', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                ...(token ? { Authorization: 'Bearer ' + token } : {}),
+              },
+              body: JSON.stringify({ path: name, permanent: true }),
+            })
+          }
+        }, [newName, scratch])
       },
     },
 

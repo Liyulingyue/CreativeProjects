@@ -15,6 +15,7 @@ import errors from './errors.test.mjs'
 import publicShare from './public-share.test.mjs'
 import chat from './chat.test.mjs'
 import messages from './messages.test.mjs'
+import pagesOpen from './pages-open.test.mjs'
 
-const failures = await run([pictureSearch, indexControls, pages, fileManager, uploadTrash, errors, publicShare, chat, messages])
+const failures = await run([pictureSearch, indexControls, pages, fileManager, uploadTrash, errors, publicShare, chat, messages, pagesOpen])
 process.exit(failures ? 1 : 0)

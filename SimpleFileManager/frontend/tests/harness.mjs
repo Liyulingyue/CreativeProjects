@@ -53,6 +53,28 @@ export async function tiles(page) {
       })))
 }
 
+/** Wait until a condition holds, checking every 300ms.
+ *
+ * A fixed wait is a guess. Some things here take a second or two --
+ * renaming a file also has to tell the indexes about it -- and a
+ * guess that is too short fails the test for the wrong reason.
+ */
+export async function waitUntil(fn, { timeout = 15000, interval = 300, what = 'the thing' } = {}) {
+  const started = Date.now()
+  let last
+  while (Date.now() - started < timeout) {
+    try {
+      const value = await fn()
+      if (value) return value
+      last = 'it was still not true'
+    } catch (err) {
+      last = err instanceof Error ? err.message : String(err)
+    }
+    await new Promise((r) => setTimeout(r, interval))
+  }
+  throw new Error(`waited ${Math.round((Date.now() - started) / 1000)}s for ${what}: ${last}`)
+}
+
 /** The text of the last toast, if there is one. */
 export async function lastToast(page) {
   return page.evaluate(() => {
