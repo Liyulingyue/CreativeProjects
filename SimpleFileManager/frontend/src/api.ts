@@ -809,7 +809,14 @@ export interface ServiceProbe {
   latency_ms?: number;
 }
 
-export async function fetchServiceHealth(): Promise<Record<string, { ok: boolean }>> {
+export interface ServiceHealth {
+  ok: boolean;
+  detail?: string | null;
+  total_mb?: number;
+  available_mb?: number;
+}
+
+export async function fetchServiceHealth(): Promise<Record<string, ServiceHealth>> {
   const res = await authFetch(`${API_BASE}/settings/service_health`);
   if (!res.ok) throw await apiError(res, '读取服务状态失败');
   return res.json();

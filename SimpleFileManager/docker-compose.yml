@@ -45,11 +45,17 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # The health endpoint checks the databases, the disk, the vector store
-    # and the model endpoints, so an unhealthy container is one that is
-    # actually broken rather than merely running.
+    # The liveness probe, not the full health check.
+    #
+    # The full check reports on everything this service depends on,
+    # including the model endpoints, and answers 503 when the model is
+    # down. That is the truth -- but the frontend waits for this
+    # container to be healthy before it starts, so a model that is
+    # being restarted would keep the whole application unreachable.
+    # Liveness says "the service is answering"; the full check stays
+    # available for a monitor that cares about the model.
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5).status == 200 else 1)"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health/live', timeout=5).status == 200 else 1)"]
       interval: 60s
       timeout: 10s
       retries: 3

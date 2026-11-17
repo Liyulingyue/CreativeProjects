@@ -11,13 +11,25 @@ function formatBytes(bytes: number): string {
 }
 
 export function ServiceStatus({ collapsed = false }: { collapsed?: boolean }) {
-  const [health, setHealth] = useState<{ llm: boolean; embedding: boolean } | null>(null);
+  const [health, setHealth] = useState<{
+    llm: boolean;
+    embedding: boolean;
+    memoryOk: boolean;
+    memoryAvailableMb?: number;
+    memoryDetail?: string;
+  } | null>(null);
   const [storage, setStorage] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     try {
       const h = await fetchServiceHealth();
-      setHealth({ llm: h.llm?.ok ?? false, embedding: h.embedding?.ok ?? false });
+      setHealth({
+        llm: h.llm?.ok ?? false,
+        embedding: h.embedding?.ok ?? false,
+        memoryOk: h.memory?.ok ?? true,
+        memoryAvailableMb: h.memory?.available_mb,
+        memoryDetail: h.memory?.detail ?? undefined,
+      });
     } catch {
       setHealth(null);
     }
@@ -74,6 +86,18 @@ export function ServiceStatus({ collapsed = false }: { collapsed?: boolean }) {
         <div className="flex items-center gap-1.5 text-xs text-slate-400">
           <Icon name="hardDrive" size={12} />
           程序数据 {formatBytes(storage)}
+        </div>
+      )}
+      {health && !health.memoryOk && (
+        // The machine is close to the point where the kernel starts
+        // killing processes, and it takes this service with it when it
+        // does. Say so while there is still time to free something up.
+        <div className="text-xs text-amber-600 leading-4"
+             title={health.memoryDetail}>
+          内存不多了
+          {health.memoryAvailableMb !== undefined
+            ? `（可用 ${(health.memoryAvailableMb / 1024).toFixed(1)} GB）`
+            : ''}
         </div>
       )}
     </div>

@@ -203,6 +203,20 @@ def health():
     return JSONResponse(report, status_code=status)
 
 
+@app.get("/api/health/live")
+def health_live():
+    """Is this process answering at all?
+
+    The full health check reports on everything this service depends
+    on, and a model that is down makes it report "degraded" -- which is
+    the truth, but not the same question. A container that is watched
+    with this endpoint stays alive while the model is being restarted,
+    and the thing waiting for it (the frontend) gets to come up and
+    say "the model is not there" instead of never starting at all.
+    """
+    return {"status": "alive", "app": "SimpleFileManager", "version": "0.4.0"}
+
+
 # All other routers require auth
 auth_dep = Depends(get_current_auth)
 app.include_router(fs, prefix="/api/fs", tags=["fs"], dependencies=[Depends(fs_auth)])

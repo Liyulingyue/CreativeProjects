@@ -6,6 +6,8 @@ import time
 from app.cpu_pool import get_big_pool
 import importlib
 
+from tests.conftest import client
+
 settings_mod = importlib.import_module("app.routers.settings")
 
 
@@ -59,3 +61,33 @@ def test_the_probe_asks_for_a_deadline(monkeypatch):
     ok, detail = settings_mod._probe_llm()
     assert ok is True
     assert seen.get("request_timeout") is not None
+
+
+class TestTheHealthEndpoint:
+    """What the health check says, and what it answers with."""
+
+    def test_the_liveness_probe_answers_while_the_service_is_up(self):
+        """A separate, simpler question: is this process answering?
+
+        The container that runs the frontend waits for the backend to be
+        healthy before it starts. If the full health check answered
+        that question -- and it answers 503 when the model is down --
+        then a model being restarted would keep the whole application
+        unreachable.
+        """
+        res = client.get("/api/health/live")
+        assert res.status_code == 200
+        assert res.json()["status"] == "alive"
+
+    def test_the_health_check_looks_at_the_memory(self):
+        """The models take most of this machine's memory.
+
+        When it runs out, the kernel starts killing processes, and this
+        service is one of them. Saying so while there is still time is
+        the point of a health check.
+        """
+        res = client.get("/api/health")
+        assert res.status_code in (200, 503)
+        memory = res.json()["checks"]["memory"]
+        assert "available_mb" in memory
+        assert "total_mb" in memory

@@ -116,9 +116,15 @@ def test_connection() -> dict:
 
 
 def _probe_services() -> dict:
+    from ..health import check_memory
+
     return {
         "llm": {"ok": _probe_llm()[0]},
         "embedding": {"ok": _probe_embedding()[0]},
+        # How much room the machine has left. The models take most of
+        # it, and when it runs out the kernel starts killing processes --
+        # this one included.
+        "memory": check_memory(),
     }
 
 

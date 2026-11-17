@@ -29,6 +29,13 @@ DB_PROBE_TIMEOUT_S = 2.0
 # take on new work safely.
 DISK_LOW_BYTES = int(os.getenv("HEALTH_DISK_LOW_BYTES", str(1024 * 1024 * 1024)))
 
+# Below this many *available* megabytes the machine is close to the
+# point where the kernel's OOM killer starts choosing victims -- and
+# the victim is usually this service, taking the chat history and the
+# index with it. Saying so while there is still time is the whole
+# point of a health check.
+MEMORY_LOW_MB = int(os.getenv("HEALTH_MEMORY_LOW_MB", "2048"))
+
 
 def _check_db(path: Path) -> dict:
     """Open a SQLite file read-only and read a row from it."""
@@ -62,6 +69,35 @@ def _check_disk(path: Path) -> dict:
         "free": usage.free,
         "used_pct": round(usage.used / usage.total * 100, 1) if usage.total else 0,
         "detail": None if usage.free > DISK_LOW_BYTES else "free space below threshold",
+    }
+
+
+def check_memory() -> dict:
+    """How much memory the machine has left for anybody to use.
+
+    "Available" is the number that matters: it counts what could be
+    handed out without the kernel having to swap or kill something.
+    """
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as fh:
+            info = {}
+            for line in fh:
+                key, _, value = line.partition(":")
+                info[key] = int(value.strip().split()[0]) if value.strip() else 0
+    except (OSError, ValueError, IndexError) as e:
+        return {"ok": True, "detail": f"读不到内存信息: {e}"}
+
+    total_mb = info.get("MemTotal", 0) // 1024
+    available_mb = info.get("MemAvailable", 0) // 1024
+    swap_free_mb = info.get("SwapFree", 0) // 1024
+    ok = available_mb >= MEMORY_LOW_MB
+    return {
+        "ok": ok,
+        "total_mb": total_mb,
+        "available_mb": available_mb,
+        "swap_free_mb": swap_free_mb,
+        "detail": None if ok else
+        f"可用内存只剩 {available_mb} MB（机器快满了，内核会开始杀进程）",
     }
 
 
@@ -110,6 +146,7 @@ def check_health() -> dict:
     from .deps import get_storage_root
 
     checks["disk"] = _check_disk(Path(get_storage_root()))
+    checks["memory"] = check_memory()
 
     # The vector store is the expensive one: opening it reads the
     # manifest, so it is only touched when the file is there.
@@ -143,7 +180,7 @@ def check_health() -> dict:
 
     broken = [k for k, v in checks.items() if not v.get("ok")]
     degraded = [
-        k for k in broken if k.startswith(("llm", "embedding", "vector_store"))
+        k for k in broken if k.startswith(("llm", "embedding", "vector_store", "memory"))
     ]
     hard = [k for k in broken if k not in degraded]
 
