@@ -13,3 +13,7 @@ references/
 
 # 下载的安装包（不是源码）
 *.deb
+
+# generated part previews / STL from generators/demo.py
+out/
+*.stl
