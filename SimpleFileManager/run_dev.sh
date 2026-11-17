@@ -53,6 +53,7 @@ mkdir -p "$LOG_DIR"
 
 BACKEND_PID="$LOG_DIR/backend.pid"
 FRONTEND_PID="$LOG_DIR/frontend.pid"
+WATCHDOG_PID="$LOG_DIR/watchdog.pid"
 
 c_green() { printf '\033[32m%s\033[0m\n' "$1"; }
 c_red()   { printf '\033[31m%s\033[0m\n' "$1"; }
@@ -194,9 +195,17 @@ start_backend() {
     # setsid puts the service in a session of its own, so closing the
     # terminal that started it does not take it down with it. A NAS
     # that stops when the shell that launched it goes is not a NAS.
+    # Hot reload is on. Without it, a change to the backend needs a
+    # manual restart, and the first sign that the change did not take
+    # effect is a stale answer -- which reads as "the fix did not work"
+    # rather than "the server is running the old code".
+    #
+    # The reload spawns a supervisor and a worker, so the pid file
+    # holds the supervisor. Stopping sends TERM to the whole process
+    # group, which takes both down; that is what terminate() does.
     setsid bash -c '
         cd "$1" || exit 1
-        BACKEND_RELOAD=0 LOG_FILE="$2" exec .venv/bin/python run.py
+        LOG_FILE="$2" exec .venv/bin/python run.py
     ' _ "$BACKEND_DIR" "$LOG_DIR/backend.log" > /dev/null 2> "$LOG_DIR/backend.console.log" &
     echo $! > "$BACKEND_PID"
     disown 2>/dev/null || true
@@ -240,6 +249,49 @@ start_frontend() {
 
 stop_backend()  { echo "[backend]"; terminate backend "$BACKEND_PID"; }
 stop_frontend() { echo "[frontend]"; terminate frontend "$FRONTEND_PID"; }
+stop_watchdog() { echo "[watchdog]"; terminate watchdog "$WATCHDOG_PID"; }
+
+# Something has to notice when a service dies.
+#
+# This machine has 30GB of memory and the 24B model alone takes 18GB of
+# it. When the kernel runs out, it takes something with it -- and one
+# afternoon it took the backend, the model and the picture index
+# server all at once. Nothing restarted them: the developer had to
+# notice. A watchdog that checks every half minute is cheaper than
+# that.
+start_watchdog() {
+    if pid_alive "$WATCHDOG_PID"; then
+        c_dim "  already running (PID $(cat "$WATCHDOG_PID"))"
+        return 0
+    fi
+    setsid bash -c '
+        ROOT="$1"; LOG="$2"; PORT="$3"
+        echo "[watchdog] starting" > "$LOG"
+        last_llm_retry=0
+        while true; do
+            sleep 30
+            # The backend: is it answering at all?
+            if ! curl -sf -m 5 "http://127.0.0.1:$PORT/api/health/live" >/dev/null 2>&1; then
+                echo "[watchdog] $(date +%T) the backend stopped answering; starting it again" >> "$LOG"
+                "$ROOT/run_dev.sh" --start backend >> "$LOG" 2>&1
+            fi
+            # The model: if it is gone, it is worth starting again --
+            # but not every thirty seconds, the model takes a while to
+            # come up.
+            if ! curl -sf -m 5 "http://127.0.0.1:9010/health" >/dev/null 2>&1; then
+                now=$(date +%s)
+                if [ $((now - last_llm_retry)) -gt 120 ]; then
+                    last_llm_retry=$now
+                    echo "[watchdog] $(date +%T) the model is not answering; starting it again" >> "$LOG"
+                    "$ROOT/LLMServices/serve.sh" start >> "$LOG" 2>&1
+                fi
+            fi
+        done
+    ' _ "$ROOT" "$LOG_DIR/watchdog.log" "$BACKEND_PORT" > /dev/null 2>&1 &
+    echo $! > "$WATCHDOG_PID"
+    disown 2>/dev/null || true
+    c_green "  watching over the services (PID $(cat "$WATCHDOG_PID"))"
+}
 
 status_one() {
     local name="$1" pid_file="$2" port="$3"
@@ -358,6 +410,12 @@ case "$ACTION" in
             esac
             [ "$rc" -ne 0 ] && break
         done
+        # The watchdog goes up with the backend: it is what puts the
+        # backend back if it dies.
+        if [ "$rc" -eq 0 ] && { [ "$TARGET" = "all" ] || [ "$TARGET" = "backend" ]; }; then
+            echo "[watchdog]"
+            start_watchdog
+        fi
         if [ "$rc" -eq 0 ]; then
             echo ""
             c_green "=== Ready ==="
@@ -387,6 +445,9 @@ case "$ACTION" in
             esac
         done
         if [ "$TARGET" = "all" ]; then
+            # The watchdog would otherwise put everything back up
+            # again a few seconds after it was stopped.
+            stop_watchdog
             echo ""
             c_dim "  LLM services left running. Stop them with: ./run_dev.sh --stop llm"
         fi
