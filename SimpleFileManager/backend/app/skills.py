@@ -24,6 +24,7 @@ import re
 import shutil
 import threading
 import time
+import uuid
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Optional
@@ -359,7 +360,11 @@ def _handle_write_file(path: str, content: str) -> dict:
     # Into a temporary file first, then moved into place. A write that
     # is cut short used to leave half a file under the name the user
     # was going to open next.
-    tmp = target.with_name(f".{target.name}.writing")
+    #
+    # The temporary file's name is unique: two agents writing the same
+    # file at the same time used to share one temporary file, and one of
+    # them would move it away while the other was still writing.
+    tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex[:12]}.writing")
     try:
         with open(tmp, "w", encoding="utf-8") as fh:
             fh.write(content)

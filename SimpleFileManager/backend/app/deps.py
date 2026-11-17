@@ -109,14 +109,23 @@ def _save_json(path: Path, data):
     not parse next time the service starts. Writing beside it and moving
     it into place means the old one stays readable until the new one is
     complete.
+
+    The temporary file's name is unique. Two people saving the settings
+    at the same time used to share one temporary file: the first one to
+    finish moved it into place, and the second found it gone -- so
+    changing a setting was a 500 out of six attempts.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:12]}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _update_env_value(path: Path, key: str, value: str) -> None:

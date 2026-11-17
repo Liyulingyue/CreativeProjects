@@ -26,6 +26,7 @@ import shutil
 import sqlite3
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -275,7 +276,10 @@ class VersionStore:
             self.snapshot(path, note="还原前的内容")
 
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f".{path.name}.restoring")
+        # A unique temporary name: two restores of the same file at the
+        # same time used to share one temporary file, and one of them
+        # would move it away while the other was still copying.
+        tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:12]}.restoring")
         try:
             shutil.copy2(blob, tmp)
             tmp.replace(path)

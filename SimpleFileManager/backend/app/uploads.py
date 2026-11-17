@@ -369,7 +369,10 @@ class UploadManager:
         path = self.chunk_path(upload_id, index)
         # Written to a temporary name and moved into place, so a chunk
         # that is half-written is not mistaken for one that arrived.
-        tmp = path.with_suffix(".part.tmp")
+        # The temporary name is unique: a client that retries a chunk
+        # while the first try is still being written used to have the
+        # two tries overwrite each other's temporary file.
+        tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex[:12]}.part.tmp")
         try:
             with open(tmp, "wb") as out:
                 out.write(data)

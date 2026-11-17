@@ -199,3 +199,45 @@ class TestTwoChunkedUploadsOfTheSameName:
         leftovers = [p.name for p in root.iterdir() if p.name.endswith(".uploading")]
         assert leftovers == [], f"temporary files were left behind: {leftovers}"
         target.unlink()
+
+
+class TestSeveralPeopleSavingTheSettings:
+    def test_concurrent_saves_all_succeed(self):
+        """Everyone's change is saved, and nobody gets a 500.
+
+        The settings are written to a temporary file and then moved into
+        place, so a half-written file is never left behind. If the
+        temporary file's name is the same for everybody, the first one
+        to finish moves it away and the others fail -- so saving a
+        setting was a coin toss.
+        """
+        results = []
+        barrier = threading.Barrier(6)
+
+        def save(i):
+            barrier.wait()
+            res = client.post("/api/settings", json={"auto_index_enabled": bool(i % 2)})
+            results.append((i, res.status_code, res.text[:150]))
+
+        threads = [threading.Thread(target=save, args=(i,)) for i in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+        assert not any(t.is_alive() for t in threads), "a save hung"
+
+        bad = [r for r in results if r[1] != 200]
+        assert not bad, f"some saves failed: {bad}"
+
+        # And the file on disk is still readable.
+        res = client.get("/api/settings")
+        assert res.status_code == 200
+        assert "auto_index_enabled" in res.json()
+
+    def test_no_temporary_files_are_left_behind(self):
+        """A temporary file that outlives its writer is litter."""
+        from pathlib import Path
+        from app.deps import DATA_DIR
+        leftovers = [p.name for p in Path(DATA_DIR).iterdir()
+                     if p.name.endswith(".tmp")]
+        assert leftovers == [], f"temporary files left behind: {leftovers}"
