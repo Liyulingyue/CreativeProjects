@@ -39,6 +39,16 @@ VERSIONS_DB_NAME = "versions.db"
 # file that is rewritten every day does not fill the disk.
 MAX_VERSIONS_PER_FILE = 20
 
+# One file's history: a version is a whole copy of the file, so a
+# large file's history is large. Past this, the file is not versioned
+# -- the disk matters more than being able to undo one replacement of
+# a two-gigabyte video.
+MAX_VERSION_FILE_BYTES = 512 * 1024 * 1024
+
+# All the history together. The per-file limit does not bound this:
+# a hundred files, each with twenty versions, add up.
+MAX_VERSION_TOTAL_BYTES = 1024 * 1024 * 1024
+
 CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS versions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -99,6 +109,11 @@ class VersionStore:
         if not digest:
             return None
         size = path.stat().st_size
+        if size > MAX_VERSION_FILE_BYTES:
+            # A version is a whole copy. A big file's history is big,
+            # and the disk is not endless.
+            log.info("not keeping a version of %s: it is %d bytes", path, size)
+            return None
 
         blob = self.blobs / digest
         if not blob.exists():
@@ -126,7 +141,40 @@ class VersionStore:
                 conn.close()
 
         self._trim(path)
+        self._trim_total()
         return self.get(version_id)
+
+    def _trim_total(self) -> None:
+        """Drop the oldest versions until the history fits the disk.
+
+        The per-file limit says nothing about the whole: a hundred
+        files with twenty versions each is a lot of copies, and the
+        disk is shared with the things that matter.
+        """
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                rows = conn.execute(
+                    "SELECT id, size FROM versions ORDER BY created_at ASC"
+                ).fetchall()
+                total = sum(r[1] or 0 for r in rows)
+                stale = []
+                for version_id, size in rows:
+                    if total <= MAX_VERSION_TOTAL_BYTES:
+                        break
+                    stale.append(version_id)
+                    total -= size or 0
+                if stale:
+                    conn.executemany(
+                        "DELETE FROM versions WHERE id = ?", [(i,) for i in stale]
+                    )
+                    conn.commit()
+            finally:
+                conn.close()
+        if stale:
+            log.info("dropped %d old versions to stay inside %d bytes",
+                     len(stale), MAX_VERSION_TOTAL_BYTES)
+        self._collect_blobs()
 
     def _trim(self, path: Path) -> None:
         """Drop the oldest versions of a file beyond the limit."""

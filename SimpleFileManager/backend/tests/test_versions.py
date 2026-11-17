@@ -144,3 +144,39 @@ def test_the_versions_follow_a_file_that_moves():
 
     assert svc.list(root / "动过的.txt"), "版本没有跟着文件走"
     assert not svc.list(root / "会动的.txt"), "旧地址上还留着版本记录"
+
+
+class TestTheHistoryAndTheDisk:
+    """A version is a whole copy of the file.
+
+    The per-file limit says nothing about the whole, so there is a
+    limit on the whole too.
+    """
+
+    def test_a_very_large_file_is_not_versioned(self, tmp_path, monkeypatch):
+        from app.versions import VersionStore
+
+        monkeypatch.setattr("app.versions.MAX_VERSION_FILE_BYTES", 10)
+        store = VersionStore(tmp_path / ".versions")
+        target = tmp_path / "big.bin"
+        target.write_bytes(b"x" * 100)
+
+        assert store.snapshot(target) is None
+        assert store.list(target) == []
+
+    def test_the_oldest_versions_go_when_the_history_gets_too_big(self, tmp_path, monkeypatch):
+        from app.versions import VersionStore
+
+        monkeypatch.setattr("app.versions.MAX_VERSION_TOTAL_BYTES", 100)
+        store = VersionStore(tmp_path / ".versions")
+        target = tmp_path / "a.txt"
+        for i in range(5):
+            target.write_text(f"version {i}" + "." * 40, encoding="utf-8")
+            store.snapshot(target)
+
+        versions = store.list(target)
+        assert versions, "历史被清空了"
+        total = sum(v["size"] for v in versions)
+        assert total <= 100 + 60, f"历史还是太大: {total}"
+        # The newest one is kept -- the recent past is the useful part.
+        assert versions[0]["size"] > 0
