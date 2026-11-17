@@ -630,3 +630,42 @@ def test_the_agent_can_still_list_an_open_folder(people):
         assert "随手.txt" in names
     finally:
         deps.set_current_user(None)
+
+
+def test_the_agent_cannot_semantic_search_into_a_private_folder(people, monkeypatch):
+    """Search results are filtered by what the caller may open.
+
+    The index holds every document on the machine, so a semantic search
+    that does not filter hands back the contents of a folder somebody
+    was shut out of -- the snippet, and the path.
+
+    The search itself is stubbed: what matters here is what happens to
+    the results, not how they were found.
+    """
+    import app.deps as deps
+    from app.deps import get_storage_root, state
+    from app.skills import _handle_semantic_search
+    from app.search_engine import search_engine
+
+    private = _make("私密/日记.txt", "秘密")
+    state.get_user_store().restrict("私密", people["one"]["id"], "none")
+
+    monkeypatch.setattr(search_engine, "hybrid_search", lambda *a, **k: {
+        "results": [{
+            "path": str(private),
+            "score": 1.0,
+            "preview": "秘密",
+        }],
+    })
+
+    deps.set_current_user({
+        "id": people["one"]["id"], "username": "甲", "role": "user",
+    })
+    try:
+        result = _handle_semantic_search("日记", top_k=5)
+        paths = [p["path"] for p in result.get("passages", [])]
+        assert not any("私密" in p for p in paths), \
+            f"the search handed back a private file: {result}"
+        assert "秘密" not in str(result)
+    finally:
+        deps.set_current_user(None)

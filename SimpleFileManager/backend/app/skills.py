@@ -431,6 +431,12 @@ def _handle_semantic_search(query: str, top_k: int = 5) -> dict:
     interaction.mark_active()
     payload = search_engine.hybrid_search(query, min(top_k, 20), "", "semantic")
     results = payload.get("results", [])
+    # The index holds every document on the machine. What this person
+    # may not open does not come back to them -- the same rule the
+    # search page follows.
+    from .routers.search import _readable_results
+
+    results = _readable_results(results)
     passages = []
     for r in results:
         passages.append({
