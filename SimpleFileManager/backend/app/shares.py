@@ -253,14 +253,37 @@ class ShareStore:
             finally:
                 conn.close()
 
-    def note_access(self, share_id: str) -> None:
-        """Record that a share was fetched."""
+    def note_download(self, share_id: str) -> None:
+        """Record that a file was actually downloaded through this share.
+
+        Only a download counts. Looking at a shared folder to see what
+        is in it is not a download, and counting it meant a folder share
+        with a limit of one could be browsed but never downloaded from:
+        the visitor spent their one allowed download on the file list.
+        """
         with db.write_lock(self._lock, what="共享表"):
             conn = self._get_conn()
             try:
                 conn.execute(
                     "UPDATE shares SET downloads = downloads + 1, last_access = ?"
                     " WHERE id = ?",
+                    (int(time.time()), share_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def note_visit(self, share_id: str) -> None:
+        """Record that somebody opened the share, without downloading.
+
+        The time is kept so an unused share can be cleaned up, but the
+        download count is not touched: browsing is not downloading.
+        """
+        with db.write_lock(self._lock, what="共享表"):
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE shares SET last_access = ? WHERE id = ?",
                     (int(time.time()), share_id),
                 )
                 conn.commit()

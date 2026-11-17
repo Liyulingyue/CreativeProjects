@@ -139,8 +139,8 @@ function ShareRow({ share, onCopy, onRevoke, onExtend, copied }: {
         <div className="text-[11px] text-slate-400 truncate">
           {share.is_dir ? '文件夹' : formatSize(share.size)}
           {share.has_password && ' · 有密码'}
-          {share.max_downloads > 0 && ` · 限 ${share.downloads}/${share.max_downloads} 次`}
-          {share.downloads > 0 && !share.max_downloads && ` · 已访问 ${share.downloads} 次`}
+          {share.max_downloads > 0 && ` · 已下载 ${share.downloads}/${share.max_downloads} 次`}
+          {share.downloads > 0 && !share.max_downloads && ` · 已下载 ${share.downloads} 次`}
           {' · '}{status}
         </div>
       </div>

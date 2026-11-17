@@ -219,3 +219,37 @@ def test_the_administrator_makes_a_share(client, storage, monkeypatch):
     r = client.post("/api/shares", json={"path": "公开测试/a.txt"})
     assert r.status_code == 200, r.text
     assert r.json()["id"]
+
+
+def test_looking_at_a_shared_folder_is_not_a_download(client, storage):
+    """Browsing a folder must not spend the download allowance.
+
+    A shared folder with a limit of one used to be unusable: the
+    visitor opened the link, looked at the list -- which counted as a
+    download -- and was then told the link had run out before they
+    could fetch anything.
+    """
+    share = storage["make"](name="", is_dir=True, max_downloads=1)
+    # Looking at the list is not a download.
+    r = client.get(f"/api/share/{share['id']}/list")
+    assert r.status_code == 200, r.text
+    # So the one allowed download is still there.
+    r = client.get(f"/api/share/{share['id']}/download", params={"name": "a.txt"})
+    assert r.status_code == 200, r.text
+    assert r.content == "公开内容".encode()
+
+
+def test_a_download_still_counts_against_the_limit(client, storage):
+    """The limit still works: one download, then the link is done."""
+    share = storage["make"](name="a.txt", max_downloads=1)
+    assert client.get(f"/api/share/{share['id']}/download").status_code == 200
+    r = client.get(f"/api/share/{share['id']}/download")
+    assert r.status_code == 410
+
+
+def test_the_download_count_says_what_it_counts(client, storage):
+    """The number the owner sees is the number of downloads."""
+    share = storage["make"](name="a.txt")
+    client.get(f"/api/share/{share['id']}/download")
+    fresh = storage["store"].get(share["id"])
+    assert fresh["downloads"] == 1

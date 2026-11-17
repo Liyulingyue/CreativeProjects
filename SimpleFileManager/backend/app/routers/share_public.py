@@ -253,7 +253,9 @@ def share_list(share_id: str, request: Request):
                 continue
     except OSError as e:
         raise HTTPException(status_code=500, detail=str(e))
-    _store().note_access(share_id)
+    # Looking at the list is not a download, so the download count is
+    # left alone -- only the time of the visit is kept.
+    _store().note_visit(share_id)
     return {
         "name": share["name"],
         "path": relative,
@@ -287,7 +289,7 @@ def share_download(share_id: str, request: Request):
     if target.is_dir():
         raise HTTPException(status_code=400, detail="请指定要下载的文件")
 
-    _store().note_access(share_id)
+    _store().note_download(share_id)
     size = target.stat().st_size
     headers = {"Accept-Ranges": "bytes"}
     return FileResponse(
