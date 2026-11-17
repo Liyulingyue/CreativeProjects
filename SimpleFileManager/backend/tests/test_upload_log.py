@@ -136,3 +136,52 @@ def test_a_chunked_upload_is_recorded():
         assert any(e["name"] == "chunked.txt" for e in entries)
     finally:
         log.clear()
+
+
+class TestTheLogSurvivesItsOwnHousekeeping:
+    """Housekeeping must never fail the thing it is housekeeping for."""
+
+    def test_a_failing_prune_does_not_fail_the_upload(self):
+        """When pruning goes wrong, the upload still goes through.
+
+        The prune runs inside the write that records the upload. If the
+        prune raises -- and it might, the disk could be full or the
+        database locked -- then the upload would fail too, and the
+        person uploading a file would be told their upload broke
+        because housekeeping broke.
+        """
+        log = _log()
+        log.clear()
+        original = log._get_conn
+
+        def broken_conn():
+            # The connection the prune opens raises on the DELETE.
+            raise OSError("the disk is full")
+
+        try:
+            # Only the prune's connection fails; the insert still works.
+            calls = {"n": 0}
+
+            def conn():
+                calls["n"] += 1
+                if calls["n"] > 1:
+                    raise OSError("the disk is full")
+                return original()
+
+            log._get_conn = conn
+            # The prune only runs once an hour, so make it due.
+            log._last_prune = 0.0
+            try:
+                entry = log.record(path="/storage/x.txt", size=1, name="x.txt")
+            except OSError as e:
+                # The prune's failure must not have escaped as an upload
+                # failure. If it did, this test fails with a clear message.
+                raise AssertionError(
+                    f"the upload failed because of the prune: {e}")
+            assert entry["id"], "the upload was not recorded"
+        finally:
+            log._get_conn = original
+        try:
+            assert log.count() == 1, "the upload was not recorded"
+        finally:
+            log.clear()

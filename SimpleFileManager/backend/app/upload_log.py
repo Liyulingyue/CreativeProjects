@@ -21,11 +21,14 @@ hour, so the cost is a single delete per hour rather than per upload.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
 import time
 from typing import Optional
 from . import db
+
+log = logging.getLogger(__name__)
 
 # How long an entry is kept, and how many there may be at most. A
 # household does not need years of "who uploaded this", and the
@@ -218,8 +221,13 @@ class UploadLog:
             return
         self._last_prune = now
         cutoff = now - RETENTION_DAYS * 86400
-        conn = self._get_conn()
+        # Everything from here on is housekeeping, and housekeeping
+        # must never fail the thing it is housekeeping for. So the
+        # connection is opened inside the try: opening it can fail
+        # too, and that failure must not travel out into the upload.
+        conn = None
         try:
+            conn = self._get_conn()
             conn.execute("DELETE FROM upload_log WHERE at < ?", (cutoff,))
             total = int(conn.execute("SELECT COUNT(*) FROM upload_log").fetchone()[0])
             if total > MAX_ROWS:
@@ -235,7 +243,12 @@ class UploadLog:
             # But it should not fail silently either.
             log.warning("could not prune the upload log", exc_info=True)
         finally:
-            conn.close()
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    log.warning("could not close the upload log connection",
+                                exc_info=True)
 
     @staticmethod
     def _row_to_dict(row) -> dict:

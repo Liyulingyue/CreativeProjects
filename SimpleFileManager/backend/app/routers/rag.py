@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from ..deps import state, can_access, get_storage_root
 from .auth import require_admin
+from ..cpu_pool import CpuPoolBusy
 from ..llm_client import _friendly_error
 from ..search_engine import search_engine
 
@@ -108,7 +109,6 @@ def semantic_search(req: SearchRequest) -> SearchResult:
     # The query embedding itself goes through the dedicated *search* embedder
     # (EMBEDDING_SEARCH_URL) so it has its own low-latency path even while
     # the indexer is hammering the indexer embedder.
-    from ..cpu_pool import CpuPoolBusy
     from ..interaction import interaction
     interaction.mark_active()
     try:
