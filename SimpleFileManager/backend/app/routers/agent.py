@@ -1104,8 +1104,25 @@ def estimate_messages_tokens(messages: list[dict]) -> int:
     return total
 
 
-def context_budget() -> int:
-    return max(2000, state.get_settings().max_context_tokens - CONTEXT_RESERVE_TOKENS)
+def context_budget(provider=None) -> int:
+    """How many tokens this conversation may use.
+
+    The setting says how big the conversation may get. The model may
+    be smaller than that: a person can pick the small model from the
+    chat page, and it holds a quarter of what the setting assumes.
+    So the smaller of the two wins -- otherwise the conversation grows
+    past what the model can take and the request is refused.
+    """
+    budget = state.get_settings().max_context_tokens - CONTEXT_RESERVE_TOKENS
+    if provider is not None:
+        try:
+            from ..llm_client import provider_context_size
+            size = provider_context_size(provider)
+            if size:
+                budget = min(budget, size - CONTEXT_RESERVE_TOKENS)
+        except Exception:
+            pass
+    return max(2000, budget)
 
 
 def _compress_to_memory(msgs: list[dict]) -> str:
@@ -1195,14 +1212,14 @@ class Session:
         msgs.extend(self.history[-MAX_SESSION_MESSAGES:])
         return msgs
 
-    def compact(self) -> bool:
+    def compact(self, provider=None) -> bool:
         """Compress history until it fits the context budget.
 
         Returns True if anything changed. The final trim is a safety net: a
         single oversized message (a pasted document, say) cannot be split, and
         sending an over-budget prompt would be rejected by the server.
         """
-        budget = context_budget()
+        budget = context_budget(provider)
         changed = False
         for _ in range(3):
             if estimate_messages_tokens(self.build_messages()) <= budget:
@@ -1403,7 +1420,6 @@ def agent_chat_stream(req: AgentRequest):
         interaction.mark_active()
         session = _get_session(session_id)
         session.history.append({"role": "user", "content": req.message})
-        session.compact()
 
         # Resolve which provider this turn will use. Precedence:
         #   1. `req.provider_id` — per-turn override from the chat UI's
@@ -1424,6 +1440,9 @@ def agent_chat_stream(req: AgentRequest):
             yield sse("error", {"message": message})
             _save_assistant_message(session_id, f"发生错误：{message}", interrupted=True)
             return
+        # Now that the model is known, the conversation can be cut down
+        # to what that model will actually hold.
+        session.compact(provider)
         # Defer persisting the override until the first token arrives.
         # If the stream fails immediately (provider down), the session
         # keeps its original provider instead of being stuck.

@@ -177,3 +177,114 @@ def test_a_lan_address_on_this_box_is_still_local(monkeypatch):
     assert llm_client._is_local_provider(lan) is True
     assert llm_client._is_local_provider(public) is False
     assert llm_client._is_local_provider(lookalike) is False
+
+
+class TestHowBigAModelIs:
+    """The setting says how long a conversation may get.
+
+    The model may be smaller than that: the chat page lets a person
+    pick the small model, and it holds a quarter of what the setting
+    assumes. Asking the model how big it is costs one request.
+    """
+
+    def test_the_model_is_asked_how_much_it_can_hold(self, monkeypatch):
+        import json
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        from app import llm_client
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                body = json.dumps(
+                    {"default_generation_settings": {"n_ctx": 4096}}
+                ).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_address[1]}/v1"
+            llm_client._CONTEXT_SIZES.clear()
+            size = llm_client.provider_context_size(type("P", (), {"base_url": url})())
+            assert size == 4096
+            # The answer is remembered: the model is not asked twice.
+            llm_client._CONTEXT_SIZES.clear()
+            llm_client.provider_context_size(type("P", (), {"base_url": url})())
+            assert url.split("/v1")[0] in llm_client._CONTEXT_SIZES
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_a_model_that_will_not_say_gives_no_answer(self, monkeypatch):
+        from app import llm_client
+
+        llm_client._CONTEXT_SIZES.clear()
+        size = llm_client.provider_context_size(
+            type("P", (), {"base_url": "http://127.0.0.1:1/v1"})()
+        )
+        assert size is None
+
+    def test_the_conversation_is_cut_to_what_the_model_can_hold(self, monkeypatch):
+        from app import llm_client
+        from app.routers.agent import context_budget
+
+        # The setting says 32768; this model holds 8192.
+        monkeypatch.setattr(
+            llm_client, "provider_context_size",
+            lambda provider: 8192,
+        )
+        budget = context_budget(type("P", (), {"base_url": "http://x/v1"})())
+
+        assert budget < 8192
+        assert budget >= 2000
+
+
+class TestTheModelSaysItIsTooFull:
+    """A model that cannot hold the prompt says so in English.
+
+    The user is told, in Chinese, what to do about it.
+    """
+
+    def _context_error(self):
+        import httpx2 as httpx
+        from openai import APIStatusError
+
+        request = httpx.Request("POST", "http://model/v1/chat/completions")
+        response = httpx.Response(
+            400,
+            request=request,
+            text=('{"error":{"code":400,"message":"request (20009 tokens) '
+                  'exceeds the available context size (8192 tokens)"}}'),
+        )
+        return APIStatusError("bad request", response=response, body=None)
+
+    def test_the_complaint_about_the_context_is_translated(self):
+        from app.llm_client import _friendly_error
+
+        message = _friendly_error(self._context_error())
+
+        assert "装不下" in message
+        assert "exceeds the available context" not in message
+
+    def test_other_bad_requests_still_say_what_the_server_said(self):
+        from app.llm_client import _friendly_error
+
+        import httpx2 as httpx
+        from openai import APIStatusError
+
+        request = httpx.Request("POST", "http://model/v1/chat/completions")
+        response = httpx.Response(400, request=request, text="模型名不认识")
+        error = APIStatusError("bad request", response=response, body=None)
+
+        message = _friendly_error(error)
+
+        assert "400" in message

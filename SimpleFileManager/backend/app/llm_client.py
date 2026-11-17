@@ -51,6 +51,49 @@ class _null_context:
         return False
 
 
+# How many tokens a model can hold at once, per base URL. A llama-server
+# says so on /props; a remote service usually does not, and then the
+# setting is what we go by.
+_CONTEXT_SIZES: dict[str, int] = {}
+
+
+def provider_context_size(provider) -> Optional[int]:
+    """How many tokens this model can hold at once.
+
+    The setting says 32768, which is right for the model this box
+    usually runs -- but a person can pick the small model from the
+    chat page, and that one holds 8192. Sending it a longer prompt
+    than it can take is rejected outright, so it is worth asking.
+
+    Returns None when the model will not say.
+    """
+    base_url = (getattr(provider, "base_url", "") or "").strip()
+    if not base_url:
+        return None
+    root = base_url.split("/v1")[0].rstrip("/")
+    if not root.startswith("http"):
+        return None
+    if root in _CONTEXT_SIZES:
+        return _CONTEXT_SIZES[root]
+    try:
+        import json
+        import urllib.request
+
+        with urllib.request.urlopen(f"{root}/props", timeout=3) as resp:
+            data = json.loads(resp.read())
+        n_ctx = int(
+            (data.get("default_generation_settings") or {}).get("n_ctx")
+            or (data.get("meta") or {}).get("n_ctx")
+            or 0
+        )
+    except Exception:
+        return None
+    if n_ctx <= 0:
+        return None
+    _CONTEXT_SIZES[root] = n_ctx
+    return n_ctx
+
+
 def _friendly_error(exc: Exception) -> str:
     """Turn transport/SDK errors into something worth showing in the UI."""
     if isinstance(exc, CpuPoolBusy):
@@ -68,7 +111,13 @@ def _friendly_error(exc: Exception) -> str:
         if code == 404:
             return "模型服务返回 404，请检查设置里的 Base URL 与模型名称是否匹配。"
         detail = getattr(exc, "response", None)
-        return f"模型服务返回 {code}" + (f"：{detail.text[:200]}" if detail is not None and getattr(detail, "text", "") else "")
+        text = detail.text if detail is not None and getattr(detail, "text", "") else ""
+        if "exceeds the available context" in text or "exceed_context_size" in text:
+            # The conversation outgrew the model. Saying so is more
+            # useful than showing the raw complaint.
+            return ("这一轮太长了，这个模型装不下（它的上下文比对话短）。"
+                    "换个大一点的模型，或者开一个新对话。")
+        return f"模型服务返回 {code}" + (f"：{text[:200]}" if text else "")
     if isinstance(exc, (APIConnectionError, TimeoutError)):
         return "无法连接模型服务，请确认 LLMServices/serve.sh 已启动且端口可达。"
     return str(exc)
