@@ -27,6 +27,13 @@ MAX_DOCUMENT_BYTES = 32 * 1024 * 1024
 # Cap the extracted text so a 300-page scan cannot blow up the search index.
 MAX_EXTRACTED_CHARS = 400_000
 
+# A .docx/.xlsx/.pptx is a ZIP. The file on disk is small; what comes
+# out of it is not. This is how much may come out.
+MAX_UNZIPPED_BYTES = 200 * 1024 * 1024
+
+# And how many pieces it may be made of.
+MAX_UNZIPPED_FILES = 20_000
+
 
 class ExtractionError(Exception):
     """Raised with a user-facing reason when a document cannot be parsed."""
@@ -75,6 +82,36 @@ def _extract_pdf(path: Path) -> str:
     if not text.strip():
         raise ExtractionError("PDF 中没有可提取的文字（可能是扫描件，需要 OCR）")
     return text
+
+
+def _check_unzipped_size(path: Path) -> None:
+    """Refuse a document that would blow up when it is opened.
+
+    Word, Excel and PowerPoint files are ZIP archives: a few megabytes
+    on disk can be a few hundred megabytes of XML inside. The parsers
+    read all of it into memory, so the size is checked before they
+    start.
+    """
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(path) as zf:
+            infos = zf.infolist()
+    except zipfile.BadZipFile as e:
+        raise ExtractionError("文件不是有效的 Office 文档（压缩包坏了）") from e
+    except OSError as e:
+        raise ExtractionError(f"无法读取文件：{e}") from e
+
+    total = sum(i.file_size for i in infos)
+    if total > MAX_UNZIPPED_BYTES:
+        raise ExtractionError(
+            f"文档解压后太大（{total // 1024 // 1024}MB），"
+            f"上限 {MAX_UNZIPPED_BYTES // 1024 // 1024}MB"
+        )
+    if len(infos) > MAX_UNZIPPED_FILES:
+        raise ExtractionError(
+            f"文档里的文件太多（{len(infos)} 个），上限 {MAX_UNZIPPED_FILES} 个"
+        )
 
 
 def _extract_docx(path: Path) -> str:
@@ -197,6 +234,11 @@ def extract_text(path: Path) -> Optional[str]:
         raise ExtractionError(
             f"文档过大（{size // 1024 // 1024}MB），上限 {MAX_DOCUMENT_BYTES // 1024 // 1024}MB"
         )
+
+    if suffix in (DOCX_EXTENSIONS | XLSX_EXTENSIONS | PPTX_EXTENSIONS):
+        # These are ZIP archives underneath, and what is inside them is
+        # not what the file's size says.
+        _check_unzipped_size(path)
 
     if suffix in PDF_EXTENSIONS:
         text = _extract_pdf(path)
