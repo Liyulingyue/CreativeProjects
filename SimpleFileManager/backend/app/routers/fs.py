@@ -275,6 +275,16 @@ def _follow_the_move(src: Path, dest: Path) -> None:
         state.get_favorite_store().rename(old_rel, new_rel)
     except Exception:  # noqa: BLE001
         log.warning("the stars did not follow the move", exc_info=True)
+    # The same goes for the versions and for the links people sent out:
+    # both are about a file, not about a name.
+    try:
+        state.get_version_store().rename(src, dest)
+    except Exception:  # noqa: BLE001
+        log.warning("the versions did not follow the move", exc_info=True)
+    try:
+        state.get_share_store().rename(str(src), str(dest))
+    except Exception:  # noqa: BLE001
+        log.warning("the share links did not follow the move", exc_info=True)
 
 
 @fs.post("/move")

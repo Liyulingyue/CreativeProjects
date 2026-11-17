@@ -119,3 +119,28 @@ def test_clearing_removes_every_version_and_its_blob(store):
     assert svc.list(root / "a.txt") == []
     assert svc.list(root / "b.txt") == []
     assert list(svc.blobs.iterdir()) == []
+
+
+def test_the_versions_follow_a_file_that_moves():
+    """A version belongs to a file, not to a name.
+
+    If the history stayed at the old path, restoring an old version
+    would put the file back where it used to be -- a second copy, at
+    an address nobody is looking at.
+    """
+    from app.deps import get_storage_root, state
+    from tests.conftest import client
+
+    root = get_storage_root()
+    target = root / "会动的.txt"
+    target.write_text("first", encoding="utf-8")
+    svc = state.get_version_store()
+    svc.snapshot(target)
+
+    moved = client.post("/api/fs/move", json={
+        "src": str(target), "dest": str(root / "动过的.txt"),
+    })
+    assert moved.status_code == 200
+
+    assert svc.list(root / "动过的.txt"), "版本没有跟着文件走"
+    assert not svc.list(root / "会动的.txt"), "旧地址上还留着版本记录"

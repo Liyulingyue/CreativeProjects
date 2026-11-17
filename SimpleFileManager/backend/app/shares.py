@@ -27,6 +27,7 @@ import secrets
 import sqlite3
 import threading
 import time
+from pathlib import Path
 from typing import Optional
 from . import db
 
@@ -132,6 +133,55 @@ class ShareStore:
                 conn.close()
         log.info("share created: %s -> %s (expires %s)", share_id, path, expires_at or "never")
         return self.get(share_id)
+
+    def rename(self, old_path: str, new_path: str) -> int:
+        """Follow a file that has moved or been renamed.
+
+        A share opens one path. When that file moves, the link should
+        still open it -- the person who was sent the link does not
+        know anything about a move, and a link that suddenly says "the
+        file was deleted" is a lie.
+
+        Returns how many links were moved.
+        """
+        old_path = (old_path or "").strip()
+        new_path = (new_path or "").strip()
+        if not old_path or not new_path or old_path == new_path:
+            return 0
+        with db.write_lock(self._lock, what="共享表"):
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "UPDATE shares SET path = ? || SUBSTR(path, ?)"
+                    " WHERE path = ? OR path LIKE ?",
+                    (new_path, len(old_path) + 1, old_path, old_path + "/%"),
+                )
+                # The name and the size on the link were a snapshot of
+                # the file at that name. They belong to the file, not
+                # to the name, so they are brought along too.
+                moved_rows = conn.execute(
+                    "SELECT id, path FROM shares WHERE path = ? OR path LIKE ?",
+                    (new_path, new_path + "/%"),
+                ).fetchall()
+                for share_id, share_path in moved_rows:
+                    target = Path(share_path)
+                    try:
+                        stat = target.stat()
+                        name = target.name
+                        size = stat.st_size if target.is_file() else 0
+                    except OSError:
+                        continue
+                    conn.execute(
+                        "UPDATE shares SET name = ?, size = ? WHERE id = ?",
+                        (name, size, share_id),
+                    )
+                conn.commit()
+                moved = cur.rowcount or 0
+            finally:
+                conn.close()
+        if moved:
+            log.info("shares followed %s to %s (%d)", old_path, new_path, moved)
+        return moved
 
     def get(self, share_id: str) -> Optional[dict]:
         conn = self._get_conn()

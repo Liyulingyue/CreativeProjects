@@ -251,6 +251,34 @@ class VersionStore:
             self._collect_blobs()
         return removed
 
+    def rename(self, old_path: Path, new_path: Path) -> int:
+        """Follow a file that has moved or been renamed.
+
+        A version belongs to a file. When the file moves, the versions
+        move with it -- otherwise the history of a file becomes
+        unreachable the moment it is moved, and restoring an old
+        version would put the file back where it used to be.
+
+        Returns how many versions were moved.
+        """
+        old = str(old_path)
+        new = str(new_path)
+        if not old or not new or old == new:
+            return 0
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "UPDATE versions SET path = ? || SUBSTR(path, ?)"
+                    " WHERE path = ? OR path LIKE ?",
+                    (new, len(old) + 1, old, old + "/%"),
+                )
+                conn.commit()
+                moved = cur.rowcount or 0
+            finally:
+                conn.close()
+        return moved
+
     def forget(self, path: Path) -> int:
         """Throw away the history of a file that is gone.
 

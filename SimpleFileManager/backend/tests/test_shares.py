@@ -135,3 +135,30 @@ def test_a_stopped_link_stops_working(share):
 
 def test_a_link_that_was_never_made_is_not_found():
     assert client.get("/api/share/nosuchlink").status_code == 404
+
+
+class TestALinkFollowsItsFile:
+    """A share opens one path. The file behind it can move."""
+
+    def test_a_link_still_opens_the_file_after_it_moves(self):
+        from app.deps import get_storage_root
+
+        root = get_storage_root()
+        (root / "分享的文件.txt").write_text("内容", encoding="utf-8")
+
+        created = client.post("/api/shares", json={
+            "path": str(root / "分享的文件.txt"),
+            "password": "abcd",
+            "expiry_days": 7,
+        })
+        assert created.status_code == 200, created.text
+        share_id = created.json()["id"]
+
+        moved = client.post("/api/fs/move", json={
+            "src": str(root / "分享的文件.txt"), "dest": str(root / "搬走的文件.txt"),
+        })
+        assert moved.status_code == 200
+
+        public = client.get(f"/api/share/{share_id}")
+        assert public.status_code == 200, public.text
+        assert public.json()["name"] == "搬走的文件.txt"
