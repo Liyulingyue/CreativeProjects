@@ -949,7 +949,7 @@ def tool_semantic_search(query: str, path: str = "", top_k: int = 5) -> dict:
             more = search_engine.hybrid_search(query, top_k=top_k * 3, path_filter=needle)
             reachable = [r for r in more.get("results", []) if _result_is_readable(r)]
         except Exception:
-            pass
+            log.warning("could not widen the search for %s", query, exc_info=True)
     items = reachable[:top_k]
 
     if not items:
@@ -1304,7 +1304,12 @@ def _restore_session(session_id: str) -> Session:
             # sees the right default.
             session.provider_id = chat_session.provider_id
     except Exception:
-        pass
+        # The conversation is still there in the database; what is lost
+        # is the model's memory of it. Quietly continuing would leave
+        # the model answering as if this were the first message, with
+        # no sign of why.
+        log.warning("could not rebuild the conversation %s from history",
+                    session_id, exc_info=True)
     sessions[session_id] = session
     _touch(session_id)
     return session

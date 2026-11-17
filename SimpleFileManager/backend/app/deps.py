@@ -2048,7 +2048,8 @@ class AppState:
             self._index_stats.unsupported_count = len(skipped["unsupported"])
             self._index_stats.failed_count = len(skipped["failed"])
         except Exception:
-            pass
+            log.warning("could not read the indexer's skip counters",
+                        exc_info=True)
         return self._index_stats
 
     def update_index_stats(self, updates: dict) -> IndexStats:

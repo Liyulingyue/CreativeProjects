@@ -232,7 +232,8 @@ class UploadLog:
             conn.commit()
         except Exception:
             # Pruning is housekeeping; it must never fail an upload.
-            pass
+            # But it should not fail silently either.
+            log.warning("could not prune the upload log", exc_info=True)
         finally:
             conn.close()
 
