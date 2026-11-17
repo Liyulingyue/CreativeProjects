@@ -244,6 +244,40 @@ STORAGE_PATH/                    # .env 中 STORAGE_PATH 配置的目录
 | 对话的上下文 | 模型自己说的容量（/props），和设置里较小的那个 | 压缩历史 |
 | 沙箱命令 | 120 秒 | 超时杀掉 |
 
+## 服务挂了会怎样
+
+机器是有限的：30 GB 内存，24B 模型一个就占 18 GB。有一天下午内存吃紧，
+内核的 OOM killer 一次性把后端、模型、图片索引服务全带走了，而**没有
+人看着**，得靠人自己发现。这里记下现在的做法。
+
+### 两个健康检查
+
+| 接口 | 问什么 | 挂了会怎样 |
+|---|---|---|
+| `/api/health` | 数据库、磁盘、向量库、模型端点、内存，都还好吗 | 503（`error`）或 `degraded` |
+| `/api/health/live` | 这个进程还在回话吗 | 200，永远 |
+
+`/api/health` 在模型没起来时会说 `degraded` 并回 503——这是实话。
+但 **docker-compose 里的 frontend 等的是 backend 的 `service_healthy`**，
+用完整检查的话，模型重启一次，整个应用就再也起不来了。所以容器探针
+用 `/api/health/live`：它只问「进程还在不在」。
+
+内存也进了健康检查：可用内存低于 `HEALTH_MEMORY_LOW_MB`（默认 2048 MB）
+就算 `degraded`，页面上会显示「内存不多了（可用 X GB）」。内核开始杀进程
+之前，先说一声。
+
+### 看门狗
+
+`run_dev.sh` 起的看门狗每 30 秒看一次：
+
+| 看什么 | 怎么判断 | 怎么办 |
+|---|---|---|
+| 后端 | `GET /api/health/live` | 重新 `run_dev.sh --start backend` |
+| 24B 模型 | `GET :9010/health` | `LLMServices/serve.sh start`（两分钟一次，不然模型来不及起来） |
+
+`./run_dev.sh --stop all` 会把看门狗一起停掉——不然几秒钟后它又会把
+服务全拉起来。
+
 ## 性能优化
 
 ### 增量索引
