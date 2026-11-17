@@ -151,3 +151,43 @@ def test_the_listing_says_which_files_are_starred(two_people):
     starred = res.json()["favorite_paths"]
     assert len(starred) == 1
     assert starred[0].endswith("全家/照片.jpg")
+
+
+class TestAStarFollowsItsFile:
+    """A star is on a file, not on a name."""
+
+    def test_a_starred_file_that_moves_keeps_its_star(self):
+        from app.deps import get_storage_root
+
+        root = get_storage_root()
+        (root / "原来.txt").write_text("内容", encoding="utf-8")
+
+        added = client.post("/api/favorites", json={"path": str(root / "原来.txt")})
+        assert added.status_code == 200
+
+        moved = client.post("/api/fs/move", json={
+            "src": str(root / "原来.txt"), "dest": str(root / "后来.txt"),
+        })
+        assert moved.status_code == 200
+
+        listed = client.get("/api/favorites").json()
+        paths = [f["path"] for f in listed["favorites"]]
+        assert str(root / "后来.txt") in paths, f"星星跟丢了: {paths}"
+        assert str(root / "原来.txt") not in paths
+
+    def test_a_folder_that_moves_takes_its_stars_with_it(self):
+        from app.deps import get_storage_root
+
+        root = get_storage_root()
+        (root / "老文件夹").mkdir()
+        (root / "老文件夹" / "里面的.txt").write_text("内容", encoding="utf-8")
+        assert client.post("/api/favorites", json={
+            "path": str(root / "老文件夹" / "里面的.txt"),
+        }).status_code == 200
+
+        assert client.post("/api/fs/move", json={
+            "src": str(root / "老文件夹"), "dest": str(root / "新文件夹"),
+        }).status_code == 200
+
+        paths = [f["path"] for f in client.get("/api/favorites").json()["favorites"]]
+        assert str(root / "新文件夹" / "里面的.txt") in paths, f"星星跟丢了: {paths}"

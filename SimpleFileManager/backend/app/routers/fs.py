@@ -268,6 +268,13 @@ def _follow_the_move(src: Path, dest: Path) -> None:
         indexer.rename_file(str(src), str(dest))
     except Exception:  # noqa: BLE001
         log.warning("the keyword index did not follow the move", exc_info=True)
+    # A star is on a file, not on a name. When the file moves, the star
+    # moves with it -- otherwise it vanishes from the list without a
+    # word, and the person who put it there has no idea where it went.
+    try:
+        state.get_favorite_store().rename(old_rel, new_rel)
+    except Exception:  # noqa: BLE001
+        log.warning("the stars did not follow the move", exc_info=True)
 
 
 @fs.post("/move")

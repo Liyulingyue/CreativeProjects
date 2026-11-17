@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -38,6 +39,10 @@ class FavoriteStore:
 
     def __init__(self, db_path: str):
         self.db_path = db_path
+        # One lock for the whole store, the way the other stores do
+        # it: a reader that sees half of a rename would star a file
+        # that is not there.
+        self._lock = threading.Lock()
         conn = self._connect()
         try:
             conn.execute(CREATE_FAVORITES)
@@ -68,6 +73,43 @@ class FavoriteStore:
         finally:
             conn.close()
         return {"path": path, "name": name or Path(path).name, "is_dir": is_dir}
+
+    def rename(self, old_path: str, new_path: str) -> int:
+        """Follow a file that has moved or been renamed.
+
+        A star is on a file, not on a name. When the file moves, the
+        star moves with it -- otherwise it vanishes from the list
+        without a word, and the person who put it there has no idea
+        where it went.
+
+        Returns how many stars were moved.
+        """
+        old_path = (old_path or "").strip()
+        new_path = (new_path or "").strip()
+        if not old_path or not new_path or old_path == new_path:
+            return 0
+        from . import db
+
+        with db.write_lock(self._lock, what="收藏表"):
+            conn = self._connect()
+            try:
+                # A star on a folder covers everything under it, so a
+                # folder that moves takes its contents with it.
+                cur = conn.execute(
+                    "UPDATE favorites SET path = ? || SUBSTR(path, ?)"
+                    " WHERE path = ? OR path LIKE ?",
+                    (
+                        new_path,
+                        len(old_path) + 1,
+                        old_path,
+                        old_path + "/%",
+                    ),
+                )
+                conn.commit()
+                moved = cur.rowcount or 0
+            finally:
+                conn.close()
+        return moved
 
     def remove(self, path: str, user_id: str) -> bool:
         conn = self._connect()
