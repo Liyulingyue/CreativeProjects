@@ -286,22 +286,34 @@ def get_indexed_files():
 
 
 @rag.delete("/files/{file_path:path}")
-def delete_indexed_file(file_path: str) -> dict:
+def delete_indexed_file(file_path: str, _admin=Depends(require_admin)) -> dict:
+    """Take one file out of the index.
+
+    The index is the administrator's business: dropping a file out of
+    it makes that file unfindable, and rebuilding the whole thing
+    costs hours.
+    """
     try:
         rag_svc = state.get_rag_service()
         rag_svc.vector_store.delete_by_file(file_path)
         search_engine.remove_file(file_path)
         return {"success": True}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"删除失败：{e}")
 
 
 @rag.delete("/clear")
-def clear_index() -> dict:
+def clear_index(_admin=Depends(require_admin)) -> dict:
+    """Throw the whole index away.
+
+    Everything the search can find is in here, and putting it back
+    takes hours of embedding. It is the administrator's call, not
+    anybody's.
+    """
     try:
         rag_svc = state.get_rag_service()
         rag_svc.clear_index()
         search_engine.clear()
-        return {"success": True, "message": "Index cleared"}
+        return {"success": True, "message": "索引已清空"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"清空失败：{e}")

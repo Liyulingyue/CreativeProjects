@@ -168,6 +168,32 @@ def test_a_person_shut_out_of_a_folder_cannot_move_a_batch_into_it(people):
     assert (get_storage_root() / "别处" / "随手.txt").exists()
 
 
+def test_only_the_administrator_can_empty_the_index(people):
+    """The index is hours of work to rebuild.
+
+    Throwing it away is the administrator's decision, not anybody's.
+    """
+    token = _login("甲", "jia1234")
+    res = client.delete("/api/rag/clear", headers={"Authorization": f"Bearer {token}"})
+
+    assert res.status_code == 403
+
+
+def test_only_the_administrator_can_drop_a_file_out_of_the_index(people):
+    token = _login("甲", "jia1234")
+    res = client.delete("/api/rag/files/全家/照片.jpg",
+                        headers={"Authorization": f"Bearer {token}"})
+
+    assert res.status_code == 403
+
+
+def test_the_administrator_can_empty_the_index(people):
+    boss = _login("boss", "boss1234")
+    res = client.delete("/api/rag/clear", headers={"Authorization": f"Bearer {boss}"})
+
+    assert res.status_code == 200
+
+
 def test_a_person_shut_out_of_a_folder_cannot_open_it(people):
     from app.deps import state
 

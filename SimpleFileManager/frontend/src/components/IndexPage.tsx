@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { fetchAutoIndexStatus, fetchIndexSkipped, pauseAutoIndex, resumeAutoIndex, runAutoIndexNow, updateSettings } from '../api';
+import { fetchAutoIndexStatus, fetchCurrentUser, fetchIndexSkipped, pauseAutoIndex, resumeAutoIndex, runAutoIndexNow, updateSettings } from '../api';
 import { authFetch } from '../auth';
 import { useToast } from './ui/Toast';
 import { ConfirmDialog, Sheet } from './ui/Dialog';
@@ -209,10 +209,18 @@ export function IndexPage() {
   const [isScanning, setIsScanning] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmDeleteFile, setConfirmDeleteFile] = useState<string | null>(null);
+  // Emptying the index and dropping a file out of it are the
+  // administrator's business -- the backend says so, and a button
+  // that always fails is worse than no button.
+  const [isAdmin, setIsAdmin] = useState(false);
   const [skipped, setSkipped] = useState<IndexSkipped | null>(null);
   const skippedCount = skipped
     ? skipped.unsupported.length + skipped.failed.length + skipped.oversized.length
     : 0;
+
+  useEffect(() => {
+    fetchCurrentUser().then(u => setIsAdmin(!!u.is_admin)).catch(() => setIsAdmin(false));
+  }, []);
   const [showSkipped, setShowSkipped] = useState(false);
   const [showStatusSheet, setShowStatusSheet] = useState(false);
 
@@ -358,11 +366,13 @@ export function IndexPage() {
               title="刷新">
               <Icon name="refresh" size={15} />刷新
             </button>
-            <button onClick={() => setConfirmClear(true)} disabled={isClearing || (stats?.indexed_count ?? 0) === 0}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-red-50 text-red-600 text-sm font-medium hover:bg-red-100 disabled:opacity-40 transition-colors"
-              title="清空索引">
-              <Icon name="trash" size={15} />{isClearing ? '清空中...' : '清空'}
-            </button>
+            {isAdmin && (
+              <button onClick={() => setConfirmClear(true)} disabled={isClearing || (stats?.indexed_count ?? 0) === 0}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-red-50 text-red-600 text-sm font-medium hover:bg-red-100 disabled:opacity-40 transition-colors"
+                title="清空索引">
+                <Icon name="trash" size={15} />{isClearing ? '清空中...' : '清空'}
+              </button>
+            )}
           </div>
         </div>
 
@@ -444,10 +454,12 @@ export function IndexPage() {
             className="flex-1 items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg bg-slate-100 text-slate-700 text-sm font-medium hover:bg-slate-200 transition-colors">
             <Icon name="refresh" size={15} />刷新
           </button>
-          <button onClick={() => setConfirmClear(true)} disabled={isClearing || (stats?.indexed_count ?? 0) === 0}
-            className="flex-1 items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg bg-red-50 text-red-600 text-sm font-medium hover:bg-red-100 disabled:opacity-40 transition-colors">
-            <Icon name="trash" size={15} />{isClearing ? '清空中...' : '清空索引'}
-          </button>
+          {isAdmin && (
+            <button onClick={() => setConfirmClear(true)} disabled={isClearing || (stats?.indexed_count ?? 0) === 0}
+              className="flex-1 items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg bg-red-50 text-red-600 text-sm font-medium hover:bg-red-100 disabled:opacity-40 transition-colors">
+              <Icon name="trash" size={15} />{isClearing ? '清空中...' : '清空索引'}
+            </button>
+          )}
         </div>
       </Sheet>
 
@@ -540,10 +552,12 @@ export function IndexPage() {
                       <Icon name="file" size={18} className="text-slate-400" />
                       <div className="text-sm font-medium text-slate-700 truncate">{file.file_path.split(/[/\\]/).pop()}</div>
                     </div>
-                    <button onClick={() => setConfirmDeleteFile(file.file_path)}
-                      className="p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors flex-shrink-0">
-                      <Icon name="trash" size={15} />
-                    </button>
+                    {isAdmin && (
+                      <button onClick={() => setConfirmDeleteFile(file.file_path)}
+                        className="p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors flex-shrink-0">
+                        <Icon name="trash" size={15} />
+                      </button>
+                    )}
                   </div>
                   {/* Vectorisation is incremental, so say plainly which part of
                       this file is embedded and which is still queued. */}
