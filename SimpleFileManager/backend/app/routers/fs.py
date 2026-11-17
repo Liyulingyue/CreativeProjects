@@ -922,6 +922,11 @@ async def upload_files(path: str = "", files: list[UploadFile] = File(...),
                 while chunk := await f.read(1024 * 1024):
                     out.write(chunk)
             tmp.replace(dest)
+        except OSError as e:
+            tmp.unlink(missing_ok=True)
+            if uploads._out_of_disk(e):
+                raise HTTPException(status_code=507, detail="磁盘满了，文件放不进去")
+            raise HTTPException(status_code=500, detail=f"上传失败：{e}")
         except BaseException:
             tmp.unlink(missing_ok=True)
             raise

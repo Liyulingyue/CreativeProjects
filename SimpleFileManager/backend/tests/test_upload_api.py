@@ -276,13 +276,14 @@ class TestOneShotUpload:
             return f
 
         monkeypatch.setattr("builtins.open", explode)
-        with pytest.raises(Exception):
-            client.post(
-                "/api/fs/upload",
-                params={"path": str(root)},
-                files=[("files", ("one.txt", b"hello", "text/plain"))],
-            )
+        res = client.post(
+            "/api/fs/upload",
+            params={"path": str(root)},
+            files=[("files", ("one.txt", b"hello", "text/plain"))],
+        )
         monkeypatch.undo()
+        assert res.status_code == 500
+        assert "上传失败" in res.json()["detail"]
         # Nothing half-written is sitting under the name.
         assert not (root / "one.txt").exists()
         leftovers = [p.name for p in root.iterdir() if p.name.endswith(".uploading")]
@@ -307,3 +308,26 @@ class TestOneShotUpload:
         )
         detail = res.json()["detail"]
         assert detail == "文件名不合法"
+
+
+class TestTheDiskIsFull:
+    """A NAS running out of room is an ordinary Tuesday."""
+
+    def test_a_chunk_that_does_not_fit_says_so_in_chinese(self, monkeypatch):
+        import errno
+
+        from app import uploads
+
+        info = start_upload(size=4, total_chunks=1)
+
+        def no_room(self, *args, **kwargs):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr("builtins.open", no_room)
+        with pytest.raises(uploads.UploadError) as e:
+            uploads.UploadManager(get_storage_root()).write_chunk(
+                info["upload_id"], 0, b"data"
+            )
+
+        assert "磁盘满了" in str(e.value)
+        assert "No space left" not in str(e.value)

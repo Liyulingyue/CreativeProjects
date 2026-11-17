@@ -65,6 +65,18 @@ def safe_subdir(target_dir: Path, rel_dir: str) -> Path:
 class UploadError(Exception):
     """An upload could not go ahead."""
 
+
+def _out_of_disk(e: OSError) -> bool:
+    """Whether this is the disk saying there is no room left.
+
+    A NAS running out of space is an ordinary Tuesday, not a bug. It
+    gets its own sentence: "the disk is full" says what to do, and the
+    system's own words ("No space left on device") do not.
+    """
+    import errno
+
+    return getattr(e, "errno", None) == errno.ENOSPC
+
 class UploadConflict(UploadError):
     """The name is already taken.
 
@@ -290,9 +302,15 @@ class UploadManager:
         # Written to a temporary name and moved into place, so a chunk
         # that is half-written is not mistaken for one that arrived.
         tmp = path.with_suffix(".part.tmp")
-        with open(tmp, "wb") as out:
-            out.write(data)
-        tmp.replace(path)
+        try:
+            with open(tmp, "wb") as out:
+                out.write(data)
+            tmp.replace(path)
+        except OSError as e:
+            tmp.unlink(missing_ok=True)
+            if _out_of_disk(e):
+                raise UploadError("磁盘满了，这一块写不进去") from e
+            raise UploadError(f"写入失败：{e}") from e
         return {"received": self.received(upload_id), "index": index}
 
     def received(self, upload_id: str) -> list[int]:
@@ -382,6 +400,11 @@ class UploadManager:
                     f"文件大小不符：预期 {meta['size']} 字节，实际 {total_bytes} 字节"
                 )
             tmp.replace(dest)
+        except OSError as e:
+            tmp.unlink(missing_ok=True)
+            if _out_of_disk(e):
+                raise UploadError("磁盘满了，文件放不进去") from e
+            raise UploadError(f"写入失败：{e}") from e
         except Exception:
             tmp.unlink(missing_ok=True)
             raise
