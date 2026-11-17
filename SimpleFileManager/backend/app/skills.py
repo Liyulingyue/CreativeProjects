@@ -329,8 +329,17 @@ def _handle_read_file(path: str, limit: int | None = None) -> dict:
     if not can_access(target, "read"):
         return {"error": f"无权读取: {path}"}
     try:
-        content = target.read_text(encoding="utf-8")[:limit]
-        return {"path": _rel(target), "content": content, "truncated": len(content) >= limit}
+        # Only read what is needed. A file of any size can be pointed
+        # at, and reading all of it first is how a big file takes the
+        # service down.
+        with open(target, "r", encoding="utf-8", errors="replace") as fh:
+            content = fh.read(limit + 1)
+        truncated = len(content) > limit
+        return {
+            "path": _rel(target),
+            "content": content[:limit],
+            "truncated": truncated,
+        }
     except Exception as e:
         return {"error": str(e)}
 
@@ -344,9 +353,20 @@ def _handle_write_file(path: str, content: str) -> dict:
         try:
             state.get_version_store().snapshot(target, note="被 Agent 写入覆盖")
         except Exception:
-            pass
+            log.warning("could not snapshot %s before the agent overwrote it",
+                        target, exc_info=True)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
+    # Into a temporary file first, then moved into place. A write that
+    # is cut short used to leave half a file under the name the user
+    # was going to open next.
+    tmp = target.with_name(f".{target.name}.writing")
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        tmp.replace(target)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return {"path": _rel(target), "size": target.stat().st_size, "written": True}
 
 
@@ -357,6 +377,10 @@ def _handle_move_file(source: str, destination: str) -> dict:
         return {"error": f"源文件不存在: {source}"}
     if not can_access(src, "write") or not can_access(dst.parent, "write"):
         return {"error": f"无权移动: {source}"}
+    if dst.exists():
+        # Renaming over something that is already there takes it away.
+        # The tool says so instead of doing it.
+        return {"error": f"目标已经存在: {destination}"}
     dst.parent.mkdir(parents=True, exist_ok=True)
     src.rename(dst)
     return {"source": _rel(src), "destination": _rel(dst), "moved": True}

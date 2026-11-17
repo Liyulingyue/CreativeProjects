@@ -691,3 +691,78 @@ class TestTheZipBomb:
 
         result = skills.import_zip_skill(archive)
         assert result["id"]
+
+
+class TestTheFileToolsAreCareful:
+    """The agent's file tools do the same things the page does.
+
+    They used to be less careful: reading a file took all of it into
+    memory, writing one left half a file behind when it was cut
+    short, and moving one quietly replaced whatever was in the way.
+    """
+
+    def test_reading_a_file_only_reads_what_was_asked_for(self, monkeypatch):
+        from tests.conftest import create_test_file
+
+        create_test_file("大的.txt", "x" * 100000)
+        result = execute_tool("read_file", {"path": "大的.txt", "limit": 100})
+
+        assert len(result["content"]) == 100
+        assert result["truncated"] is True
+
+    def test_reading_a_huge_file_does_not_take_it_all_into_memory(self, monkeypatch):
+        from tests.conftest import create_test_file
+
+        create_test_file("很大的.txt", "y" * 5_000_000)
+        read_sizes = []
+        real_open = open
+
+        def watching_open(self, *args, **kwargs):
+            handle = real_open(self, *args, **kwargs)
+            if str(self).endswith("很大的.txt"):
+                original_read = handle.read
+
+                def read(size=-1):
+                    read_sizes.append(size)
+                    return original_read(size)
+
+                handle.read = read
+            return handle
+
+        monkeypatch.setattr("builtins.open", watching_open)
+        execute_tool("read_file", {"path": "很大的.txt", "limit": 50})
+
+        # The read was capped rather than "all of it".
+        assert read_sizes and all(0 < s <= 51 for s in read_sizes), read_sizes
+
+    def test_writing_a_file_leaves_nothing_behind_when_it_fails(self, monkeypatch):
+        from tests.conftest import get_storage_root
+
+        real_open = open
+
+        def explode(self, *args, **kwargs):
+            if str(self).endswith(".writing"):
+                raise OSError("the disk gave up")
+            return real_open(self, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", explode)
+        result = execute_tool("write_file", {"path": "半截.txt", "content": "内容"})
+        monkeypatch.undo()
+
+        assert "error" in result
+
+        root = get_storage_root()
+        assert not (root / "半截.txt").exists()
+        leftovers = [p.name for p in root.iterdir() if p.name.endswith(".writing")]
+        assert leftovers == []
+
+    def test_moving_a_file_over_another_one_is_refused(self):
+        from tests.conftest import create_test_file
+
+        create_test_file("原来的.txt", "原来的内容")
+        result = execute_tool("move_file", {
+            "source": "原来的.txt", "destination": "原来的.txt",
+        })
+
+        assert "error" in result
+        assert "已经存在" in result["error"]
