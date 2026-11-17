@@ -16,12 +16,20 @@ from .digest import digest_service
 
 log = logging.getLogger(__name__)
 
+# How long to wait before trying again to write a digest properly.
+RETRY_FALLBACK_SECONDS = 10 * 60
+
 
 class AutoDigestScheduler:
     def __init__(self):
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._last_run_ts: float = 0.0
+        # When a digest was written without a summary -- because the
+        # model was busy at the time -- it is worth writing again once
+        # the model is free. Not more often than this, though: a busy
+        # model would otherwise be asked every minute.
+        self._last_retry_ts: float = 0.0
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -62,6 +70,18 @@ class AutoDigestScheduler:
 
         existing = digest_service.get(today)
         if existing:
+            if existing.get("generated_by") == "fallback":
+                # A digest that is only a list of file names: the model
+                # was busy when it was written. Write it again once the
+                # model has a chance.
+                if (time.time() - self._last_retry_ts) < RETRY_FALLBACK_SECONDS:
+                    return
+                self._last_retry_ts = time.time()
+                result = digest_service.generate(today)
+                if result.get("success") and result.get("generated_by") == "llm":
+                    log.info("the daily digest for %s was written properly", today)
+                    self._last_run_ts = time.time()
+                return
             self._last_run_ts = time.time()
             return
 
@@ -71,6 +91,7 @@ class AutoDigestScheduler:
 
     def reset(self):
         self._last_run_ts = 0.0
+        self._last_retry_ts = 0.0
 
 
 auto_digest = AutoDigestScheduler()
