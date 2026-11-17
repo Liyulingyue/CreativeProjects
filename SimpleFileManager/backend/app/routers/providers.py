@@ -19,7 +19,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..deps import state
+from ..deps import state, LastMainError
 from .auth import require_admin
 from ..models import LLMProvider, LLMProviderCreate, LLMProviderUpdate
 
@@ -44,20 +44,11 @@ def create_provider(req: LLMProviderCreate, _admin=Depends(require_admin)) -> LL
 
 @router.patch("/{provider_id}", response_model=LLMProvider)
 def update_provider(provider_id: str, req: LLMProviderUpdate, _admin=Depends(require_admin)) -> LLMProvider:
-    # Reject demoting the only main — leaves the system with no default
-    # for new sessions. The router layer is the right place to catch
-    # this because the service layer doesn't know "is the last main?".
-    if req.is_main is False:
-        svc = state.get_chat_history()
-        with svc._lock:  # type: ignore[attr-defined]
-            conn = svc._get_conn()  # type: ignore[attr-defined]
-            others_main = conn.execute(
-                "SELECT COUNT(*) FROM llm_providers WHERE is_main = 1 AND id != ?",
-                (provider_id,),
-            ).fetchone()[0]
-            conn.close()
-        if others_main == 0:
-            raise HTTPException(status_code=400, detail="至少要有一个 main provider；先在另一个上设 main")
+    # Demoting the last main provider is refused: a new chat session
+    # needs a main provider to land on. The check and the change are
+    # done together, under one lock, so two administrators acting at
+    # same time cannot each demote theirs and leave none behind.
+    #
     # A provider that names no thinking budget follows the system
     # default, and the operator can put it back on the default by
     # clearing the field -- which arrives as an explicit null. Leaving
@@ -66,16 +57,19 @@ def update_provider(provider_id: str, req: LLMProviderUpdate, _admin=Depends(req
     extra = {}
     if "reasoning_budget" in req.model_fields_set:
         extra["reasoning_budget"] = req.reasoning_budget
-    result = state.get_chat_history().update_provider(
-        provider_id,
-        name=req.name,
-        base_url=req.base_url,
-        model=req.model,
-        api_key=req.api_key,
-        is_main=req.is_main,
-        max_tokens=req.max_tokens,
-        **extra,
-    )
+    try:
+        result = state.get_chat_history().update_provider(
+            provider_id,
+            name=req.name,
+            base_url=req.base_url,
+            model=req.model,
+            api_key=req.api_key,
+            is_main=req.is_main,
+            max_tokens=req.max_tokens,
+            **extra,
+        )
+    except LastMainError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if result is None:
         raise HTTPException(status_code=404, detail="provider 不存在")
     return result
@@ -83,22 +77,15 @@ def update_provider(provider_id: str, req: LLMProviderUpdate, _admin=Depends(req
 
 @router.delete("/{provider_id}")
 def delete_provider(provider_id: str, _admin=Depends(require_admin)) -> dict:
-    svc = state.get_chat_history()
-    # Reject deleting the only main; same reason as the PATCH demote
-    # above (no default would be left).
-    target = svc.get_provider(provider_id)
-    if target is None:
+    # Deleting the last main provider is refused, same reason as the
+    # demote above -- and the check and the deletion are done together
+    # so two administrators cannot each delete theirs and leave none.
+    try:
+        deleted = state.get_chat_history().delete_provider(provider_id)
+    except LastMainError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not deleted:
         raise HTTPException(status_code=404, detail="provider 不存在")
-    if target.is_main:
-        with svc._lock:  # type: ignore[attr-defined]
-            conn = svc._get_conn()  # type: ignore[attr-defined]
-            others_main = conn.execute(
-                "SELECT COUNT(*) FROM llm_providers WHERE is_main = 1"
-            ).fetchone()[0]
-            conn.close()
-        if others_main <= 1:
-            raise HTTPException(status_code=400, detail="至少要有一个 main provider")
-    deleted = svc.delete_provider(provider_id)
     return {"deleted": deleted}
 
 

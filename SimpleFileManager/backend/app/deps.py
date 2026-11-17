@@ -172,6 +172,14 @@ def _calc_storage_used() -> int:
     return total
 
 
+class LastMainError(Exception):
+    """The change would leave the system with no main provider.
+
+    A new chat session needs a main provider to land on, so removing
+    the last one is refused rather than done.
+    """
+
+
 class EmbeddingService:
     def __init__(self, api_key: str, base_url: str, model: str):
         self.api_key = api_key
@@ -789,12 +797,20 @@ class ChatHistoryService:
                 "SELECT 1 FROM llm_providers WHERE is_main = 1 LIMIT 1"
             ).fetchone()
             is_main = 0 if existing_main else 1
+            # The column does not accept a null: a provider that never
+            # set a thinking budget follows the system default. Writing
+            # the null straight through used to make creating a
+            # provider without that field fail with a database error.
+            budget = (
+                reasoning_budget if reasoning_budget is not None
+                else DEFAULT_REASONING_BUDGET
+            )
             conn.execute(
                 "INSERT INTO llm_providers (id, name, base_url, model, api_key,"
                 " is_main, max_tokens, reasoning_budget, created_at, updated_at)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (provider_id, name, base_url, model, api_key,
-                 is_main, max_tokens, reasoning_budget, now, now)
+                 is_main, max_tokens, budget, now, now)
             )
             conn.commit()
             conn.close()
@@ -802,10 +818,7 @@ class ChatHistoryService:
             id=provider_id, name=name, base_url=base_url, model=model,
             api_key=api_key, is_main=bool(is_main),
             max_tokens=max_tokens,
-            reasoning_budget=(
-                reasoning_budget if reasoning_budget is not None
-                else DEFAULT_REASONING_BUDGET
-            ),
+            reasoning_budget=budget,
             created_at=now, updated_at=now
         )
 
@@ -816,8 +829,18 @@ class ChatHistoryService:
                          api_key: Optional[str] = None,
                          is_main: Optional[bool] = None,
                          max_tokens: Optional[int] = None,
-                         reasoning_budget: Any = _UNSET
+                         reasoning_budget: Any = _UNSET,
+                         keep_a_main: bool = True,
                          ) -> Optional[LLMProvider]:
+        """Change a provider.
+
+        `keep_a_main` refuses to demote the last main provider. The
+        check and the change happen under the same lock: if they were
+        separate, two administrators acting at the same time could
+        each see "there is another main" and each demote theirs, and
+        the system would be left with no main at all -- and a new chat
+        session has nowhere to land.
+        """
         with self._writing():
             conn = self._get_conn()
             existing = conn.execute(
@@ -850,9 +873,15 @@ class ChatHistoryService:
                 conn.execute("UPDATE llm_providers SET is_main = 0")
                 fields.append("is_main = ?"); values.append(1)
             elif is_main is False:
-                # Caller is asking to demote this provider. The route
-                # layer is responsible for ensuring a main remains
-                # (refuses if this is the only provider).
+                if keep_a_main:
+                    others_main = conn.execute(
+                        "SELECT COUNT(*) FROM llm_providers WHERE is_main = 1 AND id != ?",
+                        (provider_id,),
+                    ).fetchone()[0]
+                    if others_main == 0:
+                        conn.close()
+                        raise LastMainError(
+                            "至少要有一个 main provider；先在另一个上设 main")
                 fields.append("is_main = ?"); values.append(0)
             if fields:
                 fields.append("updated_at = ?")
@@ -866,19 +895,34 @@ class ChatHistoryService:
             conn.close()
         return self.get_provider(provider_id)
 
-    def delete_provider(self, provider_id: str) -> bool:
-        # The router layer guards against deleting the main; sessions
-        # referencing this provider will have their provider_id set to
-        # NULL via ON DELETE SET NULL and the agent flow will backfill
-        # from the main at read time.
+    def delete_provider(self, provider_id: str, keep_a_main: bool = True) -> bool:
+        """Remove a provider.
+
+        `keep_a_main` refuses to remove the last main provider. The
+        check and the removal are under the same lock, for the reason
+        given in update_provider.
+        """
         with self._writing():
             conn = self._get_conn()
-            cur = conn.execute(
-                "DELETE FROM llm_providers WHERE id = ?", (provider_id,)
-            )
-            conn.commit()
-            deleted = cur.rowcount > 0
-            conn.close()
+            try:
+                if keep_a_main:
+                    is_main = conn.execute(
+                        "SELECT is_main FROM llm_providers WHERE id = ?",
+                        (provider_id,),
+                    ).fetchone()
+                    if is_main and is_main[0]:
+                        others_main = conn.execute(
+                            "SELECT COUNT(*) FROM llm_providers WHERE is_main = 1"
+                        ).fetchone()[0]
+                        if others_main <= 1:
+                            raise LastMainError("至少要有一个 main provider")
+                cur = conn.execute(
+                    "DELETE FROM llm_providers WHERE id = ?", (provider_id,)
+                )
+                conn.commit()
+                deleted = cur.rowcount > 0
+            finally:
+                conn.close()
             return deleted
 
     def _row_to_provider(self, row) -> LLMProvider:
@@ -1215,7 +1259,8 @@ class ChatHistoryService:
                                   dim: Optional[str] = None,
                                   api_key: Optional[str] = None,
                                   is_index: Optional[bool] = None,
-                                  is_search: Optional[bool] = None) -> Optional[EmbeddingProvider]:
+                                  is_search: Optional[bool] = None,
+                                  keep_an_index: bool = True) -> Optional[EmbeddingProvider]:
         with self._writing():
             conn = self._get_conn()
             existing = conn.execute(
@@ -1244,9 +1289,21 @@ class ChatHistoryService:
                 conn.execute("UPDATE embedding_providers SET is_index = 0")
                 fields.append("is_index = ?"); values.append(1)
             elif is_index is False:
-                # Caller is asking to demote this row. The router
-                # layer is responsible for ensuring another is_index
-                # row remains (refuses when this is the only one).
+                # Demoting the last index provider is refused: the
+                # index needs one to build into. The check and the
+                # change are under the same lock, so two administrators
+                # acting at the same time cannot each demote theirs and
+                # leave none.
+                if keep_an_index:
+                    others = conn.execute(
+                        "SELECT COUNT(*) FROM embedding_providers"
+                        " WHERE is_index = 1 AND id != ?",
+                        (provider_id,),
+                    ).fetchone()[0]
+                    if others == 0:
+                        conn.close()
+                        raise LastMainError(
+                            "至少要有一个 index provider；先在另一个上设 index")
                 fields.append("is_index = ?"); values.append(0)
             if is_search is True:
                 # Search is also a singleton. Demote the rest so
@@ -1269,18 +1326,31 @@ class ChatHistoryService:
             conn.close()
         return self.get_embedding_provider(provider_id)
 
-    def delete_embedding_provider(self, provider_id: str) -> bool:
+    def delete_embedding_provider(self, provider_id: str, keep_an_index: bool = True) -> bool:
         with self._writing():
             conn = self._get_conn()
-            # Refuse silently: router layer is responsible for the
-            # "is_index" guard since it knows whether this is the
-            # last index row.
-            cur = conn.execute(
-                "DELETE FROM embedding_providers WHERE id = ?", (provider_id,)
-            )
-            conn.commit()
-            deleted = cur.rowcount > 0
-            conn.close()
+            try:
+                if keep_an_index:
+                    # Deleting the last index provider is refused, and
+                    # the check and the deletion are under the same
+                    # lock -- see update_embedding_provider.
+                    row = conn.execute(
+                        "SELECT is_index FROM embedding_providers WHERE id = ?",
+                        (provider_id,),
+                    ).fetchone()
+                    if row and row[0]:
+                        others = conn.execute(
+                            "SELECT COUNT(*) FROM embedding_providers WHERE is_index = 1"
+                        ).fetchone()[0]
+                        if others <= 1:
+                            raise LastMainError("至少要有一个 index provider")
+                cur = conn.execute(
+                    "DELETE FROM embedding_providers WHERE id = ?", (provider_id,)
+                )
+                conn.commit()
+                deleted = cur.rowcount > 0
+            finally:
+                conn.close()
             return deleted
 
     def _row_to_embedding_provider(self, row) -> EmbeddingProvider:

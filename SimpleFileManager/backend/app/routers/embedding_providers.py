@@ -12,7 +12,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..deps import state
+from ..deps import state, LastMainError
 from .auth import require_admin
 from ..models import EmbeddingProvider, EmbeddingProviderCreate, EmbeddingProviderUpdate
 
@@ -43,35 +43,22 @@ def update_embedding_provider(
 ) -> EmbeddingProvider:
     chat_svc = state.get_chat_history()
     # Refuse to demote the only is_index. is_search is allowed to be
-    # empty, so the unset case is always fine.
-    if req.is_index is False:
-        target = chat_svc.get_embedding_provider(provider_id)
-        if target is None:
-            raise HTTPException(status_code=404, detail="provider 不存在")
-        if target.is_index:
-            with chat_svc._lock:  # type: ignore[attr-defined]
-                conn = chat_svc._get_conn()  # type: ignore[attr-defined]
-                others = conn.execute(
-                    "SELECT COUNT(*) FROM embedding_providers"
-                    " WHERE is_index = 1 AND id != ?",
-                    (provider_id,),
-                ).fetchone()[0]
-                conn.close()
-            if others == 0:
-                raise HTTPException(
-                    status_code=400,
-                    detail="至少要有一个 index provider；先在另一个上设 index",
-                )
-    result = chat_svc.update_embedding_provider(
-        provider_id,
-        name=req.name,
-        base_url=req.base_url,
-        model=req.model,
-        dim=req.dim,
-        api_key=req.api_key,
-        is_index=req.is_index,
-        is_search=req.is_search,
-    )
+    # empty, so the unset case is always fine. The check and the change
+    # are under one lock, so two administrators acting at the same time
+    # cannot each demote theirs and leave none.
+    try:
+        result = chat_svc.update_embedding_provider(
+            provider_id,
+            name=req.name,
+            base_url=req.base_url,
+            model=req.model,
+            dim=req.dim,
+            api_key=req.api_key,
+            is_index=req.is_index,
+            is_search=req.is_search,
+        )
+    except LastMainError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if result is None:
         raise HTTPException(status_code=404, detail="provider 不存在")
     # Cache invalidation: any role/endpoint change must drop the
@@ -86,20 +73,12 @@ def update_embedding_provider(
 @router.delete("/{provider_id}")
 def delete_embedding_provider(provider_id: str, _admin=Depends(require_admin)) -> dict:
     chat_svc = state.get_chat_history()
-    target = chat_svc.get_embedding_provider(provider_id)
-    if target is None:
+    try:
+        deleted = chat_svc.delete_embedding_provider(provider_id)
+    except LastMainError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not deleted:
         raise HTTPException(status_code=404, detail="provider 不存在")
-    if target.is_index:
-        with chat_svc._lock:  # type: ignore[attr-defined]
-            conn = chat_svc._get_conn()  # type: ignore[attr-defined]
-            others = conn.execute(
-                "SELECT COUNT(*) FROM embedding_providers WHERE is_index = 1"
-            ).fetchone()[0]
-            conn.close()
-        if others <= 1:
-            raise HTTPException(
-                status_code=400, detail="至少要有一个 index provider",
-            )
-    deleted = chat_svc.delete_embedding_provider(provider_id)
     state.invalidate_embedding_caches()
     return {"deleted": deleted}
+
