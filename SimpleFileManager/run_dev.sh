@@ -129,6 +129,78 @@ fail_with_log() {
     return 1
 }
 
+# The pids listening on a port, if we can tell.
+port_holders() {
+    local port="$1"
+    ss -ltnp 2>/dev/null | awk -v p=":$port\$" '
+        $4 ~ p {
+            line = $0
+            while (match(line, /pid=[0-9]+/)) {
+                print substr(line, RSTART + 4, RLENGTH - 4)
+                line = substr(line, RSTART + RLENGTH)
+            }
+        }' | sort -u
+}
+
+# Is this process one of ours? A leftover from an earlier run of this
+# script is ours to clean up; somebody else's process is not.
+is_our_process() {
+    local pid="$1" dir="$2"
+    local cwd
+    cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null)"
+    case "$cwd" in
+        "$dir"|"$dir"/*) return 0 ;;
+    esac
+    local cmd
+    cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+    case "$cmd" in
+        *"$dir"*) return 0 ;;
+    esac
+    return 1
+}
+
+# Free a port that is held by a leftover of ours.
+#
+# With hot reload on, the backend is a supervisor and a worker. Kill the
+# supervisor -- which is what the OOM killer does when it picks a
+# victim -- and the worker is orphaned but keeps the port. The service
+# still answers, so the watchdog sees nothing wrong; but the next
+# restart says "the port is in use" and never comes back.
+#
+# So: when the port is busy and the pid we recorded is gone, look at
+# who holds it. If it is one of ours, stop it and carry on. If it is
+# somebody else's, leave it alone and say so.
+reclaim_port() {
+    local port="$1" dir="$2" name="$3"
+    local holders pid mine=""
+    holders="$(port_holders "$port")"
+    [ -n "$holders" ] || return 1
+    for pid in $holders; do
+        if is_our_process "$pid" "$dir"; then
+            mine="$mine $pid"
+        else
+            return 1
+        fi
+    done
+    [ -n "$mine" ] || return 1
+    c_dim "  $name: a leftover of ours (PID$(echo $mine)) is holding port $port; stopping it"
+    for pid in $mine; do
+        kill -TERM "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+    done
+    local waited=0
+    while port_busy "$port" && [ "$waited" -lt 10 ]; do
+        sleep 1
+        waited=$((waited + 1))
+    done
+    if port_busy "$port"; then
+        for pid in $mine; do
+            kill -9 "-$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null
+        done
+        sleep 1
+    fi
+    ! port_busy "$port"
+}
+
 # --- components ------------------------------------------------------------
 
 start_llm() {
@@ -154,9 +226,14 @@ start_backend() {
         return 0
     fi
     if port_busy "$BACKEND_PORT"; then
-        c_red "  port $BACKEND_PORT is in use by another process."
-        c_red "  Stop it first, or set BACKEND_PORT to a free port."
-        return 1
+        # A leftover of ours may still be holding the port (see
+        # reclaim_port). If so, take it back; if not, it is somebody
+        # else's and we say so.
+        if ! reclaim_port "$BACKEND_PORT" "$BACKEND_DIR" "backend"; then
+            c_red "  port $BACKEND_PORT is in use by another process."
+            c_red "  Stop it first, or set BACKEND_PORT to a free port."
+            return 1
+        fi
     fi
     if [ ! -d "$BACKEND_DIR/.venv" ]; then
         c_red "  backend/.venv missing. Create it:"
@@ -223,9 +300,11 @@ start_frontend() {
         return 0
     fi
     if port_busy "$FRONTEND_PORT"; then
-        c_red "  port $FRONTEND_PORT is in use by another process."
-        c_red "  Stop it first, or edit port in frontend/vite.config.ts."
-        return 1
+        if ! reclaim_port "$FRONTEND_PORT" "$FRONTEND_DIR" "frontend"; then
+            c_red "  port $FRONTEND_PORT is in use by another process."
+            c_red "  Stop it first, or edit port in frontend/vite.config.ts."
+            return 1
+        fi
     fi
     # Invoke vite directly rather than `npm run dev`: npm reparents, leaving the
     # pid file pointing at a dead shell and breaking stop/status.
@@ -265,14 +344,24 @@ start_watchdog() {
         return 0
     fi
     setsid bash -c '
-        ROOT="$1"; LOG="$2"; PORT="$3"
+        ROOT="$1"; LOG="$2"; PORT="$3"; PID_FILE="$4"
         echo "[watchdog] starting" > "$LOG"
         last_llm_retry=0
         while true; do
             sleep 30
-            # The backend: is it answering at all?
-            if ! curl -sf -m 5 "http://127.0.0.1:$PORT/api/health/live" >/dev/null 2>&1; then
-                echo "[watchdog] $(date +%T) the backend stopped answering; starting it again" >> "$LOG"
+            # The backend: two things have to be true. It has to answer,
+            # and the process we started has to still be there -- with
+            # hot reload on, that process is a supervisor, and if it is
+            # gone the worker it left behind keeps answering while
+            # code changes stop taking effect. A service that answers
+            # but does not reload is broken in a way nobody notices.
+            bpid=""
+            [ -f "$PID_FILE" ] && bpid="$(cat "$PID_FILE" 2>/dev/null)"
+            supervisor_alive=0
+            [ -n "$bpid" ] && kill -0 "$bpid" 2>/dev/null && supervisor_alive=1
+            if ! curl -sf -m 5 "http://127.0.0.1:$PORT/api/health/live" >/dev/null 2>&1 \
+               || [ "$supervisor_alive" -ne 1 ]; then
+                echo "[watchdog] $(date +%T) the backend is not right (answering=$([ "$supervisor_alive" -eq 1 ] && echo yes || echo no)); starting it again" >> "$LOG"
                 "$ROOT/run_dev.sh" --start backend >> "$LOG" 2>&1
             fi
             # The model: if it is gone, it is worth starting again --
@@ -287,7 +376,7 @@ start_watchdog() {
                 fi
             fi
         done
-    ' _ "$ROOT" "$LOG_DIR/watchdog.log" "$BACKEND_PORT" > /dev/null 2>&1 &
+    ' _ "$ROOT" "$LOG_DIR/watchdog.log" "$BACKEND_PORT" "$BACKEND_PID" > /dev/null 2>&1 &
     echo $! > "$WATCHDOG_PID"
     disown 2>/dev/null || true
     c_green "  watching over the services (PID $(cat "$WATCHDOG_PID"))"
