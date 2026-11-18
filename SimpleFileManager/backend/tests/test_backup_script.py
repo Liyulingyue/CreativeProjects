@@ -141,8 +141,9 @@ def test_the_archive_holds_the_databases_and_leaves_the_rest_out(tmp_path, monke
 
     monkeypatch.setattr(module, "SOURCE_DIR", source)
     archive = tmp_path / "out.tar.gz"
-    files, size = module.build_archive(archive)
-    assert files > 0
+    build = module.build_archive(archive)
+    assert build.files > 0
+    assert build.problems == []
     assert archive.exists()
 
     import tarfile

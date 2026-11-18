@@ -31,9 +31,15 @@ Environment:
     SFM_PASSWORD the administrator's password, so the indexing can be
                  asked to stop while the vector store is copied
 
-To restore: untar the archive over the storage root. It is a plain
-tar.gz, so `tar xzf <archive> -C <storage root>` puts everything back
-where it was, including the hidden .simplefilemanager directory.
+To restore: use the restore script.
+
+    scripts/restore.py <archive> [target]
+
+It checks the archive first, puts the files back where they belong, and
+keeps the old data aside instead of deleting it. Unpacking the archive
+by hand does not: the archive holds one top-level directory named after
+the storage root, so `tar xzf archive -C <root>` leaves the data one
+level too deep, in a directory the service never looks at.
 """
 
 import json
@@ -46,7 +52,11 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from collections import namedtuple
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from archive_check import verify_archive  # noqa: E402  (a script, not a package)
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 SOURCE_DIR = Path(os.getenv("SOURCE_DIR", PROJECT_DIR / "backend" / "data"))
@@ -55,6 +65,14 @@ KEEP = int(os.getenv("KEEP", "7"))
 
 # SQLite side files that belong with their database.
 DB_SUFFIXES = (".db",)
+
+# The snapshot already holds everything these hold. Carrying them along
+# puts a log of a different moment next to a consistent copy, which is
+# at best noise and at worst a puzzle nobody can answer later.
+DB_SIDE_SUFFIXES = ("-wal", "-shm", "-journal")
+
+# What one build produced: how much went in, and what went wrong.
+Build = namedtuple("Build", "files size problems")
 
 
 def snapshot_database(src: Path, dest: Path) -> bool:
@@ -146,8 +164,16 @@ class Indexing:
             time.sleep(1.0)
 
 
-def build_archive(archive: Path) -> tuple[int, int]:
-    """Write the archive. Returns (file count, byte count)."""
+def build_archive(archive: Path) -> Build:
+    """Write the archive.
+
+    Returns what went in and what went wrong along the way. A
+    database that could not be snapshotted is still copied, because a
+    rough copy beats no copy, but it is reported: the backup is only
+    as good as its weakest database, and the operator has to know
+    which one that was.
+    """
+    problems: list[str] = []
     staging = Path(tempfile.mkdtemp(prefix="sfm-backup-"))
     try:
         root_copy = staging / SOURCE_DIR.name
@@ -164,8 +190,13 @@ def build_archive(archive: Path) -> tuple[int, int]:
                 continue
             target = root_copy / rel
             target.parent.mkdir(parents=True, exist_ok=True)
+            if path.name.endswith(DB_SIDE_SUFFIXES):
+                # The snapshot of the database beside it already holds
+                # everything this holds.
+                continue
             if path.suffix in DB_SUFFIXES:
                 if not snapshot_database(path, target):
+                    problems.append(f"{path.name} 没有做成一致的快照，只是原样拷了一份")
                     shutil.copy2(path, target)
                 continue
             shutil.copy2(path, target)
@@ -174,7 +205,7 @@ def build_archive(archive: Path) -> tuple[int, int]:
         with tarfile.open(archive, "w:gz") as tar:
             tar.add(root_copy, arcname=SOURCE_DIR.name)
         size = archive.stat().st_size
-        return files, size
+        return Build(files, size, problems)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 
@@ -208,7 +239,9 @@ def main() -> int:
         print("[backup] 索引   : 没有密码，索引继续在跑（向量库可能拷得不完整）")
 
     try:
-        files, size = build_archive(tmp)
+        build = build_archive(tmp)
+        for problem in build.problems:
+            print(f"[backup] 有问题 : {problem}", file=sys.stderr)
         # Written to a temporary name and moved into place, so an
         # interrupted backup never leaves a truncated file that looks
         # like a good one.
@@ -222,17 +255,27 @@ def main() -> int:
             indexing.start_again()
             print("[backup] 索引   : 已恢复")
 
-    print(f"[backup] 完成   : {archive}（{files} 个文件，{size / 1024 / 1024:.1f} MB）")
+    print(f"[backup] 完成   : {archive}（{build.files} 个文件，{build.size / 1024 / 1024:.1f} MB）")
 
-    # Check that the archive is readable. A backup that cannot be read
-    # is worse than no backup, because it looks like one.
-    try:
-        with tarfile.open(archive, "r:gz") as tar:
-            tar.getnames()
-        print("[backup] 校验   : 归档可读 ✓")
-    except Exception as e:
-        print(f"备份失败：归档无法读取：{e}", file=sys.stderr)
+    # Check that the archive is not merely readable but restorable. The
+    # old check -- that the tar could be opened and its names listed --
+    # said nothing about whether the databases inside open, so a broken
+    # backup could look exactly like a good one.
+    report = verify_archive(archive)
+    for note in report.notes:
+        print(f"[backup] 没查   : {note}")
+    if not report.ok:
+        # A backup that cannot be restored must not sit in the rotation
+        # looking like one. It is kept under a name the rotation does
+        # not match, so it can be looked at but not restored by
+        # accident.
+        broken = archive.with_suffix(archive.suffix + ".broken")
+        archive.replace(broken)
+        for problem in report.problems:
+            print(f"备份失败：{problem}", file=sys.stderr)
+        print(f"备份失败：这个归档还原不了，已改名存为 {broken.name}", file=sys.stderr)
         return 1
+    print(f"[backup] 校验   : 还原得了 ✓")
 
     archives = sorted(BACKUP_DIR.glob("sfm-*.tar.gz"), key=lambda p: p.stat().st_mtime)
     if len(archives) > KEEP:
