@@ -1,5 +1,8 @@
 import os
 import json
+import logging
+import threading
+import time
 import uuid
 import sqlite3
 import hashlib
@@ -12,12 +15,27 @@ from .auth import require_admin
 from ..models import SnapshotRecord, FileSnapshot, FileChange, Suggestion, CompareResponse
 from ..deps import state, get_storage_root
 
+log = logging.getLogger(__name__)
+
 organizer = APIRouter()
+
+# How many entries one snapshot may hold. A snapshot of a very large
+# library would otherwise walk it for minutes and write a row per
+# file -- and the page that asks for it uses none of those rows.
+#
+# A snapshot that hit the limit says so, rather than pretending it
+# saw everything: a snapshot that stops half way would otherwise make
+# every file it missed look like a deletion.
+MAX_SNAPSHOT_ENTRIES = 200_000
+
+# How many rows are written at a time.
+INSERT_BATCH = 2000
 
 
 class OrganizerService:
     def __init__(self, db_path: str):
         self.db_path = db_path
+        self._lock = threading.Lock()
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
@@ -38,15 +56,40 @@ class OrganizerService:
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshot_date ON file_snapshots(date)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshot_path ON file_snapshots(path)")
+        # The snapshots themselves are stored one row per file, so a
+        # snapshot of an empty tree would leave no rows at all -- and
+        # then it would not exist. That is exactly the snapshot you
+        # want to compare against: the one you took before everything
+        # was deleted. So the snapshots are listed in their own table.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS snapshot_meta (
+                date TEXT PRIMARY KEY,
+                complete INTEGER NOT NULL DEFAULT 1,
+                taken_at REAL NOT NULL
+            )
+        """)
+        # Whether the snapshot saw everything. A snapshot that stopped
+        # half way would make every file it missed look like a
+        # deletion, so the fact is kept with it.
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(file_snapshots)")]
+        if "complete" not in cols:
+            conn.execute(
+                "ALTER TABLE file_snapshots ADD COLUMN complete INTEGER NOT NULL DEFAULT 1"
+            )
         conn.commit()
         conn.close()
 
-    def _scan_directory(self, root_path: str) -> list[dict]:
+    def _scan_directory(self, root_path: str) -> tuple[list[dict], bool]:
+        """Everything under a directory, and whether that was all of it."""
         files = []
+        truncated = False
         try:
             for entry in Path(root_path).rglob("*"):
                 if ".simplefilemanager" in entry.parts:
                     continue
+                if len(files) >= MAX_SNAPSHOT_ENTRIES:
+                    truncated = True
+                    break
                 try:
                     stat = entry.stat()
                     files.append({
@@ -62,8 +105,10 @@ class OrganizerService:
                 except (PermissionError, OSError):
                     continue
         except Exception:
-            pass
-        return files
+            # A tree that cannot be walked whole is still worth a
+            # snapshot of the part that could be read.
+            truncated = True
+        return files, truncated
 
     def take_snapshot(self, root_path: str) -> SnapshotRecord:
         # Seconds matter: the whole point of a snapshot is to diff two moments,
@@ -71,51 +116,71 @@ class OrganizerService:
         # overwrote the first, so "snapshot -> add files -> snapshot again" was
         # impossible within one day.
         date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        files = self._scan_directory(root_path)
+        files, truncated = self._scan_directory(root_path)
+        total_files = sum(1 for f in files if not f["is_dir"])
+        total_dirs = sum(1 for f in files if f["is_dir"])
 
-        conn = self._get_conn()
-        # Guard against a collision in the same second rather than deleting the
-        # previous snapshot outright.
-        if conn.execute("SELECT 1 FROM file_snapshots WHERE date = ?", (date,)).fetchone():
-            date = f"{date}:{uuid.uuid4().hex[:4]}"
+        with db.write_lock(self._lock, what="快照表"):
+            conn = self._get_conn()
+            try:
+                # Guard against a collision in the same second rather than
+                # deleting the previous snapshot outright.
+                if conn.execute(
+                    "SELECT 1 FROM snapshot_meta WHERE date = ?", (date,)
+                ).fetchone():
+                    date = f"{date}:{uuid.uuid4().hex[:4]}"
 
-        snapshots = []
-        for f in files:
-            sid = uuid.uuid4().hex
-            conn.execute(
-                "INSERT INTO file_snapshots (id, date, path, name, is_dir, size, modified) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (sid, date, f["path"], f["name"], int(f["is_dir"]), f["size"], f["modified"])
-            )
-            snapshots.append(FileSnapshot(
-                id=sid,
-                path=f["path"],
-                name=f["name"],
-                is_dir=f["is_dir"],
-                size=f["size"],
-                modified=f["modified"],
-                snapshot_date=date
-            ))
+                rows = [
+                    (uuid.uuid4().hex, date, f["path"], f["name"],
+                     int(f["is_dir"]), f["size"], f["modified"], 0 if truncated else 1)
+                    for f in files
+                ]
+                # In batches: one statement per file is one statement
+                # per file, and a library has a lot of files.
+                for start in range(0, len(rows), INSERT_BATCH):
+                    conn.executemany(
+                        "INSERT INTO file_snapshots (id, date, path, name, is_dir, size,"
+                        " modified, complete) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        rows[start:start + INSERT_BATCH],
+                    )
+                # The snapshot itself is listed even when it has no
+                # files -- an empty tree is a moment worth remembering.
+                conn.execute(
+                    "INSERT OR REPLACE INTO snapshot_meta (date, complete, taken_at)"
+                    " VALUES (?, ?, ?)",
+                    (date, 0 if truncated else 1, time.time()),
+                )
+                conn.commit()
+            finally:
+                conn.close()
 
-        conn.commit()
-        conn.close()
-
+        if truncated:
+            log.warning("the snapshot of %s stopped at %d entries; it is not complete",
+                        root_path, len(files))
         return SnapshotRecord(
             id=date,
             date=date,
-            total_files=sum(1 for f in files if not f["is_dir"]),
-            total_dirs=sum(1 for f in files if f["is_dir"]),
-            files=snapshots
+            total_files=total_files,
+            total_dirs=total_dirs,
+            # The list is not returned: the page that asks for a snapshot
+            # wants the counts, and the rows are here for the diff later.
+            files=[],
+            truncated=truncated,
         )
 
     def get_snapshot(self, date: str) -> Optional[SnapshotRecord]:
         conn = self._get_conn()
         rows = conn.execute(
-            "SELECT id, date, path, name, is_dir, size, modified FROM file_snapshots WHERE date = ?",
+            "SELECT id, date, path, name, is_dir, size, modified, complete"
+            " FROM file_snapshots WHERE date = ?",
             (date,)
         ).fetchall()
+        meta = conn.execute(
+            "SELECT complete FROM snapshot_meta WHERE date = ?", (date,)
+        ).fetchone()
         conn.close()
 
-        if not rows:
+        if meta is None:
             return None
 
         snapshots = []
@@ -135,33 +200,58 @@ class OrganizerService:
             date=date,
             total_files=sum(1 for s in snapshots if not s.is_dir),
             total_dirs=sum(1 for s in snapshots if s.is_dir),
-            files=snapshots
+            files=snapshots,
+            truncated=not meta[0],
         )
 
     def get_latest_snapshot(self) -> Optional[SnapshotRecord]:
+        """The most recent snapshot, as counts.
+
+        The page that asks wants the counts and the date, so they are
+        counted in the database. Reading the whole snapshot and
+        throwing all but two numbers away meant a library with fifty
+        thousand files built fifty thousand objects for every page
+        load.
+        """
         conn = self._get_conn()
         row = conn.execute(
-            "SELECT DISTINCT date FROM file_snapshots ORDER BY date DESC LIMIT 1"
+            "SELECT m.date,"
+            " SUM(CASE WHEN f.is_dir = 0 THEN 1 ELSE 0 END),"
+            " SUM(CASE WHEN f.is_dir = 1 THEN 1 ELSE 0 END),"
+            " m.complete"
+            " FROM snapshot_meta m"
+            " LEFT JOIN file_snapshots f ON f.date = m.date"
+            " GROUP BY m.date ORDER BY m.taken_at DESC, m.date DESC LIMIT 1"
         ).fetchone()
         conn.close()
 
-        if row:
-            return self.get_snapshot(row[0])
-        return None
+        if not row:
+            return None
+        return SnapshotRecord(
+            id=row[0],
+            date=row[0],
+            total_files=int(row[1] or 0),
+            total_dirs=int(row[2] or 0),
+            files=[],
+            truncated=not row[3],
+        )
 
     def list_snapshots(self, limit: int = 30) -> list[dict]:
         conn = self._get_conn()
         rows = conn.execute(
-            """SELECT date, COUNT(*) as file_count,
-               SUM(CASE WHEN is_dir = 0 THEN 1 ELSE 0 END) as files,
-               SUM(CASE WHEN is_dir = 1 THEN 1 ELSE 0 END) as dirs
-               FROM file_snapshots GROUP BY date ORDER BY date DESC LIMIT ?""",
+            """SELECT m.date,
+               SUM(CASE WHEN f.is_dir = 0 THEN 1 ELSE 0 END) as files,
+               SUM(CASE WHEN f.is_dir = 1 THEN 1 ELSE 0 END) as dirs,
+               COUNT(f.id) as file_count
+               FROM snapshot_meta m
+               LEFT JOIN file_snapshots f ON f.date = m.date
+               GROUP BY m.date ORDER BY m.taken_at DESC, m.date DESC LIMIT ?""",
             (limit,)
         ).fetchall()
         conn.close()
 
         return [
-            {"date": r[0], "file_count": r[1], "files": r[2], "dirs": r[3]}
+            {"date": r[0], "file_count": r[3], "files": r[1] or 0, "dirs": r[2] or 0}
             for r in rows
         ]
 
@@ -171,6 +261,16 @@ class OrganizerService:
 
         if not snap_from or not snap_to:
             raise HTTPException(status_code=404, detail="找不到这份快照")
+
+        if snap_from.truncated or snap_to.truncated:
+            # One of the two did not see everything, so the files it
+            # missed look like files that were deleted. Saying so is
+            # better than a diff that invents a thousand deletions.
+            raise HTTPException(
+                status_code=400,
+                detail="这两份快照里有一份不是完整的（拍的时候超出了上限），"
+                       "比出来的结果不可信，请重新拍一次",
+            )
 
         files_from = {f.path: f for f in snap_from.files}
         files_to = {f.path: f for f in snap_to.files}
@@ -249,7 +349,7 @@ class OrganizerService:
                     id=uuid.uuid4().hex,
                     type="move",
                     priority="low",
-                    message=f"图片文件建议移到 /photos 目录",
+                    message="图片文件建议移到 /photos 目录",
                     source_path=f.path,
                     target_path="/photos",
                     reason=f"根据文件类型 ({ext}) 判断"
@@ -259,7 +359,7 @@ class OrganizerService:
                     id=uuid.uuid4().hex,
                     type="move",
                     priority="low",
-                    message=f"视频文件建议移到 /videos 目录",
+                    message="视频文件建议移到 /videos 目录",
                     source_path=f.path,
                     target_path="/videos",
                     reason=f"根据文件类型 ({ext}) 判断"
@@ -269,7 +369,7 @@ class OrganizerService:
                     id=uuid.uuid4().hex,
                     type="move",
                     priority="low",
-                    message=f"文档文件建议移到 /documents 目录",
+                    message="文档文件建议移到 /documents 目录",
                     source_path=f.path,
                     target_path="/documents",
                     reason=f"根据文件类型 ({ext}) 判断"
@@ -279,7 +379,7 @@ class OrganizerService:
                     id=uuid.uuid4().hex,
                     type="move",
                     priority="low",
-                    message=f"音频文件建议移到 /music 目录",
+                    message="音频文件建议移到 /music 目录",
                     source_path=f.path,
                     target_path="/music",
                     reason=f"根据文件类型 ({ext}) 判断"
@@ -289,7 +389,7 @@ class OrganizerService:
                     id=uuid.uuid4().hex,
                     type="archive",
                     priority="medium",
-                    message=f"压缩文件可能需要归档",
+                    message="压缩文件可能需要归档",
                     source_path=f.path,
                     target_path=None,
                     reason="压缩包建议统一归档管理"
@@ -298,14 +398,22 @@ class OrganizerService:
         return suggestions
 
     def delete_old_snapshots(self, keep_days: int = 30):
-        conn = self._get_conn()
         # Snapshots are keyed "YYYY-MM-DD HH:MM:SS" now, so the cutoff has to
         # carry a time too or every snapshot from the cutoff day would be kept
         # (its date string is lexicographically greater than a bare day).
-        cutoff = (datetime.now() - timedelta(days=keep_days)).strftime("%Y-%m-%d 23:59:59")
-        conn.execute("DELETE FROM file_snapshots WHERE date < ?", (cutoff,))
-        conn.commit()
-        conn.close()
+        #
+        # The cutoff is the *start* of the day, not the end: with the end
+        # of the day, "keep 30 days" threw away the thirtieth day as
+        # well, so it kept twenty-nine.
+        cutoff = (datetime.now() - timedelta(days=max(0, int(keep_days)))).strftime("%Y-%m-%d 00:00:00")
+        with db.write_lock(self._lock, what="快照表"):
+            conn = self._get_conn()
+            try:
+                conn.execute("DELETE FROM file_snapshots WHERE date < ?", (cutoff,))
+                conn.execute("DELETE FROM snapshot_meta WHERE date < ?", (cutoff,))
+                conn.commit()
+            finally:
+                conn.close()
 
 
 def get_organizer_service() -> OrganizerService:

@@ -385,7 +385,11 @@ class SnapshotRecord(BaseModel):
     date: str
     total_files: int
     total_dirs: int
-    files: list[FileSnapshot]
+    files: list[FileSnapshot] = []
+    # Whether the snapshot saw everything. A snapshot that stopped half
+    # way makes every file it missed look like a deletion, so the fact
+    # is carried with it.
+    truncated: bool = False
 
 
 class FileChange(BaseModel):
