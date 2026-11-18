@@ -251,3 +251,86 @@ def test_files_already_in_a_new_directory_are_reported(tmp_path):
         assert "arrived/two.txt" in ready
     finally:
         watcher.stop()
+
+
+class TestTheWatchesThatAreGivenBack:
+    """A watch that is not given back takes up a slot for ever.
+
+    The kernel watches the inode, so a directory that is moved out of
+    the tree keeps its watch. The kernel only gives it back when the
+    directory is deleted -- and a directory that was moved somewhere
+    else is not deleted. Each such watch is one of the user's watch
+    slots, and there are not many of those.
+    """
+
+    def test_a_watch_that_is_dropped_is_also_removed_from_the_kernel(self, tmp_path):
+        removed = []
+
+        class FakeLibc:
+            @staticmethod
+            def inotify_rm_watch(fd, wd):
+                removed.append(wd)
+                return 0
+
+            @staticmethod
+            def inotify_add_watch(fd, path, mask):
+                return 0
+
+        h = Harness(tmp_path)
+        h.watcher._libc = FakeLibc()
+        h.watcher._fd = 7
+        h.watcher._watches = {1: ("", 1), 2: ("gone", 2)}
+
+        # Only one of the two directories is still there.
+        (tmp_path / "still").mkdir()
+        h.watcher._dir_cache = [tmp_path, tmp_path / "still"]
+        h.watcher._sync_watches()
+
+        assert 2 in removed, f"the watch was not given back: {removed}"
+
+    def test_the_kernel_watches_do_not_pile_up(self, tmp_path):
+        """The real thing: move the directories out and count the watches."""
+        import glob
+        import os
+
+        h = Harness(tmp_path)
+        if not h.watcher.can_watch(tmp_path)[0]:
+            pytest.skip("this filesystem does not report changes")
+
+        def watches_held():
+            total = 0
+            for fd in glob.glob(f"/proc/{os.getpid()}/fdinfo/*"):
+                try:
+                    with open(fd) as fh:
+                        text = fh.read()
+                except OSError:
+                    continue
+                if "inotify wd:" in text:
+                    total += text.count("inotify wd:")
+            return total
+
+        assert h.watcher.start()
+        try:
+            before = watches_held()
+            moved = tmp_path.parent / f"{tmp_path.name}-moved"
+            moved.mkdir()
+            for i in range(20):
+                (tmp_path / f"dir{i}").mkdir()
+            import time
+
+            time.sleep(1.0)
+            h.watcher._sync_watches()
+            after_creating = watches_held()
+            assert after_creating > before
+
+            for i in range(20):
+                os.rename(tmp_path / f"dir{i}", moved / f"dir{i}")
+            time.sleep(0.5)
+            h.watcher._sync_watches()
+            after_moving = watches_held()
+
+            assert after_moving < after_creating, (
+                f"the watches piled up: {after_creating} -> {after_moving}"
+            )
+        finally:
+            h.watcher.stop()

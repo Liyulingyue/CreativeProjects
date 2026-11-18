@@ -119,6 +119,7 @@ class StorageWatcher:
         self.on_change = on_change
         self.on_overflow = on_overflow
         self._fd = -1
+        self._libc = None
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -259,6 +260,28 @@ class StorageWatcher:
         self._dir_cache = found
         return found
 
+    def _drop_watch(self, wd: int) -> None:
+        """Let go of a watch the kernel is still holding.
+
+        The kernel watches the inode, so a directory that is moved out
+        of the tree keeps its watch: the events still arrive, they are
+        just about a directory that is no longer ours. The kernel only
+        gives the watch back when the directory is deleted -- and a
+        directory that was moved elsewhere is not deleted, so the watch
+        sits there taking up one of the user's watch slots for as long
+        as the directory exists.
+
+        There are a limited number of those slots, and running out of
+        them means some directories are not watched at all. So the
+        watch is given back here.
+        """
+        if self._fd < 0 or self._libc is None:
+            return
+        try:
+            self._libc.inotify_rm_watch(self._fd, wd)
+        except Exception:
+            log.debug("could not remove the watch %d", wd, exc_info=True)
+
     def _sync_watches(self, mark_ready: bool = False) -> set[str]:
         """Make the set of watches match the tree.
 
@@ -308,6 +331,10 @@ class StorageWatcher:
         for wd in list(self._watches):
             if wd not in seen:
                 self._watches.pop(wd, None)
+                # The kernel may still be holding the watch -- the
+                # directory was moved out of the tree rather than
+                # deleted -- and that watch takes up a slot.
+                self._drop_watch(wd)
 
         if new_dirs:
             self._dir_cache = None
