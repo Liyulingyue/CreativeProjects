@@ -34,13 +34,17 @@ function startFakeModel() {
         res.end('data: [DONE]\n\n')
         return
       }
+      // A question that asks for a slow answer gets one: it takes
+      // long enough for a person to go and read something else while
+      // it is being written.
+      const slow = body.includes('慢慢来')
       for (const w of WORDS) {
         const chunk = {
           id: 'x', object: 'chat.completion.chunk', created: 0, model: 'fake',
           choices: [{ index: 0, delta: { content: w }, finish_reason: null }],
         }
         res.write(`data: ${JSON.stringify(chunk)}\n\n`)
-        await new Promise((r) => setTimeout(r, 900))
+        await new Promise((r) => setTimeout(r, slow ? 4000 : 900))
       }
       const last = {
         id: 'x', object: 'chat.completion.chunk', created: 0, model: 'fake',
@@ -63,6 +67,18 @@ async function openChat(page) {
 }
 
 const sendButton = (page) => page.locator('button').filter({ hasText: /^发送$/ }).first()
+
+/** Whether the conversation with this title is the one on the screen. */
+async function isChosen(page, title) {
+  return page.evaluate((t) => {
+    const buttons = Array.from(
+      document.querySelectorAll('div.space-y-0\\.5 button.w-full.text-left')
+    )
+    const button = buttons.find((b) => (b.innerText || '').includes(t))
+    if (!button) return false
+    return (button.parentElement?.className || '').includes('bg-indigo-50')
+  }, title)
+}
 
 /**
  * Point a provider at the fake model and make it the main one.
@@ -243,6 +259,71 @@ export default {
         const other = await page.evaluate(() => document.body.innerText)
         ok(!other.includes('喵'),
           `别的会话里出现了这个会话正在写的字: ${other.slice(0, 240)}`)
+
+        await restoreProviders(page, made)
+      },
+    },
+
+    {
+      name: '别处的回答写完了，也不会把人从这一段对话里拽走',
+      async fn(page) {
+        // A turn that finishes in one conversation must not drag the
+        // person out of the conversation they are reading.
+        //
+        // The list of conversations is re-read when a turn ends, and
+        // the re-read used to say "nobody has chosen a conversation
+        // yet" -- because it was looking at a value from the first
+        // render -- so it moved the person to whichever conversation
+        // the server thought was current. That is the conversation
+        // the turn just finished in, not the one being read.
+        const made = await useFakeModel(page, fake.port)
+        ok(made.id, `假模型没接上: ${made.error || ''}`)
+
+        await openChat(page)
+        await pickFakeProvider(page, made)
+
+        // One conversation with a message in it.
+        await page.locator('textarea').first().fill('第一个对话里的问题')
+        await sendButton(page).click()
+        await page.waitForTimeout(6000)
+
+        // A second one, whose answer is still being written. The slow
+        // answer is what makes this test possible: the person has to
+        // be able to go and read the first conversation while the
+        // second one is still going.
+        await page.locator('button').filter({ hasText: '新建对话' }).first().click()
+        await page.waitForTimeout(800)
+        await page.locator('textarea').first().fill('慢慢来')
+        await sendButton(page).click()
+        await page.waitForTimeout(1500)
+
+        // While that answer is being written, the person goes back to
+        // reading the first conversation.
+        //
+        // The list of conversations is the one in the sidebar -- the
+        // messages are in a scroller of their own, and the two look
+        // alike from the outside.
+        const titles = page.locator('div.space-y-0\\.5 button.w-full.text-left')
+        const count = await titles.count()
+        ok(count >= 2, `对话列表里只有 ${count} 个`)
+        // The first one in the list is the newest; the second is the
+        // older one. Click the older one.
+        const older = titles.nth(1)
+        const olderTitle = (await older.innerText()).trim()
+        // The click is dispatched rather than performed: while the
+        // answer is being written the list is redrawn every word, and
+        // a real click waits for the element to hold still -- which
+        // would push it past the end of the answer and test nothing.
+        await older.dispatchEvent('click')
+        await page.waitForTimeout(500)
+        ok(await isChosen(page, olderTitle), '点了没有选中')
+
+        // Now let the second answer finish.
+        await page.waitForTimeout(25000)
+
+        // The person is still reading the conversation they chose.
+        ok(await isChosen(page, olderTitle),
+          '人被拽到了别的对话：那一轮在另一个对话里写完了，就把人拽走了')
 
         await restoreProviders(page, made)
       },

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   fetchChatSessions,
   createChatSession,
@@ -15,11 +15,24 @@ export function useChatSessions(sessionType: string = 'chat') {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
+  // Which conversation the person is looking at, right now.
+  //
+  // The reload below has to know this, but it cannot take it as an
+  // argument: it is called from a callback that is remembered across
+  // renders. The copy it closed over was the one from the first
+  // render -- always empty -- so the check "has the person chosen a
+  // conversation?" always said no, and every reload dragged the person
+  // back to whatever the server thought was current. That is visible
+  // when a turn finishes in one conversation while the person is
+  // reading another: they were pulled out of it.
+  const currentSessionIdRef = useRef(currentSessionId);
+  currentSessionIdRef.current = currentSessionId;
+
   const loadSessions = useCallback(async () => {
     try {
       const data = await fetchChatSessions(sessionType);
       setSessions(data.sessions);
-      if (data.current_session_id && !currentSessionId) {
+      if (data.current_session_id && !currentSessionIdRef.current) {
         setCurrentSessionId(data.current_session_id);
       }
     } catch (e) {
@@ -65,14 +78,15 @@ export function useChatSessions(sessionType: string = 'chat') {
       // also drop the agent's in-memory conversation context, otherwise it leaks
       authFetch(`/api/agent/sessions/${id}`, { method: 'DELETE' }).catch(() => {}),
     ]);
-    setSessions(prev => {
-      const filtered = prev.filter(s => s.id !== id);
-      if (currentSessionId === id) {
-        setCurrentSessionId(filtered.length > 0 ? filtered[0].id : null);
-      }
-      return filtered;
-    });
-  }, [currentSessionId]);
+    // The next conversation is chosen outside the state updater: an
+    // updater is run during the render, and setting state from inside
+    // one is a side effect the render should not have.
+    if (currentSessionId === id) {
+      const rest = sessions.filter(s => s.id !== id);
+      setCurrentSessionId(rest.length > 0 ? rest[0].id : null);
+    }
+    setSessions(prev => prev.filter(s => s.id !== id));
+  }, [currentSessionId, sessions]);
 
   const updateSessionTitle = useCallback(async (id: string, title: string) => {
     await updateChatSessionTitle(id, title);
