@@ -85,10 +85,16 @@ class CpuPool:
         # How many readers are in, and whether a writer is.
         self._readers = 0
         self._writer = False
-        # How many writers are waiting. A reader that arrives while no
-        # reader is in waits for them: otherwise a stream of readers
-        # would keep a writer out for ever.
-        self._writers_waiting = 0
+        # There used to be a count of the writers waiting here, and a
+        # rule that a reader arriving while no reader was in would
+        # wait for them. That rule was dropped on purpose: the picture
+        # index takes the cores one picture at a time and gives them
+        # back in between, so it is waiting most of the time, and a
+        # reader held back behind it would never get in.
+        #
+        # So the rule now is the other way round: readers do not wait
+        # for a writer, and a writer that is kept out says so within
+        # its own deadline instead of hanging. See _may_enter.
         self._fd: Optional[int] = None
         # Whether the file lock is held in shared or exclusive mode. The
         # mode always matches the in-process state: a writer only enters
@@ -179,48 +185,41 @@ class CpuPool:
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             with self._cond:
-                if not shared:
-                    self._writers_waiting += 1
-                try:
-                    while not self._may_enter(shared):
-                        if deadline is not None and time.monotonic() >= deadline:
-                            return False
-                        remaining = None if deadline is None else deadline - time.monotonic()
-                        self._cond.wait(POLL_INTERVAL if remaining is None
-                                       else max(0.001, min(POLL_INTERVAL, remaining)))
-                    # The in-process turn is ours. Now the file lock.
-                    if shared:
-                        if self._readers == 0:
-                            # The first reader speaks for the process.
-                            if self._fd_mode != "shared":
-                                self._release_flock()
-                                if not self._poll_flock("shared", deadline):
-                                    # Another process has the cores. Give
-                                    # the in-process lock back and try
-                                    # again, so that a thread with a short
-                                    # deadline is not stuck behind us.
-                                    if deadline is not None and time.monotonic() >= deadline:
-                                        return False
-                                    self._cond.wait(POLL_INTERVAL)
-                                    continue
-                        self._readers += 1
-                    else:
-                        self._writer = True
-                        if self._fd_mode != "exclusive":
-                            # No reader is in, so the shared lock (if any)
-                            # has already been given back.
+                while not self._may_enter(shared):
+                    if deadline is not None and time.monotonic() >= deadline:
+                        return False
+                    remaining = None if deadline is None else deadline - time.monotonic()
+                    self._cond.wait(POLL_INTERVAL if remaining is None
+                                   else max(0.001, min(POLL_INTERVAL, remaining)))
+                # The in-process turn is ours. Now the file lock.
+                if shared:
+                    if self._readers == 0:
+                        # The first reader speaks for the process.
+                        if self._fd_mode != "shared":
                             self._release_flock()
-                            if not self._poll_flock("exclusive", deadline):
-                                self._writer = False
-                                self._cond.notify_all()
+                            if not self._poll_flock("shared", deadline):
+                                # Another process has the cores. Give
+                                # the in-process lock back and try
+                                # again, so that a thread with a short
+                                # deadline is not stuck behind us.
                                 if deadline is not None and time.monotonic() >= deadline:
                                     return False
                                 self._cond.wait(POLL_INTERVAL)
                                 continue
-                finally:
-                    if not shared:
-                        self._writers_waiting -= 1
-                        self._cond.notify_all()
+                    self._readers += 1
+                else:
+                    self._writer = True
+                    if self._fd_mode != "exclusive":
+                        # No reader is in, so the shared lock (if any)
+                        # has already been given back.
+                        self._release_flock()
+                        if not self._poll_flock("exclusive", deadline):
+                            self._writer = False
+                            self._cond.notify_all()
+                            if deadline is not None and time.monotonic() >= deadline:
+                                return False
+                            self._cond.wait(POLL_INTERVAL)
+                            continue
                 return True
 
     def release(self) -> None:
