@@ -123,16 +123,26 @@ class HybridSearchEngine:
                 conn.close()
 
     def rename_file(self, old: str, new: str):
-        """Rewrite the path column for every chunk of a renamed file.
+        """Rewrite the path and the name for every chunk of a renamed file.
 
         Used by the indexer's move-detection pass when content is
         unchanged. Cheaper than delete-then-upsert because the FTS5
         tree isn't rebuilt.
+
+        The name is rewritten too, not just the path. The name is the
+        one the person sees in the results, and it is also what the
+        agent matches a spoken title against -- a row still carrying
+        the old name offers a file that is not there any more, and
+        leaves the new name unsearchable.
         """
+        name = Path(new).name
         with self._lock:
             conn = self._get_conn()
             try:
-                conn.execute("UPDATE fts_files SET path = ? WHERE path = ?", (new, old))
+                conn.execute(
+                    "UPDATE fts_files SET path = ?, name = ? WHERE path = ?",
+                    (new, name, old),
+                )
                 conn.commit()
             finally:
                 conn.close()
