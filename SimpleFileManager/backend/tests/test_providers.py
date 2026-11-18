@@ -123,3 +123,82 @@ class TestCreatingAProvider:
         assert res.status_code == 201, res.text
         assert res.json()["max_tokens"] is None
         client.delete(f"/api/providers/{res.json()['id']}")
+
+
+class TestTheEmbeddingProviders:
+    """The embedding side has the same two rules as the LLM side.
+
+    There has to be an index provider -- the picture index builds into
+    it -- and a provider can be created without filling in every field.
+    """
+
+    @pytest.fixture
+    def embeddings(self):
+        from app.deps import state
+
+        svc = state.get_chat_history()
+        before = {p.id for p in svc.list_embedding_providers()}
+        yield svc
+        for p in svc.list_embedding_providers():
+            if p.id not in before:
+                svc.delete_embedding_provider(p.id, keep_an_index=False)
+
+    def test_the_only_index_provider_cannot_be_demoted(self, embeddings):
+        """Demoting the last index provider is refused."""
+        index = [p for p in embeddings.list_embedding_providers() if p.is_index]
+        if not index:
+            pytest.skip("this installation has no index provider")
+        res = client.patch(f"/api/embedding_providers/{index[0].id}",
+                           json={"is_index": False})
+        assert res.status_code == 400, res.text
+        assert embeddings.get_embedding_provider(index[0].id).is_index
+
+    def test_the_only_index_provider_cannot_be_deleted(self, embeddings):
+        index = [p for p in embeddings.list_embedding_providers() if p.is_index]
+        if not index:
+            pytest.skip("this installation has no index provider")
+        res = client.delete(f"/api/embedding_providers/{index[0].id}")
+        assert res.status_code == 400, res.text
+        assert embeddings.get_embedding_provider(index[0].id) is not None
+
+    def test_two_administrators_at_once_cannot_leave_none(self, embeddings):
+        """The check and the change have to be together here too."""
+        a = embeddings.create_embedding_provider(
+            "甲", "http://127.0.0.1:9011/v1", "m1", dim="128")
+        b = embeddings.create_embedding_provider(
+            "乙", "http://127.0.0.1:9012/v1", "m2", dim="128")
+        embeddings.update_embedding_provider(a.id, is_index=True)
+
+        results = []
+        barrier = threading.Barrier(2)
+
+        def demote(provider_id, label):
+            barrier.wait()
+            res = client.patch(f"/api/embedding_providers/{provider_id}",
+                               json={"is_index": False})
+            results.append((label, res.status_code))
+
+        threads = [
+            threading.Thread(target=demote, args=(a.id, "甲")),
+            threading.Thread(target=demote, args=(b.id, "乙")),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+        assert not any(t.is_alive() for t in threads), "the request hung"
+
+        index = [p for p in embeddings.list_embedding_providers() if p.is_index]
+        assert index, f"no index provider left: {results}"
+
+    def test_a_provider_can_be_created_without_a_dimension(self):
+        """The dimension has a default, so leaving it out should work."""
+        res = client.post("/api/embedding_providers", json={
+            "name": "新模型",
+            "base_url": "http://127.0.0.1:9011/v1",
+            "model": "m",
+        })
+        assert res.status_code == 201, res.text
+        body = res.json()
+        assert body["dim"] == "AUTO", body
+        client.delete(f"/api/embedding_providers/{body['id']}")

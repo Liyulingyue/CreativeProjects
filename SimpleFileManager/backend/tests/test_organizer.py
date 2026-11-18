@@ -265,10 +265,14 @@ class TestWhichSnapshotIsTheLatest:
         assert res.json()["date"] == third["date"], res.json()
 
     def test_the_list_is_in_the_order_they_were_taken(self):
+        # A second apart, so that the names themselves say which is
+        # which. Two snapshots taken in the same second differ only by
+        # a random suffix, and the order of those suffixes is not the
+        # order they were taken in.
         for i in range(3):
             _file(f"文件{i}.txt")
             client.post("/api/organizer/snapshot")
-            time.sleep(0.05)
+            time.sleep(1.1)
 
         res = client.get("/api/organizer/snapshots")
         dates = [s["date"] for s in res.json()["snapshots"]]
