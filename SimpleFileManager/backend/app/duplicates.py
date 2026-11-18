@@ -42,22 +42,56 @@ class DuplicateFinder:
 
         return db.connect(self.index_db_path)
 
-    def _hashes(self) -> dict[str, list[tuple[str, int]]]:
-        """content hash -> [(path, size), ...] for the files that have one."""
+    def _hashes(self) -> dict[str, list[tuple[str, int, float]]]:
+        """content hash -> [(path, size, mtime), ...] for the files that have one.
+
+        The size and the time come along because the index's hash is
+        only true of the file as it was when the index saw it. A file
+        that has been edited since then has a hash that no longer
+        describes it, and the difference between "these two files are
+        the same" and "these two files were the same once" matters
+        when one of them is about to be thrown away.
+        """
         with self._connect() as conn:
             try:
                 rows = conn.execute(
-                    "SELECT path, size, content_hash FROM file_index"
+                    "SELECT path, size, mtime, content_hash FROM file_index"
                     " WHERE content_hash IS NOT NULL AND content_hash != ''"
                     " AND size >= ?",
                     (MIN_DUPLICATE_SIZE,),
                 ).fetchall()
             except sqlite3.Error:
                 return {}
-        groups: dict[str, list[tuple[str, int]]] = {}
-        for path, size, digest in rows:
-            groups.setdefault(digest, []).append((path, int(size or 0)))
+        groups: dict[str, list[tuple[str, int, float]]] = {}
+        for path, size, mtime, digest in rows:
+            groups.setdefault(digest, []).append((path, int(size or 0), float(mtime or 0)))
         return groups
+
+    def _drifted(self, path: str, size: int, mtime: float) -> bool:
+        """Whether the file has changed since the index last saw it.
+
+        The cheap check: the size and the time the index recorded are
+        still what the file says. If they are not, the file has been
+        touched since, and the hash in the index describes something
+        else.
+        """
+        try:
+            st = (self.storage_root / path).stat()
+        except OSError:
+            return True
+        return st.st_size != size or abs(st.st_mtime - mtime) > 0.001
+
+    def _still_a_copy_of(self, path: str, size: int, mtime: float, digest: str) -> bool:
+        """Whether the file still has the contents the group was found by.
+
+        If the file has not changed since the index saw it, the answer
+        is yes. If it has, the only honest way to know is to read it and
+        hash it again -- which is worth doing here, because the answer
+        decides whether a file somebody edited is thrown away.
+        """
+        if not self._drifted(path, size, mtime):
+            return True
+        return _hash_file(self.storage_root / path) == digest
 
     def find(self, limit: int = 200) -> dict:
         """The duplicate groups, biggest waste first.
@@ -75,8 +109,13 @@ class DuplicateFinder:
                 continue
             visible = [
                 (path, size)
-                for path, size in entries
+                for path, size, mtime in entries
                 if can_access(self.storage_root / path, "read")
+                # A file that has changed since the index saw it may no
+                # longer be a copy of anything. Saying it is one is a
+                # guess, and this page is where people decide what to
+                # throw away.
+                and not self._drifted(path, size, mtime)
             ]
             if len(visible) < 2:
                 continue
@@ -125,13 +164,13 @@ class DuplicateFinder:
             raise ValueError("没有找到这组重复文件")
 
         candidates = []
-        for path, size in entries:
+        for path, size, mtime in entries:
             target = self.storage_root / path
             try:
                 check_access(target, "write")
             except Exception:
                 continue
-            candidates.append((path, size, target))
+            candidates.append((path, size, mtime, target))
         if len(candidates) < 2:
             raise ValueError("你没有权限处理这组重复文件")
 
@@ -143,14 +182,24 @@ class DuplicateFinder:
             # The oldest is kept: it is the one that was there first.
             kept = min(
                 candidates,
-                key=lambda c: (c[2].stat().st_mtime if c[2].exists() else 0, c[0]),
+                key=lambda c: (c[3].stat().st_mtime if c[3].exists() else 0, c[0]),
             )
 
         bin_service = TrashService(self.storage_root)
         trashed = []
         failed = []
-        for path, size, target in candidates:
-            if target == kept[2]:
+        for path, size, mtime, target in candidates:
+            if target == kept[3]:
+                continue
+            # The index's hash is only true of the file as it was when
+            # the index saw it. A file that has been edited since then
+            # is not a copy of anything, and putting it in the bin
+            # would throw away the edit.
+            if not self._still_a_copy_of(path, size, mtime, digest):
+                failed.append({
+                    "path": path,
+                    "error": "这个文件的内容已经变了，不再是重复的，所以没有动它",
+                })
                 continue
             try:
                 bin_service.trash(target)
@@ -163,7 +212,7 @@ class DuplicateFinder:
             "trashed": trashed,
             "failed": failed,
             "wasted": sum(
-                size for path, size, _ in candidates
+                size for path, size, _mtime, _target in candidates
                 if path != kept[0] and path in set(trashed)
             ),
         }

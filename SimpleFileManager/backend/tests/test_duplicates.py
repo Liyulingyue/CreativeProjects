@@ -33,13 +33,24 @@ def finder(tmp_path):
 
 
 def _index(finder, path, size, digest):
+    """Put a file in the index, the way the indexer would.
+
+    The file is really there, and the index records the time and the
+    size it had. The finder needs those to tell a copy from a file
+    that has been changed since -- an index that says a file is a
+    duplicate is only true of the file as it was when it was looked at.
+    """
     import sqlite3
 
+    target = finder.storage_root / path
+    if not target.exists():
+        target.write_bytes(b"x" * size)
+    st = target.stat()
     conn = sqlite3.connect(finder.index_db_path)
     conn.execute(
         "INSERT OR REPLACE INTO file_index (path, mtime, size, indexed_at, content_hash)"
-        " VALUES (?, 0, ?, 0, ?)",
-        (path, size, digest),
+        " VALUES (?, ?, ?, 0, ?)",
+        (path, st.st_mtime, st.st_size, digest),
     )
     conn.commit()
     conn.close()
@@ -135,3 +146,83 @@ def test_nothing_is_thrown_away_that_cannot_be_found_again(finder):
 
     assert out["failed"] == []
     assert out["wasted"] == 2000
+
+
+class TestAFileThatHasChanged:
+    """The index's hash is true of the file as it was when it was looked at.
+
+    A file somebody edited after the index last saw it is not a copy of
+    anything, and putting it in the bin throws the edit away.
+    """
+
+    def test_a_changed_file_is_not_offered_as_a_duplicate(self, finder):
+        """The page must not offer a file that is no longer a copy."""
+        _index(finder, "a.txt", 2000, "abc")
+        _index(finder, "b.txt", 2000, "abc")
+
+        # b.txt is edited. The index has not been rebuilt yet.
+        (finder.storage_root / "b.txt").write_bytes(b"y" * 2000)
+
+        out = finder.find()
+        assert out["count"] == 0, f"a changed file was offered as a copy: {out}"
+
+    def test_a_changed_file_is_not_thrown_away(self, finder):
+        """The clean-up leaves it alone, and says why."""
+        _index(finder, "a.txt", 2000, "abc")
+        _index(finder, "b.txt", 2000, "abc")
+
+        (finder.storage_root / "b.txt").write_bytes(b"y" * 2000)
+
+        out = finder.clean("abc", keep="a.txt")
+        assert out["trashed"] == [], f"a changed file was thrown away: {out}"
+        assert (finder.storage_root / "b.txt").exists()
+        assert out["failed"], "it should say why it left the file alone"
+        assert "变" in out["failed"][0]["error"]
+
+    def test_it_is_the_contents_that_decide_and_not_the_history(self, finder):
+        """A file that was edited and edited back is still a copy.
+
+        What matters is what is in the file now. The time it was
+        touched is only a hint that something might have changed --
+        when it has, the file is read and hashed again, and that hash
+        is the answer.
+        """
+        import hashlib
+
+        content = b"x" * 2000
+        digest = hashlib.sha256(content).hexdigest()
+        (finder.storage_root / "a.txt").write_bytes(content)
+        (finder.storage_root / "b.txt").write_bytes(content)
+        _index(finder, "a.txt", 2000, digest)
+        _index(finder, "b.txt", 2000, digest)
+
+        # b.txt is edited, and then edited back.
+        (finder.storage_root / "b.txt").write_bytes(b"y" * 2000)
+        (finder.storage_root / "b.txt").write_bytes(content)
+
+        out = finder.clean(digest, keep="a.txt")
+        assert len(out["trashed"]) == 1, out
+        assert not (finder.storage_root / "b.txt").exists()
+
+    def test_a_file_that_kept_its_size_but_not_its_contents_is_spared(self, finder):
+        """Same size, different contents: only the hash can tell.
+
+        The cheap check -- size and time -- would pass if the time
+        were the same, so the file is read and hashed again.
+        """
+        import hashlib
+
+        content = b"x" * 2000
+        digest = hashlib.sha256(content).hexdigest()
+        (finder.storage_root / "a.txt").write_bytes(content)
+        (finder.storage_root / "b.txt").write_bytes(content)
+        _index(finder, "a.txt", 2000, digest)
+        _index(finder, "b.txt", 2000, digest)
+
+        # b.txt is edited. The size is the same; the time is not.
+        (finder.storage_root / "b.txt").write_bytes(b"y" * 2000)
+
+        out = finder.clean(digest, keep="a.txt")
+        assert out["trashed"] == [], f"a changed file was thrown away: {out}"
+        assert (finder.storage_root / "b.txt").exists()
+        assert (finder.storage_root / "b.txt").read_bytes() == b"y" * 2000
