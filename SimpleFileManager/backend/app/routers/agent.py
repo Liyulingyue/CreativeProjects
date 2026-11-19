@@ -765,7 +765,17 @@ def tool_submit_plan(title: str, summary: str = "", actions: Optional[list[dict]
         return {"success": False, "error": "Plan must contain at least one action."}
     cleaned = []
     for a in actions:
-        error = validate_plan_action(a)
+        try:
+            error = validate_plan_action(a)
+        except PathNotAllowed:
+            # The person asking may not reach the path the plan names.
+            # The tools answer with a message, never with an exception:
+            # the model has to be told what went wrong, so it can say
+            # something useful instead of the turn dying.
+            return {"success": False, "error": (
+                "You may not reach the path this plan names. A plan "
+                "cannot do what you are not allowed to do."
+            )}
         if error:
             return {"success": False, "error": error}
         action_type = a.get("action_type", "move")
