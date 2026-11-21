@@ -700,12 +700,33 @@ class AutoIndexer:
         unsupported: dict[str, str] = {}
         oversized: dict[str, str] = {}
         scan_complete = True
-        try:
-            for entry in root.rglob("*"):
-                if _is_hidden(entry):
+
+        def on_error(error: OSError) -> None:
+            # A folder that cannot be listed is not a folder whose files
+            # were deleted.
+            #
+            # pathlib's rglob skips a directory it cannot open without
+            # saying anything, so the files inside it would simply be
+            # missing from the walk -- and the scan would take that for
+            # "these files are gone" and drop them from the index. The
+            # person then searches for a file that is still on the disk
+            # and finds nothing, with nothing to say why.
+            #
+            # So the walk says which folder it could not read, the
+            # scan knows its enumeration was incomplete, and the
+            # deletions are held back.
+            nonlocal scan_complete
+            scan_complete = False
+            log.info("could not list %s: %s", getattr(error, "filename", "?"), error)
+
+        for dirpath, dirnames, filenames in os.walk(root, onerror=on_error):
+            # Hidden directories hold deleted and half-written files;
+            # they are not walked at all.
+            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+            for name in filenames:
+                if name.startswith("."):
                     continue
-                if not entry.is_file():
-                    continue
+                entry = Path(dirpath) / name
                 try:
                     stat = entry.stat()
                     present.add(str(entry))
@@ -741,8 +762,6 @@ class AutoIndexer:
                 except (PermissionError, OSError):
                     scan_complete = False
                     continue
-        except (PermissionError, OSError):
-            scan_complete = False
         self._last_enumeration_complete = scan_complete
         self._present_paths = present
         self._unsupported = unsupported
