@@ -1,0 +1,17 @@
+[package]
+name = "phb"
+version = "0.1.0"
+edition = "2021"
+description = "pptx-html-bridge-next: PPTX <-> typed JSON manifest <-> HTML view. Pure Rust, no Python runtime."
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+roxmltree = "0.20"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+thiserror = "2"
+
+[profile.release]
+opt-level = 3
+lto = true
