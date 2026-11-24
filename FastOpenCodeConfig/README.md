@@ -1,6 +1,8 @@
 # FastOpenCodeConfig — 将 opencode 注册为开机启动服务
 
-本工具集用于简化 `opencode` 在 Linux 系统下的开机启动配置。只需运行一键脚本，即可将 `opencode web --hostname 0.0.0.0 --port 4096` 注册为 systemd 服务。
+本工具集用于简化 `opencode` 在 Linux 系统下的开机启动配置。只需运行一键脚本，即可将 `opencode serve --hostname 0.0.0.0 --port 4096` 注册为 systemd 服务。
+
+> 使用 `serve` 而非旧版的 `web`：`opencode web` 只存在于 OpenCode V1（≤1.19.x），V2 已移除该子命令，`serve` 是 V1/V2 通用的常驻服务器写法，同时照常提供 Web 界面。
 
 ---
 
@@ -43,17 +45,19 @@ chmod +x setup_service.sh
 ### 1) 测试启动
 确保您的网络或端口设置正常：
 ```bash
-opencode web --hostname 0.0.0.0 --port 4096
+opencode serve --hostname 0.0.0.0 --port 4096
 ```
 
 ### 2) 身份验证配置 (可选)
 支持通过环境变量配置账户和密码保护服务器访问：
-- `OPENCODE_SERVER_PASSWORD`：设置访问密码
-- `OPENCODE_SERVER_USERNAME`：设置用户名（默认为 opencode）
+- `OPENCODE_SERVER_PASSWORD`：设置访问密码（V1 兼容写法，V2 仍支持）
+- `OPENCODE_PASSWORD`：设置访问密码（V2 推荐写法）
+
+> OpenCode V2 起不再支持 `OPENCODE_SERVER_USERNAME`，用户名恒为 `opencode`。
 
 示例：
 ```bash
-OPENCODE_SERVER_PASSWORD=secret opencode web --hostname 0.0.0.0 --port 4096
+OPENCODE_SERVER_PASSWORD=secret opencode serve --hostname 0.0.0.0 --port 4096
 ```
 
 ### 2) 创建服务文件
@@ -61,7 +65,7 @@ OPENCODE_SERVER_PASSWORD=secret opencode web --hostname 0.0.0.0 --port 4096
 
 ```ini
 [Unit]
-Description=OpenCode Web Service
+Description=OpenCode Server Service
 After=network.target
 
 [Service]
@@ -71,12 +75,12 @@ User=youruser
 # 设置工作目录
 WorkingDirectory=/home/youruser
 # 指向 opencode 的绝对路径（如 /usr/bin/opencode）
-ExecStart=/usr/bin/opencode web --hostname 0.0.0.0 --port 4096
+ExecStart=/usr/bin/opencode serve --hostname 0.0.0.0 --port 4096
 Restart=on-failure
 RestartSec=5s
-# 身份验证配置 (可选)
-Environment=OPENCODE_SERVER_USERNAME=opencode
+# 身份验证配置 (可选，V2 只需 OPENCODE_PASSWORD)
 Environment=OPENCODE_SERVER_PASSWORD=your_password
+Environment=OPENCODE_PASSWORD=your_password
 
 [Install]
 WantedBy=multi-user.target
@@ -103,7 +107,7 @@ sudo systemctl start opencode.service
 
 - **虚拟环境**：如果 `opencode` 安装在虚拟环境，请手动修改 `ExecStart` 的路径。
 - **端口访问**：默认端口 `4096` 超过 1024，无需 root 即可运行，但确保您的防火墙已开放该端口。
-- **身份验证**：推荐配置 `OPENCODE_SERVER_USERNAME` 和 `OPENCODE_SERVER_PASSWORD` 环境变量保护服务器访问安全。
+- **身份验证**：推荐配置 `OPENCODE_SERVER_PASSWORD`（V1 兼容）和 `OPENCODE_PASSWORD`（V2）环境变量保护服务器访问安全；V2 不再支持 `OPENCODE_SERVER_USERNAME`。
 
 ---
 

@@ -476,7 +476,7 @@ export struct AboutPage {
 
             Text() {
               Span('① 在电脑上启动服务:\n')
-              Span('opencode web --hostname 0.0.0.0 --port 4096\n\n')
+              Span('opencode serve --hostname 0.0.0.0 --port 4096\n\n')
               Span('② 手机与电脑连接（任选一种）:\n\n')
               Span('【同局域网】确保手机和电脑在同一 WiFi 下，在 App "后端" 中填入 http://电脑IP:4096\n\n')
               Span('【远程访问】推荐使用 ngrok 内网穿透:\n')

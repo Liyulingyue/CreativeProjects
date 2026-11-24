@@ -24,7 +24,7 @@ if systemctl is-active --quiet opencode.service 2>/dev/null; then
 elif systemctl is-active --quiet opencode 2>/dev/null; then
     echo "检测到 opencode 服务已运行，正在使用现有服务"
     OPENCODE_RUNNING=true
-elif pgrep -f "opencode web" > /dev/null 2>&1; then
+elif pgrep -f "opencode serve" > /dev/null 2>&1; then
     echo "检测到 opencode 进程已运行，正在使用现有进程"
     OPENCODE_RUNNING=true
 else
@@ -151,9 +151,9 @@ echo ""
 echo "配置方法："
 echo "  1. 通过 setup_service.sh 配置时会提示设置密码"
 echo "  2. 或手动设置环境变量："
-echo "     OPENCODE_SERVER_PASSWORD=your_password opencode web"
+echo "     OPENCODE_SERVER_PASSWORD=your_password opencode serve"
 echo ""
 echo "推荐环境变量："
-echo "  OPENCODE_SERVER_USERNAME - 用户名 (默认 opencode)"
-echo "  OPENCODE_SERVER_PASSWORD - 密码 (必填)"
+echo "  OPENCODE_SERVER_PASSWORD - 密码 (V1 兼容写法)"
+echo "  OPENCODE_PASSWORD         - 密码 (V2 推荐写法，用户名恒为 opencode)"
 echo "=========================================="

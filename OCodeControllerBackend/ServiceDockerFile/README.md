@@ -6,15 +6,15 @@
 
 | 服务 | 端口 | 说明 |
 |------|------|------|
-| OpenCode | 4096 | AI 编程助手 |
+| OpenCode | 4096 | AI 编程助手（`opencode serve`，V1/V2 通用） |
 | FileBrowser | 8080 | 文件管理（根目录 `/`，即容器根目录）|
 
 ## 环境变量
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `OPENCODE_SERVER_USERNAME` | OpenCode 访问用户名 | `opencode` |
-| `OPENCODE_SERVER_PASSWORD` | OpenCode 访问密码 | （空，需指定） |
+| `OPENCODE_SERVER_PASSWORD` | OpenCode 访问密码（V1 兼容写法，V2 仍支持） | （空，需指定） |
+| `OPENCODE_PASSWORD` | OpenCode 访问密码（V2 推荐写法） | （空，需指定） |
 | `FB_USERNAME` | FileBrowser 登录用户名 | `admin` |
 | `FB_PASSWORD` | FileBrowser 登录密码 | `admin123` |
 
@@ -29,13 +29,12 @@ docker build -t opencode-service:latest .
 
 ```bash
 docker run -d -p 4098:4096 -p 8088:8080 --name opencode-test \
-  -e OPENCODE_SERVER_USERNAME=test \
   -e OPENCODE_SERVER_PASSWORD=123456 \
   -e FB_USERNAME=admin \
   -e FB_PASSWORD=admin123 \
   opencode-service:latest
 
-# OpenCode: http://localhost:4098（test / 123456）
+# OpenCode: http://localhost:4098（opencode / 123456）
 # FileBrowser: http://localhost:8088（admin / admin123）
 ```
 

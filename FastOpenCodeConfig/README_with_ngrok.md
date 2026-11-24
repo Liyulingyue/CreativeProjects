@@ -29,13 +29,15 @@ OpenCode 支持通过环境变量配置账户密码，保护服务访问安全�
 
 | 环境变量 | 说明 | 默认值 |
 |----------|------|--------|
-| `OPENCODE_SERVER_USERNAME` | 用户名 | opencode |
-| `OPENCODE_SERVER_PASSWORD` | 密码 | 无 |
+| `OPENCODE_SERVER_PASSWORD` | 密码（V1 兼容写法，V2 仍支持） | 无 |
+| `OPENCODE_PASSWORD` | 密码（V2 推荐写法） | 无 |
+
+> OpenCode V2 起不再支持 `OPENCODE_SERVER_USERNAME`，用户名恒为 `opencode`。
 
 ### 快速测试
 
 ```bash
-OPENCODE_SERVER_PASSWORD=secret opencode web --hostname 0.0.0.0 --port 4096
+OPENCODE_SERVER_PASSWORD=secret opencode serve --hostname 0.0.0.0 --port 4096
 ```
 
 在另一个终端启动 Ngrok：
@@ -54,7 +56,7 @@ chmod +x setup_service_ngrok.sh
 
 该脚本会：
 - 检测 opencode 和 ngrok 路径
-- 询问配置端口、用户名、密码、Ngrok 认证令牌
+- 询问配置端口、密码、Ngrok 认证令牌
 - 生成并安装 systemd 服务
 - 自动启动 Ngrok 内网穿透
 
@@ -63,7 +65,7 @@ chmod +x setup_service_ngrok.sh
 ### 1) 启动 OpenCode 服务
 
 ```bash
-opencode web --hostname 0.0.0.0 --port 4096
+opencode serve --hostname 0.0.0.0 --port 4096
 ```
 
 ### 2) 启动 Ngrok 穿透

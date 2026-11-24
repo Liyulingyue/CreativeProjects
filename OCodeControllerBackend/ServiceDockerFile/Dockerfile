@@ -22,8 +22,9 @@ WORKDIR /
 EXPOSE 4096 8080
 
 # 6. OpenCode 环境变量（运行时通过 -e 注入）
-ENV OPENCODE_SERVER_USERNAME=opencode
+# 注：OpenCode V2 起不再支持 OPENCODE_SERVER_USERNAME，用户名恒为 opencode
 ENV OPENCODE_SERVER_PASSWORD=
+ENV OPENCODE_PASSWORD=
 
 # 7. FileBrowser 环境变量（运行时通过 -e 注入）
 ENV FB_USERNAME=admin
