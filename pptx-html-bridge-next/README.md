@@ -33,7 +33,7 @@ phb roundtrip deck.pptx outdir/          # 读→写→再读，验证稳定性
 | 图片 | 位置尺寸、srcRect 百分比裁切、旋转、**点击超链接**；**内容哈希命名**——同一张图跨轮次同名，自动去重 |
 | 自由形状 | custGeom 完整往返：moveTo/lnTo/cubicBezTo/quadBezTo/arcTo/close，多子路径，各自坐标空间 |
 | 连接线 | 颜色/宽度/虚线、flipH/V、**headEnd + tailEnd 双端箭头** |
-| 超链接 | run 级 + 图片级；外部 URL（TargetMode=External）与内部跳页双向往返，tooltip 保留 |
+| 超链接 | run 级 + 图片级；外部 URL（TargetMode=External）与内部跳页双向往返，tooltip 保留。**内部跳页记 manifest 页号（sldIdLst 顺序）**，与源文件 part 编号解耦 |
 | 项目符号 | buNone/buChar/buAutoNum + buClr/buSzPct/buFont，marL/indent 悬挂缩进 |
 | 表格 | 网格列宽/行高、**合并单元格**（gridSpan/rowSpan/vMerge/hMerge 全语义）、单元格底色/加粗/字号/颜色/对齐；旧版纯字符串单元格仍兼容 |
 | 备注 | notesSlide 正文提取与写回（\n 分段），含 notesMaster/theme2 打包 |
@@ -82,3 +82,12 @@ cargo test    # 7 个测试
   （类型化、校验严格），HTML 只是渲染产物
 - OOXML 承重层（包模型/rels/theme）由嵌入的空白模板打底（开发期用
   python-pptx 引导生成一次，运行时零 Python）；源文件若自带母版栈则整体携带
+
+## 语义归一说明
+
+以下场景读侧会归一化（首次 write→read 后 manifest 与手写值可能不同，此后稳定）：
+
+- `theme: None` 或部分槽位缺省 → 读回时总是填充实际主题值（读侧永远给出完整 theme）
+- `bullet.kind = "char"` 且未给 `character` → 写出缺省 `•`，读回带出
+- 空的 `Link`（既无 url 也无 slide）→ 写出时不生成超链接，读回为 `null`
+- 形状 `anchor: None` → 写出 `ctr`，读回归一为 `None`（ctr 即缺省语义）

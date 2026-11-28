@@ -29,6 +29,8 @@ struct Ctx<'a> {
     fidelity_seq: usize,
     assets: Vec<(String, Vec<u8>)>,
     media_done: HashMap<String, String>, // 包内路径 → asset 文件名
+    /// slide part 路径 → manifest 页号（按 sldIdLst 顺序，跳页链接以此为准）
+    page_of_part: HashMap<String, u32>,
 }
 
 impl Ctx<'_> {
@@ -151,6 +153,7 @@ pub fn read_pptx(path: &Path) -> Result<ReadOutcome> {
         fidelity_seq: 0,
         assets: vec![],
         media_done: HashMap::new(),
+        page_of_part: HashMap::new(),
     };
 
     // 1. 根 rels → officeDocument part
@@ -240,6 +243,8 @@ pub fn read_pptx(path: &Path) -> Result<ReadOutcome> {
         let slide_part = rel_map
             .get(rid)
             .ok_or_else(|| BridgeError::Other(format!("slide rId {rid} 无对应 part")))?;
+        // 页号以 sldIdLst 顺序为准（文件名编号与页序可能不一致）
+        ctx.page_of_part.insert(slide_part.clone(), (i + 1) as u32);
         let slide_base = parent_dir(slide_part);
         let slide_rels_path = format!("{}/_rels/{}.rels", slide_base, file_name(slide_part));
 
@@ -510,6 +515,10 @@ fn read_sp(node: Node, ctx: &mut Ctx, slide_idx: usize, slide_rels: &HashMap<Str
         .unwrap_or((None, None, None, None, None));
     let shadow = sp_pr.and_then(|sp| child(sp, "effectLst")).and_then(|e| child(e, "outerShdw")).map(read_shadow);
 
+    if sp_pr.and_then(|sp| child(sp, "ln")).and_then(|ln| child(ln, "gradFill")).is_some() {
+        ctx.note("线条使用渐变描边，已降级为无色（宽度/箭头保留）");
+    }
+
     // prstGeom 的 adj 调整值（roundRect 圆角等）
     let adj_val = sp_pr
         .and_then(|sp| child(sp, "prstGeom"))
@@ -573,7 +582,7 @@ fn read_sp(node: Node, ctx: &mut Ctx, slide_idx: usize, slide_rels: &HashMap<Str
             auto_size: read_auto_size(node),
             anchor: read_anchor(node),
             shadow,
-            insets: read_insets(node),
+            insets: read_insets(node, ctx),
             font_scale_pct: fs,
             ln_spc_reduction_pct: lr,
         }));
@@ -612,7 +621,7 @@ fn read_sp(node: Node, ctx: &mut Ctx, slide_idx: usize, slide_rels: &HashMap<Str
         rotation: geom.rot,
         shadow,
         paragraphs,
-        insets: read_insets(node),
+        insets: read_insets(node, ctx),
         anchor: read_shape_anchor(node),
         adj_val,
         ph_type,
@@ -780,14 +789,19 @@ fn read_auto_size(sp_node: Node) -> Option<String> {
     }
 }
 
-/// bodyPr 的四边内边距 EMU [l, t, r, b]（任一缺省记 None）
-fn read_insets(sp_node: Node) -> Option<[i64; 4]> {
+/// bodyPr 的四边内边距 EMU [l, t, r, b]。四边齐全才收（部分设置会把
+/// 缺失槽位误存成 0），部分出现的记保真提示并按缺省处理。
+fn read_insets(sp_node: Node, ctx: &mut Ctx) -> Option<[i64; 4]> {
     let bp = find(sp_node, "bodyPr")?;
     let get = |a: &str| attr(bp, a).and_then(|v| v.parse().ok());
     let ins = [get("lIns"), get("tIns"), get("rIns"), get("bIns")];
-    if ins.iter().any(|v| v.is_some()) {
+    let some_count = ins.iter().filter(|v| v.is_some()).count();
+    if some_count == 4 {
         Some(ins.map(|v| v.unwrap_or(0)))
     } else {
+        if some_count > 0 {
+            ctx.note("bodyPr 仅部分内边距被设置，按缺省边距处理");
+        }
         None
     }
 }
@@ -824,15 +838,21 @@ fn read_shape_anchor(sp_node: Node) -> Option<String> {
 }
 
 /// hlinkClick 节点 → Link（外部 URL 或内部跳页）
-fn link_of(hlink: Node, slide_rels: &HashMap<String, Rel>) -> Option<Link> {
+/// 内部跳页记 manifest 页号（sldIdLst 顺序），而非 part 文件名编号
+fn link_of(hlink: Node, slide_rels: &HashMap<String, Rel>, ctx: &Ctx) -> Option<Link> {
     let rid = attr_ns(hlink, NS_R, "id")?;
     let rel = slide_rels.get(rid)?;
     let tooltip = attr(hlink, "tooltip").map(|v| v.to_string());
     if rel.external {
         Some(Link { url: Some(rel.target.clone()), slide: None, tooltip })
     } else {
-        let stem = file_name(&rel.target).trim_end_matches(".xml");
-        let slide = stem.strip_prefix("slide").and_then(|s| s.parse::<u32>().ok());
+        let slide = ctx.page_of_part.get(&rel.target).copied().or_else(|| {
+            // 兜底：目标不在已知页表里（罕见），退回文件名编号
+            file_name(&rel.target)
+                .trim_end_matches(".xml")
+                .strip_prefix("slide")
+                .and_then(|s| s.parse().ok())
+        });
         Some(Link { url: None, slide, tooltip })
     }
 }
@@ -907,7 +927,7 @@ fn read_paragraphs(tx_body: Node, ctx: &mut Ctx, slide_rels: &HashMap<String, Re
                 lang,
             };
             if let Some(hl) = rpr.and_then(|rp| child(rp, "hlinkClick")) {
-                run.link = link_of(hl, slide_rels);
+                run.link = link_of(hl, slide_rels, ctx);
             }
             runs.push(run);
         }
@@ -1031,7 +1051,7 @@ fn read_pic(node: Node, ctx: &mut Ctx, slide_rels: &HashMap<String, Rel>, t: &T,
         .descendants()
         .find(|d| d.tag_name().name() == "cNvPr")
         .and_then(|c| child(c, "hlinkClick"))
-        .and_then(|hl| link_of(hl, slide_rels));
+        .and_then(|hl| link_of(hl, slide_rels, ctx));
 
     out.push(Element::Image(ImageElement {
         x, y, w, h,
@@ -1049,6 +1069,9 @@ fn read_cxn(node: Node, ctx: &mut Ctx, t: &T, out: &mut Vec<Element>) {
     };
     let (x, y, w, h) = (t.map_x(geom.x), t.map_y(geom.y), t.dim(geom.w, true), t.dim(geom.h, false));
     let ln_node = child(node, "spPr").and_then(|sp| child(sp, "ln"));
+    if ln_node.and_then(|ln| child(ln, "gradFill")).is_some() {
+        ctx.note("线条使用渐变描边，已降级为无色（宽度/箭头保留）");
+    }
     let (color, width_pt, dash, head_end, tail_end) = ln_node
         .map(|ln| {
             let c = child(ln, "solidFill").and_then(|sf| read_color_child(sf, ctx));
@@ -1229,9 +1252,13 @@ fn collect_template_pack(
             }
         }
     }
-    // 每个版式：xml + rels + 版式侧媒体
+    // 每个版式：xml + rels + 版式侧媒体（按编号去重，避免写出重复 part）
     layout_targets.sort_by_key(|(n, _)| *n);
+    layout_targets.dedup_by(|a, b| a.0 == b.0);
     for (n, lp) in layout_targets {
+        if pack.layouts.iter().any(|l| l.number == n) {
+            continue;
+        }
         let lbase = parent_dir(&lp);
         let xml = ctx.part_str(&lp)?;
         let lrels_path = format!("{}/_rels/{}.rels", lbase, file_name(&lp));

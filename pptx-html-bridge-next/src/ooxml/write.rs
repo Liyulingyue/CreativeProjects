@@ -193,7 +193,10 @@ fn patch_content_types(manifest: &Presentation, media_map: &HashMap<String, Stri
     };
     let mut defaults = String::new();
     for e in &exts {
-        defaults.push_str(&format!(r#"<Default Extension="{}" ContentType="{}"/>"#, e, ct_type(e)));
+        // 模板已声明的 Default（jpeg/rels/xml/bin 等）不重复注入
+        if !ct.contains(&format!(r#"Extension="{}""#, e)) {
+            defaults.push_str(&format!(r#"<Default Extension="{}" ContentType="{}"/>"#, e, ct_type(e)));
+        }
     }
     ct = ct.replace("<Override", &format!("{}<Override", defaults));
     let mut overrides = String::new();
@@ -658,10 +661,10 @@ fn emit_element(el: &Element, mut id: u64, rid_map: &HashMap<String, u64>, links
                 .map(|c| {
                     format!(
                         r#"<a:srcRect l="{}" t="{}" r="{}" b="{}"/>"#,
-                        (c[0] * 1000.0) as i64,
-                        (c[1] * 1000.0) as i64,
-                        (c[2] * 1000.0) as i64,
-                        (c[3] * 1000.0) as i64
+                        (c[0] * 1000.0).round() as i64,
+                        (c[1] * 1000.0).round() as i64,
+                        (c[2] * 1000.0).round() as i64,
+                        (c[3] * 1000.0).round() as i64
                     )
                 })
                 .unwrap_or_default();
