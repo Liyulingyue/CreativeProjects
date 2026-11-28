@@ -8,6 +8,7 @@ pub const PRES_RELS: &str = include_str!("../../assets/template/parts/ppt/_rels/
 pub const MASTER_XML: &str = include_str!("../../assets/template/parts/ppt/slideMasters/slideMaster1.xml");
 pub const MASTER_RELS: &str = include_str!("../../assets/template/parts/ppt/slideMasters/_rels/slideMaster1.xml.rels");
 pub const THEME_XML: &str = include_str!("../../assets/template/parts/ppt/theme/theme1.xml");
+pub const NOTES_MASTER_XML: &str = include_str!("../../assets/template/parts/ppt/notesMasters/notesMaster1.xml");
 pub const PRES_PROPS: &str = include_str!("../../assets/template/parts/ppt/presProps.xml");
 pub const VIEW_PROPS: &str = include_str!("../../assets/template/parts/ppt/viewProps.xml");
 pub const TABLE_STYLES: &str = include_str!("../../assets/template/parts/ppt/tableStyles.xml");

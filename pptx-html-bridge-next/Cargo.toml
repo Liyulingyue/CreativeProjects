@@ -1,6 +1,6 @@
 [package]
 name = "phb"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "pptx-html-bridge-next: PPTX <-> typed JSON manifest <-> HTML view. Pure Rust, no Python runtime."
 

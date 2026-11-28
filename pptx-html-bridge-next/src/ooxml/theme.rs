@@ -1,4 +1,6 @@
 //! 主题：clrScheme + clrMap，以及 schemeClr → RGB 的解析（含 lumMod/lumOff）。
+//! 同时把 clrScheme / fontScheme 提炼为 ThemeManifest（写侧回填用）。
+use crate::model::ThemeManifest;
 use crate::xmlutil::{attr, child};
 use roxmltree::Node;
 use std::collections::HashMap;
@@ -9,26 +11,56 @@ pub struct Theme {
     pub scheme: HashMap<String, String>,
     /// clrMap：槽位（tx1/bg1/tx2/bg2）→ scheme 名称
     pub slot_map: HashMap<String, String>,
+    /// 可回填的主题清单（读侧提炼）
+    pub manifest: ThemeManifest,
 }
 
 impl Theme {
     pub fn parse(theme_xml: &str, master_xml: Option<&str>) -> Theme {
         let mut t = Theme::default();
         if let Ok(doc) = roxmltree::Document::parse(theme_xml) {
-            if let Some(scheme) = find(doc.root_element(), "clrScheme") {
+            let root = doc.root_element();
+            if let Some(scheme) = find(root, "clrScheme") {
+                t.manifest.name = attr(scheme, "name").map(|v| v.to_string());
                 for c in scheme.children().filter(|n| n.is_element()) {
                     let name = c.tag_name().name().to_string();
-                    if let Some(clr) = child(c, "srgbClr").or_else(|| child(c, "sysClr")) {
-                        let hex = attr(clr, "val")
-                            .or_else(|| attr(clr, "lastClr"))
-                            .unwrap_or("")
-                            .trim_start_matches('#')
-                            .to_uppercase();
+                    // sysClr 的 val 是系统色名（window/windowText），RGB 必须取 lastClr
+                    let hex = if let Some(clr) = child(c, "srgbClr") {
+                        attr(clr, "val")
+                    } else if let Some(clr) = child(c, "sysClr") {
+                        attr(clr, "lastClr")
+                    } else {
+                        None
+                    }
+                    .map(|v| v.trim_start_matches('#').to_uppercase());
+                    if let Some(hex) = hex {
                         if hex.len() == 6 {
-                            t.scheme.insert(name, hex);
+                            t.scheme.insert(name.clone(), hex.clone());
+                            match name.as_str() {
+                                "dk1" => t.manifest.colors.dk1 = Some(hex),
+                                "lt1" => t.manifest.colors.lt1 = Some(hex),
+                                "dk2" => t.manifest.colors.dk2 = Some(hex),
+                                "lt2" => t.manifest.colors.lt2 = Some(hex),
+                                "accent1" => t.manifest.colors.accent1 = Some(hex),
+                                "accent2" => t.manifest.colors.accent2 = Some(hex),
+                                "accent3" => t.manifest.colors.accent3 = Some(hex),
+                                "accent4" => t.manifest.colors.accent4 = Some(hex),
+                                "accent5" => t.manifest.colors.accent5 = Some(hex),
+                                "accent6" => t.manifest.colors.accent6 = Some(hex),
+                                "hlink" => t.manifest.colors.hlink = Some(hex),
+                                "folHlink" => t.manifest.colors.fol_hlink = Some(hex),
+                                _ => {}
+                            }
                         }
                     }
                 }
+            }
+            // 字体方案：latin typeface
+            if let Some(major) = find(root, "majorFont") {
+                t.manifest.major_font = child(major, "latin").and_then(|l| attr(l, "typeface")).map(|v| v.to_string());
+            }
+            if let Some(minor) = find(root, "minorFont") {
+                t.manifest.minor_font = child(minor, "latin").and_then(|l| attr(l, "typeface")).map(|v| v.to_string());
             }
         }
         if let Some(master) = master_xml {
