@@ -310,7 +310,11 @@ fn render_paragraphs(out: &mut String, paragraphs: &[Paragraph]) {
             }
             Some(b) if b.kind == "auto_num" => {
                 counters[lvl] += 1;
-                let n = b.num_start.map(|s| s as u64 + counters[lvl]).unwrap_or(counters[lvl]);
+                // num_start 是首号：第 count 次出现 = start + count - 1
+                let n = b
+                    .num_start
+                    .map(|s| (s as u64).saturating_sub(1) + counters[lvl])
+                    .unwrap_or(counters[lvl]);
                 Some(format!("<span>{}. </span>", n))
             }
             Some(_) => Some(String::new()), // none：不出符号

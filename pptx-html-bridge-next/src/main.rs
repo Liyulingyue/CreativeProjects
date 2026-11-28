@@ -89,13 +89,15 @@ fn cmd_view(manifest: &PathBuf, outdir: &PathBuf) -> Result<()> {
         .map_err(|e| error::BridgeError::Manifest(e.to_string()))?;
     let assets_dir = manifest.parent().unwrap_or(Path::new(".")).join("assets");
     let mut assets: Vec<(String, Vec<u8>)> = Vec::new();
-    let dir = std::fs::read_dir(&assets_dir)?;
-    for entry in dir.flatten() {
-        if entry.path().is_file() {
-            assets.push((
-                entry.file_name().to_string_lossy().to_string(),
-                std::fs::read(entry.path())?,
-            ));
+    // assets 目录可选（无图片的 manifest 不需要）
+    if let Ok(dir) = std::fs::read_dir(&assets_dir) {
+        for entry in dir.flatten() {
+            if entry.path().is_file() {
+                assets.push((
+                    entry.file_name().to_string_lossy().to_string(),
+                    std::fs::read(entry.path())?,
+                ));
+            }
         }
     }
     view::view_html(&pres, &assets, outdir)?;
